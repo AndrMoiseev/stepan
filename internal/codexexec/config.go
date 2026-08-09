@@ -35,6 +35,7 @@ type Config struct {
 	Timeout      time.Duration
 	ArtifactDir  string
 	SessionID    string
+	Nonce        string
 	ConfigMode   ConfigMode
 	IOGrace      time.Duration
 }
@@ -68,6 +69,9 @@ func (c Config) Validate() (Config, error) {
 	}
 	if c.SessionID != "" && strings.TrimSpace(c.SessionID) == "" {
 		return Config{}, errors.New("session ID must be non-empty when supplied")
+	}
+	if strings.TrimSpace(c.Nonce) == "" {
+		return Config{}, errors.New("expected nonce is required")
 	}
 	return c, nil
 }

@@ -47,6 +47,8 @@ type Result struct {
 	FinalOutputValid  bool              `json:"final_output_valid"`
 	StderrNonempty    bool              `json:"stderr_nonempty"`
 	Outcome           Outcome           `json:"outcome"`
+	FailureClass      string            `json:"failure_class,omitempty"`
+	Usage             json.RawMessage   `json:"usage,omitempty"`
 	Detail            string            `json:"detail,omitempty"`
 }
 
@@ -143,6 +145,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	cmd.WaitDelay = cfg.IOGrace
 	if err := cmd.Start(); err != nil {
 		result.TerminationReason = SpawnFailed
+		result.FailureClass = "spawn_failure"
 		result.Detail = err.Error()
 		stdout.Close()
 		stderr.Close()
@@ -158,6 +161,9 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	}
 	if waitErr != nil {
 		result.Detail = waitErr.Error()
+		if errors.Is(waitErr, exec.ErrWaitDelay) {
+			result.FailureClass = "io_timeout"
+		}
 	}
 	if stdoutCloseErr != nil && result.Detail == "" {
 		result.Detail = stdoutCloseErr.Error()
@@ -168,6 +174,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if info, err := os.Stat(filepath.Join(cfg.ArtifactDir, "stderr.log")); err == nil {
 		result.StderrNonempty = info.Size() > 0
 	}
+	classify(&result, cfg)
 	return finish()
 }
 

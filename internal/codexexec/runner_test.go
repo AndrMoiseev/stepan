@@ -96,6 +96,9 @@ func TestInheritedPipeIsBounded(t *testing.T) {
 	if result.ProcessExitCode == nil || *result.ProcessExitCode != 0 {
 		t.Fatalf("parent exit code not preserved: %+v", result)
 	}
+	if result.FailureClass != "io_timeout" {
+		t.Fatalf("inherited pipe classification = %+v", result)
+	}
 	// ponytail: stage 2 only bounds inherited I/O; stage 4 terminates the descendant.
 	time.Sleep(3100 * time.Millisecond)
 }
@@ -118,6 +121,20 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	case "nonzero":
 		os.Exit(7)
+	case "structured-success":
+		for i, arg := range os.Args[:len(os.Args)-1] {
+			if arg == "--output-last-message" {
+				if err := os.WriteFile(os.Args[i+1], []byte(`{"result":"ok","nonce":"nonce"}`), 0o600); err != nil {
+					os.Exit(10)
+				}
+				break
+			}
+		}
+		fmt.Fprintln(os.Stdout, `{"type":"thread.started","thread_id":"session-1"}`)
+		fmt.Fprintln(os.Stdout, `{"type":"future.event"}`)
+		fmt.Fprintln(os.Stdout, `{"type":"turn.completed","usage":{"input_tokens":1}}`)
+		fmt.Fprintln(os.Stderr, "warning")
+		os.Exit(0)
 	case "leave-pipe-open":
 		cmd := exec.Command(os.Args[0])
 		cmd.Env = append(os.Environ(), "GO_WANT_CODEX_HELPER=hold-pipe")
@@ -146,7 +163,7 @@ func fakeConfig(t *testing.T, artifactDir string) Config {
 		Executable: os.Args[0], CodexVersion: "fake",
 		Workspace: root, Prompt: []byte("prompt"), Sandbox: ReadOnly,
 		SchemaPath: schema, Timeout: time.Second, ArtifactDir: artifactDir,
-		ConfigMode: Isolated,
+		Nonce: "nonce", ConfigMode: Isolated,
 	}
 }
 

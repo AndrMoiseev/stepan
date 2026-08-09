@@ -23,6 +23,7 @@ func TestValidateBeforeArtifacts(t *testing.T) {
 		SchemaPath:  schema,
 		Timeout:     time.Second,
 		ArtifactDir: artifactDir,
+		Nonce:       "nonce",
 		ConfigMode:  Isolated,
 	}).Validate()
 	if err == nil {
