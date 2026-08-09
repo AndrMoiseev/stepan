@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -51,13 +52,25 @@ func run() int {
 		return 2
 	}
 
-	plan := struct {
-		Executable string   `json:"executable"`
-		Args       []string `json:"args"`
-	}{cfg.Executable, cfg.Args()}
-	if err := json.NewEncoder(os.Stdout).Encode(plan); err != nil {
-		fmt.Fprintln(os.Stderr, "write plan:", err)
+	cfg.CodexVersion, err = codexexec.Version(context.Background(), cfg.Executable)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read Codex version:", err)
 		return 2
+	}
+	result, err := codexexec.Run(context.Background(), cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "run probe:", err)
+		return 2
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, "write result:", err)
+		return 2
+	}
+	if result.TerminationReason == codexexec.SpawnFailed {
+		return 2
+	}
+	if result.Outcome != codexexec.Pass {
+		return 1
 	}
 	return 0
 }

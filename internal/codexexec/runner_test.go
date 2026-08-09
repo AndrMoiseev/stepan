@@ -1,0 +1,167 @@
+package codexexec
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestTransport(t *testing.T) {
+	tests := []struct {
+		name       string
+		scenario   string
+		exitCode   int
+		stderrSize int
+	}{
+		{"large separate streams", "large", 0, 1 << 20},
+		{"warning with success", "warning", 0, len("warning\n")},
+		{"nonzero exit", "nonzero", 7, 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("GO_WANT_CODEX_HELPER", test.scenario)
+			cfg := fakeConfig(t, filepath.Join(t.TempDir(), "run"))
+			result, err := Run(context.Background(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.ProcessExitCode == nil || *result.ProcessExitCode != test.exitCode {
+				t.Fatalf("exit code = %v, want %d", result.ProcessExitCode, test.exitCode)
+			}
+			stdout, err := os.ReadFile(filepath.Join(cfg.ArtifactDir, "stdout.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stderr, err := os.ReadFile(filepath.Join(cfg.ArtifactDir, "stderr.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.scenario == "large" && (!bytes.Equal(stdout, bytes.Repeat([]byte("o"), 1<<20)) || !bytes.Equal(stderr, bytes.Repeat([]byte("e"), 1<<20))) {
+				t.Fatal("large stdout/stderr bytes were lost or mixed")
+			}
+			if len(stderr) != test.stderrSize {
+				t.Fatalf("stderr size = %d, want %d", len(stderr), test.stderrSize)
+			}
+			if result.StderrNonempty != (test.stderrSize > 0) {
+				t.Fatalf("stderr_nonempty = %v", result.StderrNonempty)
+			}
+			manifestData, err := os.ReadFile(filepath.Join(cfg.ArtifactDir, "manifest.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(manifestData, []byte(`"prompt"`)) || bytes.Contains(manifestData, []byte("environment")) {
+				t.Fatal("manifest contains prompt or environment")
+			}
+			assertResultWrittenLast(t, cfg.ArtifactDir)
+		})
+	}
+}
+
+func TestSpawnFailure(t *testing.T) {
+	root := t.TempDir()
+	badExecutable := filepath.Join(root, "bad.exe")
+	if err := os.WriteFile(badExecutable, []byte("not a Windows executable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fakeConfig(t, filepath.Join(root, "run"))
+	cfg.Executable = badExecutable
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.TerminationReason != SpawnFailed || result.ProcessExitCode != nil {
+		t.Fatalf("unexpected spawn result: %+v", result)
+	}
+	assertResultWrittenLast(t, cfg.ArtifactDir)
+}
+
+func TestInheritedPipeIsBounded(t *testing.T) {
+	t.Setenv("GO_WANT_CODEX_HELPER", "leave-pipe-open")
+	cfg := fakeConfig(t, filepath.Join(t.TempDir(), "run"))
+	cfg.IOGrace = 100 * time.Millisecond
+	started := time.Now()
+	result, err := Run(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatal("inherited pipe blocked transport")
+	}
+	if result.ProcessExitCode == nil || *result.ProcessExitCode != 0 {
+		t.Fatalf("parent exit code not preserved: %+v", result)
+	}
+	// ponytail: stage 2 only bounds inherited I/O; stage 4 terminates the descendant.
+	time.Sleep(3100 * time.Millisecond)
+}
+
+func TestMain(m *testing.M) {
+	scenario := os.Getenv("GO_WANT_CODEX_HELPER")
+	if scenario == "" {
+		os.Exit(m.Run())
+	}
+	switch scenario {
+	case "large":
+		done := make(chan struct{}, 2)
+		go func() { os.Stdout.Write(bytes.Repeat([]byte("o"), 1<<20)); done <- struct{}{} }()
+		go func() { os.Stderr.Write(bytes.Repeat([]byte("e"), 1<<20)); done <- struct{}{} }()
+		<-done
+		<-done
+		os.Exit(0)
+	case "warning":
+		fmt.Fprintln(os.Stderr, "warning")
+		os.Exit(0)
+	case "nonzero":
+		os.Exit(7)
+	case "leave-pipe-open":
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append(os.Environ(), "GO_WANT_CODEX_HELPER=hold-pipe")
+		cmd.Dir = os.TempDir()
+		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+		if err := cmd.Start(); err != nil {
+			os.Exit(9)
+		}
+		os.Exit(0)
+	case "hold-pipe":
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	default:
+		os.Exit(8)
+	}
+}
+
+func fakeConfig(t *testing.T, artifactDir string) Config {
+	t.Helper()
+	root := t.TempDir()
+	schema := filepath.Join(root, "schema.json")
+	if err := os.WriteFile(schema, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return Config{
+		Executable: os.Args[0], CodexVersion: "fake",
+		Workspace: root, Prompt: []byte("prompt"), Sandbox: ReadOnly,
+		SchemaPath: schema, Timeout: time.Second, ArtifactDir: artifactDir,
+		ConfigMode: Isolated,
+	}
+}
+
+func assertResultWrittenLast(t *testing.T, dir string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "result.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result Result
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, "result.json.tmp-*"))
+	if err != nil || len(temps) != 0 {
+		t.Fatalf("temporary result files remain: %v, %v", temps, err)
+	}
+}

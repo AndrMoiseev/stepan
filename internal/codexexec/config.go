@@ -26,15 +26,17 @@ const (
 )
 
 type Config struct {
-	Executable  string
-	Workspace   string
-	Prompt      []byte
-	Sandbox     Sandbox
-	SchemaPath  string
-	Timeout     time.Duration
-	ArtifactDir string
-	SessionID   string
-	ConfigMode  ConfigMode
+	Executable   string
+	CodexVersion string
+	Workspace    string
+	Prompt       []byte
+	Sandbox      Sandbox
+	SchemaPath   string
+	Timeout      time.Duration
+	ArtifactDir  string
+	SessionID    string
+	ConfigMode   ConfigMode
+	IOGrace      time.Duration
 }
 
 func (c Config) Validate() (Config, error) {
