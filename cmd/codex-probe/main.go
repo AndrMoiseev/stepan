@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/codexexec"
@@ -58,7 +59,9 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "read Codex version:", err)
 		return 2
 	}
-	result, err := codexexec.Run(context.Background(), cfg)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	result, err := codexexec.Run(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run probe:", err)
 		return 2
@@ -69,6 +72,9 @@ func run() int {
 	}
 	if result.TerminationReason == codexexec.SpawnFailed {
 		return 2
+	}
+	if result.TerminationReason == codexexec.OperatorCanceled {
+		return 130
 	}
 	if result.Outcome != codexexec.Pass {
 		return 1

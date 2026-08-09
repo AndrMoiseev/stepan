@@ -21,8 +21,11 @@ import (
 type TerminationReason string
 
 const (
-	Exited      TerminationReason = "exited"
-	SpawnFailed TerminationReason = "spawn_failed"
+	Exited               TerminationReason = "exited"
+	SpawnFailed          TerminationReason = "spawn_failed"
+	OperatorCanceled     TerminationReason = "operator_canceled"
+	TimedOut             TerminationReason = "timed_out"
+	KilledAfterIOTimeout TerminationReason = "killed_after_io_timeout"
 )
 
 type Outcome string
@@ -136,7 +139,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.Executable, cfg.Args()...)
+	job, err := newProcessJob()
+	if err != nil {
+		result.TerminationReason = SpawnFailed
+		result.FailureClass = "job_creation_failed"
+		result.Detail = err.Error()
+		stdout.Close()
+		stderr.Close()
+		return finish()
+	}
+	controller := newCancelController(job.Close)
+	cmd := exec.Command(cfg.Executable, cfg.Args()...)
 	cmd.Dir = cfg.Workspace
 	cmd.Stdin = bytes.NewReader(cfg.Prompt)
 	// Wrapping the files makes os/exec create and concurrently drain separate pipes.
@@ -144,6 +157,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	cmd.Stderr = writer{stderr}
 	cmd.WaitDelay = cfg.IOGrace
 	if err := cmd.Start(); err != nil {
+		controller.Close()
 		result.TerminationReason = SpawnFailed
 		result.FailureClass = "spawn_failure"
 		result.Detail = err.Error()
@@ -151,8 +165,43 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		stderr.Close()
 		return finish()
 	}
+	if err := job.Assign(cmd.Process); err != nil {
+		_ = cmd.Process.Kill()
+		controller.Cancel(SpawnFailed)
+		waitErr := cmd.Wait()
+		if cmd.ProcessState != nil {
+			code := cmd.ProcessState.ExitCode()
+			result.ProcessExitCode = &code
+		}
+		result.TerminationReason = SpawnFailed
+		result.FailureClass = "job_assignment_failed"
+		result.Detail = err.Error()
+		if waitErr != nil && result.Detail == "" {
+			result.Detail = waitErr.Error()
+		}
+		stdout.Close()
+		stderr.Close()
+		return finish()
+	}
 
+	processDone := make(chan struct{})
+	watchDone := make(chan struct{})
+	timer := time.NewTimer(cfg.Timeout)
+	go func() {
+		defer close(watchDone)
+		select {
+		case <-ctx.Done():
+			controller.Cancel(OperatorCanceled)
+		case <-timer.C:
+			controller.Cancel(TimedOut)
+		case <-processDone:
+		}
+	}()
 	waitErr := cmd.Wait()
+	close(processDone)
+	timer.Stop()
+	<-watchDone
+	controller.Close()
 	stdoutCloseErr := stdout.Close()
 	stderrCloseErr := stderr.Close()
 	if cmd.ProcessState != nil {
@@ -163,7 +212,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		result.Detail = waitErr.Error()
 		if errors.Is(waitErr, exec.ErrWaitDelay) {
 			result.FailureClass = "io_timeout"
+			if controller.Reason() == "" {
+				result.TerminationReason = KilledAfterIOTimeout
+			}
 		}
+	}
+	if reason := controller.Reason(); reason != "" {
+		result.TerminationReason = reason
+		result.FailureClass = string(reason)
+	}
+	if err := controller.Err(); err != nil && result.Detail == "" {
+		result.Detail = err.Error()
 	}
 	if stdoutCloseErr != nil && result.Detail == "" {
 		result.Detail = stdoutCloseErr.Error()

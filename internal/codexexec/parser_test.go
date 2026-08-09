@@ -115,13 +115,13 @@ func TestClassifierUsesObservableSignalPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	zero := 0
-	result := Result{ProcessExitCode: &zero, Outcome: Fail}
+	result := Result{ProcessExitCode: &zero, TerminationReason: Exited, Outcome: Fail}
 	classify(&result, Config{ArtifactDir: root, Nonce: "nonce"})
 	if result.FailureClass != "invalid_final_output" {
 		t.Fatalf("final-output classification = %+v", result)
 	}
 	seven := 7
-	result = Result{ProcessExitCode: &seven, Outcome: Fail}
+	result = Result{ProcessExitCode: &seven, TerminationReason: Exited, Outcome: Fail}
 	classify(&result, Config{ArtifactDir: root, Nonce: "nonce"})
 	if result.FailureClass != "process_failure" {
 		t.Fatalf("process classification = %+v", result)

@@ -151,7 +151,11 @@ func classify(result *Result, cfg Config) {
 	finalErr := ValidateFinalOutput(filepath.Join(cfg.ArtifactDir, "last-message.json"), cfg.Nonce)
 	result.FinalOutputValid = finalErr == nil
 
-	if result.ProcessExitCode == nil {
+	if result.TerminationReason != Exited {
+		if result.FailureClass == "" {
+			result.FailureClass = string(result.TerminationReason)
+		}
+	} else if result.ProcessExitCode == nil {
 		result.FailureClass = "process_not_started"
 	} else if *result.ProcessExitCode != 0 {
 		result.FailureClass = "process_failure"
