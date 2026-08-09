@@ -58,6 +58,13 @@ func TestTransport(t *testing.T) {
 			if bytes.Contains(manifestData, []byte(`"prompt"`)) || bytes.Contains(manifestData, []byte("environment")) {
 				t.Fatal("manifest contains prompt or environment")
 			}
+			eventData, err := os.ReadFile(filepath.Join(cfg.ArtifactDir, "events.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(eventData, []byte(`"prompt"`)) || bytes.Contains(eventData, []byte("environment")) {
+				t.Fatal("event journal contains prompt or environment")
+			}
 			assertResultWrittenLast(t, cfg.ArtifactDir)
 		})
 	}

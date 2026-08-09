@@ -100,6 +100,10 @@ func TestSuccessfulClassificationAllowsStderr(t *testing.T) {
 	if result.Outcome != Pass || result.FailureClass != "" || !result.StderrNonempty || result.SessionID == nil || *result.SessionID != "session-1" {
 		t.Fatalf("result = %+v", result)
 	}
+	state, err := ReadState(filepath.Join(cfg.ArtifactDir, "state.json"))
+	if err != nil || state.Status != "completed" || state.LastSeq == 0 {
+		t.Fatalf("state = %+v, %v", state, err)
+	}
 }
 
 func TestClassifierUsesObservableSignalPrecedence(t *testing.T) {

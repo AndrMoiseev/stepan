@@ -108,13 +108,30 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if err := os.Mkdir(cfg.ArtifactDir, 0o700); err != nil {
 		return Result{}, fmt.Errorf("create artifact directory: %w", err)
 	}
+	var journal *Journal
+	state := State{RunID: result.InvocationID, InvocationID: result.InvocationID, Status: "running"}
 	finish := func() (Result, error) {
 		result.FinishedAt = time.Now().UTC()
 		result.DurationMS = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
+		var finishErr error
+		if journal != nil {
+			state.LastSeq = journal.LastSeq()
+			if result.Outcome == Pass {
+				state.Status = "completed"
+			} else if result.TerminationReason == OperatorCanceled || result.TerminationReason == TimedOut {
+				state.Status = "interrupted"
+			} else {
+				state.Status = "failed"
+			}
+			finishErr = journal.Close()
+			if err := WriteState(filepath.Join(cfg.ArtifactDir, "state.json"), state); finishErr == nil {
+				finishErr = err
+			}
+		}
 		if err := writeJSONAtomic(filepath.Join(cfg.ArtifactDir, "result.json"), result); err != nil {
 			return result, err
 		}
-		return result, nil
+		return result, finishErr
 	}
 
 	promptHash := sha256.Sum256(cfg.Prompt)
@@ -138,6 +155,18 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		stdout.Close()
 		return Result{}, err
 	}
+	journal, err = NewJournal(filepath.Join(cfg.ArtifactDir, "events.jsonl"), result.InvocationID, result.InvocationID)
+	if err != nil {
+		stdout.Close()
+		stderr.Close()
+		return Result{}, err
+	}
+	if err := WriteState(filepath.Join(cfg.ArtifactDir, "state.json"), state); err != nil {
+		stdout.Close()
+		stderr.Close()
+		journal.Close()
+		return Result{}, err
+	}
 
 	job, err := newProcessJob()
 	if err != nil {
@@ -153,8 +182,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	cmd.Dir = cfg.Workspace
 	cmd.Stdin = bytes.NewReader(cfg.Prompt)
 	// Wrapping the files makes os/exec create and concurrently drain separate pipes.
-	cmd.Stdout = writer{stdout}
-	cmd.Stderr = writer{stderr}
+	cmd.Stdout = observedWriter{"stdout", stdout, journal}
+	cmd.Stderr = observedWriter{"stderr", stderr, journal}
 	cmd.WaitDelay = cfg.IOGrace
 	if err := cmd.Start(); err != nil {
 		controller.Close()
@@ -237,8 +266,16 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	return finish()
 }
 
-// writer intentionally hides *os.File from os/exec so it uses a pipe.
-type writer struct{ io.Writer }
+// observedWriter intentionally hides *os.File from os/exec so it uses a pipe.
+type observedWriter struct {
+	stream      string
+	destination io.Writer
+	journal     *Journal
+}
+
+func (w observedWriter) Write(data []byte) (int, error) {
+	return w.journal.Observe(w.stream, w.destination, data)
+}
 
 func randomID() (string, error) {
 	var data [16]byte
@@ -274,5 +311,5 @@ func writeJSONAtomic(path string, value any) error {
 	if err := file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temp, path)
+	return replaceFile(temp, path)
 }
