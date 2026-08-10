@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "scenario": "A02",
+  "outcome": "PASS",
+  "observation": {
+    "app_server_restarted": true,
+    "explicit_thread_resume": true,
+    "resumed_thread_id_matches_original": true,
+    "new_turn_id": true,
+    "resume_prompt_omitted_context_nonce": true,
+    "previous_context_nonce_recalled": true,
+    "terminal_status": "completed",
+    "structured_output_typed_validation": true,
+    "experimental_api_sent": false
+  },
+  "external_postconditions": {
+    "a01_workspace_git_status": "clean",
+    "a02_workspace_git_status": "clean",
+    "workspace_heads": "unborn",
+    "remote_count": 0,
+    "local_credential_setting_count": 0
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "probe_sha256": "5b1dc5b9c6d17d722b0c21dfe8ce3ea81982817735398900157fea8fc5d8eb29",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/result.json",
+      "sha256": "c015acf0ec94627411f2f343653ce368d009e50d96f482db8538be7e4afee423"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a02-final-evidence/manifest.json",
+      "sha256": "2ab132ab29eb35ef57730091dfe228d5624e16dfdfa789eae866d4559cf4be3c"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a02-final-evidence/stdout.jsonl",
+      "sha256": "832ea52fdccb5be1dcbbe13fb5dcd3e87135570a2123eed1d82fdab7a0762cf1"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a02-final-evidence/normalized-events.jsonl",
+      "sha256": "a12c49f04cc820c52b75e44b77323f1b7f01b14e6786d366781df506c3d5b6d3"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a02-final-evidence/result.json",
+      "sha256": "8e7e4c6fa22e0cddd17fe4a1eb842107783309da7386bc0d46d912e66d3107a4"
+    }
+  ]
+}

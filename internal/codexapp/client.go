@@ -252,8 +252,7 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 
 func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config ProbeConfig, result *ProbeResult) error {
 	if err := transport.SendRequest(IntID(1), "initialize", map[string]any{
-		"clientInfo":   map[string]string{"name": "stepan", "version": "0"},
-		"capabilities": map[string]bool{"experimentalApi": false},
+		"clientInfo": map[string]string{"name": "stepan", "version": "0"},
 	}); err != nil {
 		return err
 	}

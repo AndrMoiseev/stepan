@@ -79,11 +79,12 @@ func runVerticalFake(scenario string) int {
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"clientInfo"`
-		Capabilities struct {
-			ExperimentalAPI bool `json:"experimentalApi"`
-		} `json:"capabilities"`
 	}
-	if json.Unmarshal(initialize.Params, &initializeParams) != nil || initializeParams.ClientInfo.Name != "stepan" || initializeParams.ClientInfo.Version == "" || initializeParams.Capabilities.ExperimentalAPI {
+	var initializeFields map[string]json.RawMessage
+	if json.Unmarshal(initialize.Params, &initializeParams) != nil || json.Unmarshal(initialize.Params, &initializeFields) != nil || initializeParams.ClientInfo.Name != "stepan" || initializeParams.ClientInfo.Version == "" {
+		return 23
+	}
+	if _, hasCapabilities := initializeFields["capabilities"]; hasCapabilities {
 		return 23
 	}
 	if err := transport.SendResult(initialize.ID, map[string]string{

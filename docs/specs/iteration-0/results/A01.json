@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "scenario": "A01",
+  "outcome": "PASS",
+  "observation": {
+    "handshake_complete": true,
+    "thread_id_present": true,
+    "turn_id_present": true,
+    "item_id_present": true,
+    "terminal_status": "completed",
+    "terminal_count": 1,
+    "structured_output_path": "turn/completed.params.turn.items[].agentMessage[phase=final_answer].text",
+    "structured_output_typed_validation": true,
+    "experimental_api_sent": false
+  },
+  "external_postconditions": {
+    "workspace_git_status": "clean",
+    "workspace_head": "unborn",
+    "remote_count": 0,
+    "local_credential_setting_count": 0
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "probe_sha256": "5b1dc5b9c6d17d722b0c21dfe8ce3ea81982817735398900157fea8fc5d8eb29",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/manifest.json",
+      "sha256": "94b158c0ea30ba67c338adaca9cd3776b4695ebabe472564b50d42ca3ec6ab5e"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/stdout.jsonl",
+      "sha256": "99b0a34448b34b2a16b3a034f45bab267d2f6a4b0d0305467a355f560249865d"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/normalized-events.jsonl",
+      "sha256": "b4e3a4ca5897de737348b376e8f68b98c9fffa3ff5f19796b35de0425d2f73d9"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/result.json",
+      "sha256": "c015acf0ec94627411f2f343653ce368d009e50d96f482db8538be7e4afee423"
+    }
+  ]
+}
