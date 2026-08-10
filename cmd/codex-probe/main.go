@@ -26,6 +26,7 @@ func run() int {
 	flag.DurationVar(&cfg.Timeout, "timeout", 10*time.Minute, "process timeout")
 	flag.StringVar(&cfg.SessionID, "session", "", "explicit session ID to resume")
 	flag.StringVar(&cfg.Nonce, "nonce", "", "expected nonce in the structured final output")
+	flag.StringVar(&cfg.CaseID, "case", "", "stable scenario ID recorded in the manifest")
 	flag.Func("sandbox", "read-only or workspace-write", func(value string) error {
 		cfg.Sandbox = codexexec.Sandbox(value)
 		return nil

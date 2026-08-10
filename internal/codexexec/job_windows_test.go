@@ -26,7 +26,7 @@ func TestCancellationKillsProcessTree(t *testing.T) {
 			root := t.TempDir()
 			pidFile := filepath.Join(root, "pids.json")
 			t.Setenv("GO_WANT_CODEX_HELPER", "tree-parent")
-			t.Setenv("CODEX_HELPER_PID_FILE", pidFile)
+			t.Setenv("STEPAN_HELPER_PID_FILE", pidFile)
 			cfg := fakeConfig(t, filepath.Join(root, "run"))
 			cfg.Timeout = 500 * time.Millisecond
 			ctx := context.Background()

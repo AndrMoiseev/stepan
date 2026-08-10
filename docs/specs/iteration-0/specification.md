@@ -1,322 +1,552 @@
 # Stepan: спецификация итерации 0
 
-Статус: готово к ревью  
-Итерация: 0 — технический spike  
-Timebox: 2–3 рабочих дня одного разработчика  
-Целевая среда: Windows native  
+Редакция: 2 — approval-driven App Server spike
+
+Статус: готово к ревью
+
+Итерация: 0 — технический spike
+
+Timebox редакции: 2–3 рабочих дня одного разработчика
+
+Целевая среда: Windows native
+
 Стек: Go
 
 ## 1. Назначение
 
-Итерация должна экспериментально подтвердить, что Codex CLI можно использовать как управляемый subprocess для следующих итераций Stepan, не реализуя собственный агентский runtime и не вызывая API моделей напрямую.
+Итерация должна экспериментально подтвердить, что Codex CLI можно использовать
+как управляемый двусторонний subprocess для следующих итераций Stepan, не
+реализуя собственный агентский runtime и не вызывая API моделей напрямую.
 
-Результатом является не production-ready runner, а минимальный probe, воспроизводимые fixtures и зафиксированный контракт интеграции. Неизвестное поведение Codex нельзя маскировать эвристикой: оно должно завершить соответствующий сценарий как неуспешный и попасть в отчёт.
+Основной проверяемый transport — `codex app-server` поверх stdio JSON-RPC.
+Stepan выступает клиентом протокола, получает streamed events и запросы
+подтверждения, проверяет их своей политикой, отвечает сам либо делегирует
+материальное решение оператору.
+
+`codex exec` больше не является основным transport будущего Stepan. Полученные
+в первой редакции результаты и raw evidence сохраняются как доказательство
+ограничений одностороннего non-interactive режима, но отрицательный `C06` сам по
+себе не блокирует новую архитектуру.
+
+Результатом является не production-ready controller, а минимальный App Server
+probe, воспроизводимые fixtures и зафиксированный контракт интеграции.
+Неизвестное поведение Codex нельзя маскировать эвристикой: оно должно завершить
+соответствующий сценарий как неуспешный и попасть в отчёт.
 
 ## 2. Зафиксированные решения и допущения
 
 - Probe и последующий Stepan реализуются на Go.
-- Базовый toolchain — Go `1.26.x`; фактическая patch-версия записывается в `go.mod`, manifest и отчёт.
+- Базовый toolchain — Go `1.26.x`; фактическая patch-версия записывается в
+  `go.mod`, manifest и отчёт.
 - Фактические проверки выполняются только в Windows native.
-- MVP считается Windows-only, пока те же обязательные сценарии не пройдены на другой ОС. Теоретический анализ или успешная cross-compilation не считаются подтверждением поддержки ОС.
+- MVP считается Windows-only, пока обязательные сценарии не пройдены на другой
+  ОС. Теоретический анализ и cross-compilation не считаются runtime evidence.
 - Базовая проверяемая версия — локально установленный `codex-cli 0.147.0`.
-- Минимально поддерживаемая версия Codex определяется только по фактически пройденной версии. Совместимость с более ранними версиями не предполагается.
-- Codex запускается напрямую с массивом аргументов. Shell, PowerShell, `cmd.exe`, строковая сборка команды и shell-escaping не используются.
-- Prompt передаётся через stdin с аргументом `-`, чтобы не зависеть от quoting и ограничения длины командной строки.
-- Для resume всегда используется явно сохранённый session ID. `--last` не входит во внутренний контракт Stepan из-за неоднозначности при нескольких сессиях.
-- `danger-full-access` и `--dangerously-bypass-approvals-and-sandbox` не используются.
-- Аутентификация берётся из существующей установки Codex. Credentials не копируются в репозиторий, fixtures или отчёт.
-- Probe использует стандартную библиотеку Go. Единственное заранее допустимое исключение — `golang.org/x/sys/windows`, если оно потребуется для Windows Job Object; CLI framework и универсальный JSON Schema validator в spike не нужны.
+- Команда `codex app-server` в этой версии помечена experimental. Поддержка
+  фиксируется только для точной фактически пройденной версии; автоматическая
+  совместимость с более ранними или будущими версиями не предполагается.
+- JSON Schema bundle протокола генерируется установленным CLI без флага
+  `--experimental`; его hash и версия Codex входят в evidence.
+- Основной transport — `codex app-server --stdio`. WebSocket, daemon и remote
+  transport не входят в обязательный путь spike.
+- Codex запускается напрямую с массивом аргументов. Shell, PowerShell,
+  `cmd.exe`, строковая сборка команды и shell-escaping не используются.
+- Запросы JSON-RPC передаются отдельными UTF-8 строками через stdin. stdout
+  содержит отдельные JSON-RPC messages; stderr остаётся независимым каналом.
+- Базовая позиция роли задаётся как `readOnly` с явно ограниченным read access,
+  `approvalPolicy=onRequest` и reviewer `user`.
+- `user` в конфигурации Codex означает маршрутизацию approval в клиент App
+  Server. Фактическим источником решения может быть policy Stepan или оператор;
+  источник всегда записывается в durable journal.
+- Ни одна роль не получает безусловный `workspaceWrite` как default.
+  Разрешение на конкретную запись или команду выдаётся только после проверки
+  соответствующего server request.
+- В MVP используются только одноразовые решения. Stepan автоматически не
+  отправляет `acceptForSession`, session-scoped permission grants и
+  `acceptWithExecpolicyAmendment`.
+- `dangerFullAccess`, `danger-full-access` и обход approvals/sandbox запрещены.
+- Permission profiles являются beta, а `additionalPermissions` в command
+  approval — experimental. Основной критерий безопасности не зависит от них.
+- Запрет чтения обеспечивается до запуска операции sandbox-границей или
+  физически отдельным role workspace. Approval является механизмом узкого
+  исключения, а не единственной защитой.
+- Аутентификация берётся из существующей установки Codex. Credentials не
+  копируются в репозиторий, fixtures, role workspace или отчёт.
+- Probe использует стандартную библиотеку Go. Единственное заранее допустимое
+  исключение — `golang.org/x/sys/windows`, если оно потребуется для Windows Job
+  Object.
 
 ## 3. Основание в интерфейсе Codex
 
-Официальная документация фиксирует необходимые базовые механизмы:
+Официальная документация фиксирует необходимые механизмы:
 
-- `codex exec --json` пишет JSONL-события в stdout; среди документированных событий есть `thread.started`, `turn.started`, `turn.completed`, `turn.failed`, `item.*` и `error`;
-- `thread.started` содержит `thread_id`;
-- `--output-schema` задаёт JSON Schema финального ответа, а `--output-last-message` сохраняет этот ответ отдельно;
-- `codex exec resume <SESSION_ID>` продолжает явно выбранную сессию;
-- `--sandbox` поддерживает как минимум `read-only` и `workspace-write`;
-- `--ignore-user-config` отключает пользовательский `config.toml`, сохраняя использование аутентификации из `CODEX_HOME`;
-- stderr и exit code остаются самостоятельными каналами результата.
+- App Server предназначен для глубокой интеграции, включая conversation
+  history, approvals и streamed agent events;
+- stdio transport использует JSON-RPC messages, после `initialize` клиент
+  отправляет `initialized`, создаёт или возобновляет thread и запускает turn;
+- schema протокола можно сгенерировать из установленной версии CLI;
+- `turn/start` поддерживает `outputSchema`, `approvalPolicy` и явный
+  `sandboxPolicy`;
+- `ReadOnlyAccess` позволяет заменить default `fullAccess` на restricted
+  `readableRoots`;
+- command и file changes могут приходить как server-initiated approval requests;
+- встроенный `request_permissions` создаёт
+  `item/permissions/requestApproval` для filesystem и network permissions;
+- permission response может содержать только подмножество запрошенных прав и
+  иметь turn или session scope;
+- permission profiles позволяют задавать `read`, `write` и `deny`, но помечены
+  beta.
 
-Источники: [non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode), [developer commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli), [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference), [sandbox](https://learn.chatgpt.com/docs/sandboxing).
+Источники: [Codex App Server](https://learn.chatgpt.com/docs/app-server),
+[Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security),
+[Permissions](https://learn.chatgpt.com/docs/permissions),
+[Sandbox](https://learn.chatgpt.com/docs/sandboxing),
+[Non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 
-Документация задаёт ожидаемое поведение, но не заменяет empirical-проверки конкретной версии CLI.
+Документация задаёт ожидаемое поведение, но не заменяет empirical-проверки
+конкретной версии CLI на Windows.
 
 ## 4. Цели
 
 Итерация отвечает на следующие вопросы.
 
-1. Можно ли безопасно запускать `codex exec` без shell и без интерактивного TUI?
-2. Можно ли одновременно и без потерь читать stdout и stderr, дождаться закрытия обоих потоков и получить точный exit code?
-3. Можно ли построчно разобрать и сохранить JSONL, извлечь session ID и не ломаться на неизвестном типе валидного события?
-4. Можно ли получить финальный ответ, строго соответствующий заданной JSON Schema?
-5. Можно ли продолжить конкретную сессию по сохранённому ID, включая сессию после принудительного прерывания?
-6. Можно ли отличить успешный запуск с предупреждениями в stderr от ошибки процесса?
-7. Можно ли по timeout или Ctrl+C завершить Codex и всё созданное им дерево процессов без orphan-процессов?
-8. Обеспечивают ли `read-only` и `workspace-write` ожидаемые границы записи на Windows?
-9. Можно ли изолировать framework-owned параметры от пользовательской конфигурации, не ломая аутентификацию?
-10. Можно ли однозначно классифицировать невалидный JSONL, невалидный финальный ответ, ненулевой exit code, обрыв и timeout?
-11. Какие Windows-специфичные различия в quoting, путях, завершении процессов и атомарной записи должны попасть во внутренний контракт?
-12. Можно ли вычислить стабильный идентификатор точного candidate snapshot, не изменяя реальный Git index и рабочее дерево?
+1. Можно ли безопасно запустить App Server без shell, выполнить handshake и
+   завершить процесс вместе со всем деревом потомков?
+2. Можно ли строго разобрать JSON-RPC requests, responses и notifications,
+   сохранив неизвестные валидные messages?
+3. Можно ли создать thread, запустить turn, получить structured final output и
+   продолжить явно выбранный thread после перезапуска App Server?
+4. Можно ли перехватить command, file-change и permission approvals и связать
+   каждый запрос с точными `threadId`, `turnId`, `itemId` и request ID?
+5. Можно ли принять разрешённую запись один раз, отклонить запрещённую и
+   подтвердить результат по файловой системе и Git, а не по сообщению агента?
+6. Можно ли приостановить turn, сохранить pending approval, показать его
+   оператору и продолжить только после явного решения?
+7. Можно ли ограничить чтение роли явным набором roots и доказать, что закрытый
+   source marker не попал в model-visible output или evidence?
+8. Можно ли дать test-author доступ к контракту и каталогу тестов без доступа к
+   production source, а проверки выполнить отдельным verifier/controller?
+9. Можно ли выдать только запрошенное read-разрешение на один turn и не
+   расширить остальные filesystem permissions?
+10. Можно ли отличить отказ sandbox, отказ controller, cancel оператора,
+    timeout, protocol error и падение процесса?
+11. Можно ли изолировать framework-owned настройки от пользовательской
+    конфигурации, не ломая аутентификацию?
+12. Можно ли вычислить стабильный идентификатор candidate snapshot, не изменяя
+    настоящий Git index и рабочее дерево?
 
 ## 5. Не входит в итерацию
 
-- Полный CLI и интерактивная сессия Stepan.
-- Workflow спецификации, планирования, реализации, проверок и commit.
-- Публичный runner/provider interface или поддержка второго агентского CLI.
-- Универсальная модель событий всех будущих версий Codex.
-- Автоматические retries и rework.
-- Production-ready recovery после любого места падения Stepan.
-- Физическая изоляция файловой системы сильнее sandbox Codex.
+- Полный CLI и продуктовый workflow Stepan.
+- Workflow спецификации, планирования, реализации, rework и commit.
+- Публичный runner/provider interface или второй агентский CLI.
+- Универсальная реализация JSON-RPC всех методов будущих версий App Server.
+- Автоматический reviewer agent и сложная risk-scoring система.
+- Автоматическое расширение прав на session или постоянное изменение execpolicy.
+- Зависимость обязательного пути от experimental `additionalPermissions`.
+- Production-ready recovery из любой точки protocol exchange.
+- Полная OS-виртуализация, container runtime или общий ACL-manager.
+- Гарантия, что любой отказ чтения автоматически породит approval request:
+  обычная операция может завершиться отказом без `request_permissions`.
 - Поддержка macOS, Linux или WSL.
-- CI, installer, update-механизм, telemetry и сбор продуктовых метрик.
-- Оптимизация производительности и стоимости модельных запусков.
+- CI, installer, update-механизм, telemetry и продуктовые метрики.
+- Оптимизация стоимости модельных запусков.
+
+Минимальная физическая изоляция test-author входит в spike: отдельный каталог
+без production source и без общей Git object database. Это не объявляется
+универсальным isolation-механизмом будущих ролей.
 
 ## 6. Артефакты итерации
 
 После выполнения должны существовать:
 
-1. Go probe, запускающий реальный или fake subprocess по одному внутреннему пути исполнения.
-2. Автоматические тесты subprocess-слоя без обращения к Codex.
-3. Санитизированные JSONL fixtures успешных и ошибочных запусков.
-4. JSON Schema тестового финального ответа.
-5. Внутренний контракт интеграции с Codex.
-6. Отчёт о spike с матрицей сценариев, наблюдениями и техническими решениями.
-7. Явное решение о поддерживаемой ОС и минимальной версии Codex.
+1. Go probe, запускающий реальный или fake App Server по одному пути исполнения.
+2. Автоматические тесты subprocess и JSON-RPC слоя без обращения к Codex.
+3. Санитизированные fixtures requests, responses, notifications и approvals.
+4. Сгенерированный установленным CLI JSON Schema bundle протокола либо его
+   проверяемый hash и инструкция воспроизведения.
+5. JSON Schema тестового финального ответа.
+6. Внутренний контракт интеграции с App Server.
+7. Отчёт о spike с матрицей сценариев, наблюдениями и решениями.
+8. Явная role access matrix для implementation, test-author и verifier.
+9. Решение о поддерживаемой ОС и точной версии Codex.
 
-Рекомендуемое минимальное размещение:
+Рекомендуемое минимальное размещение после реализации:
 
 ```text
-cmd/codex-probe/
-internal/codexexec/
-internal/codexexec/testdata/
+cmd/codex-appserver-probe/
+internal/codexapp/
+internal/codexapp/testdata/
 docs/specs/iteration-0/codex-integration-contract.md
 docs/specs/iteration-0/report.md
 ```
 
-Live-артефакты сохраняются в `.stepan/spike/` и не коммитятся. В `.gitignore` добавляется `/.stepan/`. В репозиторий попадают только небольшие санитизированные fixtures, необходимые для replay-тестов.
+Существующий `internal/codexexec` и его evidence не переименовываются в рамках
+редактирования спецификации. Решение об удалении или сохранении legacy probe
+принимается после успешного App Server spike.
 
-Не требуется заранее создавать interface с одной реализацией. `internal/codexexec` является прямой Codex-интеграцией; выделение runner interface откладывается до появления второго CLI.
+Live-артефакты сохраняются в `.stepan/spike/` и не коммитятся. В репозиторий
+попадают только небольшие санитизированные fixtures и version-specific schema,
+если ручное ревью подтвердит отсутствие secrets и локальных путей.
 
-## 7. Контракт probe
+## 7. Контракт App Server probe
 
 ### 7.1. Вход
 
 Probe принимает:
 
-- абсолютный путь к executable Codex либо имя `codex` для разрешения через `PATH`;
-- абсолютный путь к workspace;
-- prompt как UTF-8 stdin;
-- режим `read-only` или `workspace-write`;
-- абсолютный путь к JSON Schema;
-- timeout;
-- каталог артефактов запуска;
-- необязательный session ID для resume;
+- абсолютный путь к executable Codex либо имя `codex` для разрешения через
+  `PATH`;
+- абсолютный путь к role workspace;
+- role ID и access policy;
+- initial user input как UTF-8;
+- JSON Schema финального ответа;
+- execution timeout и отдельный approval timeout;
+- каталог артефактов;
+- необязательный явный thread ID для resume;
 - режим конфигурации `isolated` или `inherited`.
 
-Путь к executable после разрешения сохраняется в manifest. Probe не должен случайно запускать `codex.exe` из текущего каталога.
+Access policy содержит как минимум:
 
-### 7.2. Формирование процесса
+- нормализованные readable roots;
+- нормализованные writable roots, доступные только для approval policy Stepan;
+- запрещённые paths и path patterns;
+- разрешённые command forms и working directories;
+- признак допустимости network access;
+- список решений, которые всегда требуют оператора.
 
-Для новой сессии логический вызов имеет вид:
+Путь к executable после разрешения сохраняется в manifest. Probe не должен
+случайно запускать `codex.exe` из текущего каталога.
 
-```text
-codex exec
-  --json
-  --color never
-  --sandbox <mode>
-  -c approval_policy="never"
-  --output-schema <absolute-schema-path>
-  --output-last-message <absolute-output-path>
-  --cd <absolute-workspace-path>
-  [--ignore-user-config --ignore-rules]
-  -
-```
+### 7.2. Запуск и handshake
 
-Для продолжения:
+Логический subprocess-вызов:
 
 ```text
-codex exec resume
-  --json
-  --output-schema <absolute-schema-path>
-  --output-last-message <absolute-output-path>
-  -c approval_policy="never"
-  [--ignore-user-config --ignore-rules]
-  <explicit-session-id>
-  -
+codex app-server
+  --stdio
+  --strict-config
+  -c approvals_reviewer="user"
+  <явные framework-owned config overrides>
 ```
 
-Точный порядок поддерживаемых resume-флагов проверяется по `codex exec resume --help` версии `0.147.0` и живым сценарием. Если `--cd` или sandbox нельзя явно повторить на resume, контракт обязан зафиксировать фактическое наследование и безопасный способ проверить workspace до запуска.
+Точный список поддерживаемых flags и config keys берётся из `--help` и schema
+версии `0.147.0`; значения не собираются в shell-строку.
 
-В режиме `isolated` обязательны `--ignore-user-config`, `--ignore-rules`, `approval_policy="never"` и явные framework-owned значения всех настроек, влияющих на полномочия и машинный контракт. Внутренний Codex не может запрашивать расширение полномочий: такую развилку должен маршрутизировать Stepan. В режиме `inherited` флаги игнорирования не передаются; режим нужен только для сравнительного сценария spike и не является default будущего Stepan.
+После запуска клиент обязан:
 
-`--ignore-user-config` не считается доказательством полной изоляции от project-owned входов. Базовый сценарий `isolated` выполняется в workspace без `.codex/`, `AGENTS.md`, hooks и MCP-конфигурации. Отдельный сценарий фиксирует, какие project-owned источники всё ещё загружаются и могут ли они переопределить явно переданные sandbox, approval policy или output contract.
+1. отправить ровно один `initialize` с идентификатором Stepan;
+2. проверить успешный response и сохранить platform metadata;
+3. отправить `initialized` notification;
+4. вызвать `configRequirements/read` и проверить допустимость требуемых policy;
+5. создать thread или возобновить его по явному ID;
+6. вызвать `turn/start` с `approvalPolicy=onRequest`, explicit `cwd`,
+   `outputSchema` и `sandboxPolicy.type=readOnly`;
+7. передать restricted read access с явными `readableRoots`, а не полагаться на
+   default `fullAccess`;
+8. читать stream до terminal `turn/completed`, `turn/failed` или отмены.
 
-### 7.3. Выход
+`capabilities.experimentalApi` в обязательных сценариях не включается.
+Отдельный exploratory-сценарий может проверить experimental поля, но его
+результат не входит в критерий готовности основного пути.
 
-Probe возвращает нормализованный `result.json` и собственный exit code.
+### 7.3. Protocol messages
 
-Минимальные поля `result.json`:
+- Request содержит `method`, `params` и `id`.
+- Response содержит тот же `id` и ровно одно из `result` или `error`.
+- Notification не содержит `id`.
+- ID считаются opaque JSON scalar в пределах разрешённой generated schema.
+- Stepan не переиспользует client request ID на одном transport connection.
+- Server request регистрируется как pending до отправки ответа.
+- Ответ без соответствующего pending request, повторный response и
+  противоречивые terminal notifications являются protocol failure.
+- Валидный неизвестный method сохраняется как raw evidence. Он блокирует turn
+  только если требует client response или меняет machine contract.
+- Thread ID, turn ID, item ID и request ID не выводятся друг из друга.
+
+### 7.4. Approval routing
+
+Обязательные виды server requests:
+
+- `item/commandExecution/requestApproval`;
+- `item/fileChange/requestApproval`;
+- `item/permissions/requestApproval`.
+
+До ответа Stepan атомарно сохраняет pending approval минимум с полями:
 
 ```json
 {
   "schema_version": 1,
-  "invocation_id": "opaque-random-id",
-  "codex_version": "0.147.0",
-  "started_at": "RFC3339Nano UTC",
-  "finished_at": "RFC3339Nano UTC",
-  "duration_ms": 0,
-  "session_id": "opaque-string-or-null",
-  "process_exit_code": 0,
-  "termination_reason": "exited",
-  "terminal_event": "turn.completed",
-  "stdout_valid_jsonl": true,
-  "final_output_valid": true,
-  "stderr_nonempty": false,
-  "outcome": "PASS"
+  "request_id": "opaque-json-scalar",
+  "thread_id": "opaque-string",
+  "turn_id": "opaque-string",
+  "item_id": "opaque-string",
+  "kind": "command|file_change|permissions",
+  "status": "pending",
+  "requested_at": "RFC3339Nano UTC",
+  "policy_snapshot_id": "opaque-hash",
+  "candidate_snapshot_id": "opaque-hash-or-null"
 }
 ```
 
-Допустимые `termination_reason`:
+Controller принимает одно из решений:
 
-- `exited`;
-- `spawn_failed`;
-- `operator_canceled`;
-- `timed_out`;
-- `killed_after_io_timeout`.
+- `accept` — одноразовое разрешение после полной policy-проверки;
+- `decline` — операция запрещена, turn может продолжить альтернативным путём;
+- `cancel` — запрос или turn отменён оператором либо lifecycle controller;
+- `await_operator` — внутреннее состояние Stepan; ответ App Server ещё не
+  отправляется.
 
-Session ID рассматривается как непрозрачная непустая строка: Stepan не валидирует UUID-формат и не извлекает из значения смысл. `process_exit_code` и `terminal_event` равны `null`, если соответствующий факт не был получен.
+Каждое завершённое решение содержит `decision_source=policy|operator`, точное
+решение, timestamp и ссылку на request. Молчание, timeout и потеря connection не
+считаются согласием.
 
-`outcome` принимает `PASS`, `FAIL` или `INCONCLUSIVE`. Детальная причина хранится отдельно и позднее отображается на минимальные классы остановки MVP. Не нужно создавать отдельный продуктовый stop code для каждого технического симптома.
+Автоматически запрещены:
 
-Exit code probe:
+- paths вне разрешённых roots;
+- `.git`, `.stepan`, `.codex`, `.agents`, credentials и секретные файлы;
+- network, если он явно не разрешён утверждённым планом;
+- destructive или необратимые команды;
+- неизвестный command form, shell nesting и несовпадающий `cwd`;
+- расширение прав после изменения candidate или policy snapshot;
+- `acceptForSession`, session-scoped grants и execpolicy amendment.
 
-- `0` — сценарий завершён и его ожидания выполнены;
-- `1` — сценарий завершён, но ожидания не выполнены;
-- `2` — неверный ввод или probe не смог начать проверку;
-- `130` — отмена оператором.
+Command string является недоверенными данными. Автоматическое разрешение
+возможно только для точно нормализованной формы из allowlist и ожидаемого `cwd`.
+В остальных случаях запрос делегируется оператору либо отклоняется.
 
-### 7.4. Артефакты одного запуска
+После `accept` Stepan всё равно проверяет наблюдаемый filesystem/Git result.
+Approval доказывает авторизацию, но не корректность и не фактический scope
+выполненной операции.
+
+### 7.5. Ограничение чтения и role workspace
+
+Default `readOnly` без explicit access неприемлем, потому что App Server может
+дать ему `fullAccess` для чтения. Каждый turn получает restricted read access с
+явным списком roots.
+
+Минимальная role matrix spike:
+
+| Роль | Доступ на чтение | Доступ на изменение |
+|---|---|---|
+| `implementation` | Утверждённая спецификация, план и разрешённая область репозитория | Только разрешённая область и только через approval |
+| `test-author` | Публичный контракт, test requirements, существующие test utilities | Только каталог новых тестов и только через approval |
+| `verifier` | Candidate snapshot, спецификация, diff и evidence | Нет |
+
+Test-author запускается в отдельном test-only Git-репозитории:
+
+- production source отсутствует физически;
+- нет remote, общей Git object database, alternates, worktree pointer,
+  symlink/junction или hardlink к исходному checkout;
+- копируются только явно перечисленные contract/test inputs;
+- секретный source canary находится в sibling-каталоге вне readable roots;
+- project-owned instructions из исходного checkout не включаются в context;
+- raw output и artifacts проверяются на отсутствие canary.
+
+Если test execution требует чтения production source, его выполняет отдельный
+verifier/controller. Test-author получает только структурированный и
+санитизированный результат. Передача raw compiler output допускается лишь после
+проверки, что он не раскрывает запрещённое содержимое.
+
+Попытка запрещённого чтения может завершиться обычным sandbox denial и не обязана
+автоматически создавать approval. Агенту разрешено вызвать `request_permissions`,
+но безопасность не зависит от того, сделал ли он это.
+
+Для `item/permissions/requestApproval` Stepan:
+
+1. нормализует все абсолютные paths;
+2. отклоняет не запрошенные или более широкие permissions;
+3. разрешает только подмножество request;
+4. использует только turn scope;
+5. повторно проверяет role policy и snapshot перед ответом;
+6. делегирует оператору доступ к source, credentials и иным закрытым roots.
+
+Permission profiles можно проверить отдельным beta-сценарием. Основной сценарий
+использует `ReadOnlyAccess` и физический role workspace, чтобы не зависеть от
+beta-конфигурации.
+
+### 7.6. Configuration isolation
+
+Режим `isolated` обязан:
+
+- удалить из child environment унаследованные `CODEX_*`, кроме необходимого
+  для существующей аутентификации `CODEX_HOME`;
+- передать framework-owned overrides явно;
+- установить `approvals_reviewer=user`;
+- запросить effective config через `config/read`, сохранив только
+  санитизированные релевантные поля;
+- запросить managed requirements через `configRequirements/read`;
+- проверить, что требуемые `onRequest` и `readOnly` разрешены;
+- выполнять базовые сценарии в workspace без `.codex`, `.agents`, `AGENTS.md`,
+  hooks, plugins и MCP-конфигурации;
+- проверить `instructionSources`, возвращённые thread API, и остановиться, если
+  загружен неразрешённый источник.
+
+`CODEX_HOME` и user config не считаются изолированными только потому, что probe
+передал overrides. Любое неявное влияние на approval, sandbox, tools, hooks,
+MCP или output contract должно быть либо измерено и запрещено, либо привести к
+`BLOCKED`.
+
+Режим `inherited` нужен только для сравнительного live-сценария и не является
+default будущего Stepan.
+
+### 7.7. Успешность turn
+
+App Server является долгоживущим процессом, поэтому exit code процесса не
+является сигналом успеха отдельного turn.
+
+Turn успешен, только если одновременно:
+
+1. handshake завершён;
+2. thread и turn однозначно идентифицированы;
+3. stream является валидным JSON-RPC;
+4. все server requests получили ровно один допустимый response;
+5. отсутствуют unresolved approvals;
+6. наблюдался один непротиворечивый terminal status успеха;
+7. final output найден по подтверждённому protocol path и независимо прошёл
+   JSON Schema validation;
+8. turn не был отменён и не превысил execution timeout;
+9. postconditions сценария подтверждены внешними наблюдениями.
+
+Если App Server завершился, его exit code и stderr учитываются отдельно. Exit
+`0` не превращает незавершённый turn в успешный; ненулевой exit всегда является
+process failure.
+
+### 7.8. Артефакты одного сценария
 
 ```text
 <artifact-dir>/
   manifest.json
   stdout.jsonl
   stderr.log
-  last-message.json
+  normalized-events.jsonl
+  approvals.jsonl
+  state.json
   result.json
 ```
 
-- `manifest.json` содержит версию Codex, ОС/архитектуру, абсолютные пути в санитизируемой форме, список аргументов без prompt и secrets, sandbox, timeout и режим конфигурации.
-- `stdout.jsonl` сохраняет исходные байты stdout без переформатирования.
+- `manifest.json` содержит версии Codex и protocol schema, OS/arch, executable,
+  санитизированные paths, argv, role и hashes input/policy.
+- `stdout.jsonl` сохраняет исходные bytes stdout без переформатирования.
 - `stderr.log` сохраняет stderr отдельно.
-- `last-message.json` является содержимым `--output-last-message`.
+- `normalized-events.jsonl` содержит события Stepan с correlation IDs.
+- `approvals.jsonl` хранит request lifecycle и decision source без secrets.
+- `state.json` является атомарным snapshot состояния scenario.
 - `result.json` записывается последним атомарной заменой временного файла.
-- Prompt по умолчанию не дублируется в manifest. Для воспроизводимого сценария хранится имя test case и hash prompt.
+- Prompt и permission payload по умолчанию не дублируются в manifest; хранятся
+  test case ID и hashes.
 
-## 8. Требования к subprocess-слою
+## 8. Требования к subprocess и JSON-RPC слою
 
 ### 8.1. Запуск без shell
 
 - Используется `os/exec.Command` или `CommandContext` с отдельными аргументами.
-- Нельзя передавать строку команды в PowerShell или `cmd.exe`.
 - stdout и stderr подключаются к разным pipe до `Start`.
-- Оба потока вычитываются конкурентно с момента запуска, чтобы заполнение одного pipe не блокировало процесс.
-- `Wait` вызывается только после начала чтения обоих потоков.
+- stdin остаётся открытым для всего JSON-RPC lifecycle.
+- stdout и stderr вычитываются конкурентно с момента запуска.
+- JSON-RPC writes сериализует один writer; конкурентная запись bytes запрещена.
+- Reader не блокируется ожиданием решения оператора: server request передаётся
+  state machine, а чтение следующих messages продолжается.
 
-### 8.2. JSONL
+### 8.2. JSONL framing
 
 - Каждая непустая строка stdout должна быть самостоятельным JSON object.
-- Пустые строки допускается сохранить и пропустить при semantic parsing.
-- Максимальный размер одной строки — 16 MiB; превышение считается невалидным output, а не поводом выделять память без ограничения.
-- Синтаксически валидное событие с неизвестным `type` сохраняется и не завершает run ошибкой.
-- Невалидная или оборванная строка сохраняется как evidence и делает `stdout_valid_jsonl=false`.
-- Минимально интерпретируются только поля, необходимые control plane: `type`, `thread_id`, terminal status и usage при наличии.
-- Session ID извлекается только из `thread.started.thread_id`. Текстовые совпадения и пути rollout-файлов не используются.
-- Порядок сохраняется строго внутри каждого потока. Общий `seq` stdout/stderr означает порядок наблюдения Stepan и не выдаётся за причинный порядок записей двух разных OS pipes.
+- Максимальный размер одной строки — 16 MiB.
+- Невалидная или оборванная строка сохраняется как evidence и завершает
+  connection как protocol failure.
+- Валидный неизвестный notification сохраняется без потери.
+- Неизвестный request, требующий response, приводит к fail-closed ответу, если
+  generated schema допускает такой response, либо к остановке connection.
+- Порядок сохраняется строго внутри stdout и stderr. Общий `seq` означает
+  порядок наблюдения Stepan, а не причинный порядок разных OS pipes.
 
-### 8.3. Разделение каналов и успешность
+### 8.3. Отмена и timeout
 
-Непустой stderr сам по себе не означает ошибку. Успех реального запуска требует одновременно:
-
-1. процесс был запущен;
-2. процесс завершился с exit code `0`;
-3. stdout является валидным JSONL;
-4. получен ровно один непротиворечивый session ID;
-5. наблюдалось успешное terminal event;
-6. `last-message.json` существует и соответствует JSON Schema;
-7. запуск не был отменён и не превысил timeout.
-
-Ненулевой exit code всегда делает запуск неуспешным, даже если финальный текст утверждает обратное. Сочетания terminal event, `error` events и exit code, наблюдённые в fixtures, фиксируются в интеграционном контракте.
-
-### 8.4. Отмена и timeout
-
-- Ctrl+C и timeout используют одну идемпотентную функцию отмены.
-- На Windows завершение должно охватывать всё дерево процессов, созданное Codex. Убийство только непосредственного `codex.exe` недостаточно.
-- Предпочтительный предмет проверки — Windows Job Object с `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; допустима другая реализация, если тест доказывает отсутствие живого дочернего и внучатого процесса.
-- После отмены stdout и stderr дочитываются либо принудительно закрываются по ограниченному I/O grace timeout.
-- Частично записанные артефакты не удаляются.
-- Повторная отмена не должна паниковать, зависать или менять уже определённую причину завершения.
-- После принудительного прерывания выполняется отдельная попытка resume по сохранённому session ID.
-
-Конкретная длительность default timeout будущего Stepan не определяется этим spike. В тестах используются короткие значения, достаточные для воспроизводимого срабатывания.
+- Execution timeout, approval timeout и operator cancel являются разными
+  причинами остановки.
+- Пока Stepan находится в `await_operator`, execution timer может быть
+  приостановлен, но действует отдельный approval deadline.
+- Сначала отправляется `turn/interrupt`, если connection остаётся рабочим.
+- Если bounded grace period истёк, закрывается Windows Job Object со всем
+  деревом процессов.
+- Повторная отмена идемпотентна.
+- Partial artifacts и pending decision не удаляются.
+- После потери connection pending approval считается отменённым. Автоматически
+  повторять ранее принятое, но не подтверждённое решение запрещено.
 
 ## 9. Fake subprocess и replay-тесты
 
-Все ошибки транспорта сначала проверяются без реального Codex. Fake child должен уметь по сценарию:
+Fake App Server должен уметь:
 
-- записать валидные JSONL-события в stdout;
-- записать warning в stderr и завершиться с `0`;
-- заполнить оба потока объёмом больше размера системного pipe;
-- вернуть ненулевой exit code;
-- вывести невалидную JSON-строку;
-- оборвать последнюю JSON-строку без newline;
-- вывести неизвестный валидный тип события;
-- вывести строку больше установленного лимита;
-- зависнуть до timeout;
-- породить дочерний процесс, который порождает внучатый процесс и ждёт;
-- закрыть процесс, оставив pipe открытым у потомка;
-- завершиться до выдачи session ID;
-- выдать два разных session ID.
+- выполнить корректный initialize handshake;
+- вернуть JSON-RPC error до initialize;
+- создать thread и turn;
+- выдать command, file-change и permissions approval requests;
+- принять `accept`, `decline` и `cancel`;
+- прислать `serverRequest/resolved` до и после client response;
+- выдать два server requests одновременно;
+- прислать duplicate request ID или response без request;
+- завершить turn с unresolved approval;
+- выдать неизвестный notification;
+- записать warning в stderr при успешном turn;
+- заполнить stdout и stderr больше размера системного pipe;
+- вывести invalid/truncated/oversized JSON line;
+- зависнуть до execution или approval timeout;
+- породить дочерний и внучатый процессы;
+- закрыть parent, оставив pipe открытым у потомка.
 
-Тесты используют стандартный Go test binary как helper process; отдельный внешний mock framework не нужен.
+Тесты используют стандартный Go test binary как helper process. Replay fixtures
+проходят через тот же parser и state machine, что live output.
 
-Санитизированные fixtures воспроизводятся тем же parser без запуска процессов. Replay-тест должен доказывать, что изменение parser не меняет уже зафиксированную классификацию молча.
-
-## 10. Обязательные живые сценарии Codex
+## 10. Обязательные живые сценарии App Server
 
 Каждый сценарий получает стабильный ID, ожидаемый результат и каталог evidence.
 
 | ID | Сценарий | Проверяемое ожидание |
 |---|---|---|
-| `C01` | Базовый `read-only` запуск | Exit `0`, валидный JSONL, один session ID, `turn.completed`, валидный финальный ответ |
-| `C02` | Resume `C01` по явному ID | Использован тот же ID; ответ учитывает маркер из первого turn |
-| `C03` | Строгая JSON Schema | Финальный файл содержит все required fields, не содержит дополнительных полей и проходит независимую локальную валидацию |
-| `C04` | Предупреждение в stderr при успехе | Непустой stderr не меняет `PASS`, если остальные сигналы успешны |
-| `C05` | `read-only` с просьбой создать marker | Файл не создан ни внутри, ни вне workspace; попытка отражена в событиях или результате |
-| `C06` | `workspace-write` с созданием marker внутри workspace | Только ожидаемый файл внутри workspace создан; HEAD не изменён |
-| `C07` | `workspace-write` с просьбой записать вне workspace | Marker в sibling-каталоге вне workspace не создан; запуск не получает расширенных полномочий |
-| `C08` | Timeout активного запуска | Probe завершается ограниченно по времени; дерево процессов отсутствует; partial evidence сохранено |
-| `C09` | Resume после `C08` | Явно зафиксировано: resume работает, корректно отказывается или session ID не успевает появиться |
-| `C10` | Изолированная конфигурация | Запуск с `--ignore-user-config --ignore-rules` сохраняет auth и явно заданные sandbox/schema параметры |
-| `C11` | Сравнение inherited и project-owned конфигурации | Зафиксировано, какие пользовательские и проектные настройки, MCP, hooks, rules или warnings влияют на запуск и что имеет приоритет над CLI-флагами |
-| `C12` | Пути и UTF-8 | Workspace и schema в пути с пробелами, кириллицей, `&`, `[` и `]` проходят без shell-escaping и повреждения данных |
+| `A01` | Handshake и базовый turn | Initialize успешен, thread/turn IDs сохранены, terminal success и structured output валидны |
+| `A02` | Resume явного thread ID | После перезапуска App Server возобновлён точный thread; контекст предыдущего turn подтверждён nonce |
+| `A03` | Разрешённая запись | App Server запросил approval; Stepan ответил одноразовым `accept`; marker создан только в разрешённой области; HEAD не изменён |
+| `A04` | Запрещённая внешняя запись | Запрос наблюдался и получил `decline`; sibling marker отсутствует; turn не получил иных полномочий |
+| `A05` | File-change policy | Предложенные paths доступны до решения; разрешённый change принят, защищённый path отклонён |
+| `A06` | Делегирование оператору | Turn остаётся pending без исполнения; решение оператора сохраняется и ровно один раз отправляется App Server |
+| `A07` | Restricted read — разрешённые inputs | Test-author читает contract/test inputs и не читает ничего вне readable roots |
+| `A08` | Restricted read — source canary | Прямые и shell-попытки чтения source получают denial; canary отсутствует во всех model-visible outputs и artifacts |
+| `A09` | Read permission decline | `item/permissions/requestApproval` связан с turn; controller отклоняет source access; содержимое не раскрыто |
+| `A10` | Read permission grant subset | Разрешён ровно один безопасный input на один turn; sibling source остаётся недоступным; grant не переносится в следующий turn |
+| `A11` | Blind test-author + verifier | Test-author создаёт тест только из контракта; отдельный verifier запускает проверку с source access и возвращает санитизированный результат |
+| `A12` | Timeout и cancel | Turn ограниченно прерывается, pending approvals закрыты, дерево процессов отсутствует, partial evidence сохранено |
+| `A13` | Configuration isolation | Effective config, requirements и instruction sources соответствуют framework policy; auth работает |
+| `A14` | Inherited comparison | Зафиксировано влияние user/project config, tools, hooks, MCP и managed requirements |
+| `A15` | Пути и UTF-8 | Role workspace и artifacts в пути с пробелами, кириллицей, `&`, `[` и `]` проходят без shell escaping |
+| `A16` | Process stderr и terminal signals | Warning в stderr не меняет успешный turn; process failure и protocol failure классифицируются отдельно |
 
 ### 10.1. Ограничение модельных запусков
 
-Сценарии разрешается объединять, если один реальный invocation даёт независимое evidence для нескольких строк матрицы. Fake и replay-тесты не заменяют `C01`–`C12`, но должны покрывать все искусственно воспроизводимые отказы до живых запусков.
+Сценарии разрешается объединять, если один invocation даёт независимое evidence
+для каждой строки. Fake и replay не заменяют `A01`–`A16`, но покрывают все
+искусственно воспроизводимые отказы до live-запусков.
 
-### 10.2. Безопасность тестовых workspace
+Сценарий `A10` обязателен для возможности approval-gated чтения. Если версия
+`0.147.0` не может выдать узкий turn-scoped filesystem grant через стабильный
+protocol, результат фиксируется как `BLOCKED`; experimental fallback не выдаётся
+за подтверждение основного пути.
 
-- Каждый write-сценарий выполняется в отдельном временном Git-репозитории без credentials и remotes.
-- Проверки внешней записи используют заранее созданный sibling-каталог рядом с workspace, не объявленный writable root или `--add-dir`, и marker с уникальным именем. Временный системный каталог не используется, поскольку он может иметь отдельные разрешения sandbox.
-- После сценария проверяется фактическое состояние файлов и `git status`, а не только сообщение агента.
-- Не используются команды с production или сетевыми побочными эффектами.
+### 10.2. Безопасность workspace
 
-## 11. Невалидный финальный ответ и schema validation
+- Каждый write-сценарий выполняется в отдельном временном Git-репозитории без
+  credentials и remotes.
+- Sibling-каталог находится рядом с workspace, но не внутри системного temp.
+- Test-only workspace не является worktree исходного репозитория и не разделяет
+  с ним objects.
+- Все marker/canary содержат уникальный nonce.
+- Проверяются фактические files, `HEAD`, `git status` и отсутствие nonce в
+  запрещённых output channels.
+- Не используются production credentials, network или необратимые эффекты.
 
-Для позитивных сценариев применяется небольшая фиксированная schema:
+## 11. Structured final output
+
+Для позитивных сценариев применяется небольшая schema:
 
 ```json
 {
@@ -331,190 +561,215 @@ Exit code probe:
 }
 ```
 
-Значение `nonce` задаётся prompt и сверяется локально. Одной проверки наличия JSON недостаточно.
+Schema передаётся через `turn/start.outputSchema`. Точный protocol path, по
+которому возвращается итоговый объект версии `0.147.0`, определяется generated
+schema и `A01`; извлечение из произвольного текста или последней встреченной JSON
+подстроки запрещено.
 
-Независимая проверка этой фиксированной schema реализуется typed-декодированием Go с запретом неизвестных полей и явной проверкой required/enum/minLength. Подключать общий JSON Schema engine ради spike не требуется.
-
-Поведение при намеренно невалидном ответе проверяется двумя способами:
-
-1. детерминированно — fake process и replay fixture;
-2. на реальном Codex — только если не требуется ослаблять schema или многократно расходовать модельные запуски ради случайного нарушения.
-
-Реальный Codex не обязан намеренно нарушить enforced schema. Отсутствие такого нарушения не считается пробелом тестирования parser.
+Независимая проверка выполняется typed-декодированием Go с запретом неизвестных
+полей и явной проверкой required/enum/minLength.
 
 ## 12. Candidate snapshot
 
-Spike должен проверить Git-native вариант, не меняющий настоящий index:
+Spike сохраняет Git-native механизм, не меняющий настоящий index:
 
 1. создать временный index вне `.git/index`;
 2. установить `GIT_INDEX_FILE` только для дочерних команд Git;
-3. загрузить в него `HEAD` через `git read-tree HEAD`;
-4. применить состояние working tree через `git add -A` во временный index;
+3. загрузить `HEAD` через `git read-tree HEAD`;
+4. применить working tree через `git add -A` во временный index;
 5. получить tree OID через `git write-tree`;
-6. представить candidate snapshot как пару `HEAD OID + tree OID`.
+6. представить snapshot как `HEAD OID + tree OID`.
 
-Обязательные случаи:
+Обязательные случаи: tracked, untracked, deletion, rename, staged+unstaged,
+ignored, Unicode path, одинаковые size/timestamp с разным содержимым, повторный
+расчёт и изменение во время расчёта.
 
-- изменение tracked-файла;
-- добавление untracked-файла;
-- удаление файла;
-- rename;
-- staged и unstaged изменения одного файла;
-- файл с теми же размером и timestamp, но другим содержимым;
-- ignored-файл;
-- путь с пробелами и Unicode;
-- повторный расчёт без изменений;
-- изменение файла во время расчёта.
+Snapshot пересчитывается перед approval и после принятой операции. Если
+candidate или policy snapshot изменился во время pending approval, запрос
+инвалидируется и не принимается автоматически.
 
-Критерии выбора механизма:
+Механизм не должен менять refs, настоящий index или working tree. Известные
+ограничения submodules, symlinks и file modes на Windows фиксируются явно.
 
-- одинаковый candidate даёт одинаковые OID;
-- любое содержательное изменение поддерживаемого candidate меняет tree OID;
-- реальный index, HEAD и working tree не изменяются;
-- snapshot можно пересчитать перед проверкой, после проверки, перед verifier и перед commit;
-- гонка во время расчёта обнаруживается повторным расчётом либо приводит к явному `REPOSITORY_DIVERGED` в будущей итерации.
+## 13. Durable state и журнал
 
-Если механизм не покрывает submodules, symlinks или особые file modes на Windows, ограничение фиксируется явно; скрытая нормализация недопустима.
+### 13.1. Формат
 
-Создание blob/tree objects в Git object database допустимо: механизм не должен менять refs, настоящий index или working tree. Временные недостижимые objects являются явно принятой ценой Git-native snapshot.
-
-## 13. Durable state и журнал событий
-
-В spike не реализуется полный recovery, но фиксируется формат, совместимый с итерациями 1 и 5.
-
-### 13.1. Решение по формату
-
-- Авторитетный snapshot состояния: `.stepan/runs/<run-id>/state.json`.
+- Авторитетный snapshot: `.stepan/runs/<run-id>/state.json`.
 - Append-only журнал: `.stepan/runs/<run-id>/events.jsonl`.
-- Необработанные invocation-артефакты: `.stepan/runs/<run-id>/invocations/<invocation-id>/`.
-- Все структуры имеют целочисленный `schema_version`.
-- Каждое событие имеет монотонный `seq`, `event_id`, UTC timestamp, `run_id`, необязательные `task_id`, `invocation_id`, `session_id`, `type` и `payload`.
-- Journal хранит нормализованные события Stepan; сырой Codex JSONL хранится отдельно и ссылается по invocation ID.
-- `state.json` записывается во временный файл в том же каталоге и заменяется только после успешного flush/close.
+- Raw artifacts: `.stepan/runs/<run-id>/invocations/<invocation-id>/`.
+- Все структуры имеют `schema_version`.
+- Каждое событие имеет монотонный `seq`, `event_id`, UTC timestamp, `run_id`,
+  необязательные `task_id`, `invocation_id`, `thread_id`, `turn_id`, `item_id`,
+  `request_id`, `type` и `payload`.
+- `state.json` заменяется атомарно после успешного flush/close.
 
-### 13.2. Что проверяет spike
+### 13.2. Approval state
 
-- Запись и чтение примеров `state.json` и `events.jsonl` в UTF-8.
-- Сохранение порядка при конкурентном чтении stdout/stderr через единый sequencer Stepan.
-- Поведение Windows при замене существующего `state.json`.
-- Сохранение последней валидной строки журнала при оборванной последней записи.
-- Отсутствие credentials, полного environment и несаницированных secrets в durable state.
+State machine содержит минимум:
 
-Полная crash consistency, fsync-дисциплина и восстановление по Git остаются объёмом итерации 5.
+```text
+starting
+→ ready
+→ running_turn
+→ awaiting_controller_decision
+→ awaiting_operator
+→ running_turn
+→ completed | interrupted | failed
+```
 
-Journal пишет один владелец. Он сохраняет порядок событий внутри каждого исходного потока; общий порядок между stdout и stderr является порядком наблюдения, а не гарантированным порядком записи дочерним процессом.
+Pending approval записывается durable до ответа App Server. После restart
+Stepan не предполагает, что старый stdio request остаётся живым. Если protocol
+не предоставляет подтверждённый recovery path, pending request завершается
+fail-closed, а turn возобновляется или повторяется отдельным явным действием.
 
-## 14. Теоретическая проработка кроссплатформенности
+Журнал не хранит credentials, полный environment, raw secrets и содержимое
+запрещённых файлов. Raw permission payload перед сохранением санитизируется.
 
-Отчёт содержит отдельную таблицу различий Windows, Linux и macOS минимум по следующим темам:
+## 14. Теоретическая кроссплатформенность
 
-- разрешение executable через `PATH`;
-- quoting массива аргументов и Unicode paths;
-- process groups, signals и завершение дерева процессов;
-- закрытие унаследованных stdout/stderr handles;
-- атомарная замена файла;
-- file modes и symlinks в candidate snapshot;
-- расположение `CODEX_HOME` и пользовательской конфигурации;
-- sandbox semantics Codex;
-- поведение Ctrl+C;
-- cross-compilation Go-кода с OS-specific build tags.
+Отчёт сравнивает Windows, Linux и macOS минимум по темам:
 
-Допускается cross-build probe для `linux/amd64`, `darwin/amd64` и `darwin/arm64` как дополнительное evidence архитектурной переносимости. Он не является runtime-тестом и не меняет Windows-only статус.
+- разрешение executable и JSON-RPC stdio framing;
+- Unicode paths;
+- process groups, signals и завершение дерева;
+- закрытие унаследованных handles;
+- атомарная замена state;
+- file modes, symlinks, junctions и hardlinks;
+- `CODEX_HOME`, config layering и instruction sources;
+- enforcement restricted read access и permission profiles;
+- behavior Ctrl+C и pending approvals.
 
-OS-specific код ограничивается механизмом управления процессом и, если потребуется, атомарной заменой файла. Parser, нормализация результата, journal и Git snapshot не должны зависеть от разделителя путей или shell-команд.
+Cross-build не меняет Windows-only статус. OS-specific код ограничивается
+process management и атомарной заменой; parser, state machine, policy и snapshot
+остаются платформенно нейтральными.
 
-## 15. Технические решения, обязательные в отчёте
+## 15. Решения, обязательные в отчёте
 
-`docs/specs/iteration-0/report.md` должен дать одно явное решение по каждому пункту:
+`docs/specs/iteration-0/report.md` должен дать явное решение по пунктам:
 
-1. Поддерживаемая ОС MVP.
-2. Минимальная версия Codex CLI и политика поведения на более новой версии.
-3. Точный набор аргументов нового запуска и resume.
-4. Способ изоляции framework-owned конфигурации от пользовательской.
-5. Правила успешности по JSONL, terminal event, final output, stderr и exit code.
-6. Политика неизвестных событий и лимит размера JSONL-строки.
-7. Механизм Ctrl+C, timeout и завершения дерева процессов.
-8. Возможность и ограничения resume после обрыва.
-9. Формат `state.json`, `events.jsonl` и raw invocation evidence.
-10. Механизм candidate snapshot.
-11. Известные Windows-ограничения и список теоретических рисков других ОС.
+1. Поддерживаемая ОС и точная версия Codex.
+2. Пригодность experimental App Server для pinned-version MVP.
+3. Точный initialize/thread/turn contract.
+4. Извлечение structured final output.
+5. Resume и restart behavior.
+6. Correlation и lifecycle server requests.
+7. Policy автоматического accept/decline и делегирования оператору.
+8. Restricted read access и доказательство отсутствия source leakage.
+9. Возможность turn-scoped read grant без experimental API.
+10. Configuration isolation и managed requirements.
+11. Timeout, cancel и завершение process tree.
+12. Durable approval state и recovery pending request.
+13. Candidate snapshot.
+14. Известные Windows-ограничения и кроссплатформенные риски.
+15. Судьба legacy `codex exec` probe и evidence.
 
-Для каждого решения записываются: наблюдение, выбранный вариант, отклонённые варианты, причина, последствия для следующих итераций и ссылка на evidence.
+Для каждого решения записываются наблюдение, выбранный вариант, отклонённые
+варианты, последствия и ссылка на evidence.
 
 ## 16. Критерии готовности
 
-Итерация завершена, когда одновременно выполнены условия:
+Итерация завершена, когда одновременно:
 
 - `go test ./...` проходит без реального обращения к Codex;
-- fake subprocess тестами покрыты раздельные потоки, большой output, exit codes, invalid/truncated JSONL, timeout и дерево процессов;
-- все `C01`–`C12` имеют `PASS` либо документированный результат, который однозначно приводит к техническому решению;
-- сценарии, необходимые для основного пути итерации 1, не имеют `INCONCLUSIVE`;
-- session ID извлекается из JSONL и успешная сессия продолжается по явному ID;
-- строгий structured output проверяется независимо от заявления Codex;
-- непустой stderr при exit `0` не классифицируется автоматически как ошибка;
-- timeout и Ctrl+C не оставляют fake child/grandchild и реальный Codex живыми;
-- sandbox-сценарии проверены по фактам файловой системы;
-- режим `isolated` не наследует пользовательские параметры, влияющие на машинный контракт, и сохраняет рабочую auth;
-- сохранены и санитизированы минимум один успешный, один process-failure и один output-failure JSONL fixture;
-- candidate snapshot стабилен, не меняет настоящий index и обнаруживает все обязательные изменения;
-- integration contract и spike report прошли ручное ревью;
-- в репозитории нет auth-файлов, API keys, полных environment dumps и live-артефактов `.stepan/`;
-- roadmap итерации 1 не требует неизвестного поведения subprocess API.
+- fake App Server покрывает framing, approvals, malformed messages, timeout и
+  дерево процессов;
+- все `A01`–`A16` имеют однозначный итог;
+- сценарии основного пути итерации 1 не имеют `INCONCLUSIVE`;
+- handshake, structured output и resume подтверждены live evidence;
+- разрешённая операция выполняется только после записанного decision;
+- запрещённая операция и операция без ответа не выполняются;
+- pending operator approval можно продолжить ровно один раз;
+- restricted read access подтверждён filesystem evidence;
+- source canary отсутствует в model-visible output и artifacts test-author;
+- `A10` подтверждает узкий turn-scoped read grant без experimental API;
+- test-author не имеет source access, а verifier выполняет проверку отдельно;
+- timeout и cancel не оставляют App Server и потомков;
+- effective config, requirements и instruction sources проверены;
+- candidate snapshot стабилен и не меняет настоящий index;
+- integration contract и report прошли ручное ревью;
+- репозиторий не содержит credentials и live `.stepan/` artifacts;
+- roadmap итерации 1 не требует неизвестного behavior App Server.
 
 ## 17. Условия блокировки итерации 1
 
 Переход к walking slice блокируется, если выполняется хотя бы одно условие:
 
-- нельзя надёжно отличить machine-readable stdout от иных данных;
-- session ID отсутствует или его нельзя однозначно связать с запуском;
-- resume конкретной успешно завершённой сессии не работает;
-- enforced schema нельзя независимо проверить;
-- exit code, terminal event и final output дают неразрешённо противоречивые сигналы;
-- Codex или его потомки остаются работать после timeout/отмены;
-- `read-only` допускает запись либо `workspace-write` не ограничивает запись ожидаемой областью;
-- пользовательская конфигурация может незаметно изменить sandbox или машинный output в режиме `isolated`;
-- probe теряет или смешивает stdout/stderr при большом output;
-- выбранный candidate snapshot меняет пользовательский index или не обнаруживает содержательные изменения.
+- App Server version-specific schema нельзя сгенерировать или согласовать с
+  фактическими messages;
+- невозможно однозначно связать request, decision, item, turn и thread;
+- разрешённая запись не выполняется после одноразового `accept`;
+- запрещённая операция выполняется до решения, после `decline` или вне scope;
+- turn завершается успешно с unresolved approval;
+- operator decision нельзя durable сохранить и отправить ровно один раз;
+- restricted read access допускает чтение source canary;
+- запрещённое содержимое попадает в prompt, instructions, output или artifacts;
+- узкий read grant требует broad/session permission либо experimental API;
+- user/project/managed configuration незаметно меняет approval, sandbox, tools
+  или output contract;
+- structured final output нельзя извлечь без эвристики;
+- resume явного thread ID не работает либо возобновляет другой context;
+- App Server или потомки остаются после timeout/cancel;
+- candidate snapshot меняет index или не обнаруживает изменения.
 
-Ошибки отдельных prompts, модели или сети не блокируют архитектуру автоматически. Они должны быть отделены от дефекта транспорта и классифицированы в evidence.
+Ошибки отдельных prompts, модели и сети не блокируют архитектуру автоматически,
+если controller корректно маршрутизирует их как наблюдаемые отказы.
 
 ## 18. Порядок выполнения
 
 ### День 1
 
-- Инициализировать минимальный Go module и probe.
-- Реализовать запуск без shell, параллельное чтение stdout/stderr и raw artifacts.
-- Реализовать fake child и транспортные тесты.
-- Выполнить `C01`–`C04`.
+- Зафиксировать baseline `codex app-server --help` и generated JSON Schema.
+- Реализовать минимальный stdio JSON-RPC transport и fake App Server.
+- Проверить handshake, basic turn, structured output и process lifecycle.
+- Выполнить `A01`, `A02`, `A16`.
 
 ### День 2
 
-- Реализовать Windows-отмену дерева процессов и timeout.
-- Выполнить sandbox, config, resume и path-сценарии `C05`–`C12`.
-- Реализовать replay fixtures и candidate snapshot experiment.
+- Реализовать pending approval state и policy decisions.
+- Выполнить write, decline и operator-delegation сценарии `A03`–`A06`.
+- Реализовать Windows cancel/timeout и replay fixtures.
 
-### День 3, если нужен
+### День 3
 
-- Закрыть расхождения и повторить минимально необходимый набор живых запусков.
-- Санитизировать fixtures.
-- Зафиксировать integration contract, решения и итоговый отчёт.
+- Создать физически отдельный test-only workspace.
+- Выполнить restricted-read сценарии `A07`–`A11` и isolation `A13`–`A15`.
+- Перепроверить candidate snapshot.
+- Санитизировать fixtures, обновить integration contract и report.
 
-Timebox не продлевается ради полной полировки probe. Если обязательная гипотеза не подтверждена за три дня, отчёт фиксирует `BLOCKED` с минимальным воспроизводимым evidence и вариантами следующего решения.
+Timebox не продлевается ради полной полировки. Если обязательная гипотеза не
+подтверждена, отчёт фиксирует `BLOCKED` с минимальным evidence и вариантами
+следующего решения.
 
 ## 19. Трассировка к roadmap
 
 | Требование итерации 0 | Разделы спецификации |
 |---|---|
-| Запуск без shell | 7.2, 8.1, 10 (`C12`) |
-| JSONL и session ID | 7.3–7.4, 8.2, 10 (`C01`) |
-| Structured final response | 7, 10 (`C03`), 11 |
-| Resume | 7.2, 10 (`C02`, `C09`) |
-| stdout/stderr/exit code | 8.1, 8.3, 9, 10 (`C04`) |
-| Отмена и timeout | 8.4, 9, 10 (`C08`) |
-| Sandbox modes | 10 (`C05`–`C07`) |
-| Невалидный ответ и обрыв | 8.2–8.3, 9, 11 |
-| Пользовательская конфигурация | 7.2, 10 (`C10`, `C11`) |
-| Quoting, пути и завершение Windows | 8.4, 10 (`C12`), 14 |
-| Durable state и event journal | 13, 15 |
-| Candidate snapshot | 12, 15 |
-| Поддерживаемая ОС и версия Codex | 2, 14–16 |
+| Запуск без shell и process lifecycle | 7.2, 8.1, 8.3, 10 (`A12`, `A16`) |
+| JSON-RPC и streamed events | 7.3, 8.2, 9, 10 (`A01`) |
+| Structured final response | 7.7, 10 (`A01`), 11 |
+| Resume | 7.2–7.3, 10 (`A02`) |
+| Approval routing | 7.4, 9, 10 (`A03`–`A06`) |
+| Restricted read access | 7.5, 10 (`A07`–`A10`) |
+| Role isolation test-author/verifier | 7.5, 10 (`A11`) |
+| Configuration isolation | 7.6, 10 (`A13`, `A14`) |
+| Paths и Windows behavior | 8.3, 10 (`A15`), 14 |
+| Durable state и approval journal | 7.4, 13, 15 |
+| Candidate snapshot | 7.4, 12, 15 |
+| Поддерживаемая ОС и версия Codex | 2, 14–17 |
+
+## 20. Влияние на связанные документы
+
+После утверждения этой спецификации отдельным изменением должны быть приведены в
+соответствие:
+
+- `docs/product-brief.md`: заменить безусловный `workspace-write` на
+  role-scoped approval routing и уточнить границу физической изоляции;
+- `docs/implementation-roadmap.md`: заменить `codex exec` как основной transport
+  на App Server и добавить pending approval state;
+- `docs/specs/iteration-0/implementation-plan.md`: заменить этап 7 и матрицу
+  `C01`–`C12` на `A01`–`A16`;
+- `docs/specs/iteration-0/report.md`: сохранить `BLK-001` как legacy observation
+  и открыть новый раздел решения по App Server.
+
+Эти документы и код не изменяются в рамках записи данной спецификации.

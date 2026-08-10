@@ -24,6 +24,7 @@ func TestValidateBeforeArtifacts(t *testing.T) {
 		Timeout:     time.Second,
 		ArtifactDir: artifactDir,
 		Nonce:       "nonce",
+		CaseID:      "test",
 		ConfigMode:  Isolated,
 	}).Validate()
 	if err == nil {
@@ -43,7 +44,7 @@ func TestArgsAreSeparateForNewAndResume(t *testing.T) {
 		ConfigMode:  Isolated,
 	}
 	wantNew := []string{
-		"exec", "--json", "--color", "never", "--sandbox", "workspace-write",
+		"exec", "--json", "--color", "never", "-c", `default_permissions=":workspace"`,
 		"-c", `approval_policy="never"`, "--output-schema", `C:\schema dir\schema.json`,
 		"--output-last-message", `C:\artifact dir\last-message.json`, "--cd", `C:\work space`,
 		"--ignore-user-config", "--ignore-rules", "-",
@@ -55,10 +56,23 @@ func TestArgsAreSeparateForNewAndResume(t *testing.T) {
 	cfg.SessionID = "opaque-session"
 	wantResume := []string{
 		"exec", "resume", "--json", "--output-schema", `C:\schema dir\schema.json`,
-		"--output-last-message", `C:\artifact dir\last-message.json`, "-c", `approval_policy="never"`,
+		"--output-last-message", `C:\artifact dir\last-message.json`, "-c", `default_permissions=":workspace"`,
+		"-c", `approval_policy="never"`,
 		"--ignore-user-config", "--ignore-rules", "opaque-session", "-",
 	}
 	if got := cfg.Args(); !reflect.DeepEqual(got, wantResume) {
 		t.Fatalf("resume args:\n got %#v\nwant %#v", got, wantResume)
+	}
+}
+
+func TestSandboxMapsToPermissionProfile(t *testing.T) {
+	tests := map[Sandbox]string{
+		ReadOnly:       ":read-only",
+		WorkspaceWrite: ":workspace",
+	}
+	for sandbox, want := range tests {
+		if got := sandbox.permissionProfile(); got != want {
+			t.Errorf("%s: got %q, want %q", sandbox, got, want)
+		}
 	}
 }

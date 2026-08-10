@@ -1,242 +1,359 @@
 # Stepan: план реализации итерации 0
 
-Статус: готов к выполнению  
-Основание: [спецификация итерации 0](specification.md)  
+Статус: готов к ревью  
+Основание: [спецификация итерации 0](specification.md), редакция 2  
 Целевая среда: Windows native  
-Оценка: 2–3 рабочих дня одного разработчика
+Timebox: 2–3 рабочих дня одного разработчика
 
-## 1. Назначение плана
+## 1. Цель плана
 
-Этот документ задаёт порядок реализации и проверки технического spike. Требования, критерии готовности и условия блокировки определяет спецификация; план их не переопределяет.
+За timebox получить минимальный App Server probe и фактический ответ, пригоден
+ли `codex app-server` версии `0.147.0` как approval-driven transport для
+итерации 1.
 
-Реализация ведётся одним основным исполнителем по вертикальным этапам. Параллельная работа допускается только для изолированных участков после стабилизации основного subprocess-контракта.
+План не переопределяет требования спецификации. Если обязательная гипотеза не
+подтверждается, результатом этапа становится `BLOCKED` с минимальным evidence,
+а не обход через experimental API, broad permissions или эвристику.
 
-## 2. Ограничения реализации
+## 2. Исходное состояние
 
-- Не реализовывать продуктовый workflow Stepan и публичный runner interface.
-- Использовать стандартную библиотеку Go; добавить `golang.org/x/sys/windows` только при необходимости для Windows Job Object.
-- Не добавлять CLI framework, универсальный JSON Schema validator, mock framework или абстракции для будущих provider-ов.
-- Сначала проверять транспортные отказы fake subprocess и replay-тестами, затем выполнять живые вызовы Codex.
-- Не считать сообщение модели доказательством sandbox, завершения процессов или состояния Git: проверять наблюдаемые факты.
-- Не коммитить `.stepan/`, credentials, полный environment или несаницированные live-артефакты.
-- Не расширять timebox ради полировки probe; неподтверждённую обязательную гипотезу фиксировать как `BLOCKED` с evidence.
+В репозитории уже есть legacy spike для `codex exec`:
 
-## 3. Исходное состояние и предварительные условия
+- `cmd/codex-probe` и `internal/codexexec`;
+- subprocess lifecycle, Windows Job Object, raw artifacts и replay-тесты;
+- durable state primitives;
+- `internal/gitsnapshot` с Git-native candidate snapshot.
 
-На момент составления плана локально обнаружены:
+Этот код не переименовывается и не переделывается в App Server client. Новый
+двусторонний transport реализуется рядом в `internal/codexapp`. Из legacy-кода
+переносятся только небольшие уже проверенные приёмы; общий framework выделяется
+только при фактической необходимости.
 
-- Windows native;
-- `codex-cli 0.147.0`;
-- Git `2.55.0.windows.3`;
-- отсутствие команды `go` в `PATH`;
-- у `codex exec resume` нет отдельных флагов `--sandbox`, `--cd` и `--color`; фактическое наследование предстоит проверить живым сценарием.
+На момент составления плана подтверждены `codex-cli 0.147.0` и наличие команды
+`codex app-server`; `go` отсутствует в `PATH`. До первой реализации необходимо
+обнаружить или установить Go `1.26.x` и записать точную patch-версию в evidence.
 
-До начала реализации:
+## 3. Ограничения реализации
 
-- [ ] Установить или обнаружить Go `1.26.x` и записать точную patch-версию.
-- [ ] Проверить доступность существующей аутентификации Codex без копирования credentials.
-- [ ] Зафиксировать исходный `git status` и не перезаписывать пользовательские изменения.
-- [ ] Повторно сохранить вывод `codex --version`, `codex exec --help` и `codex exec resume --help` как baseline evidence.
-- [ ] Создать `/.stepan/` в `.gitignore` до первого live-запуска.
+- Только stdio JSONL; WebSocket, daemon и remote transport не реализуются.
+- Только стабильная поверхность протокола без `experimentalApi` в обязательном
+  пути.
+- Только стандартная библиотека Go и уже имеющийся `golang.org/x/sys/windows`.
+- Без CLI framework, универсального JSON-RPC framework, code generation в Go,
+  provider interface и recovery engine.
+- Реальный Codex не вызывается из `go test ./...`; все protocol failures сначала
+  воспроизводятся fake subprocess и replay fixtures.
+- Решение модели не является evidence для sandbox, Git или process lifecycle.
+- Live-запуски используют отдельные временные репозитории без remote,
+  credentials и ссылок на исходный checkout.
+- `.stepan/` и несаницированные live artifacts не коммитятся.
+- `internal/codexexec` удаляется или сохраняется только по итоговому решению в
+  отчёте.
 
-## 4. Целевая структура
-
-Минимальное ожидаемое размещение:
+## 4. Ожидаемое размещение
 
 ```text
-go.mod
-cmd/codex-probe/
-internal/codexexec/
-internal/codexexec/testdata/
+cmd/codex-appserver-probe/
+internal/codexapp/
+internal/codexapp/testdata/
 internal/gitsnapshot/
 docs/specs/iteration-0/
-  specification.md
   implementation-plan.md
   codex-integration-contract.md
   report.md
 ```
 
-Точное разбиение Go-кода на файлы определяется по мере реализации. Новые пакеты создаются только для независимо проверяемой ответственности; один пакет не дробится по одному типу на файл.
+В `internal/codexapp` должны появиться только необходимые ответственности:
+запуск процесса, JSONL/JSON-RPC framing, correlation, thread/turn lifecycle,
+approval policy, durable state и artifacts. Разбиение по файлам выполняется по
+мере роста кода, а не заранее по одному типу на файл.
 
-## 5. Этапы выполнения
+Generated protocol schema сначала хранится в `.stepan/spike/`. В репозиторий
+добавляется её hash и команда воспроизведения; сам bundle коммитится только если
+после ручной проверки он нужен для воспроизводимости и не содержит локальных
+данных.
 
-### Этап 1. Toolchain и каркас probe
+## 5. Этапы реализации
 
-Результат: минимальный Go module и запускаемый probe без живого обращения к Codex.
+### Этап 0. Baseline и schema gate
 
-- [ ] Инициализировать module с фактической версией Go.
-- [ ] Добавить минимальный entry point `cmd/codex-probe`.
-- [ ] Определить внутренние входные параметры запуска и выполнить их валидацию.
-- [ ] Безопасно разрешать executable через абсолютный путь или `PATH`, исключив случайный запуск из текущего каталога.
-- [ ] Формировать аргументы новой сессии и resume отдельными массивами без shell.
-- [ ] Добавить фиксированную JSON Schema позитивного ответа.
-- [ ] Проверить сборку и ошибки неверного ввода без запуска Codex.
+Результат: версия CLI и фактический protocol contract воспроизводимо
+зафиксированы до написания клиента.
 
-Контрольная точка: probe собирается, печатает диагностируемую ошибку ввода и не создаёт неполные run-артефакты до успешной валидации.
+- [ ] Обнаружить Go `1.26.x`, зафиксировать `go version` и согласовать `go.mod`.
+- [ ] Сохранить `codex --version` и `codex app-server --help` в live evidence.
+- [ ] Выполнить `codex app-server generate-json-schema --out <temp-dir>`.
+- [ ] Вычислить SHA-256 bundle, записать версию CLI, argv и инструкцию
+  воспроизведения.
+- [ ] По generated schema выписать точные формы `initialize`, config, thread,
+  turn, terminal notifications и трёх approval requests.
+- [ ] Проверить, какие поля доступны без `experimentalApi`; несовпадение со
+  спецификацией сразу отметить как риск или `BLOCKED`.
+- [ ] Зафиксировать исходный `git status`, не перезаписывая пользовательские
+  изменения и существующие `.stepan` artifacts.
 
-### Этап 2. Единый subprocess-путь и raw evidence
+Контрольная точка: schema генерируется версией `0.147.0`, имеет сохранённый hash
+и согласуется с минимальным обязательным handshake. Иначе реализация transport
+не начинается.
 
-Результат: реальный и fake executable проходят через один механизм запуска.
+### Этап 1. JSONL/JSON-RPC ядро и fake App Server
 
-- [ ] Подключать раздельные stdout/stderr pipes до `Start`.
-- [ ] Читать оба потока конкурентно и начинать чтение до `Wait`.
-- [ ] Передавать prompt в UTF-8 через stdin с аргументом `-`.
-- [ ] Сохранять исходные байты в `stdout.jsonl` и `stderr.log` без переформатирования.
-- [ ] Получать точный process exit code независимо от содержимого потоков.
-- [ ] Создавать manifest без prompt, secrets и полного environment.
-- [ ] Записывать `result.json` последним через атомарную замену.
-- [ ] Реализовать fake child через текущий Go test binary.
+Результат: один parser и одна state machine обрабатывают fake, replay и будущий
+live stream.
 
-Минимальные проверки:
+- [ ] Реализовать envelope request/response/notification без универсальной
+  поддержки всех методов App Server.
+- [ ] Хранить ID как opaque scalar и использовать type-tagged canonical key для
+  correlation.
+- [ ] Выделять каждую непустую UTF-8 строку как один JSON object с лимитом
+  16 MiB.
+- [ ] Сериализовать все client writes через одного writer.
+- [ ] Регистрировать client requests и server requests до обработки response.
+- [ ] Отклонять orphan/duplicate response, duplicate request ID,
+  противоречивые terminal notifications и turn с unresolved approval.
+- [ ] Обрабатывать `serverRequest/resolved` как отдельный lifecycle signal как
+  до, так и после отправки client response.
+- [ ] Сохранять неизвестный валидный notification; неизвестный request
+  завершать fail-closed.
+- [ ] Реализовать fake App Server текущим Go test binary без mock framework.
+- [ ] Покрыть handshake error, approvals, concurrent requests, malformed и
+  oversized lines, stderr flood, зависание и unresolved approval.
 
-- [ ] Одновременный output обоих потоков больше размера системного pipe.
-- [ ] Warning в stderr при exit code `0`.
-- [ ] Ненулевой exit code.
-- [ ] Spawn failure.
-- [ ] Потомок оставляет pipe открытым после завершения родителя.
+Проверка: `go test ./internal/codexapp` проходит без установленного Codex и без
+сети.
 
-Контрольная точка: transport-тесты проходят без установленного или запущенного Codex.
+Контрольная точка: replay и fake subprocess используют тот же parser, writer и
+state machine, что будет использовать live probe.
 
-### Этап 3. JSONL, structured output и классификация
+### Этап 2. Subprocess lifecycle и artifacts
 
-Результат: один parser одинаково обрабатывает live output и fixtures.
+Результат: probe безопасно держит двустороннее stdio-соединение и всегда
+оставляет диагностируемый результат.
 
-- [ ] Сохранять каждую строку stdout до semantic parsing.
-- [ ] Ограничить строку размером 16 MiB и классифицировать превышение без неограниченного выделения памяти.
-- [ ] Принимать неизвестный валидный `type` без ошибки запуска.
-- [ ] Отличать invalid JSONL и оборванную последнюю строку.
-- [ ] Извлекать session ID только из `thread.started.thread_id`.
-- [ ] Обнаруживать отсутствие session ID и два противоречивых ID.
-- [ ] Распознавать только необходимые terminal events и usage при наличии.
-- [ ] Проверять `last-message.json` typed-декодированием с запретом неизвестных полей и проверкой nonce.
-- [ ] Вычислять `termination_reason`, `outcome` и exit code probe из наблюдаемых сигналов.
-- [ ] Добавить replay-тесты для зафиксированных классификаций.
+- [ ] Запускать executable напрямую с массивом аргументов и разрешать его через
+  абсолютный путь или `PATH`, исключив текущий каталог.
+- [ ] Открывать stdin/stdout/stderr до `Start`, читать stdout и stderr
+  конкурентно, stdin держать открытым до завершения connection.
+- [ ] Назначать App Server в Windows Job Object и ограниченно дочитывать pipe
+  после cancel.
+- [ ] Создавать `manifest.json`, raw `stdout.jsonl`, `stderr.log`, normalized
+  events, approvals journal, `state.json` и записываемый последним `result.json`.
+- [ ] Назначать normalized events единый монотонный `seq`, `event_id`, UTC
+  timestamp и доступные correlation IDs; порядок между разными OS pipes считать
+  порядком наблюдения, а не причинным порядком.
+- [ ] Заменять `state.json` атомарно только после успешного flush/close журналов.
+- [ ] Сохранять raw stdout до semantic parsing, а permission payload
+  санитизировать до durable записи.
+- [ ] Различать spawn failure, process failure, protocol failure, timeout,
+  approval timeout и operator cancel.
+- [ ] Проверить fake child → grandchild, унаследованный открытый pipe, оба
+  потока больше системного pipe и warning в stderr.
 
-Контрольная точка: все детерминированные output-failure сценарии покрыты без модельных запусков.
+Контрольная точка: fake process tree гарантированно исчезает после timeout и
+cancel; partial evidence остаётся читаемым.
 
-### Этап 4. Timeout, Ctrl+C и дерево процессов Windows
+### Этап 3. Handshake, thread/turn и structured output
 
-Результат: одна идемпотентная отмена завершает fake child, grandchild и их I/O.
+Результат: пройден минимальный вертикальный путь `A01`, затем resume `A02` и
+классификация `A16`.
 
-- [ ] Сначала проверить минимальную реализацию Windows Job Object с `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
-- [ ] Добавить `golang.org/x/sys/windows` только если стандартной библиотеки недостаточно для проверяемой реализации.
-- [ ] Объединить timeout и Ctrl+C в одну идемпотентную функцию отмены.
-- [ ] Сохранить первую причину завершения при повторной отмене.
-- [ ] Ограничить дочитывание потоков после отмены I/O grace timeout.
-- [ ] Сохранять partial evidence при любой ветке прерывания.
-- [ ] Проверить fake child → child → grandchild и сценарий унаследованного открытого pipe.
-- [ ] Проверить отсутствие оставшихся процессов по факту ОС.
+- [ ] Отправлять ровно один `initialize`, проверять response и отправлять
+  `initialized`.
+- [ ] Читать effective config и `configRequirements/read`; fail-closed при
+  несовместимых требованиях.
+- [ ] Выполнять `thread/start` или `thread/resume` только по явному ID.
+- [ ] Запускать turn с explicit `cwd`, `approvalPolicy=onRequest`,
+  `sandboxPolicy.type=readOnly`, restricted readable roots и `outputSchema`.
+- [ ] Сохранять thread/turn/item IDs только из соответствующих protocol fields.
+- [ ] Определить по schema и `A01` точный path structured final output и
+  зафиксировать его без извлечения JSON из текста.
+- [ ] Валидировать тестовый объект typed-декодированием с запретом неизвестных
+  полей и проверкой `result`, `nonce` и required fields.
+- [ ] После перезапуска App Server возобновить точный thread и подтвердить
+  предыдущий context отдельным nonce.
 
-Контрольная точка: timeout и повторная отмена ограничены по времени, тест не оставляет fake-процессов.
+Контрольная точка: `A01`, `A02` и `A16` имеют `PASS`, `FAIL` или `BLOCKED`, raw
+evidence и внешние postconditions; `INCONCLUSIVE` не допускается.
 
-### Этап 5. Durable state и sequencer
+### Этап 4. Durable approval state и policy
 
-Результат: минимальные форматы будущего состояния подтверждены без реализации recovery.
+Результат: command, file-change и permissions requests получают ровно одно
+решение только после durable фиксации.
 
-- [ ] Записать и прочитать примеры `state.json` и `events.jsonl` с `schema_version`.
-- [ ] Назначать единый монотонный `seq` наблюдаемым событиям stdout/stderr, сохраняя порядок внутри каждого потока.
-- [ ] Проверить атомарную замену существующего `state.json` на Windows.
-- [ ] Сохранить последнюю валидную строку при оборванной последней записи журнала.
-- [ ] Проверить отсутствие credentials, полного environment и несаницированных secrets.
+- [ ] Реализовать минимальные состояния `starting`, `ready`, `running_turn`,
+  `awaiting_controller_decision`, `awaiting_operator` и terminal states.
+- [ ] Перед ответом сохранить pending request с request/thread/turn/item IDs,
+  kind, policy snapshot и candidate snapshot.
+- [ ] Нормализовать roots, path patterns, command form и `cwd`; проверять
+  allowlist точным сравнением, без исполнения shell parser.
+- [ ] Автоматически отклонять protected paths, network без разрешения,
+  destructive/unknown commands, session grants и расширение scope.
+- [ ] Поддержать одноразовые `accept`, `decline`, `cancel` и внутренний
+  `await_operator`; записывать `decision_source`.
+- [ ] Не блокировать stdout reader ожиданием оператора: request передаётся
+  state machine, чтение stream продолжается.
+- [ ] Перед отправкой решения повторно вычислять policy/candidate snapshot;
+  изменившийся request инвалидировать.
+- [ ] Защитить operator continuation переходом `pending → decided → sent`,
+  допускающим отправку ровно один раз.
+- [ ] После restart или потери connection завершать старый pending request
+  fail-closed; повторять turn только отдельным явным действием.
+- [ ] После `accept` проверять files, `HEAD`, `git status` и отсутствие изменений
+  вне разрешённой области.
 
-Контрольная точка: формат пригоден для фиксации в integration contract, но recovery и fsync-дисциплина не реализованы.
+Контрольная точка: fake/replay тесты подтверждают порядок «durable decision →
+response → observable operation» и fail-closed поведение при потере connection.
 
-### Этап 6. Candidate snapshot
+### Этап 5. Write approvals и operator delegation
 
-Результат: стабильная пара `HEAD OID + tree OID`, не меняющая настоящий index и working tree.
+Результат: live-сценарии `A03`–`A06` подтверждают управляемость материальных
+операций.
 
-- [ ] Создавать отдельный временный index и задавать `GIT_INDEX_FILE` только дочерним командам Git.
-- [ ] Выполнять `read-tree HEAD`, `add -A` и `write-tree` без shell.
-- [ ] До и после расчёта проверять HEAD, настоящий index и working tree.
-- [ ] Покрыть tracked, untracked, deletion, rename, staged+unstaged, ignored и Unicode paths.
-- [ ] Покрыть изменение содержимого при сохранённых размере и timestamp.
-- [ ] Проверить стабильность повторного расчёта.
-- [ ] Смоделировать изменение файла во время расчёта и проверить повторное обнаружение расхождения.
-- [ ] Зафиксировать ограничения submodules, symlinks и file modes на Windows.
+- [ ] Для каждого сценария создать отдельный временный Git-репозиторий и
+  sibling-каталог с уникальными nonce marker.
+- [ ] Подтвердить одноразовый `accept` разрешённой записи (`A03`).
+- [ ] Подтвердить `decline` внешней записи и отсутствие дополнительных прав
+  (`A04`).
+- [ ] Сверить proposed file changes до решения и независимо проверить принятый
+  и отклонённый paths (`A05`).
+- [ ] Остановить turn в `awaiting_operator`, сохранить решение и отправить его
+  ровно один раз (`A06`).
+- [ ] Пересчитать candidate snapshot до approval и после принятой операции.
 
-Контрольная точка: все обязательные изменения меняют tree OID, пользовательский index остаётся побайтно прежним.
+Контрольная точка: ни одна запись не происходит до записанного решения, а
+запрещённая или оставленная без ответа операция не выполняется.
 
-### Этап 7. Живые сценарии Codex
+### Этап 6. Restricted read и role isolation
 
-Результат: каждый `C01`–`C12` имеет evidence и однозначный итог.
+Результат: `A07`–`A11` доказывают отсутствие доступа test-author к production
+source и возможность узкого turn-scoped grant.
 
-Живые запуски начинаются только после прохождения этапов 1–4.
+- [ ] Создать физически отдельный test-only Git-репозиторий без remote, objects,
+  alternates, worktree links, symlink/junction и hardlink к исходному checkout.
+- [ ] Копировать туда только allowlist contract/test inputs и не переносить
+  project instructions, `.codex`, `.agents`, hooks, plugins или MCP config.
+- [ ] Разместить source canary в sibling-каталоге вне readable roots.
+- [ ] Передать restricted `ReadOnlyAccess` с явными roots и проверить
+  разрешённое чтение (`A07`).
+- [ ] Проверить прямую и command-mediated попытку чтения canary, затем найти
+  nonce во всех model-visible outputs и artifacts (`A08`).
+- [ ] Связать и отклонить source permission request (`A09`).
+- [ ] Выдать только запрошенный безопасный read root со scope `turn`, проверить
+  недоступность sibling source и отсутствие переноса grant (`A10`).
+- [ ] Дать test-author создать тест из контракта, а отдельному verifier —
+  выполнить его с source access и вернуть санитизированный результат (`A11`).
 
-- [ ] Группа A: `C01`, `C03`, `C04`, затем resume `C02`.
-- [ ] Группа B: sandbox-сценарии `C05`–`C07` в отдельных временных Git-репозиториях.
-- [ ] Группа C: timeout `C08` и resume после прерывания `C09`.
-- [ ] Группа D: isolated/inherited configuration `C10`–`C11`.
-- [ ] Группа E: пути с пробелами, кириллицей и спецсимволами `C12`.
-- [ ] Объединять сценарии только когда один invocation даёт независимое evidence для каждой строки.
-- [ ] После write-сценариев проверять файловую систему, HEAD и `git status`.
-- [ ] Не повторять модельный запуск ради случайного нарушения enforced schema.
+Контрольная точка: `A10` проходит без experimental API. Broad/session grant или
+source leakage означает `BLOCKED` для итерации 1.
 
-Контрольная точка: основной путь итерации 1 не содержит `INCONCLUSIVE`; любое блокирующее наблюдение оформлено по разделу 17 спецификации.
+### Этап 7. Cancel, configuration isolation и Windows paths
 
-### Этап 8. Fixtures, контракт и отчёт
+Результат: завершены `A12`–`A15` и закрыты Windows-specific риски.
 
-Результат: воспроизводимые производные документы и минимальный набор коммитимых evidence.
+- [ ] Сначала отправлять `turn/interrupt`, затем по grace deadline закрывать Job
+  Object; отдельно проверять execution timeout, approval timeout и operator
+  cancel (`A12`).
+- [ ] В isolated mode удалить унаследованные `CODEX_*`, кроме нужного
+  `CODEX_HOME`, и передать framework-owned overrides явно.
+- [ ] Проверить effective config, managed requirements и `instructionSources`;
+  незаявленный источник считать failure (`A13`).
+- [ ] Отдельно измерить влияние inherited user/project config, tools, hooks и
+  MCP, не используя этот режим как default (`A14`).
+- [ ] Повторить основной путь в каталогах с пробелами, кириллицей, `&`, `[` и
+  `]`, не добавляя shell escaping (`A15`).
+- [ ] Зафиксировать различия Windows/Linux/macOS только как теоретический
+  анализ; cross-build не считать runtime evidence.
 
-- [ ] Выбрать минимум один success, process-failure и output-failure JSONL fixture.
-- [ ] Санитизировать пути, идентификаторы, prompt data и потенциальные secrets.
-- [ ] Повторно прогнать fixtures через тот же parser после sanitization.
-- [ ] Заполнить `codex-integration-contract.md` только подтверждённым поведением.
-- [ ] Заполнить `report.md` матрицей `C01`–`C12`, наблюдениями, решениями, отклонёнными вариантами и ссылками на evidence.
-- [ ] Добавить сравнительную таблицу Windows/Linux/macOS как теоретический анализ, не меняя Windows-only статус без runtime evidence.
-- [ ] Зафиксировать минимальную поддерживаемую версию Codex и политику более новых версий.
-- [ ] Зафиксировать ограничения resume, sandbox, configuration isolation, process termination и candidate snapshot.
+Контрольная точка: App Server и потомки не остаются после остановки, а isolated
+mode не меняет auth, approval, sandbox, tools и output contract скрытым образом.
 
-Контрольная точка: ни одно решение отчёта не основано только на документации или заявлении модели.
+### Этап 8. Candidate snapshot и replay regression
 
-### Этап 9. Финальная проверка
+Результат: существующий `internal/gitsnapshot` подтверждён как часть approval
+contract без ненужной переработки.
 
-- [ ] Выполнить `go test ./...` без обращения к Codex.
-- [ ] Проверить `go test` повторно в чистом процессе с предсказуемым environment.
-- [ ] При отсутствии лишней стоимости выполнить cross-build для целевых комбинаций из спецификации; не считать его runtime-поддержкой.
-- [ ] Проверить `git diff --check` и отсутствие live-артефактов, credentials и secrets.
-- [ ] Сверить каждый критерий готовности раздела 16 спецификации с тестом или evidence.
-- [ ] Сверить каждое условие блокировки раздела 17 с однозначным результатом.
-- [ ] Провести ручное ревью integration contract и spike report.
+- [ ] Прогнать существующие tracked, untracked, deletion, rename,
+  staged+unstaged, ignored и Unicode cases.
+- [ ] Добавить только отсутствующие проверки одинаковых size/timestamp,
+  повторного расчёта и изменения во время capture.
+- [ ] Проверить побайтовую неизменность настоящего index, `HEAD`, refs и working
+  tree.
+- [ ] Использовать `HEAD OID + tree OID` как candidate snapshot ID в approval
+  fixtures.
+- [ ] Повторно прогнать все санитизированные replay fixtures через production
+  parser/state machine.
 
-## 6. Делегирование
+Контрольная точка: snapshot стабилен, обнаруживает изменение candidate и не
+мутирует Git state.
 
-Основной исполнитель владеет этапами 1–5 и 7–9, поскольку они используют общий subprocess-контракт и последовательное live evidence.
+### Этап 9. Contract, report и финальная проверка
 
-После контрольной точки этапа 3 допускаются два изолированных поручения:
+Результат: spike можно вручную проверить и принять либо остановить по
+зафиксированным причинам.
 
-1. Реализация этапа 6 в отдельном пакете `internal/gitsnapshot` без изменений `internal/codexexec`.
-2. Финальный read-only аудит трассировки спецификации на тесты, fixtures и отчёт без самостоятельного изменения реализации.
+- [ ] Оставить минимальный набор санитизированных success, approval,
+  process-failure и protocol-failure fixtures.
+- [ ] После sanitization повторно проиграть fixtures и проверить отсутствие
+  nonce canary, credentials и локальных абсолютных путей.
+- [ ] Заполнить `codex-integration-contract.md` только фактически подтверждённым
+  initialize/thread/turn/approval/restart поведением.
+- [ ] Заполнить в `report.md` все 15 решений раздела 15 спецификации со ссылками
+  на evidence и матрицу `A01`–`A16`.
+- [ ] Отдельно решить судьбу legacy `codex exec` probe; до этого не удалять его
+  код и raw observations.
+- [ ] Сверить критерии готовности и условия блокировки строка за строкой.
+- [ ] После утверждения результата отдельным изменением синхронизировать
+  `docs/product-brief.md` и `docs/implementation-roadmap.md`.
 
-Windows cancellation не делегируется отдельно от subprocess-слоя. Документы с итоговыми решениями не пишутся параллельно живым сценариям, чтобы не фиксировать предположения как наблюдения.
+Финальные команды:
 
-## 7. Порядок контрольных точек
+```powershell
+go test ./...
+git diff --check
+git status --short
+```
 
-| Точка | Условие перехода | Следующий риск |
+Контрольная точка: тесты не обращаются к Codex, каждый `A01`–`A16` имеет
+однозначный итог, contract/report прошли ручное ревью, а в Git нет live
+`.stepan` artifacts или secrets.
+
+## 6. Порядок по дням
+
+| День | Этапы | Обязательный результат |
 |---|---|---|
-| A | Fake transport не теряет и не смешивает потоки | Корректность parser и классификации |
-| B | Output failures воспроизводятся replay-тестами | Завершение дерева процессов |
-| C | Timeout/Ctrl+C не оставляют fake-процессы | Поведение реального Codex |
-| D | Candidate snapshot не меняет Git state | Живые sandbox/config сценарии |
-| E | `C01`–`C12` имеют однозначный итог | Санитизация и фиксация контракта |
-| F | Критерии готовности трассируются на evidence | Ручное решение о переходе к итерации 1 |
+| 1 | 0–3 | Schema gate, fake transport, process lifecycle, `A01`, `A02`, `A16` |
+| 2 | 4–5 и cancel из 7 | Durable approvals, `A03`–`A06`, fake/replay timeout tests |
+| 3 | 6–9 | `A07`–`A15`, snapshot regression, fixtures, contract и report |
 
-Провал контрольной точки не обходится fallback-эвристикой. Исполнитель либо исправляет детерминированный дефект в пределах timebox, либо фиксирует `BLOCKED` с минимальным воспроизводимым evidence.
+Если ранняя контрольная точка не пройдена, оставшееся время используется на
+минимальное воспроизведение, sanitization evidence и запись решения `BLOCKED`,
+а не на расширение реализации.
 
-## 8. Матрица трассировки
+## 7. Матрица live-сценариев
 
-| Область спецификации | Этап плана | Основное доказательство |
-|---|---|---|
-| Запуск без shell и разделение потоков | 1–2 | Fake subprocess tests и raw artifacts |
-| JSONL, session ID, terminal events | 3 | Parser/replay tests и `C01` |
-| Structured final output | 1, 3, 7 | Typed validation и `C03` |
-| Resume | 1, 7 | `C02`, `C09` |
-| Timeout, Ctrl+C, дерево процессов | 4, 7 | Fake tree test и `C08` |
-| Sandbox и configuration isolation | 7 | `C05`–`C07`, `C10`–`C11` |
-| Пути и UTF-8 | 2, 7 | Fake tests и `C12` |
-| Candidate snapshot | 6 | Git fixture tests |
-| Durable state и event journal | 5 | State/journal tests |
-| Поддержка ОС и версии Codex | 7–8 | Live matrix и report |
+| Сценарии | Этап | Основное evidence |
+|---|---:|---|
+| `A01`, `A02`, `A16` | 3 | Raw stream, IDs, terminal/final output, stderr/process classification |
+| `A03`–`A05` | 5 | Approval journal, files, `HEAD`, `git status`, candidate snapshots |
+| `A06` | 5 | Durable pending state и единственный отправленный response |
+| `A07`–`A10` | 6 | Read policy, filesystem denial, permission response, canary scan |
+| `A11` | 6 | Изолированный test repo и санитизированный verifier result |
+| `A12` | 7 | Interrupt timeline, partial state и отсутствие process tree |
+| `A13`, `A14` | 7 | Effective config, requirements и instruction sources |
+| `A15` | 7 | Manifest и успешные postconditions в Windows paths |
 
-## 9. Граница завершения
+## 8. Definition of done
 
-Итерация считается выполненной только по критериям раздела 16 спецификации. Завершение этого плана не разрешает автоматически начинать итерацию 1: сначала вручную проверяются условия блокировки раздела 17 и итоговый `report.md`.
+План выполнен, когда одновременно:
+
+- fake/replay тесты покрывают framing, correlation, approvals, malformed input,
+  timeout и process tree;
+- live matrix `A01`–`A16` заполнена без `INCONCLUSIVE` на пути итерации 1;
+- acceptance/decline и restricted read доказаны внешними наблюдениями;
+- operator decision durable и отправляется не более одного раза;
+- structured output извлекается только по version-specific protocol path;
+- isolated config и role workspace не пропускают запрещённые источники;
+- candidate snapshot не меняет настоящий Git state;
+- `go test ./...` проходит offline;
+- integration contract, report и решение о переходе к итерации 1 готовы к
+  ручному утверждению.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -122,6 +123,20 @@ func TestCancellationPreservesFirstReason(t *testing.T) {
 	}
 }
 
+func TestIsolatedEnvironmentDropsParentCodexState(t *testing.T) {
+	t.Setenv("CODEX_HOME", `C:\codex-home`)
+	t.Setenv("CODEX_THREAD_ID", "parent-thread")
+	t.Setenv("CODEX_PERMISSION_PROFILE", ":read-only")
+	isolated := strings.Join(childEnvironment(Isolated), "\n")
+	if !strings.Contains(isolated, `CODEX_HOME=C:\codex-home`) || strings.Contains(isolated, "CODEX_THREAD_ID=") || strings.Contains(isolated, "CODEX_PERMISSION_PROFILE=") {
+		t.Fatalf("isolated environment contains parent state: %s", isolated)
+	}
+	inherited := strings.Join(childEnvironment(Inherited), "\n")
+	if !strings.Contains(inherited, "CODEX_THREAD_ID=parent-thread") || !strings.Contains(inherited, "CODEX_PERMISSION_PROFILE=:read-only") {
+		t.Fatal("inherited environment was filtered")
+	}
+}
+
 func TestMain(m *testing.M) {
 	scenario := os.Getenv("GO_WANT_CODEX_HELPER")
 	if scenario == "" {
@@ -174,7 +189,7 @@ func TestMain(m *testing.M) {
 		if err := cmd.Start(); err != nil {
 			os.Exit(11)
 		}
-		pidFile := os.Getenv("CODEX_HELPER_PID_FILE")
+		pidFile := os.Getenv("STEPAN_HELPER_PID_FILE")
 		deadline := time.Now().Add(2 * time.Second)
 		for {
 			if _, err := os.Stat(pidFile); err == nil {
@@ -196,7 +211,7 @@ func TestMain(m *testing.M) {
 			os.Exit(13)
 		}
 		data, err := json.Marshal([]int{os.Getppid(), os.Getpid(), cmd.Process.Pid})
-		if err != nil || os.WriteFile(os.Getenv("CODEX_HELPER_PID_FILE"), data, 0o600) != nil {
+		if err != nil || os.WriteFile(os.Getenv("STEPAN_HELPER_PID_FILE"), data, 0o600) != nil {
 			os.Exit(14)
 		}
 		time.Sleep(30 * time.Second)
@@ -220,7 +235,7 @@ func fakeConfig(t *testing.T, artifactDir string) Config {
 		Executable: os.Args[0], CodexVersion: "fake",
 		Workspace: root, Prompt: []byte("prompt"), Sandbox: ReadOnly,
 		SchemaPath: schema, Timeout: time.Second, ArtifactDir: artifactDir,
-		Nonce: "nonce", ConfigMode: Isolated,
+		Nonce: "nonce", CaseID: "test", ConfigMode: Isolated,
 	}
 }
 

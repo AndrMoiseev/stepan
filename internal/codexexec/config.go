@@ -36,6 +36,7 @@ type Config struct {
 	ArtifactDir  string
 	SessionID    string
 	Nonce        string
+	CaseID       string
 	ConfigMode   ConfigMode
 	IOGrace      time.Duration
 }
@@ -73,16 +74,20 @@ func (c Config) Validate() (Config, error) {
 	if strings.TrimSpace(c.Nonce) == "" {
 		return Config{}, errors.New("expected nonce is required")
 	}
+	if strings.TrimSpace(c.CaseID) == "" {
+		return Config{}, errors.New("case ID is required")
+	}
 	return c, nil
 }
 
 func (c Config) Args() []string {
 	lastMessage := filepath.Join(c.ArtifactDir, "last-message.json")
+	permissionProfile := fmt.Sprintf(`default_permissions=%q`, c.Sandbox.permissionProfile())
 	var args []string
 	if c.SessionID == "" {
 		args = []string{
 			"exec", "--json", "--color", "never",
-			"--sandbox", string(c.Sandbox),
+			"-c", permissionProfile,
 			"-c", `approval_policy="never"`,
 			"--output-schema", c.SchemaPath,
 			"--output-last-message", lastMessage,
@@ -93,6 +98,7 @@ func (c Config) Args() []string {
 			"exec", "resume", "--json",
 			"--output-schema", c.SchemaPath,
 			"--output-last-message", lastMessage,
+			"-c", permissionProfile,
 			"-c", `approval_policy="never"`,
 		}
 	}
@@ -103,6 +109,13 @@ func (c Config) Args() []string {
 		args = append(args, c.SessionID)
 	}
 	return append(args, "-")
+}
+
+func (s Sandbox) permissionProfile() string {
+	if s == WorkspaceWrite {
+		return ":workspace"
+	}
+	return ":read-only"
 }
 
 func resolveExecutable(name string) (string, error) {

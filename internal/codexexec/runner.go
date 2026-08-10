@@ -56,20 +56,22 @@ type Result struct {
 }
 
 type manifest struct {
-	SchemaVersion int        `json:"schema_version"`
-	InvocationID  string     `json:"invocation_id"`
-	CodexVersion  string     `json:"codex_version"`
-	GoVersion     string     `json:"go_version"`
-	OS            string     `json:"os"`
-	Arch          string     `json:"arch"`
-	Executable    string     `json:"executable"`
-	Workspace     string     `json:"workspace"`
-	SchemaPath    string     `json:"schema_path"`
-	Args          []string   `json:"args"`
-	Sandbox       Sandbox    `json:"sandbox"`
-	Timeout       string     `json:"timeout"`
-	ConfigMode    ConfigMode `json:"config_mode"`
-	PromptSHA256  string     `json:"prompt_sha256"`
+	SchemaVersion     int        `json:"schema_version"`
+	InvocationID      string     `json:"invocation_id"`
+	CodexVersion      string     `json:"codex_version"`
+	GoVersion         string     `json:"go_version"`
+	OS                string     `json:"os"`
+	Arch              string     `json:"arch"`
+	Executable        string     `json:"executable"`
+	Workspace         string     `json:"workspace"`
+	SchemaPath        string     `json:"schema_path"`
+	Args              []string   `json:"args"`
+	Sandbox           Sandbox    `json:"sandbox"`
+	PermissionProfile string     `json:"permission_profile"`
+	Timeout           string     `json:"timeout"`
+	ConfigMode        ConfigMode `json:"config_mode"`
+	PromptSHA256      string     `json:"prompt_sha256"`
+	CaseID            string     `json:"case_id"`
 }
 
 func Version(ctx context.Context, executable string) (string, error) {
@@ -140,8 +142,10 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		CodexVersion: cfg.CodexVersion, GoVersion: runtime.Version(),
 		OS: runtime.GOOS, Arch: runtime.GOARCH,
 		Executable: cfg.Executable, Workspace: cfg.Workspace, SchemaPath: cfg.SchemaPath,
-		Args: cfg.Args(), Sandbox: cfg.Sandbox, Timeout: cfg.Timeout.String(), ConfigMode: cfg.ConfigMode,
+		Args: cfg.Args(), Sandbox: cfg.Sandbox, PermissionProfile: cfg.Sandbox.permissionProfile(),
+		Timeout: cfg.Timeout.String(), ConfigMode: cfg.ConfigMode,
 		PromptSHA256: hex.EncodeToString(promptHash[:]),
+		CaseID:       cfg.CaseID,
 	}
 	if err := writeJSON(filepath.Join(cfg.ArtifactDir, "manifest.json"), m); err != nil {
 		return Result{}, err
@@ -180,6 +184,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	controller := newCancelController(job.Close)
 	cmd := exec.Command(cfg.Executable, cfg.Args()...)
 	cmd.Dir = cfg.Workspace
+	cmd.Env = childEnvironment(cfg.ConfigMode)
 	cmd.Stdin = bytes.NewReader(cfg.Prompt)
 	// Wrapping the files makes os/exec create and concurrently drain separate pipes.
 	cmd.Stdout = observedWriter{"stdout", stdout, journal}
@@ -283,6 +288,25 @@ func randomID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(data[:]), nil
+}
+
+func childEnvironment(mode ConfigMode) []string {
+	environment := os.Environ()
+	if mode != Isolated {
+		return environment
+	}
+	filtered := environment[:0]
+	for _, item := range environment {
+		key := item
+		if separator := strings.IndexByte(item, '='); separator >= 0 {
+			key = item[:separator]
+		}
+		if strings.HasPrefix(strings.ToUpper(key), "CODEX_") && !strings.EqualFold(key, "CODEX_HOME") {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return filtered
 }
 
 func writeJSON(path string, value any) error {
