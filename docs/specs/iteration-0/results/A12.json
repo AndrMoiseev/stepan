@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "scenario": "A12",
+  "outcome": "FAIL",
+  "observation": {
+    "app_server_turn_interrupt_before_grace": false,
+    "app_server_execution_timeout": false,
+    "app_server_approval_timeout": false,
+    "app_server_operator_cancel": false,
+    "app_server_job_object_tree_ownership": false,
+    "app_server_process_tree_absence_after_cancel_proven": false,
+    "partial_artifacts_preserved": false,
+    "pending_approvals_fail_closed_on_connection_loss": true,
+    "legacy_exec_execution_timeout": true,
+    "legacy_exec_operator_cancel": true,
+    "legacy_exec_windows_job_object": true,
+    "legacy_exec_process_tree_stress_count": 20,
+    "legacy_exec_process_tree_stress_passed": false
+  },
+  "contract": {
+    "pinned_turn_interrupt_available": true,
+    "production_app_server_uses_it": false
+  },
+  "cross_platform_theory": {
+    "windows": "Job Object can terminate descendants on close.",
+    "linux_macos": "Current non-Windows fallback kills only the direct process; process-group behavior needs runtime validation.",
+    "cross_build_is_runtime_evidence": false
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "controller_commit": "38977c86d3fac29aad2a6119830e2955e36c01f4",
+    "platform": "windows/amd64"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a12-audit/raw-summary.json",
+      "sha256": "f0541d1f6dadf28347ba773c42d23d1920ac32856758a0e5138510dceb0b8233"
+    },
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a12-audit/focused-stress.txt",
+      "sha256": "ce29e219f5a4c5fe63363654e592538f35a61a101b325ad59d4471cf430ba669"
+    }
+  ]
+}

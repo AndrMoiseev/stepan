@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scenario": "A13",
+  "outcome": "FAIL",
+  "observation": {
+    "inherited_codex_environment_removed_except_codex_home": true,
+    "codex_home_auth_used_in_place": true,
+    "credentials_copied": false,
+    "initialize_authenticated": true,
+    "effective_config_read": true,
+    "managed_requirements_read": true,
+    "on_request_allowed": true,
+    "read_only_allowed": true,
+    "instruction_sources_checked": true,
+    "instruction_source_count": 0,
+    "user_config_layer_loaded": true,
+    "plugin_hook_count": 3,
+    "enabled_plugin_count": 11,
+    "mcp_server_count": 3,
+    "undeclared_influence_detected": true
+  },
+  "reason": "Keeping the existing authenticated CODEX_HOME also loads user config, plugin hooks, plugins, and MCP; this is not isolated by the iteration-0 definition.",
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "38977c86d3fac29aad2a6119830e2955e36c01f4",
+    "platform": "windows/amd64"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a13-isolated-escalated/raw-summary.json",
+      "sha256": "e1f2064581af5a4e796d8122cd89096224a46867957880138a1c3c70bd775aae"
+    },
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a13-isolated-escalated/evidence/stdout.jsonl",
+      "sha256": "ac2b7ab4edbad49a3c8e9b7952188d931f67ba364fed626c7827830d07b6fb45"
+    }
+  ]
+}

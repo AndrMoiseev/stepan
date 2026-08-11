@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "scenario": "A15",
+  "outcome": "PASS",
+  "observation": {
+    "workspace_contains_space": true,
+    "workspace_contains_cyrillic": true,
+    "workspace_contains_ampersand": true,
+    "workspace_contains_square_brackets": true,
+    "artifact_path_contains_space": true,
+    "artifact_path_contains_cyrillic": true,
+    "artifact_path_contains_ampersand": true,
+    "artifact_path_contains_square_brackets": true,
+    "shell_escaping_added": false,
+    "direct_argv_and_json_paths_used": true,
+    "handshake_complete": true,
+    "terminal_status": "completed",
+    "structured_output_valid": true,
+    "process_exit_code": 0,
+    "app_server_processes_remaining_after_stage": 0
+  },
+  "cross_platform_theory": {
+    "windows_runtime_evidence": true,
+    "linux_macos_unicode_and_metacharacter_paths": "Require native runtime verification; no shell interpretation is expected with argv-based launch.",
+    "cross_build_is_runtime_evidence": false
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "38977c86d3fac29aad2a6119830e2955e36c01f4",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a15-paths/Путь с пробелом & [скобки]/Артефакты & [результат]/raw-summary.json",
+      "sha256": "276183ee6b6205c3a75ce203541ecbaf0bc08c41bc78267bcd0f9506423e2ece"
+    },
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a15-paths/Путь с пробелом & [скобки]/Артефакты & [результат]/evidence/manifest.json",
+      "sha256": "afa1f39349b97d29b9d5afd6439b30bf2a686ebede04cd492a75963bc6a4472c"
+    },
+    {
+      "ref": ".stepan/spike/task7-live-20260811/post-process-check.json",
+      "sha256": "28105974a172bc61ae97a3eece4a0d659255dfadff3e81ceb378ea8160005254"
+    }
+  ]
+}
