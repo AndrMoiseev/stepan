@@ -4,54 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestReplayApprovalRequestsPreservesOpaqueCorrelation(t *testing.T) {
-	file, err := os.Open(filepath.Join("testdata", "approval-requests.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	repository := newApprovalRepository(t)
-	manager, cleanup := testApprovalManager(t, repository, AccessPolicy{}, nil)
-	defer cleanup()
-	expectedCandidate := strings.TrimSpace(runApprovalGit(t, repository, "rev-parse", "HEAD")) + ":" +
-		strings.TrimSpace(runApprovalGit(t, repository, "rev-parse", "HEAD^{tree}"))
-	wantKinds := []ApprovalKind{CommandApproval, FileChangeApproval, PermissionsApproval}
-	wantIDs := []string{StringID("opaque-command").Key(), IntID(42).Key(), StringID("opaque-permissions").Key()}
-	transport := NewTransport(file, io.Discard)
-	index := 0
-	for {
-		message, err := transport.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if index >= len(wantKinds) {
-			t.Fatalf("unexpected replay[%d]", index)
-		}
-		request, _, registerErr := manager.register(message)
-		kind, ids, _, decodeErr := decodeApproval(message)
-		if registerErr != nil || decodeErr != nil || kind != wantKinds[index] || message.ID.Key() != wantIDs[index] || ids.ThreadID != "thread-1" || ids.TurnID != "turn-1" {
-			t.Fatalf("replay[%d] = %q %q %+v, %v/%v", index, kind, message.ID.Key(), ids, registerErr, decodeErr)
-		}
-		if request.pending.CandidateSnapshotID == nil || *request.pending.CandidateSnapshotID != expectedCandidate {
-			t.Fatalf("candidate snapshot = %v, want %q", request.pending.CandidateSnapshotID, expectedCandidate)
-		}
-		index++
-	}
-	if index != len(wantKinds) {
-		t.Fatalf("replay count = %d", index)
-	}
-}
 
 func TestApprovalResponsesAreOneShotAndTurnScoped(t *testing.T) {
 	for _, kind := range []ApprovalKind{CommandApproval, FileChangeApproval, PermissionsApproval} {

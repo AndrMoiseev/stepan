@@ -2,13 +2,135 @@ package codexapp
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type replayConn struct {
+	mu     sync.Mutex
+	ready  *sync.Cond
+	lines  [][]byte
+	index  int
+	sent   map[string]bool
+	output bytes.Buffer
+}
+
+func newReplayConn(data []byte) *replayConn {
+	connection := &replayConn{sent: make(map[string]bool)}
+	connection.ready = sync.NewCond(&connection.mu)
+	for _, line := range bytes.SplitAfter(data, []byte{'\n'}) {
+		if len(line) != 0 {
+			connection.lines = append(connection.lines, line)
+		}
+	}
+	return connection
+}
+
+func (connection *replayConn) Read(buffer []byte) (int, error) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.index == len(connection.lines) {
+		return 0, io.EOF
+	}
+	line := connection.lines[connection.index]
+	if message, err := ParseMessage(bytes.TrimSpace(line)); err == nil && message.Kind == Response {
+		for !connection.sent[message.ID.Key()] {
+			connection.ready.Wait()
+		}
+	}
+	connection.index++
+	return copy(buffer, line), nil
+}
+
+func (connection *replayConn) Write(line []byte) (int, error) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if message, err := ParseMessage(bytes.TrimSpace(line)); err == nil && message.Kind == Request {
+		connection.sent[message.ID.Key()] = true
+		connection.ready.Broadcast()
+	}
+	return connection.output.Write(line)
+}
+
+func (*replayConn) Close() error { return nil }
+
+func TestReplaySanitizedFixtures(t *testing.T) {
+	hashes := map[string]string{
+		"success.jsonl":          "bac86a0824e5d6bcb366d1f29c8485644c9315848cb23494d5e22bfeb71d9a5a",
+		"approval.jsonl":         "b5343a74f8e919373f3d22813939c1f1e67f153e3a06c58ff3c4e5bf4f133597",
+		"process-failure.jsonl":  "dfa3ba71a6395ed5cf609dd371e305d5918f84d7eac9a6fd27d2875db7396f79",
+		"protocol-failure.jsonl": "e4527e3be4c05640044ce066953e70e29beb569eec663adf03de9c0acc3f2ee9",
+	}
+	localPath := regexp.MustCompile(`(?i)([a-z]:[\\/]|\\\\|/(users|home)/)`)
+	for name, wantHash := range hashes {
+		name, wantHash := name, wantHash
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := fmt.Sprintf("%x", sha256.Sum256(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))))
+			if sum != wantHash {
+				t.Fatalf("fixture hash = %s", sum)
+			}
+			lower := strings.ToLower(string(data))
+			for _, forbidden := range []string{"canary", "authorization", "bearer ", "api_key", "access_token", "password", ".stepan"} {
+				if strings.Contains(lower, forbidden) {
+					t.Fatalf("fixture contains forbidden marker %q", forbidden)
+				}
+			}
+			if localPath.Match(data) {
+				t.Fatal("fixture contains a local absolute path")
+			}
+
+			workspace := t.TempDir()
+			writable := filepath.Join(workspace, "public")
+			if err := os.Mkdir(writable, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			manager, cleanup := testApprovalManager(t, workspace, AccessPolicy{
+				ReadableRoots: []string{workspace}, WritableRoots: []string{writable},
+			}, nil)
+			defer cleanup()
+			connection := newReplayConn(data)
+			var events bytes.Buffer
+			result := ProbeResult{Outcome: Fail}
+			protocolErr := runProtocol(NewTransport(connection, connection), connection, &events, ProbeConfig{
+				Workspace: workspace, Prompt: "replay", Nonce: "replay", OutputSchema: DefaultOutputSchema,
+			}, &result, manager)
+			code := 0
+			var waitErr error
+			if name == "process-failure.jsonl" {
+				code, waitErr = 7, errors.New("exit status 7")
+			}
+			result.ProcessExitCode = &code
+			classifyProbeResult(&result, waitErr, protocolErr)
+			wantOutcome, wantClass := Pass, ""
+			switch name {
+			case "process-failure.jsonl":
+				wantOutcome, wantClass = Fail, "process_failure"
+			case "protocol-failure.jsonl":
+				wantOutcome, wantClass = Fail, "protocol_failure"
+			}
+			if result.Outcome != wantOutcome || result.FailureClass != wantClass {
+				t.Fatalf("result = %+v, protocol error = %v", result, protocolErr)
+			}
+			if name == "approval.jsonl" && !bytes.Contains(connection.output.Bytes(), []byte(`"id":"approval-replay","result":{"decision":"accept"}`)) {
+				t.Fatalf("approval response = %s", connection.output.Bytes())
+			}
+		})
+	}
+}
 
 func TestRunProbeVerticalPath(t *testing.T) {
 	for _, test := range []struct {

@@ -1,0 +1,7 @@
+{"id":1,"result":{"codexHome":"<codex-home>","platformFamily":"windows","platformOs":"windows","userAgent":"codex_cli_rs/0.147.0"}}
+{"id":2,"result":{"requirements":null}}
+{"id":3,"result":{"thread":{"id":"thread-replay"}}}
+{"id":4,"result":{"turn":{"id":"turn-replay"}}}
+{"method":"item/started","params":{"threadId":"thread-replay","turnId":"turn-replay","item":{"id":"file-replay","type":"fileChange","status":"inProgress","changes":[{"path":"public/allowed.txt","kind":"add","diff":"<redacted>"}]}}}
+{"method":"item/fileChange/requestApproval","params":{"threadId":"thread-replay","turnId":"turn-replay","itemId":"file-replay","startedAtMs":1},"id":"approval-replay"}
+{"method":"turn/completed","params":{"threadId":"thread-replay","turn":{"id":"turn-replay","status":"completed","items":[{"id":"item-replay","type":"agentMessage","phase":"final_answer","text":"{\"result\":\"ok\",\"nonce\":\"replay\"}"}]}}}

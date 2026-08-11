@@ -1,3 +1,0 @@
-{"method":"item/commandExecution/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"command-1","startedAtMs":1,"command":"go test ./...","cwd":"C:\\role"},"id":"opaque-command"}
-{"method":"item/fileChange/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"file-1","startedAtMs":2},"id":42}
-{"method":"item/permissions/requestApproval","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"permissions-1","startedAtMs":3,"cwd":"C:\\role","permissions":{"network":{"enabled":true}}},"id":"opaque-permissions"}

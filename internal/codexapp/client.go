@@ -242,6 +242,12 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 	if info, err := stderrFile.Stat(); err == nil {
 		result.StderrNonempty = info.Size() > 0
 	}
+	classifyProbeResult(&result, waitErr, protocolErr)
+	runErr = stderrErr
+	return finish()
+}
+
+func classifyProbeResult(result *ProbeResult, waitErr, protocolErr error) {
 	if result.ProcessExitCode == nil || *result.ProcessExitCode != 0 {
 		result.Outcome = Fail
 		result.FailureClass = "process_failure"
@@ -253,8 +259,6 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		}
 		result.Detail = protocolErr.Error()
 	}
-	runErr = stderrErr
-	return finish()
 }
 
 func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config ProbeConfig, result *ProbeResult, approvals *approvalManager) error {
