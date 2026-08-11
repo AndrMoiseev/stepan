@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunProbeVerticalPath(t *testing.T) {
@@ -41,6 +42,49 @@ func TestRunProbeVerticalPath(t *testing.T) {
 			}
 			assertProbeArtifacts(t, config.ArtifactDir)
 		})
+	}
+}
+
+func TestRunProbeApprovalRequests(t *testing.T) {
+	config := fakeProbeConfig(t, "approvals")
+	if err := os.Mkdir(filepath.Join(config.Workspace, "public"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config.AccessPolicy = AccessPolicy{
+		ReadableRoots:     []string{config.Workspace},
+		WritableRoots:     []string{filepath.Join(config.Workspace, "public")},
+		AllowedCommands:   []CommandForm{{Command: "go test ./...", CWD: config.Workspace}},
+		OperatorDecisions: []ApprovalKind{FileChangeApproval},
+	}
+	config.Operator = func(pending PendingApproval) (ApprovalDecision, error) {
+		if pending.Kind != FileChangeApproval || pending.Status != "pending" {
+			t.Errorf("operator pending = %+v", pending)
+		}
+		state, err := os.ReadFile(filepath.Join(config.ArtifactDir, "state.json"))
+		if err != nil || !bytes.Contains(state, []byte(`"status":"awaiting_operator"`)) || !bytes.Contains(state, []byte(`"request_id":"opaque-file"`)) {
+			t.Errorf("durable operator state = %s, %v", state, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		return DecisionAccept, nil
+	}
+	result, err := RunProbe(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Outcome != Pass {
+		t.Fatalf("result = %+v", result)
+	}
+	journal, err := os.ReadFile(filepath.Join(config.ArtifactDir, "approvals.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(journal)
+	if strings.Contains(text, "SECRET-REASON") || strings.Contains(text, `.git`) || strings.Count(text, `"type":"sent"`) != 4 || !strings.Contains(text, `"decision_source":"operator"`) {
+		t.Fatalf("approval journal = %s", text)
+	}
+	events, err := os.ReadFile(filepath.Join(config.ArtifactDir, "normalized-events.jsonl"))
+	if err != nil || strings.Contains(string(events), "SECRET-REASON") || strings.Contains(string(events), "SECRET-FILE-CONTENT") || !strings.Contains(string(events), "future/while-awaiting-operator") {
+		t.Fatalf("normalized events = %s, %v", events, err)
 	}
 }
 

@@ -34,6 +34,8 @@ type ProbeConfig struct {
 	ArtifactDir  string
 	ThreadID     string
 	OutputSchema json.RawMessage
+	AccessPolicy AccessPolicy
+	Operator     OperatorFunc
 }
 
 func (config ProbeConfig) Args() []string {
@@ -51,6 +53,10 @@ func (config ProbeConfig) validate() (ProbeConfig, error) {
 	}
 	if info, err := os.Stat(config.Workspace); err != nil || !info.IsDir() {
 		return ProbeConfig{}, errors.New("workspace must be an existing directory")
+	}
+	config.Workspace, err = canonicalPath(config.Workspace)
+	if err != nil {
+		return ProbeConfig{}, fmt.Errorf("normalize workspace: %w", err)
 	}
 	if !filepath.IsAbs(config.ArtifactDir) {
 		return ProbeConfig{}, errors.New("artifact directory must be absolute")
@@ -112,11 +118,6 @@ type probeManifest struct {
 	SchemaSHA256  string    `json:"output_schema_sha256"`
 }
 
-type probeState struct {
-	Status    string    `json:"status"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
 type protocolEvent struct {
 	Seq       uint64          `json:"seq"`
 	Timestamp time.Time       `json:"timestamp"`
@@ -126,8 +127,7 @@ type protocolEvent struct {
 	Raw       json.RawMessage `json:"raw"`
 }
 
-// RunProbe executes the version-pinned stdio vertical path. Cancellation and
-// approval handling are deliberately outside this iteration step.
+// RunProbe executes the version-pinned stdio vertical path.
 func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 	config, err := config.validate()
 	if err != nil {
@@ -169,21 +169,28 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		eventsFile.Close()
 		return ProbeResult{}, err
 	}
-	_ = approvalsFile.Close()
+	approvals, err := newApprovalManager(filepath.Join(config.ArtifactDir, "state.json"), approvalsFile, config.Workspace, config.AccessPolicy, config.Operator)
+	if err != nil {
+		stdoutFile.Close()
+		stderrFile.Close()
+		eventsFile.Close()
+		approvalsFile.Close()
+		return ProbeResult{}, fmt.Errorf("initialize approval policy: %w", err)
+	}
 
 	finish := func() (ProbeResult, error) {
-		closeErr := errors.Join(stdoutFile.Close(), stderrFile.Close(), eventsFile.Close())
-		status := "failed"
+		status := StatusFailed
 		if result.Outcome == Pass {
-			status = "completed"
+			status = StatusCompleted
+		} else if result.TerminalStatus == "interrupted" {
+			status = StatusInterrupted
 		}
-		if err := writeJSONAtomic(filepath.Join(config.ArtifactDir, "state.json"), probeState{Status: status, UpdatedAt: time.Now().UTC()}); err != nil {
-			return result, errors.Join(runErr, closeErr, err)
-		}
+		stateErr := approvals.setStatus(status)
+		closeErr := errors.Join(stdoutFile.Close(), stderrFile.Close(), eventsFile.Close(), approvalsFile.Close())
 		if err := writeJSONAtomic(filepath.Join(config.ArtifactDir, "result.json"), result); err != nil {
-			return result, errors.Join(runErr, closeErr, err)
+			return result, errors.Join(runErr, stateErr, closeErr, err)
 		}
-		return result, errors.Join(runErr, closeErr)
+		return result, errors.Join(runErr, stateErr, closeErr)
 	}
 
 	command := exec.Command(config.Executable, config.Args()...)
@@ -221,10 +228,10 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 
 	recordedStdout := io.TeeReader(stdout, stdoutFile)
 	transport := NewTransport(recordedStdout, stdin)
-	protocolErr := runProtocol(transport, stdin, eventsFile, config, &result)
+	protocolErr := runProtocol(transport, stdin, eventsFile, config, &result, approvals)
 	if protocolErr != nil {
+		_ = approvals.failClosed()
 		_ = stdin.Close()
-		_, _ = io.Copy(io.Discard, transport.decoder.reader)
 	}
 	waitErr := command.Wait()
 	stderrErr := <-stderrDone
@@ -250,7 +257,7 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 	return finish()
 }
 
-func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config ProbeConfig, result *ProbeResult) error {
+func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config ProbeConfig, result *ProbeResult, approvals *approvalManager) error {
 	if err := transport.SendRequest(IntID(1), "initialize", map[string]any{
 		"clientInfo": map[string]string{"name": "stepan", "version": "0"},
 	}); err != nil {
@@ -259,8 +266,37 @@ func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config
 	stage := 1
 	terminalSeen := false
 	var seq uint64
+	type readResult struct {
+		message Message
+		err     error
+	}
+	reads := make(chan readResult, 64)
+	stopReads := make(chan struct{})
+	defer close(stopReads)
+	go func() {
+		for {
+			message, err := transport.Read()
+			select {
+			case reads <- readResult{message, err}:
+			case <-stopReads:
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 	for {
-		message, err := transport.Read()
+		var message Message
+		var err error
+		select {
+		case read := <-reads:
+			message, err = read.message, read.err
+		case decision := <-approvals.operatorOut:
+			if err := approvals.continueOperator(decision, transport); err != nil {
+				return err
+			}
+			continue
+		}
 		if errors.Is(err, io.EOF) {
 			if !terminalSeen {
 				return errors.New("connection closed before terminal turn/completed")
@@ -276,20 +312,51 @@ func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config
 		}
 		switch message.Kind {
 		case Request:
-			return fmt.Errorf("unsupported server request %q", message.Method)
+			_, ids, _, err := decodeApproval(message)
+			if err != nil {
+				return err
+			}
+			if stage != 5 || ids.ThreadID != result.ThreadID || ids.TurnID != result.TurnID {
+				return errors.New("approval correlation IDs do not match the running turn")
+			}
+			request, decision, err := approvals.register(message)
+			if err != nil {
+				return err
+			}
+			if decision != DecisionAwaitOperator {
+				if err := approvals.resolve(transport, request, decision, DecisionByPolicy); err != nil {
+					return err
+				}
+			}
 		case Response:
 			if message.Error != nil {
 				return fmt.Errorf("%s failed: %d %s", requestName(stage), message.Error.Code, message.Error.Message)
 			}
+			previousStage := stage
 			if err := advanceProtocol(transport, message, &stage, config, result); err != nil {
 				return err
 			}
+			if previousStage == 1 {
+				if err := approvals.setStatus(StatusReady); err != nil {
+					return err
+				}
+			} else if previousStage == 4 {
+				if err := approvals.setStatus(StatusRunningTurn); err != nil {
+					return err
+				}
+			}
 		case Notification:
+			if err := approvals.observeFileChanges(message, result.ThreadID, result.TurnID); err != nil {
+				return err
+			}
 			if message.Method != "turn/completed" {
 				continue
 			}
 			if terminalSeen {
 				return errors.New("duplicate terminal notification")
+			}
+			if approvals.hasPending() {
+				return errors.New("terminal notification arrived with unresolved approval")
 			}
 			terminalSeen = true
 			if stage != 5 {
@@ -486,8 +553,40 @@ func decodeTerminal(raw json.RawMessage, nonce string, result *ProbeResult) erro
 }
 
 func appendProtocolEvent(writer io.Writer, seq uint64, message Message) error {
-	event := protocolEvent{Seq: seq, Timestamp: time.Now().UTC(), Kind: message.Kind, Method: message.Method, ID: message.ID.Key(), Raw: message.Raw}
+	raw := message.Raw
+	if message.Kind == Notification {
+		if evidence, relevant, err := decodeFileChangeEvidence(message); err != nil {
+			return err
+		} else if relevant {
+			raw, err = json.Marshal(struct {
+				Method string             `json:"method"`
+				Params fileChangeEvidence `json:"params"`
+			}{message.Method, evidence})
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if message.Kind == Request && isApprovalMethod(message.Method) {
+		_, ids, _, err := decodeApproval(message)
+		if err != nil {
+			return err
+		}
+		raw, err = json.Marshal(struct {
+			Method string      `json:"method"`
+			ID     ID          `json:"id"`
+			Params approvalIDs `json:"params"`
+		}{message.Method, message.ID, approvalIDs{ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID}})
+		if err != nil {
+			return err
+		}
+	}
+	event := protocolEvent{Seq: seq, Timestamp: time.Now().UTC(), Kind: message.Kind, Method: message.Method, ID: message.ID.Key(), Raw: raw}
 	return json.NewEncoder(writer).Encode(event)
+}
+
+func isApprovalMethod(method string) bool {
+	return method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" || method == "item/permissions/requestApproval"
 }
 
 func requestName(stage int) string {
@@ -548,6 +647,10 @@ func writeJSONExclusive(path string, value any) error {
 		file.Close()
 		return err
 	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
 	return file.Close()
 }
 
@@ -559,6 +662,10 @@ func writeJSONAtomic(path string, value any) error {
 	temp := file.Name()
 	defer os.Remove(temp)
 	if err := json.NewEncoder(file).Encode(value); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
 		file.Close()
 		return err
 	}

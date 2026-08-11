@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -48,7 +49,7 @@ func runFake(scenario string) int {
 		_, _ = os.Stdout.Write(bytes.Repeat([]byte{'x'}, MaxMessageBytes+1))
 		fmt.Fprintln(os.Stdout)
 		return 0
-	case "vertical", "resume", "structured-extra", "structured-missing", "structured-wrapped", "config-denied":
+	case "vertical", "resume", "structured-extra", "structured-missing", "structured-wrapped", "config-denied", "approvals":
 		return runVerticalFake(scenario)
 	case "no-terminal":
 		return 0
@@ -158,6 +159,11 @@ func runVerticalFake(scenario string) int {
 	if err := transport.SendResult(turnRequest.ID, map[string]any{"turn": map[string]any{"id": "turn-1", "items": []any{}, "status": "inProgress"}}); err != nil {
 		return 36
 	}
+	if scenario == "approvals" {
+		if code := runApprovalFake(transport, threadID, turnParams.CWD); code != 0 {
+			return code
+		}
+	}
 	_ = transport.SendNotification("future/notification", map[string]bool{"preserved": true})
 	text := `{"result":"ok","nonce":"nonce"}`
 	if scenario == "structured-extra" {
@@ -177,4 +183,63 @@ func runVerticalFake(scenario string) int {
 	}
 	fmt.Fprintln(os.Stderr, "warning")
 	return 0
+}
+
+func runApprovalFake(transport *Transport, threadID, cwd string) int {
+	base := map[string]any{"threadId": threadID, "turnId": "turn-1", "itemId": "command-item", "startedAtMs": 1, "command": "go test ./...", "cwd": cwd}
+	if err := transport.SendRequest(StringID("opaque-command"), "item/commandExecution/requestApproval", base); err != nil {
+		return 40
+	}
+	response, err := transport.Read()
+	if err != nil || response.Kind != Response || response.ID.Key() != StringID("opaque-command").Key() || !resultHasDecision(response.Result, DecisionAccept) {
+		return 41
+	}
+
+	if err := transport.SendNotification("item/started", map[string]any{
+		"threadId": threadID, "turnId": "turn-1", "startedAtMs": 2,
+		"item": map[string]any{"id": "file-item", "type": "fileChange", "status": "inProgress", "changes": []map[string]string{{"path": filepath.Join("public", "allowed.txt"), "kind": "add", "diff": "SECRET-FILE-CONTENT"}}},
+	}); err != nil {
+		return 42
+	}
+	file := map[string]any{"threadId": threadID, "turnId": "turn-1", "itemId": "file-item", "startedAtMs": 2, "reason": "do not persist SECRET-REASON"}
+	if err := transport.SendRequest(StringID("opaque-file"), "item/fileChange/requestApproval", file); err != nil {
+		return 43
+	}
+	if err := transport.SendNotification("future/while-awaiting-operator", map[string]string{"padding": strings.Repeat("x", 1<<20)}); err != nil {
+		return 44
+	}
+	response, err = transport.Read()
+	if err != nil || response.ID.Key() != StringID("opaque-file").Key() || !resultHasDecision(response.Result, DecisionAccept) {
+		return 45
+	}
+
+	permissions := map[string]any{
+		"threadId": threadID, "turnId": "turn-1", "itemId": "permission-item", "startedAtMs": 3, "cwd": cwd,
+		"permissions": map[string]any{"fileSystem": map[string]any{"write": []string{filepath.Join(cwd, "public", "new.txt")}}},
+	}
+	if err := transport.SendRequest(IntID(99), "item/permissions/requestApproval", permissions); err != nil {
+		return 46
+	}
+	response, err = transport.Read()
+	if err != nil || response.ID.Key() != IntID(99).Key() || !bytes.Contains(response.Result, []byte(`"scope":"turn"`)) || !bytes.Contains(response.Result, []byte(`new.txt`)) {
+		return 47
+	}
+
+	permissions["itemId"] = "protected-item"
+	permissions["permissions"] = map[string]any{"fileSystem": map[string]any{"read": []string{filepath.Join(cwd, ".git", "config")}}, "network": map[string]bool{"enabled": true}}
+	if err := transport.SendRequest(StringID("opaque-denied"), "item/permissions/requestApproval", permissions); err != nil {
+		return 48
+	}
+	response, err = transport.Read()
+	if err != nil || response.ID.Key() != StringID("opaque-denied").Key() || bytes.Contains(response.Result, []byte(`config`)) || !bytes.Contains(response.Result, []byte(`"permissions":{}`)) {
+		return 49
+	}
+	return 0
+}
+
+func resultHasDecision(raw json.RawMessage, decision ApprovalDecision) bool {
+	var result struct {
+		Decision ApprovalDecision `json:"decision"`
+	}
+	return json.Unmarshal(raw, &result) == nil && result.Decision == decision
 }
