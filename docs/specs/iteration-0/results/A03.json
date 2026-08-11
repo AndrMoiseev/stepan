@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "scenario": "A03",
+  "outcome": "PASS",
+  "observation": {
+    "approval_kind": "file_change",
+    "pending_count": 1,
+    "decision": "accept",
+    "decision_source": "policy",
+    "sent_count": 1,
+    "write_observed_after_recorded_decision": true,
+    "allowed_marker_present": true,
+    "sibling_marker_present": false,
+    "head_unchanged": true,
+    "candidate_snapshot_before_approval": "c21853ce7520b59faba0720e65282186f28fd8c6:299885d581f86eddf6d3b117efecd1fd8f172d25",
+    "candidate_snapshot_after_operation": "c21853ce7520b59faba0720e65282186f28fd8c6:42cf03c2e022f1261ca763cce73c48132b209f54"
+  },
+  "external_postconditions": {
+    "workspace_git_status": "only expected untracked allowed marker",
+    "remote_count": 0
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "8011938f56238688b2b1c4d06ac13c39d8835300",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a03-c8e42d/raw-summary.json",
+      "sha256": "b0fa36be3c6bc1b485ce2b868387570976ee23ee1cb59868ce8503b4d6a81b99"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a03-c8e42d/evidence/normalized-events.jsonl",
+      "sha256": "3bad3c38851067b964a2d9a6bccf5d7606f78b8d3f32902a1d997bbf33f32f16"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a03-c8e42d/evidence/approvals.jsonl",
+      "sha256": "aee4bfd41f6a849ce755a038d7aca5f0d55a09c892d1d4936d8bc1ae6e8eec4f"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a03-c8e42d/evidence/result.json",
+      "sha256": "a79d0d8206a68ed90e89f080053d26a8cc35b5b3fa7888c32a1c11ffd9fd0c28"
+    }
+  ]
+}
