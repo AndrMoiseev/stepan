@@ -29,7 +29,7 @@ func Capture(ctx context.Context, repository string) (Snapshot, error) {
 	return capture(ctx, repository, nil)
 }
 
-func capture(ctx context.Context, repository string, afterAdd func() error) (Snapshot, error) {
+func capture(ctx context.Context, repository string, betweenCaptures func() error) (Snapshot, error) {
 	if !filepath.IsAbs(repository) {
 		return Snapshot{}, errors.New("repository path must be absolute")
 	}
@@ -43,18 +43,26 @@ func capture(ctx context.Context, repository string, afterAdd func() error) (Sna
 	}
 	defer os.RemoveAll(tempDir)
 	index := filepath.Join(tempDir, "index")
-	if _, err := git(ctx, repository, index, "read-tree", "HEAD"); err != nil {
+	captureTree := func() ([]byte, error) {
+		// Reset stat data so same-size/timestamp changes are hashed again.
+		if _, err := git(ctx, repository, index, "read-tree", before.head); err != nil {
+			return nil, err
+		}
+		if _, err := git(ctx, repository, index, "add", "-A", "--", "."); err != nil {
+			return nil, err
+		}
+		return git(ctx, repository, index, "write-tree")
+	}
+	tree, err := captureTree()
+	if err != nil {
 		return Snapshot{}, err
 	}
-	if _, err := git(ctx, repository, index, "add", "-A", "--", "."); err != nil {
-		return Snapshot{}, err
-	}
-	if afterAdd != nil {
-		if err := afterAdd(); err != nil {
+	if betweenCaptures != nil {
+		if err := betweenCaptures(); err != nil {
 			return Snapshot{}, err
 		}
 	}
-	tree, err := git(ctx, repository, index, "write-tree")
+	confirmedTree, err := captureTree()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -62,10 +70,10 @@ func capture(ctx context.Context, repository string, afterAdd func() error) (Sna
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if before.head != after.head || before.indexExists != after.indexExists || !bytes.Equal(before.index, after.index) || !bytes.Equal(before.status, after.status) {
+	if !bytes.Equal(tree, confirmedTree) || before.head != after.head || before.indexExists != after.indexExists || !bytes.Equal(before.index, after.index) || !bytes.Equal(before.status, after.status) {
 		return Snapshot{}, ErrRepositoryDiverged
 	}
-	return Snapshot{HeadOID: before.head, TreeOID: strings.TrimSpace(string(tree))}, nil
+	return Snapshot{HeadOID: before.head, TreeOID: strings.TrimSpace(string(confirmedTree))}, nil
 }
 
 func readState(ctx context.Context, repository string) (repositoryState, error) {

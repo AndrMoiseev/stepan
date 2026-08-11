@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -41,6 +42,10 @@ func TestCaptureCandidateChanges(t *testing.T) {
 			write(t, path, "BBBB\n")
 			if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
 				t.Fatal(err)
+			}
+			changed, err := os.Stat(path)
+			if err != nil || changed.Size() != info.Size() || !changed.ModTime().Equal(info.ModTime()) {
+				t.Fatalf("same-size/timestamp precondition failed: %v, %v", changed, err)
 			}
 		}},
 	}
@@ -84,15 +89,18 @@ func TestCaptureUsesWorkingTreeInsteadOfRealIndex(t *testing.T) {
 	path := filepath.Join(repo, "tracked.txt")
 	write(t, path, "staged\n")
 	runGit(t, repo, "add", "tracked.txt")
-	indexBefore := readIndex(t, repo)
 	write(t, path, "unstaged\n")
+	write(t, filepath.Join(repo, "untracked-данные.txt"), "untracked\n")
+	write(t, filepath.Join(repo, "ignored.tmp"), "ignored\n")
+	runGit(t, repo, "pack-refs", "--all")
+	stateBefore := readRepositoryBytes(t, repo)
 	snapshot := mustCapture(t, repo)
 	content := runGit(t, repo, "show", snapshot.TreeOID+":tracked.txt")
 	if content != "unstaged\n" {
 		t.Fatalf("candidate content = %q", content)
 	}
-	if !bytes.Equal(indexBefore, readIndex(t, repo)) {
-		t.Fatal("staged real index changed")
+	if stateAfter := readRepositoryBytes(t, repo); !reflect.DeepEqual(stateBefore, stateAfter) {
+		t.Fatal("capture changed real index, HEAD, refs, or working tree bytes")
 	}
 }
 
@@ -100,8 +108,15 @@ func TestCaptureDetectsMutationAndRecalculation(t *testing.T) {
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
 	path := filepath.Join(repo, "tracked.txt")
-	_, err := capture(context.Background(), repo, func() error {
-		return os.WriteFile(path, []byte("mutated during capture\n"), 0o600)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(context.Background(), repo, func() error {
+		if err := os.WriteFile(path, []byte("mutation\n"), 0o600); err != nil {
+			return err
+		}
+		return os.Chtimes(path, info.ModTime(), info.ModTime())
 	})
 	if !errors.Is(err, ErrRepositoryDiverged) {
 		t.Fatalf("error = %v", err)
@@ -110,6 +125,56 @@ func TestCaptureDetectsMutationAndRecalculation(t *testing.T) {
 	if after.TreeOID == before.TreeOID {
 		t.Fatalf("recalculation did not observe mutation: %+v, %+v", before, after)
 	}
+}
+
+type repositoryBytes struct {
+	index, head []byte
+	refs, tree  map[string][]byte
+}
+
+func readRepositoryBytes(t *testing.T, repo string) repositoryBytes {
+	t.Helper()
+	gitDir := strings.TrimSpace(runGit(t, repo, "rev-parse", "--absolute-git-dir"))
+	refs := readFiles(t, filepath.Join(gitDir, "refs"), "")
+	if packed, err := os.ReadFile(filepath.Join(gitDir, "packed-refs")); err == nil {
+		refs["packed-refs"] = packed
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	head, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repositoryBytes{readIndex(t, repo), head, refs, readFiles(t, repo, ".git")}
+}
+
+func readFiles(t *testing.T, root, skipDir string) map[string][]byte {
+	t.Helper()
+	files := make(map[string][]byte)
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if path != root && entry.Name() == skipDir {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, err := filepath.Rel(root, path)
+		if err == nil {
+			files[relative] = data
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
 
 func newRepository(t *testing.T) string {

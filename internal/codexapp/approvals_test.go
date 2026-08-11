@@ -1,10 +1,10 @@
 package codexapp
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,23 +18,38 @@ func TestReplayApprovalRequestsPreservesOpaqueCorrelation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
+	repository := newApprovalRepository(t)
+	manager, cleanup := testApprovalManager(t, repository, AccessPolicy{}, nil)
+	defer cleanup()
+	expectedCandidate := strings.TrimSpace(runApprovalGit(t, repository, "rev-parse", "HEAD")) + ":" +
+		strings.TrimSpace(runApprovalGit(t, repository, "rev-parse", "HEAD^{tree}"))
 	wantKinds := []ApprovalKind{CommandApproval, FileChangeApproval, PermissionsApproval}
 	wantIDs := []string{StringID("opaque-command").Key(), IntID(42).Key(), StringID("opaque-permissions").Key()}
-	scanner := bufio.NewScanner(file)
+	transport := NewTransport(file, io.Discard)
 	index := 0
-	for scanner.Scan() {
-		message, err := ParseMessage(scanner.Bytes())
+	for {
+		message, err := transport.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		kind, ids, _, err := decodeApproval(message)
-		if err != nil || kind != wantKinds[index] || message.ID.Key() != wantIDs[index] || ids.ThreadID != "thread-1" || ids.TurnID != "turn-1" {
-			t.Fatalf("replay[%d] = %q %q %+v, %v", index, kind, message.ID.Key(), ids, err)
+		if index >= len(wantKinds) {
+			t.Fatalf("unexpected replay[%d]", index)
+		}
+		request, _, registerErr := manager.register(message)
+		kind, ids, _, decodeErr := decodeApproval(message)
+		if registerErr != nil || decodeErr != nil || kind != wantKinds[index] || message.ID.Key() != wantIDs[index] || ids.ThreadID != "thread-1" || ids.TurnID != "turn-1" {
+			t.Fatalf("replay[%d] = %q %q %+v, %v/%v", index, kind, message.ID.Key(), ids, registerErr, decodeErr)
+		}
+		if request.pending.CandidateSnapshotID == nil || *request.pending.CandidateSnapshotID != expectedCandidate {
+			t.Fatalf("candidate snapshot = %v, want %q", request.pending.CandidateSnapshotID, expectedCandidate)
 		}
 		index++
 	}
-	if err := scanner.Err(); err != nil || index != len(wantKinds) {
-		t.Fatalf("replay count = %d, error = %v", index, err)
+	if index != len(wantKinds) {
+		t.Fatalf("replay count = %d", index)
 	}
 }
 
@@ -303,13 +318,15 @@ func newApprovalRepository(t *testing.T) string {
 	return repository
 }
 
-func runApprovalGit(t *testing.T, repository string, args ...string) {
+func runApprovalGit(t *testing.T, repository string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = repository
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
 	}
+	return string(output)
 }
 
 func ptr(value string) *string { return &value }
