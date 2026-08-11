@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "scenario": "A09",
+  "outcome": "BLOCKED",
+  "observation": {
+    "stable_permission_request_available": false,
+    "request_permissions_tool_lifecycle": "under development",
+    "request_permissions_tool_enabled": false,
+    "source_permission_request_observed": false,
+    "source_content_disclosed_by_a09": false,
+    "experimental_fallback_used": false
+  },
+  "external_postconditions": {
+    "additional_live_run_after_confirmed_source_leak": false,
+    "source_content_absent_from_committed_result": true
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "8e220952874fb235791df525f9e9c4205000a5be",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task6-live-20260811/contract-observation.json",
+      "sha256": "bf01a3a8a7b694e5ddc58e5330ad0f22cb73e96124e75fb049ab82bde4b56a47"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "scenario": "A10",
+  "outcome": "BLOCKED",
+  "observation": {
+    "generated_read_only_access_present": false,
+    "generated_readable_roots_present": false,
+    "permission_response_supports_turn_scope": true,
+    "request_permissions_tool_enabled": false,
+    "stable_narrow_turn_grant_available": false,
+    "broad_or_session_grant_used": false,
+    "experimental_api_used": false
+  },
+  "external_postconditions": {
+    "unsafe_grant_issued": false,
+    "second_turn_started": false,
+    "source_content_absent_from_committed_result": true
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "8e220952874fb235791df525f9e9c4205000a5be",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "turn_start_params_sha256": "ff2e7e0796fbe2ad99e5ec7d489cc8c8630b75f2ab8f17857711107587e3197d",
+    "permissions_response_sha256": "23f3f24e9dbf35db3e0b85703f0d934da5a1cff3cbb611fba8bcd41f3b4a04b0",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task6-live-20260811/contract-observation.json",
+      "sha256": "bf01a3a8a7b694e5ddc58e5330ad0f22cb73e96124e75fb049ab82bde4b56a47"
+    }
+  ]
+}
