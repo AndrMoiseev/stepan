@@ -6,20 +6,20 @@
 
 Проверенная версия: `codex-cli 0.147.0`, Windows native/amd64
 
-Итоговый verdict для итерации 1: **BLOCKED**
+Итоговый verdict: **SPIKE PASSED WITH CAVEATS**
 
-Ручное ревью contract/report: **PENDING USER REVIEW**
+Ручное ревью contract/report: **APPROVED 2026-08-11**
 
 ## Итог
 
 App Server `0.147.0` подтвердил работоспособность stdio JSON-RPC, structured
-output, explicit resume и одноразовых command/file approvals. Этого недостаточно
-для walking slice: `A07`/`A08` доказали чтение вне intended roots и утечку source
-canary, `A09`/`A10` не нашли stable narrow turn-scoped read grant, `A12` оставил
-дыру timeout/cancel/process-tree lifecycle, `A13` обнаружил влияние user plugins,
-hooks и MCP на supposedly isolated запуск. Эти результаты прямо активируют
-условия блокировки спецификации; broad/session permission и experimental API как
-обход не принимаются.
+output, explicit resume и одноразовых command/file approvals. `A07`–`A13`
+зафиксировали ограничения встроенной read isolation, narrow grants, lifecycle и
+config isolation. Пользователь принял их как управляемые риски: чтение
+ограничивается физически отдельным role workspace и OS boundary, процессное
+дерево — Windows Job Object с bounded shutdown, конфигурация — отдельным
+доверенным профилем и fail-closed inventory. Полное решение и критерии пересмотра
+зафиксированы в [ADR 0001](../../adr/0001-codex-app-server-containment.md).
 
 Матрица: **9 PASS, 4 FAIL, 3 BLOCKED**. Ни одного `INCONCLUSIVE`.
 
@@ -59,11 +59,13 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 
 - Наблюдение: transport, resume и write approvals работают, но четыре
   обязательные safety/lifecycle области провалены.
-- Выбранный вариант: verdict **BLOCKED** для итерации 1.
-- Отклонено: считать успешные `A01`–`A06` достаточными либо обходить gaps broad
-  permissions/experimental API.
-- Последствия: App Server может оставаться исследовательским transport, но не
-  foundation walking slice до устранения `A07/A08`, `A09/A10`, `A12`, `A13`.
+- Выбранный вариант: **SPIKE PASSED WITH CAVEATS**; App Server становится
+  transport итерации 1 вместе с обязательными внешними containment gates из
+  ADR 0001.
+- Отклонено: broad permissions, experimental API и принятие `readOnly` или
+  direct process kill за доказанную границу безопасности.
+- Последствия: iteration 1 сначала реализует role-workspace, Job Object и config
+  preflight; без них соответствующий run завершается fail-closed.
 - Evidence: `results/A07.json`–`A13.json`; точные hashes приведены в матрице.
 
 ### 3. Точный initialize/thread/turn contract
@@ -137,8 +139,8 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 
 - Наблюдение: `readOnly` `0.147.0` не ограничил чтение intended roots; direct и
   shell reads раскрыли source canary четырежды в двух model-visible artifacts.
-- Выбранный вариант: считать гипотезу опровергнутой и блокировать итерацию 1;
-  до stable enforcement использовать физически отдельный workspace без source.
+- Выбранный вариант: считать гипотезу встроенной изоляции опровергнутой и
+  использовать физически отдельный workspace без source и с OS-level boundary.
 - Отклонено: считать read-only ограничением чтения или полагаться на prompt.
 - Последствия: blind test-author нельзя запускать рядом с production source.
 - Evidence: `results/A07.json`, `results/A08.json`; raw normalized events
@@ -150,7 +152,9 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 - Наблюдение: permission response schema допускает `scope="turn"`, но stable
   request tool помечен under development и disabled; `TurnStartParams` не имеет
   restricted readable roots.
-- Выбранный вариант: **BLOCKED**, grant не выдавать.
+- Выбранный вариант: dynamic grant не выдавать; после operator approval
+  материализовать конкретный input в новом изолированном workspace и начать
+  новый turn.
 - Отклонено: broad/session grant и experimental fallback.
 - Последствия: `A09`/`A10` нельзя выполнить на обязательном stable path.
 - Evidence: `results/A09.json`, `results/A10.json`; schema observation
@@ -163,10 +167,12 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
   sources читаются, но user layer загрузил 3 plugin hooks, 11 enabled plugins и
   3 MCP servers даже в attempted isolated run; `A14` подтвердил project/user
   влияние в inherited mode.
-- Выбранный вариант: считать isolation неподтверждённой и блокирующей.
+- Выбранный вариант: отдельный доверенный Codex profile, штатная авторизация и
+  fail-closed allowlist effective config/hooks/plugins/MCP перед turn.
 - Отклонено: называть очищенный environment изоляцией при сохранённом
   `CODEX_HOME`, копировать credentials или игнорировать effective config.
-- Последствия: нужен подтверждённый clean config/auth boundary до итерации 1.
+- Последствия: clean config/auth preflight становится первым обязательным gate
+  итерации 1.
 - Evidence: `results/A13.json`, `results/A14.json`; raw
   `.stepan/spike/task7-live-20260811/a13-isolated-escalated/raw-summary.json`
   SHA-256 `e1f2064581af5a4e796d8122cd89096224a46867957880138a1c3c70bd775aae`.
@@ -176,7 +182,8 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 - Наблюдение: App Server path не реализует bounded `turn/interrupt`, execution/
   approval timeout, operator cancel и Windows Job Object; отсутствие потомков не
   доказано. Legacy Job Object test прошёл одиночные случаи, но stress 20 не прошёл.
-- Выбранный вариант: lifecycle gap блокирует итерацию 1.
+- Выбранный вариант: внешний Windows Job Object; сначала best-effort
+  `turn/interrupt`, затем bounded grace и принудительное закрытие всего дерева.
 - Отклонено: переносить положительные legacy assertions на новый процессный путь
   или считать `Process.Kill` достаточным доказательством дерева.
 - Последствия: controller пока не гарантирует bounded shutdown и cleanup.
@@ -278,14 +285,15 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 | timeout/cancel не оставляет App Server/children | FAIL | A12 |
 | effective config/requirements/instructions соответствуют policy | FAIL | A13 обнаружил undeclared influence |
 | candidate snapshot стабилен и не меняет index | PASS | snapshot regression + A03–A06 |
-| contract/report прошли ручное ревью | PENDING | требуется user review; не заявлено выполненным |
+| contract/report прошли ручное ревью | PASS | пользователь принял результат 2026-08-11 и ADR 0001 |
 | Git не содержит credentials/live `.stepan` artifacts | PASS | tracked-tree scan; `.stepan/` ignored |
-| roadmap итерации 1 не зависит от unknown behavior | FAIL | safety/lifecycle/config gaps; sync также ждёт approval |
+| roadmap итерации 1 не зависит от unknown behavior | PASS | gaps закрываются явными gates ADR 0001; roadmap синхронизирован |
 
-Итерация 0 как исследование завершила сбор однозначного evidence, но критерии
-перехода к итерации 1 не выполнены.
+Строгие критерии спецификации выявили ожидаемые gaps. Пользователь принял их как
+явные ограничения MVP с внешними compensating controls из ADR 0001; поэтому
+spike завершён с замечаниями и переход к итерации 1 разрешён.
 
-## Сверка условий блокировки итерации 1
+## Сработавшие условия и принятое решение
 
 | Условие | Результат |
 |---|---|
@@ -301,10 +309,13 @@ hooks и MCP на supposedly isolated запуск. Эти результаты 
 | user/project/managed config незаметно меняет contract | **сработало: A13; A14 показывает механизм влияния** |
 | structured output требует эвристики | не сработало: A01 |
 | exact resume не работает/меняет context | не сработало: A02 |
-| App Server/children остаются после timeout/cancel | **не доказано обратное; A12 lifecycle gap блокирует fail-closed** |
+| App Server/children остаются после timeout/cancel | **не доказано обратное; A12 требует внешнего Job Object gate** |
 | candidate snapshot меняет index/не видит changes | не сработало: regression tests и A03–A06 |
 
-Одного сработавшего условия достаточно; здесь независимых блокеров несколько.
+Условия действительно сработали и результаты сценариев не изменены. После
+ручного review они классифицированы как принятые риски, потому что ADR 0001
+задаёт независимые OS/workspace/config controls и fail-closed поведение. Любое
+нарушение этих controls снова блокирует конкретный run и требует пересмотра ADR.
 
 ## Fixtures и sanitization
 
@@ -321,11 +332,11 @@ UNC, `/Users` и `/home` paths, затем проигрывает каждый �
 `Transport`, `runProtocol`, approval manager и production failure classifier.
 Старый отдельный approval-only fixture удалён как дубликат класса.
 
-## Pending manual items
+## Принятое решение и follow-up
 
-1. Пользователь вручную ревьюит этот report, integration contract и четыре
-   fixtures; до этого критерий manual review остаётся невыполненным.
-2. После approval отдельным commit синхронизируются `docs/product-brief.md` и
-   `docs/implementation-roadmap.md`. В этом изменении они намеренно не тронуты.
+1. Пользователь принял spike с замечаниями; compensating controls и критерии
+   пересмотра записаны в [ADR 0001](../../adr/0001-codex-app-server-containment.md).
+2. `docs/product-brief.md` и `docs/implementation-roadmap.md` синхронизированы с
+   post-approval решением.
 3. Отдельное решение о физическом удалении legacy `codexexec` принимается только
    после появления и проверки replacement lifecycle; сейчас evidence сохранён.

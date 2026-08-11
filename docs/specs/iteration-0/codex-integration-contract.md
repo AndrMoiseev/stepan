@@ -1,6 +1,6 @@
 # Контракт интеграции Codex App Server 0.147.0
 
-Статус: version-specific spike contract, ожидает ручного ревью
+Статус: **принят для MVP с обязательными compensating controls ADR 0001**
 
 Платформа: Windows native/amd64
 
@@ -70,7 +70,9 @@ Evidence: [A01](results/A01.json), pinned `v1/InitializeParams.json` SHA-256
 
 В schema `0.147.0` вариант `readOnly` содержит только `type` и
 `networkAccess`; поля restricted roots нет. Поэтому этот контракт не обещает
-изоляцию чтения: `A07`/`A08` доказали обратное.
+изоляцию чтения: `A07`/`A08` доказали обратное. Source-blind роли используют
+физически отдельный workspace и OS boundary согласно
+[ADR 0001](../../adr/0001-codex-app-server-containment.md).
 
 Evidence: [A01](results/A01.json), [A02](results/A02.json), pinned
 `v2/ThreadStartParams.json` SHA-256
@@ -137,10 +139,30 @@ hashes `6d0767113e22f311381809b6b236b0dde2b99b01992879c26bf7b1ea0e003cb7`,
   исход.
 - Гарантия timeout/cancel, `turn/interrupt` grace и завершения всего Windows
   process tree для App Server не подтверждена (`A12`). Она не входит в
-  поддерживаемый контракт и блокирует использование в итерации 1.
+  wire-контракт; iteration 1 обеспечивает её внешним Windows Job Object и
+  bounded shutdown согласно ADR 0001.
 
 Evidence: [A02](results/A02.json), [A12](results/A12.json),
 [A16](results/A16.json).
+
+## Обязательный operational envelope MVP
+
+Принятие этого version-specific контракта не расширяет возможности App Server.
+До каждого production turn Stepan обязан обеспечить внешние границы из
+[ADR 0001](../../adr/0001-codex-app-server-containment.md):
+
+- source-blind role workspace физически отделён, production source не доступен;
+- dynamic read grants заменены заранее материализованными allowlisted inputs;
+- App Server назначен в отдельный Windows Job Object до начала turn;
+- cancel/timeout выполняет `turn/interrupt` → bounded grace → закрытие дерева;
+- effective config, instruction sources, hooks, plugins и MCP совпадают с
+  allowlist; credentials не копируются;
+- нарушение любого preflight или containment invariant завершает run
+  fail-closed.
+
+Обычный Git worktree не является security boundary. Он может использоваться для
+организации Git-изменений, но source isolation требует отдельной файловой/OS
+границы.
 
 ## Явно не поддержано
 
