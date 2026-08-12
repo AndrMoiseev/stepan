@@ -22,6 +22,8 @@ func NewUI(controller *Controller) *UI {
 	return &UI{controller: controller, accessible: accessible, input: os.Stdin, output: os.Stdout}
 }
 
+func (ui *UI) ReportError(err error) { _, _ = fmt.Fprintln(ui.output, err) }
+
 func (ui *UI) Main() (Progress, error) {
 	for {
 		var input string
