@@ -127,6 +127,77 @@ func TestCaptureDetectsMutationAndRecalculation(t *testing.T) {
 	}
 }
 
+func TestCompareAndCheckBoundary(t *testing.T) {
+	repo := newRepository(t)
+	write(t, filepath.Join(repo, "outside-before.txt"), "dirty before baseline\n")
+	before := mustCapture(t, repo)
+
+	write(t, filepath.Join(repo, "docs", "specs", "idea", "specification.md"), "inside\n")
+	after := mustCapture(t, repo)
+	paths, err := Compare(context.Background(), repo, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"docs/specs/idea/specification.md"}; !reflect.DeepEqual(paths, want) {
+		t.Fatalf("changed paths = %q, want %q", paths, want)
+	}
+	if err := CheckBoundary(paths, "docs/specs/idea"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompareReportsAllOutsideChanges(t *testing.T) {
+	repo := newRepository(t)
+	before := mustCapture(t, repo)
+	write(t, filepath.Join(repo, "docs", "specs", "idea", "specification.md"), "inside\n")
+	write(t, filepath.Join(repo, "outside.txt"), "outside\n")
+	remove(t, filepath.Join(repo, "tracked.txt"))
+	if err := os.Rename(filepath.Join(repo, "rename.txt"), filepath.Join(repo, "renamed.txt")); err != nil {
+		t.Fatal(err)
+	}
+	after := mustCapture(t, repo)
+
+	paths, err := Compare(context.Background(), repo, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"docs/specs/idea/specification.md", "outside.txt", "rename.txt", "renamed.txt", "tracked.txt"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("changed paths = %q, want %q", paths, want)
+	}
+	err = CheckBoundary(paths, "docs/specs/idea")
+	var boundaryErr *BoundaryError
+	if !errors.As(err, &boundaryErr) || !errors.Is(err, ErrOutsideBoundary) {
+		t.Fatalf("error = %v", err)
+	}
+	if want := []string{"outside.txt", "rename.txt", "renamed.txt", "tracked.txt"}; !reflect.DeepEqual(boundaryErr.Paths, want) {
+		t.Fatalf("outside paths = %q, want %q", boundaryErr.Paths, want)
+	}
+}
+
+func TestCompareRejectsChangedHead(t *testing.T) {
+	repo := newRepository(t)
+	before := mustCapture(t, repo)
+	write(t, filepath.Join(repo, "tracked.txt"), "new commit\n")
+	runGit(t, repo, "add", "tracked.txt")
+	runGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "next")
+	after := mustCapture(t, repo)
+	if _, err := Compare(context.Background(), repo, before, after); !errors.Is(err, ErrRepositoryDiverged) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCheckBoundaryRejectsUnsafePaths(t *testing.T) {
+	for _, path := range []string{"", ".", "../outside", filepath.Join(string(filepath.Separator), "outside")} {
+		if err := CheckBoundary([]string{path}, "docs/specs/idea"); err == nil {
+			t.Fatalf("path %q accepted", path)
+		}
+	}
+	if err := CheckBoundary([]string{"docs/specs/idea-file"}, "docs/specs/idea"); !errors.Is(err, ErrOutsideBoundary) {
+		t.Fatalf("sibling-prefix error = %v", err)
+	}
+}
+
 type repositoryBytes struct {
 	index, head []byte
 	refs, tree  map[string][]byte
@@ -233,6 +304,9 @@ func runGit(t *testing.T, repo string, args ...string) string {
 
 func write(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
