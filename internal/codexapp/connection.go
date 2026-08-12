@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -32,6 +33,8 @@ type Connection struct {
 	pending map[string]chan callResult
 	err     error
 	done    chan struct{}
+	turn    *turnRun
+	turnMu  sync.Mutex
 }
 
 func NewConnection(transport *Transport, handler Handler) (*Connection, error) {
@@ -165,6 +168,10 @@ func (connection *Connection) read() {
 			}
 			response <- callResult{message: message}
 		case Notification:
+			if err := connection.dispatchTurnMessage(message); err != nil {
+				connection.fail(err)
+				return
+			}
 			if connection.handler.Notification != nil {
 				if err := connection.handler.Notification(message); err != nil {
 					connection.fail(err)
@@ -172,6 +179,12 @@ func (connection *Connection) read() {
 				}
 			}
 		case Request:
+			if strings.HasPrefix(message.Method, "item/") {
+				if err := connection.validateTurnMessage(message); err != nil {
+					connection.fail(err)
+					return
+				}
+			}
 			handle := connection.handler.Requests[message.Method]
 			if handle == nil {
 				if err := connection.Reject(message.ID, RPCError{Code: -32601, Message: "method not found"}); err != nil {

@@ -1,0 +1,337 @@
+package codexapp
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+)
+
+var ErrTurnInProgress = errors.New("a turn is already in progress")
+
+type Thread struct {
+	ID         string
+	connection *Connection
+	cwd        string
+}
+
+type TurnOptions struct {
+	OutputSchema json.RawMessage
+}
+
+type turnRun struct {
+	mu       sync.Mutex
+	threadID string
+	turnID   string
+	events   []Message
+	wake     chan struct{}
+	terminal bool
+}
+
+type terminalItem struct {
+	ID    string  `json:"id"`
+	Type  string  `json:"type"`
+	Phase *string `json:"phase"`
+	Text  string  `json:"text"`
+}
+
+func (connection *Connection) StartThread(cwd string) (*Thread, error) {
+	cwd, err := canonicalPath(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize Git root: %w", err)
+	}
+	var response struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := connection.Call("thread/start", map[string]string{"cwd": cwd}, &response); err != nil {
+		return nil, err
+	}
+	if response.Thread.ID == "" {
+		err := errors.New("thread/start response has no thread.id")
+		connection.fail(err)
+		return nil, connection.Err()
+	}
+	return &Thread{ID: response.Thread.ID, connection: connection, cwd: cwd}, nil
+}
+
+func (connection *Connection) RunTurn(thread *Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
+	if thread == nil || thread.connection != connection || thread.ID == "" {
+		return nil, errors.New("invalid thread handle")
+	}
+	if prompt == "" {
+		return nil, errors.New("turn prompt is required")
+	}
+	var schema map[string]json.RawMessage
+	if len(options.OutputSchema) == 0 || json.Unmarshal(options.OutputSchema, &schema) != nil || schema == nil {
+		return nil, errors.New("output schema must be a JSON object")
+	}
+	if !connection.turnMu.TryLock() {
+		return nil, ErrTurnInProgress
+	}
+	defer connection.turnMu.Unlock()
+
+	run := &turnRun{threadID: thread.ID, wake: make(chan struct{}, 1)}
+	connection.mu.Lock()
+	if connection.err != nil {
+		err := connection.err
+		connection.mu.Unlock()
+		return nil, err
+	}
+	connection.turn = run
+	connection.mu.Unlock()
+	defer func() {
+		connection.mu.Lock()
+		if connection.turn == run {
+			connection.turn = nil
+		}
+		connection.mu.Unlock()
+	}()
+
+	var started struct {
+		Turn struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+	}
+	params := map[string]any{
+		"threadId":       thread.ID,
+		"input":          []map[string]string{{"type": "text", "text": prompt}},
+		"cwd":            thread.cwd,
+		"approvalPolicy": "on-request",
+		"sandboxPolicy":  map[string]any{"type": "readOnly", "networkAccess": false},
+		"outputSchema":   json.RawMessage(options.OutputSchema),
+	}
+	if err := connection.Call("turn/start", params, &started); err != nil {
+		return nil, err
+	}
+	if started.Turn.ID == "" {
+		return nil, connection.failTurn(errors.New("turn/start response has no turn.id"))
+	}
+	if err := run.setTurnID(started.Turn.ID); err != nil {
+		return nil, connection.failTurn(err)
+	}
+
+	completed := make(map[string]terminalItem)
+	for {
+		message, err := run.next(connection.done)
+		if err != nil {
+			return nil, connection.Err()
+		}
+		switch message.Method {
+		case "item/completed":
+			item, err := decodeCompletedItem(message.Params)
+			if err != nil {
+				return nil, connection.failTurn(err)
+			}
+			if _, exists := completed[item.ID]; exists {
+				return nil, connection.failTurn(fmt.Errorf("duplicate item/completed for %q", item.ID))
+			}
+			completed[item.ID] = item
+		case "turn/completed":
+			output, err := decodeCompletedTurn(message.Params, completed)
+			if err != nil {
+				return nil, connection.failTurn(err)
+			}
+			return output, nil
+		}
+	}
+}
+
+func (connection *Connection) failTurn(err error) error {
+	connection.fail(err)
+	return connection.Err()
+}
+
+func (connection *Connection) dispatchTurnMessage(message Message) error {
+	if !strings.HasPrefix(message.Method, "turn/") && !strings.HasPrefix(message.Method, "item/") {
+		return nil
+	}
+	connection.mu.Lock()
+	run := connection.turn
+	connection.mu.Unlock()
+	if run == nil {
+		return fmt.Errorf("%s arrived without an active turn", message.Method)
+	}
+	if err := run.correlate(message); err != nil {
+		return err
+	}
+	return run.push(message)
+}
+
+func (connection *Connection) validateTurnMessage(message Message) error {
+	connection.mu.Lock()
+	run := connection.turn
+	connection.mu.Unlock()
+	if run == nil {
+		return fmt.Errorf("%s arrived without an active turn", message.Method)
+	}
+	return run.correlate(message)
+}
+
+func (run *turnRun) setTurnID(id string) error {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.turnID != "" && run.turnID != id {
+		return fmt.Errorf("turn/start returned %q after event for %q", id, run.turnID)
+	}
+	run.turnID = id
+	return nil
+}
+
+func (run *turnRun) correlate(message Message) error {
+	var ids struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+		ItemID   string `json:"itemId"`
+		Turn     struct {
+			ID string `json:"id"`
+		} `json:"turn"`
+		Item struct {
+			ID string `json:"id"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(message.Params, &ids); err != nil {
+		return fmt.Errorf("invalid %s params: %w", message.Method, err)
+	}
+	if ids.TurnID == "" {
+		ids.TurnID = ids.Turn.ID
+	}
+	if ids.ItemID == "" {
+		ids.ItemID = ids.Item.ID
+	}
+	if ids.ThreadID == "" || ids.TurnID == "" || strings.HasPrefix(message.Method, "item/") && ids.ItemID == "" {
+		return fmt.Errorf("%s has incomplete correlation IDs", message.Method)
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.terminal {
+		return fmt.Errorf("%s arrived after turn/completed", message.Method)
+	}
+	if ids.ThreadID != run.threadID {
+		return fmt.Errorf("%s thread ID does not match active turn", message.Method)
+	}
+	if run.turnID == "" {
+		run.turnID = ids.TurnID
+	} else if ids.TurnID != run.turnID {
+		return fmt.Errorf("%s turn ID does not match active turn", message.Method)
+	}
+	return nil
+}
+
+func (run *turnRun) push(message Message) error {
+	run.mu.Lock()
+	if run.terminal {
+		run.mu.Unlock()
+		return fmt.Errorf("%s arrived after turn/completed", message.Method)
+	}
+	if message.Method == "turn/completed" {
+		run.terminal = true
+	}
+	run.events = append(run.events, message)
+	run.mu.Unlock()
+	select {
+	case run.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (run *turnRun) next(done <-chan struct{}) (Message, error) {
+	for {
+		run.mu.Lock()
+		if len(run.events) != 0 {
+			message := run.events[0]
+			run.events = run.events[1:]
+			run.mu.Unlock()
+			return message, nil
+		}
+		run.mu.Unlock()
+		select {
+		case <-run.wake:
+		case <-done:
+			return Message{}, ErrConnectionClosed
+		}
+	}
+}
+
+func decodeCompletedItem(raw json.RawMessage) (terminalItem, error) {
+	var params struct {
+		Item terminalItem `json:"item"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil || params.Item.ID == "" || params.Item.Type == "" {
+		return terminalItem{}, errors.New("invalid item/completed notification")
+	}
+	return params.Item, nil
+}
+
+func decodeCompletedTurn(raw json.RawMessage, completed map[string]terminalItem) (json.RawMessage, error) {
+	var params struct {
+		Turn struct {
+			Status string            `json:"status"`
+			Items  []json.RawMessage `json:"items"`
+		} `json:"turn"`
+	}
+	if err := json.Unmarshal(raw, &params); err != nil {
+		return nil, errors.New("invalid turn/completed notification")
+	}
+	if params.Turn.Status != "completed" {
+		return nil, fmt.Errorf("turn terminal status is %q", params.Turn.Status)
+	}
+	if len(params.Turn.Items) != len(completed) {
+		return nil, errors.New("turn/completed items do not match item/completed events")
+	}
+	var finals, unknownPhase []terminalItem
+	for _, rawItem := range params.Turn.Items {
+		var item terminalItem
+		if err := json.Unmarshal(rawItem, &item); err != nil || item.ID == "" || item.Type == "" {
+			return nil, errors.New("invalid item in turn/completed notification")
+		}
+		seen, exists := completed[item.ID]
+		if !exists || seen.Type != item.Type {
+			return nil, fmt.Errorf("terminal item %q does not match item/completed", item.ID)
+		}
+		if item.Type != "agentMessage" {
+			continue
+		}
+		if item.Phase != nil && *item.Phase == "final_answer" {
+			finals = append(finals, item)
+		} else if item.Phase == nil {
+			unknownPhase = append(unknownPhase, item)
+		}
+	}
+	if len(finals) == 0 && len(unknownPhase) == 1 {
+		finals = unknownPhase
+	}
+	if len(finals) != 1 {
+		return nil, fmt.Errorf("terminal turn has %d final agent messages", len(finals))
+	}
+	seen := completed[finals[0].ID]
+	if seen.Text != finals[0].Text || !samePhase(seen.Phase, finals[0].Phase) {
+		return nil, errors.New("final agent message contradicts item/completed")
+	}
+	return decodeStructuredObject(finals[0].Text)
+}
+
+func decodeStructuredObject(text string) (json.RawMessage, error) {
+	data := bytes.TrimSpace([]byte(text))
+	if len(data) == 0 || data[0] != '{' {
+		return nil, errors.New("structured final output must be a JSON object")
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return nil, errors.New("structured final output must be a JSON object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("structured final output has trailing data")
+	}
+	return append(json.RawMessage(nil), data...), nil
+}
+
+func samePhase(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
