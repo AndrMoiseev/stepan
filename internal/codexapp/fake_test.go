@@ -82,9 +82,84 @@ func runFake(scenario string) int {
 		return 17
 	case "process-tree":
 		return runProcessTreeFake()
+	case "runtime-interrupt-ack", "runtime-interrupt-ignore", "runtime-crash", "runtime-restart":
+		return runRuntimeFake(scenario)
 	default:
 		return 9
 	}
+}
+
+func runRuntimeFake(scenario string) int {
+	if os.Getenv("STEPAN_CODEXAPP_TREE_LEVEL") != "" {
+		return runProcessTreeFake()
+	}
+	if pidFile := os.Getenv("STEPAN_CODEXAPP_PID_FILE"); pidFile != "" {
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), "STEPAN_CODEXAPP_TREE_LEVEL=child")
+		if err := command.Start(); err != nil {
+			return 60
+		}
+	}
+	transport := NewTransport(os.Stdin, os.Stdout)
+	initialize, err := transport.Read()
+	if err != nil || initialize.Method != "initialize" {
+		return 61
+	}
+	if err := transport.SendResult(initialize.ID, map[string]string{
+		"codexHome": "fake", "platformFamily": "windows", "platformOs": "windows", "userAgent": "fake/1",
+	}); err != nil {
+		return 62
+	}
+	initialized, err := transport.Read()
+	if err != nil || initialized.Kind != Notification || initialized.Method != "initialized" {
+		return 63
+	}
+	threadRequest, err := transport.Read()
+	if err != nil || threadRequest.Method != "thread/start" {
+		return 64
+	}
+	threadID := "thread-old"
+	if scenario == "runtime-restart" {
+		threadID = "thread-new"
+	}
+	if err := transport.SendResult(threadRequest.ID, map[string]any{"thread": map[string]string{"id": threadID}}); err != nil {
+		return 65
+	}
+	turnRequest, err := transport.Read()
+	if err != nil || turnRequest.Method != "turn/start" {
+		return 66
+	}
+	if err := transport.SendResult(turnRequest.ID, map[string]any{"turn": map[string]string{"id": "turn-1"}}); err != nil {
+		return 67
+	}
+	if scenario == "runtime-crash" {
+		fmt.Fprintln(os.Stderr, "fake crash")
+		return 17
+	}
+	interrupt, err := transport.Read()
+	if err != nil || interrupt.Method != "turn/interrupt" {
+		return 68
+	}
+	var ids struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+	}
+	if json.Unmarshal(interrupt.Params, &ids) != nil || ids.ThreadID != threadID || ids.TurnID != "turn-1" {
+		return 69
+	}
+	if scenario == "runtime-interrupt-ignore" {
+		time.Sleep(30 * time.Second)
+		return 70
+	}
+	if err := transport.SendResult(interrupt.ID, struct{}{}); err != nil {
+		return 71
+	}
+	if err := transport.SendNotification("turn/completed", map[string]any{
+		"threadId": threadID, "turn": map[string]any{"id": "turn-1", "status": "interrupted", "items": []any{}},
+	}); err != nil {
+		return 72
+	}
+	return 0
 }
 
 func runProcessTreeFake() int {

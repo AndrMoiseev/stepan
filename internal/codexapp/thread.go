@@ -47,6 +47,7 @@ type turnRun struct {
 	policy    normalizedPolicy
 	changes   map[string][]string
 	pending   map[string]bool
+	done      chan struct{}
 }
 
 type terminalItem struct {
@@ -99,7 +100,7 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 	}
 	run := &turnRun{
 		threadID: thread.ID, workspace: thread.cwd, policy: policy,
-		changes: make(map[string][]string), pending: make(map[string]bool), wake: make(chan struct{}, 1),
+		changes: make(map[string][]string), pending: make(map[string]bool), wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	connection.mu.Lock()
 	if connection.err != nil {
@@ -110,6 +111,7 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 	connection.turn = run
 	connection.mu.Unlock()
 	defer func() {
+		close(run.done)
 		connection.mu.Lock()
 		if connection.turn == run {
 			connection.turn = nil
@@ -167,6 +169,18 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 			return output, nil
 		}
 	}
+}
+
+func (connection *Connection) activeTurn() (threadID, turnID string, done <-chan struct{}, active bool) {
+	connection.mu.Lock()
+	run := connection.turn
+	connection.mu.Unlock()
+	if run == nil {
+		return "", "", nil, false
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return run.threadID, run.turnID, run.done, true
 }
 
 func (connection *Connection) failTurn(err error) error {
