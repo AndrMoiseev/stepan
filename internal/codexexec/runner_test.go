@@ -181,44 +181,6 @@ func TestMain(m *testing.M) {
 	case "hold-pipe":
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
-	case "tree-parent":
-		time.Sleep(50 * time.Millisecond)
-		cmd := exec.Command(os.Args[0])
-		cmd.Env = append(os.Environ(), "GO_WANT_CODEX_HELPER=tree-child")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Start(); err != nil {
-			os.Exit(11)
-		}
-		pidFile := os.Getenv("STEPAN_HELPER_PID_FILE")
-		deadline := time.Now().Add(2 * time.Second)
-		for {
-			if _, err := os.Stat(pidFile); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				os.Exit(12)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		fmt.Fprintln(os.Stdout, `{"type":"thread.started","thread_id":"interrupted-session"}`)
-		time.Sleep(30 * time.Second)
-		os.Exit(0)
-	case "tree-child":
-		cmd := exec.Command(os.Args[0])
-		cmd.Env = append(os.Environ(), "GO_WANT_CODEX_HELPER=tree-grandchild")
-		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-		if err := cmd.Start(); err != nil {
-			os.Exit(13)
-		}
-		data, err := json.Marshal([]int{os.Getppid(), os.Getpid(), cmd.Process.Pid})
-		if err != nil || os.WriteFile(os.Getenv("STEPAN_HELPER_PID_FILE"), data, 0o600) != nil {
-			os.Exit(14)
-		}
-		time.Sleep(30 * time.Second)
-		os.Exit(0)
-	case "tree-grandchild":
-		time.Sleep(30 * time.Second)
-		os.Exit(0)
 	default:
 		os.Exit(8)
 	}

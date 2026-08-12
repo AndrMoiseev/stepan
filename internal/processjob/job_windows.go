@@ -1,6 +1,6 @@
 //go:build windows
 
-package codexexec
+package processjob
 
 import (
 	"errors"
@@ -52,18 +52,18 @@ type extendedLimitInformation struct {
 	PeakJobMemoryUsed     uintptr
 }
 
-type windowsJob struct {
+type Job struct {
 	handle syscall.Handle
 	once   sync.Once
 	err    error
 }
 
-func newProcessJob() (*windowsJob, error) {
+func New() (*Job, error) {
 	handle, _, callErr := createJobObjectW.Call(0, 0)
 	if handle == 0 {
 		return nil, windowsCallError(callErr)
 	}
-	job := &windowsJob{handle: syscall.Handle(handle)}
+	job := &Job{handle: syscall.Handle(handle)}
 	info := extendedLimitInformation{}
 	info.BasicLimitInformation.LimitFlags = jobObjectLimitKillOnJobClose
 	ok, _, callErr := setInformationJobObject.Call(
@@ -79,7 +79,7 @@ func newProcessJob() (*windowsJob, error) {
 	return job, nil
 }
 
-func (j *windowsJob) Assign(process *os.Process) error {
+func (j *Job) Assign(process *os.Process) error {
 	var callErr error
 	if err := process.WithHandle(func(handle uintptr) {
 		ok, _, err := assignProcessToJobObject.Call(uintptr(j.handle), handle)
@@ -92,7 +92,7 @@ func (j *windowsJob) Assign(process *os.Process) error {
 	return callErr
 }
 
-func (j *windowsJob) Close() error {
+func (j *Job) Close() error {
 	j.once.Do(func() {
 		j.err = syscall.CloseHandle(j.handle)
 	})

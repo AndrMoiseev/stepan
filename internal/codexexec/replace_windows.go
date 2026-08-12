@@ -3,6 +3,7 @@
 package codexexec
 
 import (
+	"errors"
 	"syscall"
 	"unsafe"
 )
@@ -12,7 +13,7 @@ const (
 	moveFileWriteThrough    = 0x8
 )
 
-var moveFileExW = kernel32.NewProc("MoveFileExW")
+var moveFileExW = syscall.NewLazyDLL("kernel32.dll").NewProc("MoveFileExW")
 
 func replaceFile(source, destination string) error {
 	sourcePtr, err := syscall.UTF16PtrFromString(source)
@@ -32,4 +33,11 @@ func replaceFile(source, destination string) error {
 		return windowsCallError(callErr)
 	}
 	return nil
+}
+
+func windowsCallError(err error) error {
+	if err == nil || errors.Is(err, syscall.Errno(0)) {
+		return errors.New("Windows API call failed")
+	}
+	return err
 }

@@ -1,6 +1,6 @@
 //go:build !windows
 
-package codexexec
+package processjob
 
 import (
 	"errors"
@@ -8,21 +8,21 @@ import (
 	"sync"
 )
 
-type localJob struct {
+type Job struct {
 	mu      sync.Mutex
 	process *os.Process
 }
 
-func newProcessJob() (*localJob, error) { return &localJob{}, nil }
+func New() (*Job, error) { return &Job{}, nil }
 
-func (j *localJob) Assign(process *os.Process) error {
+func (j *Job) Assign(process *os.Process) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.process = process
 	return nil
 }
 
-func (j *localJob) Close() error {
+func (j *Job) Close() error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.process == nil {

@@ -16,6 +16,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
 
 type TerminationReason string
@@ -172,7 +174,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return Result{}, err
 	}
 
-	job, err := newProcessJob()
+	job, err := processjob.New()
 	if err != nil {
 		result.TerminationReason = SpawnFailed
 		result.FailureClass = "job_creation_failed"
