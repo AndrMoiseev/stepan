@@ -468,6 +468,208 @@ func TestQuestionInvalidResultEndsFlowWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "change-flow")
+	entrypoint := filepath.Join(target, "specification.md")
+	manualOutside := filepath.Join(repo, "manual-before-update.txt")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"change-flow"}`},
+		{output: `{"status":"WRITTEN"}`, action: writeTurnFile(entrypoint, "original")},
+		{output: `{"status":"READY_TO_UPDATE"}`, action: func(turn fakeInitialTurn) error {
+			data, err := os.ReadFile(entrypoint)
+			if err != nil || string(data) != "manual edit before analysis" {
+				return fmt.Errorf("analysis did not read current specification: %q, %v", data, err)
+			}
+			if turn.prompt != ChangePrompt("Apply direct change") || string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+				return errors.New("first change analysis is not strict read-only")
+			}
+			// Simulate an unrelated user edit while analysis is running. The update
+			// baseline must be captured after READY_TO_UPDATE and include it.
+			return os.WriteFile(manualOutside, []byte("manual baseline"), 0o600)
+		}},
+		{output: `{"status":"UPDATED"}`, action: func(turn fakeInitialTurn) error {
+			if turn.prompt != UpdatePrompt(target) || string(turn.option.OutputSchema) != string(UpdateSchema()) {
+				return errors.New("wrong update prompt or schema")
+			}
+			policy, err := codexapp.SingleWriteRootTurnPolicy(target)
+			if err != nil || turn.option.Policy != policy {
+				return errors.New("update did not receive exactly one write root")
+			}
+			return os.WriteFile(entrypoint, []byte("updated"), 0o600)
+		}},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("manual edit before analysis"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := controller.ProposeChange(context.Background(), "Apply direct change")
+	want := Progress{State: StateDraft, SpecID: "change-flow", Path: "docs/specs/change-flow/specification.md"}
+	if err != nil || progress != want {
+		t.Fatalf("direct update = %#v, %v, want %#v", progress, err, want)
+	}
+	if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "updated" {
+		t.Fatalf("specification was not updated: %q, %v", data, err)
+	}
+	if data, err := os.ReadFile(manualOutside); err != nil || string(data) != "manual baseline" {
+		t.Fatalf("manual baseline was changed: %q, %v", data, err)
+	}
+	if len(runner.turns) != 4 || runner.turns[0].thread != runner.turns[3].thread {
+		t.Fatalf("change did not use separate turns of the same thread: %#v", runner.turns)
+	}
+}
+
+func TestChangeClarificationUsesReadOnlyTurnsThenUpdates(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "clarified-change")
+	entrypoint := filepath.Join(target, "specification.md")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"clarified-change"}`},
+		{output: `{"status":"WRITTEN"}`, action: writeTurnFile(entrypoint, "original")},
+		{output: `{"status":"NEEDS_INPUT","message":"Which color?"}`, action: assertChangeAnalysis(entrypoint, "manual before first analysis", "CHANGE REQUEST:\nChange the color")},
+		{output: `{"status":"READY_TO_UPDATE"}`, action: assertChangeAnalysis(entrypoint, "manual before clarification answer", "USER ANSWER:\nBlue")},
+		{output: `{"status":"UPDATED"}`, action: writeTurnFile(entrypoint, "blue")},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("manual before first analysis"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := controller.ProposeChange(context.Background(), "Change the color")
+	wantQuestion := Progress{State: StateAwaitingChangeAnswer, Question: "Which color?", SpecID: "clarified-change", Path: "docs/specs/clarified-change/specification.md"}
+	if err != nil || progress != wantQuestion {
+		t.Fatalf("change question = %#v, %v, want %#v", progress, err, wantQuestion)
+	}
+	if len(runner.turns) != 3 {
+		t.Fatalf("write turn ran before READY_TO_UPDATE: %d turns", len(runner.turns))
+	}
+	if err := os.WriteFile(entrypoint, []byte("manual before clarification answer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, err = controller.SubmitChangeAnswer(context.Background(), "Blue")
+	wantDraft := Progress{State: StateDraft, SpecID: "clarified-change", Path: "docs/specs/clarified-change/specification.md"}
+	if err != nil || progress != wantDraft {
+		t.Fatalf("clarified update = %#v, %v, want %#v", progress, err, wantDraft)
+	}
+	if len(runner.turns) != 5 || runner.turns[0].thread != runner.turns[4].thread {
+		t.Fatalf("clarified update did not keep the thread: %#v", runner.turns)
+	}
+	if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "blue" {
+		t.Fatalf("clarified update did not write: %q, %v", data, err)
+	}
+}
+
+func TestUpdateFailureKeepsPartialFilesAndEndsFlow(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		output    string
+		action    func(repo, target, entrypoint string) error
+		wantError string
+	}{
+		{"outside write", `{"status":"UPDATED"}`, func(repo, target, entrypoint string) error {
+			if err := os.WriteFile(entrypoint, []byte("partial update"), 0o600); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(repo, "outside-update.txt"), []byte("outside"), 0o600)
+		}, "outside-update.txt"},
+		{"missing entrypoint", `{"status":"UPDATED"}`, func(_, _, entrypoint string) error { return os.Remove(entrypoint) }, "entrypoint"},
+		{"invalid updated envelope", `{"status":"WRITTEN"}`, func(_, _, entrypoint string) error {
+			return os.WriteFile(entrypoint, []byte("partial update"), 0o600)
+		}, "invalid status"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initDraftRepository(t)
+			target := filepath.Join(repo, "docs", "specs", "failed-update")
+			entrypoint := filepath.Join(target, "specification.md")
+			runner := &fakeInitialRunner{steps: []fakeInitialStep{
+				{output: `{"status":"READY_TO_WRITE","spec_id":"failed-update"}`},
+				{output: `{"status":"WRITTEN"}`, action: writeTurnFile(entrypoint, "original")},
+				{output: `{"status":"READY_TO_UPDATE"}`},
+				{output: test.output, action: func(fakeInitialTurn) error { return test.action(repo, target, entrypoint) }},
+			}}
+			controller := NewController(repo, runner)
+			if _, err := controller.StartIdea("brief"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := controller.CreateDraft(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			progress, err := controller.ProposeChange(context.Background(), "change")
+			if err == nil || !strings.Contains(err.Error(), test.wantError) || !strings.Contains(err.Error(), "cleanup was not performed") || progress.State != StateIdle {
+				t.Fatalf("failed update = %#v, %v", progress, err)
+			}
+			if test.name != "missing entrypoint" {
+				if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "partial update" {
+					t.Fatalf("partial update was removed: %q, %v", data, err)
+				}
+			} else if info, err := os.Lstat(target); err != nil || !info.IsDir() {
+				t.Fatalf("partial target directory was removed: %v, %v", info, err)
+			}
+		})
+	}
+}
+
+func TestInvalidChangeAnalysisEndsFlowWithoutUpdate(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "invalid-analysis")
+	entrypoint := filepath.Join(target, "specification.md")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"invalid-analysis"}`},
+		{output: `{"status":"WRITTEN"}`, action: writeTurnFile(entrypoint, "draft")},
+		{output: `{"status":"UPDATED"}`},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := controller.ProposeChange(context.Background(), "change")
+	if err == nil || progress.State != StateIdle || len(runner.turns) != 3 {
+		t.Fatalf("invalid analysis = %#v, %v; turns=%d", progress, err, len(runner.turns))
+	}
+	if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "draft" {
+		t.Fatalf("invalid analysis changed draft: %q, %v", data, err)
+	}
+}
+
+func writeTurnFile(path, content string) func(fakeInitialTurn) error {
+	return func(fakeInitialTurn) error {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		return os.WriteFile(path, []byte(content), 0o600)
+	}
+}
+
+func assertChangeAnalysis(entrypoint, content, suffix string) func(fakeInitialTurn) error {
+	return func(turn fakeInitialTurn) error {
+		data, err := os.ReadFile(entrypoint)
+		if err != nil || string(data) != content {
+			return fmt.Errorf("analysis did not reread current file: %q, %v", data, err)
+		}
+		if !strings.HasSuffix(turn.prompt, suffix) || !strings.Contains(turn.prompt, "заново прочитай текущие файлы спецификации") {
+			return errors.New("analysis prompt does not reread current specification")
+		}
+		if string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+			return errors.New("change analysis is not strict read-only")
+		}
+		return nil
+	}
+}
+
 type fakeInitialStep struct {
 	output string
 	err    error

@@ -21,6 +21,7 @@ const (
 	StateAwaitingAnswer
 	StateReadyToWrite
 	StateDraft
+	StateAwaitingChangeAnswer
 )
 
 type Progress struct {
@@ -107,6 +108,20 @@ func (controller *Controller) AskQuestion(question string) (Progress, error) {
 	return progress, nil
 }
 
+func (controller *Controller) ProposeChange(ctx context.Context, request string) (Progress, error) {
+	if controller.state != StateDraft {
+		return controller.Progress(), fmt.Errorf("specification draft is not available")
+	}
+	return controller.analyzeChange(ctx, ChangePrompt(request))
+}
+
+func (controller *Controller) SubmitChangeAnswer(ctx context.Context, answer string) (Progress, error) {
+	if controller.state != StateAwaitingChangeAnswer {
+		return controller.Progress(), fmt.Errorf("specification change is not awaiting input")
+	}
+	return controller.analyzeChange(ctx, changeAnswerPrompt(answer))
+}
+
 func (controller *Controller) Approve() (Progress, error) {
 	if controller.state != StateDraft {
 		return controller.Progress(), fmt.Errorf("specification draft is not available")
@@ -144,11 +159,79 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 		OutputSchema: CreateSchema(),
 		Policy:       policy,
 	})
-	var postErrors []error
+	var resultErr error
 	if turnErr != nil {
-		postErrors = append(postErrors, fmt.Errorf("run create turn: %w", turnErr))
+		resultErr = fmt.Errorf("run create turn: %w", turnErr)
 	} else if _, err := DecodeCreateResult(output); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("validate create result: %w", err))
+		resultErr = fmt.Errorf("validate create result: %w", err)
+	}
+	if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
+		return controller.failDraft(err)
+	}
+
+	controller.state = StateDraft
+	controller.path = target.DisplayPath
+	return controller.Progress(), nil
+}
+
+func (controller *Controller) analyzeChange(ctx context.Context, prompt string) (Progress, error) {
+	output, err := controller.runner.RunTurn(controller.thread, prompt, codexapp.TurnOptions{
+		OutputSchema: ChangeSchema(),
+		Policy:       codexapp.ReadOnlyTurnPolicy(),
+	})
+	if err != nil {
+		controller.reset()
+		return controller.Progress(), fmt.Errorf("analyze specification change: %w", err)
+	}
+	result, err := DecodeChangeResult(output)
+	if err != nil {
+		controller.reset()
+		return controller.Progress(), fmt.Errorf("validate specification change analysis: %w", err)
+	}
+	controller.question = ""
+	if result.Status == StatusNeedsInput {
+		controller.state = StateAwaitingChangeAnswer
+		controller.question = result.Message
+		return controller.Progress(), nil
+	}
+	return controller.updateDraft(ctx)
+}
+
+func (controller *Controller) updateDraft(ctx context.Context) (Progress, error) {
+	target := controller.target()
+	if err := CheckContainment(controller.root, target.Directory); err != nil {
+		return controller.failUpdate(fmt.Errorf("verify specification target: %w", err))
+	}
+	policy, err := codexapp.SingleWriteRootTurnPolicy(target.Directory)
+	if err != nil {
+		return controller.failUpdate(fmt.Errorf("prepare write policy: %w", err))
+	}
+	baseline, err := gitsnapshot.Capture(ctx, controller.root)
+	if err != nil {
+		return controller.failUpdate(fmt.Errorf("capture pre-write repository: %w", err))
+	}
+	output, turnErr := controller.runner.RunTurn(controller.thread, UpdatePrompt(target.Directory), codexapp.TurnOptions{
+		OutputSchema: UpdateSchema(),
+		Policy:       policy,
+	})
+	var resultErr error
+	if turnErr != nil {
+		resultErr = fmt.Errorf("run update turn: %w", turnErr)
+	} else if _, err := DecodeUpdateResult(output); err != nil {
+		resultErr = fmt.Errorf("validate update result: %w", err)
+	}
+	if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
+		return controller.failUpdate(err)
+	}
+	controller.state = StateDraft
+	controller.question = ""
+	return controller.Progress(), nil
+}
+
+func (controller *Controller) validateWrite(ctx context.Context, target SpecTarget, baseline gitsnapshot.Snapshot, resultErr error) error {
+	var postErrors []error
+	if resultErr != nil {
+		postErrors = append(postErrors, resultErr)
 	}
 	if err := CheckContainment(controller.root, target.Directory); err != nil {
 		postErrors = append(postErrors, fmt.Errorf("verify specification target: %w", err))
@@ -163,21 +246,25 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
 	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
 		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
-	} else if err := gitsnapshot.CheckBoundary(changed, path.Join("docs", "specs", controller.specID)); err != nil {
+	} else if err := gitsnapshot.CheckBoundary(changed, path.Dir(target.DisplayPath)); err != nil {
 		postErrors = append(postErrors, err)
 	}
-	if err := errors.Join(postErrors...); err != nil {
-		return controller.failDraft(err)
-	}
-
-	controller.state = StateDraft
-	controller.path = target.DisplayPath
-	return controller.Progress(), nil
+	return errors.Join(postErrors...)
 }
 
 func (controller *Controller) failDraft(err error) (Progress, error) {
 	controller.reset()
 	return controller.Progress(), fmt.Errorf("create draft failed; cleanup was not performed: %w", err)
+}
+
+func (controller *Controller) failUpdate(err error) (Progress, error) {
+	controller.reset()
+	return controller.Progress(), fmt.Errorf("update draft failed; cleanup was not performed: %w", err)
+}
+
+func (controller *Controller) target() SpecTarget {
+	entrypoint := filepath.Join(controller.root, filepath.FromSlash(controller.path))
+	return SpecTarget{Directory: filepath.Dir(entrypoint), Entrypoint: entrypoint, DisplayPath: controller.path}
 }
 
 func (controller *Controller) run(prompt string) (Progress, error) {
@@ -225,6 +312,19 @@ func initialAnswerPrompt(answer string) string {
 
 Когда информации достаточно, верни READY_TO_WRITE и предложи краткий spec_id
 в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
+
+USER ANSWER:
+` + answer
+}
+
+func changeAnswerPrompt(answer string) string {
+	return `Продолжи анализ предложения пользователя относительно текущей спецификации и
+репозитория. Сначала заново прочитай текущие файлы спецификации с диска. Пока не
+изменяй файлы.
+
+Если материального решения всё ещё нет, верни NEEDS_INPUT и задай ровно один
+уточняющий вопрос. Если информации достаточно для согласованной правки, верни
+READY_TO_UPDATE.
 
 USER ANSWER:
 ` + answer
