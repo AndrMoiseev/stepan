@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 
 	"github.com/AndrMoiseev/stepan/internal/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
@@ -25,6 +26,7 @@ const (
 type Progress struct {
 	State    State
 	Question string
+	Answer   string
 	SpecID   string
 	Path     string
 }
@@ -81,6 +83,44 @@ func (controller *Controller) Submit(text string) (Progress, error) {
 
 func (controller *Controller) Progress() Progress {
 	return Progress{State: controller.state, Question: controller.question, SpecID: controller.specID, Path: controller.path}
+}
+
+func (controller *Controller) AskQuestion(question string) (Progress, error) {
+	if controller.state != StateDraft {
+		return controller.Progress(), fmt.Errorf("specification draft is not available")
+	}
+	output, err := controller.runner.RunTurn(controller.thread, QuestionPrompt(question), codexapp.TurnOptions{
+		OutputSchema: QuestionSchema(),
+		Policy:       codexapp.ReadOnlyTurnPolicy(),
+	})
+	if err != nil {
+		controller.reset()
+		return controller.Progress(), fmt.Errorf("ask specification question: %w", err)
+	}
+	result, err := DecodeQuestionResult(output)
+	if err != nil {
+		controller.reset()
+		return controller.Progress(), fmt.Errorf("validate specification answer: %w", err)
+	}
+	progress := controller.Progress()
+	progress.Answer = result.Message
+	return progress, nil
+}
+
+func (controller *Controller) Approve() (Progress, error) {
+	if controller.state != StateDraft {
+		return controller.Progress(), fmt.Errorf("specification draft is not available")
+	}
+	entrypoint := filepath.Join(controller.root, filepath.FromSlash(controller.path))
+	info, err := os.Lstat(entrypoint)
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		return controller.Progress(), fmt.Errorf("approve specification entrypoint %q: %w", entrypoint, err)
+	}
+	controller.reset()
+	return controller.Progress(), nil
 }
 
 func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error) {

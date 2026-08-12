@@ -290,6 +290,184 @@ func TestCreateDraftRepeatsContainmentAfterWrite(t *testing.T) {
 	}
 }
 
+func TestDraftQuestionRereadsManualEditAndReturnsToDraft(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "question-flow")
+	entrypoint := filepath.Join(target, "specification.md")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"question-flow"}`},
+		{output: `{"status":"WRITTEN"}`, action: func(fakeInitialTurn) error {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(entrypoint, []byte("original"), 0o600)
+		}},
+		{output: `{"status":"ANSWERED","message":"It uses the manual version."}`, action: func(turn fakeInitialTurn) error {
+			data, err := os.ReadFile(entrypoint)
+			if err != nil || string(data) != "manual edit" {
+				return fmt.Errorf("question did not see current disk content: %q, %v", data, err)
+			}
+			if turn.prompt != QuestionPrompt("Which version?") || !strings.Contains(turn.prompt, "Сначала заново прочитай текущие файлы спецификации с\nдиска") {
+				return errors.New("question prompt does not require rereading disk")
+			}
+			if string(turn.option.OutputSchema) != string(QuestionSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+				return errors.New("question turn is not strict read-only")
+			}
+			return nil
+		}},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("manual edit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	progress, err := controller.AskQuestion("Which version?")
+	want := Progress{State: StateDraft, Answer: "It uses the manual version.", SpecID: "question-flow", Path: "docs/specs/question-flow/specification.md"}
+	if err != nil || progress != want {
+		t.Fatalf("question progress = %#v, %v, want %#v", progress, err, want)
+	}
+	if len(runner.turns) != 3 || runner.turns[0].thread != runner.turns[2].thread {
+		t.Fatalf("question did not use a separate turn of the same thread: %#v", runner.turns)
+	}
+	if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "manual edit" {
+		t.Fatalf("question changed the specification: %q, %v", data, err)
+	}
+	if got := controller.Progress(); got.Answer != "" || got.State != StateDraft || got.Path != want.Path {
+		t.Fatalf("answer persisted or draft menu unavailable: %#v", got)
+	}
+}
+
+func TestApproveAcceptsCurrentEntrypointAndOnlyResetsMemory(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "approve-flow")
+	entrypoint := filepath.Join(target, "specification.md")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"approve-flow"}`},
+		{output: `{"status":"WRITTEN"}`, action: func(fakeInitialTurn) error {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(entrypoint, []byte("original"), 0o600)
+		}},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entrypoint, []byte("manually approved content without a required template"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	headBefore := draftGit(t, repo, "rev-parse", "HEAD")
+	indexBefore, err := os.ReadFile(filepath.Join(repo, ".git", "index"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnsBefore := len(runner.turns)
+	progress, err := controller.Approve()
+	if err != nil || progress != (Progress{State: StateIdle}) {
+		t.Fatalf("approval = %#v, %v", progress, err)
+	}
+	if controller.thread != nil || controller.specID != "" || controller.path != "" {
+		t.Fatalf("approval retained in-memory flow: thread=%v spec=%q path=%q", controller.thread, controller.specID, controller.path)
+	}
+	if len(runner.turns) != turnsBefore {
+		t.Fatal("approval launched Codex")
+	}
+	if data, err := os.ReadFile(entrypoint); err != nil || string(data) != "manually approved content without a required template" {
+		t.Fatalf("approval rewrote current content: %q, %v", data, err)
+	}
+	indexAfter, err := os.ReadFile(filepath.Join(repo, ".git", "index"))
+	if err != nil || !bytes.Equal(indexBefore, indexAfter) || draftGit(t, repo, "rev-parse", "HEAD") != headBefore {
+		t.Fatalf("approval changed HEAD or index: %v", err)
+	}
+	for _, marker := range []string{filepath.Join(repo, ".stepan"), filepath.Join(target, "approved"), filepath.Join(target, ".approved")} {
+		if _, err := os.Lstat(marker); !os.IsNotExist(err) {
+			t.Fatalf("approval marker/state exists at %q: %v", marker, err)
+		}
+	}
+}
+
+func TestApproveRequiresCurrentRegularEntrypoint(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(string) error
+	}{
+		{"deleted", os.Remove},
+		{"directory", func(path string) error {
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			return os.Mkdir(path, 0o700)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repo := initDraftRepository(t)
+			target := filepath.Join(repo, "docs", "specs", "approve-flow")
+			entrypoint := filepath.Join(target, "specification.md")
+			runner := &fakeInitialRunner{steps: []fakeInitialStep{
+				{output: `{"status":"READY_TO_WRITE","spec_id":"approve-flow"}`},
+				{output: `{"status":"WRITTEN"}`, action: func(fakeInitialTurn) error {
+					if err := os.MkdirAll(target, 0o700); err != nil {
+						return err
+					}
+					return os.WriteFile(entrypoint, []byte("draft"), 0o600)
+				}},
+			}}
+			controller := NewController(repo, runner)
+			if _, err := controller.StartIdea("brief"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := controller.CreateDraft(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.change(entrypoint); err != nil {
+				t.Fatal(err)
+			}
+			turnsBefore := len(runner.turns)
+			progress, err := controller.Approve()
+			if err == nil || progress.State != StateDraft || progress.Path == "" {
+				t.Fatalf("invalid approval = %#v, %v", progress, err)
+			}
+			if len(runner.turns) != turnsBefore {
+				t.Fatal("failed approval launched Codex")
+			}
+		})
+	}
+}
+
+func TestQuestionInvalidResultEndsFlowWithoutRetry(t *testing.T) {
+	repo := initDraftRepository(t)
+	target := filepath.Join(repo, "docs", "specs", "question-flow")
+	runner := &fakeInitialRunner{steps: []fakeInitialStep{
+		{output: `{"status":"READY_TO_WRITE","spec_id":"question-flow"}`},
+		{output: `{"status":"WRITTEN"}`, action: func(fakeInitialTurn) error {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(target, "specification.md"), []byte("draft"), 0o600)
+		}},
+		{output: `{"status":"WRITTEN"}`},
+	}}
+	controller := NewController(repo, runner)
+	if _, err := controller.StartIdea("brief"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.CreateDraft(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if progress, err := controller.AskQuestion("question"); err == nil || progress.State != StateIdle || len(runner.turns) != 3 {
+		t.Fatalf("invalid question result = %#v, %v; turns=%d", progress, err, len(runner.turns))
+	}
+}
+
 type fakeInitialStep struct {
 	output string
 	err    error
