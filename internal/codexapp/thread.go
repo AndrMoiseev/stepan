@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -20,15 +21,32 @@ type Thread struct {
 
 type TurnOptions struct {
 	OutputSchema json.RawMessage
+	Policy       TurnPolicy
+}
+
+type TurnPolicy struct{ writableRoot string }
+
+func ReadOnlyTurnPolicy() TurnPolicy { return TurnPolicy{} }
+
+func SingleWriteRootTurnPolicy(root string) (TurnPolicy, error) {
+	root, err := canonicalPath(root)
+	if err != nil {
+		return TurnPolicy{}, fmt.Errorf("canonicalize writable root: %w", err)
+	}
+	return TurnPolicy{writableRoot: root}, nil
 }
 
 type turnRun struct {
-	mu       sync.Mutex
-	threadID string
-	turnID   string
-	events   []Message
-	wake     chan struct{}
-	terminal bool
+	mu        sync.Mutex
+	threadID  string
+	turnID    string
+	events    []Message
+	wake      chan struct{}
+	terminal  bool
+	workspace string
+	policy    normalizedPolicy
+	changes   map[string][]string
+	pending   map[string]bool
 }
 
 type terminalItem struct {
@@ -75,7 +93,14 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 	}
 	defer connection.turnMu.Unlock()
 
-	run := &turnRun{threadID: thread.ID, wake: make(chan struct{}, 1)}
+	policy, err := normalizePolicy(AccessPolicy{WritableRoots: writableRoots(options.Policy)}, thread.cwd)
+	if err != nil {
+		return nil, err
+	}
+	run := &turnRun{
+		threadID: thread.ID, workspace: thread.cwd, policy: policy,
+		changes: make(map[string][]string), pending: make(map[string]bool), wake: make(chan struct{}, 1),
+	}
 	connection.mu.Lock()
 	if connection.err != nil {
 		err := connection.err
@@ -132,6 +157,9 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 			}
 			completed[item.ID] = item
 		case "turn/completed":
+			if run.hasPending() {
+				return nil, connection.failTurn(errors.New("terminal notification arrived with unresolved approval"))
+			}
 			output, err := decodeCompletedTurn(message.Params, completed)
 			if err != nil {
 				return nil, connection.failTurn(err)
@@ -159,6 +187,9 @@ func (connection *Connection) dispatchTurnMessage(message Message) error {
 	if err := run.correlate(message); err != nil {
 		return err
 	}
+	if err := run.observeFileChanges(message); err != nil {
+		return err
+	}
 	return run.push(message)
 }
 
@@ -170,6 +201,104 @@ func (connection *Connection) validateTurnMessage(message Message) error {
 		return fmt.Errorf("%s arrived without an active turn", message.Method)
 	}
 	return run.correlate(message)
+}
+
+func (connection *Connection) registerTurnApproval(message Message) (func() error, error) {
+	connection.mu.Lock()
+	run := connection.turn
+	connection.mu.Unlock()
+	if run == nil {
+		return nil, errors.New("approval arrived without an active turn")
+	}
+	kind, ids, permissions, err := decodeApproval(message)
+	if err != nil {
+		return nil, err
+	}
+	if err := run.addPending(message.ID.Key()); err != nil {
+		return nil, err
+	}
+	return func() error {
+		decision := run.evaluateApproval(kind, ids, permissions)
+		request := &approvalRequest{message: message, ids: ids, permissions: permissions, pending: PendingApproval{Kind: kind}}
+		if err := connection.Respond(message.ID, approvalResponse(request, decision)); err != nil {
+			return err
+		}
+		return run.resolvePending(message.ID.Key())
+	}, nil
+}
+
+func (run *turnRun) evaluateApproval(kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
+	if kind != FileChangeApproval {
+		return DecisionDecline
+	}
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return evaluateApproval(run.policy, run.changes, kind, ids, permissions)
+}
+
+func writableRoots(policy TurnPolicy) []string {
+	if policy.writableRoot == "" {
+		return nil
+	}
+	return []string{policy.writableRoot}
+}
+
+func (run *turnRun) observeFileChanges(message Message) error {
+	evidence, relevant, err := decodeFileChangeEvidence(message)
+	if err != nil || !relevant {
+		return err
+	}
+	paths := make([]string, 0, len(evidence.Paths))
+	for _, value := range evidence.Paths {
+		if !filepath.IsAbs(value) {
+			value = filepath.Join(run.workspace, value)
+		}
+		value, err = canonicalPath(value)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, value)
+	}
+	run.mu.Lock()
+	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
+	run.changes[key] = append(run.changes[key], paths...)
+	run.mu.Unlock()
+	return nil
+}
+
+func (run *turnRun) addPending(key string) error {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if run.terminal {
+		return errors.New("approval arrived after turn/completed")
+	}
+	if run.pending[key] {
+		return ErrDuplicateRequestID
+	}
+	run.pending[key] = true
+	return nil
+}
+
+func (run *turnRun) resolvePending(key string) error {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	if !run.pending[key] {
+		return ErrDuplicateResponse
+	}
+	delete(run.pending, key)
+	return nil
+}
+
+func (run *turnRun) hasPending() bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return len(run.pending) != 0
+}
+
+func (run *turnRun) clearPending() {
+	run.mu.Lock()
+	clear(run.pending)
+	run.mu.Unlock()
 }
 
 func (run *turnRun) setTurnID(id string) error {

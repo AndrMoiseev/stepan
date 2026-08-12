@@ -185,6 +185,19 @@ func (connection *Connection) read() {
 					return
 				}
 			}
+			if isApprovalMethod(message.Method) {
+				handle, err := connection.registerTurnApproval(message)
+				if err != nil {
+					connection.fail(err)
+					return
+				}
+				go func() {
+					if err := handle(); err != nil {
+						connection.fail(err)
+					}
+				}()
+				continue
+			}
 			handle := connection.handler.Requests[message.Method]
 			if handle == nil {
 				if err := connection.Reject(message.ID, RPCError{Code: -32601, Message: "method not found"}); err != nil {
@@ -203,8 +216,8 @@ func (connection *Connection) read() {
 
 func (connection *Connection) fail(cause error) {
 	connection.mu.Lock()
-	defer connection.mu.Unlock()
 	if connection.err != nil {
+		connection.mu.Unlock()
 		return
 	}
 	if errors.Is(cause, ErrConnectionClosed) {
@@ -214,6 +227,11 @@ func (connection *Connection) fail(cause error) {
 	}
 	connection.pending = nil
 	close(connection.done)
+	run := connection.turn
+	connection.mu.Unlock()
+	if run != nil {
+		run.clearPending()
+	}
 }
 
 type closedError struct{ cause error }

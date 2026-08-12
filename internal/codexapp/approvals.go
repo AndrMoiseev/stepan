@@ -219,7 +219,7 @@ func canonicalPath(value string) (string, error) {
 	probe := value
 	var suffix []string
 	for {
-		resolved, err := filepath.EvalSymlinks(probe)
+		resolved, err := resolveExistingPath(probe)
 		if err == nil {
 			for index := len(suffix) - 1; index >= 0; index-- {
 				resolved = filepath.Join(resolved, suffix[index])
@@ -236,6 +236,44 @@ func canonicalPath(value string) (string, error) {
 		suffix = append(suffix, filepath.Base(probe))
 		probe = parent
 	}
+}
+
+func resolveExistingPath(value string) (string, error) {
+	value = filepath.Clean(value)
+	for links := 0; links < 255; links++ {
+		volume := filepath.VolumeName(value)
+		current := volume + string(filepath.Separator)
+		components := strings.Split(strings.TrimPrefix(value, current), string(filepath.Separator))
+		followed := false
+		for index, component := range components {
+			if component == "" {
+				continue
+			}
+			candidate := filepath.Join(current, component)
+			info, err := os.Lstat(candidate)
+			if err != nil {
+				return "", err
+			}
+			if info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				current = candidate
+				continue
+			}
+			destination, err := os.Readlink(candidate)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(destination) {
+				destination = filepath.Join(filepath.Dir(candidate), destination)
+			}
+			value = filepath.Join(append([]string{destination}, components[index+1:]...)...)
+			followed = true
+			break
+		}
+		if !followed {
+			return filepath.EvalSymlinks(value)
+		}
+	}
+	return "", errors.New("too many reparse points")
 }
 
 func newApprovalManager(statePath string, journal *os.File, workspace string, policy AccessPolicy, operator OperatorFunc) (*approvalManager, error) {
@@ -489,6 +527,7 @@ type approvalIDs struct {
 	Command                         *string           `json:"command"`
 	CWD                             *string           `json:"cwd"`
 	GrantRoot                       *string           `json:"grantRoot"`
+	Scope                           string            `json:"scope"`
 	ProposedExecpolicyAmendment     []string          `json:"proposedExecpolicyAmendment"`
 	ProposedNetworkPolicyAmendments []json.RawMessage `json:"proposedNetworkPolicyAmendments"`
 	NetworkApprovalContext          json.RawMessage   `json:"networkApprovalContext"`
@@ -548,7 +587,8 @@ func (manager *approvalManager) observeFileChanges(message Message, threadID, tu
 		}
 		paths = append(paths, normalized)
 	}
-	manager.fileChanges[fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)] = paths
+	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
+	manager.fileChanges[key] = append(manager.fileChanges[key], paths...)
 	return nil
 }
 
@@ -638,12 +678,16 @@ func decodeApproval(message Message) (ApprovalKind, approvalIDs, permissionProfi
 }
 
 func (manager *approvalManager) evaluate(kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
+	return evaluateApproval(manager.policy, manager.fileChanges, kind, ids, permissions)
+}
+
+func evaluateApproval(policy normalizedPolicy, fileChanges map[string][]string, kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
 	switch kind {
 	case CommandApproval:
 		if ids.Command == nil || ids.CWD == nil || len(ids.ProposedExecpolicyAmendment) != 0 || len(ids.ProposedNetworkPolicyAmendments) != 0 {
 			return DecisionDecline
 		}
-		if len(ids.NetworkApprovalContext) != 0 && string(ids.NetworkApprovalContext) != "null" && !manager.policy.NetworkAccess {
+		if len(ids.NetworkApprovalContext) != 0 && string(ids.NetworkApprovalContext) != "null" && !policy.NetworkAccess {
 			return DecisionDecline
 		}
 		cwd, err := canonicalPath(*ids.CWD)
@@ -654,35 +698,35 @@ func (manager *approvalManager) evaluate(kind ApprovalKind, ids approvalIDs, per
 		if unsafeCommand(command) {
 			return DecisionDecline
 		}
-		for _, allowed := range manager.policy.AllowedCommands {
+		for _, allowed := range policy.AllowedCommands {
 			if allowed.Command == command && samePath(allowed.CWD, cwd) {
-				return manager.acceptOrAwait(kind)
+				return acceptOrAwait(policy, kind)
 			}
 		}
 		return DecisionDecline
 	case FileChangeApproval:
-		if ids.GrantRoot != nil {
+		if ids.GrantRoot != nil || ids.Scope == "session" {
 			return DecisionDecline
 		}
-		paths := manager.fileChanges[fileChangeKey(ids.ThreadID, ids.TurnID, ids.ItemID)]
+		paths := fileChanges[fileChangeKey(ids.ThreadID, ids.TurnID, ids.ItemID)]
 		if len(paths) == 0 {
 			return DecisionDecline
 		}
 		for _, value := range paths {
-			if !manager.allowedRequestedPath(value, manager.policy.WritableRoots) {
+			if !allowedRequestedPath(policy, value, policy.WritableRoots) {
 				return DecisionDecline
 			}
 		}
-		return manager.acceptOrAwait(kind)
+		return acceptOrAwait(policy, kind)
 	case PermissionsApproval:
 		if ids.CWD == nil {
 			return DecisionDecline
 		}
 		cwd, err := canonicalPath(*ids.CWD)
-		if err != nil || !manager.allowedPath(cwd, manager.policy.ReadableRoots) {
+		if err != nil || !allowedPath(policy, cwd, policy.ReadableRoots) {
 			return DecisionDecline
 		}
-		if permissions.Network != nil && permissions.Network.Enabled != nil && *permissions.Network.Enabled && !manager.policy.NetworkAccess {
+		if permissions.Network != nil && permissions.Network.Enabled != nil && *permissions.Network.Enabled && !policy.NetworkAccess {
 			return DecisionDecline
 		}
 		if permissions.FileSystem != nil {
@@ -690,12 +734,12 @@ func (manager *approvalManager) evaluate(kind ApprovalKind, ids approvalIDs, per
 				return DecisionDecline
 			}
 			for _, value := range permissions.FileSystem.Read {
-				if !manager.allowedRequestedPath(value, manager.policy.ReadableRoots) {
+				if !allowedRequestedPath(policy, value, policy.ReadableRoots) {
 					return DecisionDecline
 				}
 			}
 			for _, value := range permissions.FileSystem.Write {
-				if !manager.allowedRequestedPath(value, manager.policy.WritableRoots) {
+				if !allowedRequestedPath(policy, value, policy.WritableRoots) {
 					return DecisionDecline
 				}
 			}
@@ -703,25 +747,29 @@ func (manager *approvalManager) evaluate(kind ApprovalKind, ids approvalIDs, per
 				if entry.Path.Type != "path" || entry.Path.Path == "" {
 					return DecisionDecline
 				}
-				roots := manager.policy.ReadableRoots
+				roots := policy.ReadableRoots
 				if entry.Access == "write" {
-					roots = manager.policy.WritableRoots
+					roots = policy.WritableRoots
 				} else if entry.Access != "read" && entry.Access != "deny" {
 					return DecisionDecline
 				}
-				if !manager.allowedRequestedPath(entry.Path.Path, roots) {
+				if !allowedRequestedPath(policy, entry.Path.Path, roots) {
 					return DecisionDecline
 				}
 			}
 		}
-		return manager.acceptOrAwait(kind)
+		return acceptOrAwait(policy, kind)
 	default:
 		return DecisionDecline
 	}
 }
 
 func (manager *approvalManager) acceptOrAwait(kind ApprovalKind) ApprovalDecision {
-	for _, required := range manager.policy.OperatorDecisions {
+	return acceptOrAwait(manager.policy, kind)
+}
+
+func acceptOrAwait(policy normalizedPolicy, kind ApprovalKind) ApprovalDecision {
+	for _, required := range policy.OperatorDecisions {
 		if required == kind {
 			return DecisionAwaitOperator
 		}
@@ -730,12 +778,20 @@ func (manager *approvalManager) acceptOrAwait(kind ApprovalKind) ApprovalDecisio
 }
 
 func (manager *approvalManager) allowedRequestedPath(value string, roots []string) bool {
+	return allowedRequestedPath(manager.policy, value, roots)
+}
+
+func allowedRequestedPath(policy normalizedPolicy, value string, roots []string) bool {
 	normalized, err := canonicalPath(value)
-	return err == nil && manager.allowedPath(normalized, roots)
+	return err == nil && allowedPath(policy, normalized, roots)
 }
 
 func (manager *approvalManager) allowedPath(value string, roots []string) bool {
-	for _, protected := range manager.policy.ProtectedPaths {
+	return allowedPath(manager.policy, value, roots)
+}
+
+func allowedPath(policy normalizedPolicy, value string, roots []string) bool {
+	for _, protected := range policy.ProtectedPaths {
 		if within(protected, value) {
 			return false
 		}
@@ -744,7 +800,7 @@ func (manager *approvalManager) allowedPath(value string, roots []string) bool {
 	if filepath.Separator == '\\' {
 		slashed = strings.ToLower(slashed)
 	}
-	for _, pattern := range manager.policy.ProtectedPatterns {
+	for _, pattern := range policy.ProtectedPatterns {
 		matched, _ := path.Match(pattern, slashed)
 		if matched {
 			return false
