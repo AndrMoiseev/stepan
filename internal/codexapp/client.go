@@ -39,7 +39,7 @@ type ProbeConfig struct {
 }
 
 func (config ProbeConfig) Args() []string {
-	return []string{"app-server", "--stdio", "--strict-config", "-c", `approvals_reviewer="user"`}
+	return append([]string(nil), appServerArgs...)
 }
 
 func (config ProbeConfig) validate() (ProbeConfig, error) {
@@ -193,57 +193,27 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		return result, errors.Join(runErr, stateErr, closeErr)
 	}
 
-	command := exec.Command(config.Executable, config.Args()...)
-	command.Dir = config.Workspace
-	stdin, err := command.StdinPipe()
-	if err != nil {
+	process := newProcess(config.Executable, config.Workspace, stderrFile)
+	if err := process.Start(); err != nil {
 		result.FailureClass, result.Detail = "spawn_failure", err.Error()
 		return finish()
 	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		result.FailureClass, result.Detail = "spawn_failure", err.Error()
-		return finish()
-	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		result.FailureClass, result.Detail = "spawn_failure", err.Error()
-		return finish()
-	}
-	if err := command.Start(); err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		_ = stderr.Close()
-		result.FailureClass, result.Detail = "spawn_failure", err.Error()
-		return finish()
-	}
-	stderrDone := make(chan error, 1)
-	go func() {
-		_, copyErr := io.Copy(stderrFile, stderr)
-		stderrDone <- copyErr
-	}()
 
-	recordedStdout := io.TeeReader(stdout, stdoutFile)
-	transport := NewTransport(recordedStdout, stdin)
-	protocolErr := runProtocol(transport, stdin, eventsFile, config, &result, approvals)
+	recordedStdout := io.TeeReader(process.Stdout(), stdoutFile)
+	transport := NewTransport(recordedStdout, process.Stdin())
+	protocolErr := runProtocol(transport, process.Stdin(), eventsFile, config, &result, approvals)
 	if protocolErr != nil {
 		_ = approvals.failClosed()
-		_ = stdin.Close()
+		_ = process.Stdin().Close()
 	}
-	waitErr := command.Wait()
-	stderrErr := <-stderrDone
-	if command.ProcessState != nil {
-		code := command.ProcessState.ExitCode()
-		result.ProcessExitCode = &code
-	}
+	waitErr := process.Wait()
+	result.ProcessExitCode = process.ExitCode()
+	closeErr := process.Close()
 	if info, err := stderrFile.Stat(); err == nil {
 		result.StderrNonempty = info.Size() > 0
 	}
 	classifyProbeResult(&result, waitErr, protocolErr)
-	runErr = stderrErr
+	runErr = closeErr
 	return finish()
 }
 

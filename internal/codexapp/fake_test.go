@@ -5,13 +5,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMain(main *testing.M) {
 	if scenario := os.Getenv("GO_WANT_CODEXAPP_FAKE"); scenario != "" {
+		if len(os.Args) == 2 && os.Args[1] == "--version" {
+			version := SupportedCodexVersion
+			if scenario == "version-mismatch" {
+				version = "0.148.0"
+			}
+			fmt.Println("codex-cli", version)
+			os.Exit(0)
+		}
 		os.Exit(runFake(scenario))
 	}
 	os.Exit(main.Run())
@@ -55,9 +65,54 @@ func runFake(scenario string) int {
 		return 0
 	case "nonzero":
 		return 7
+	case "process-echo":
+		if strings.Join(os.Args[1:], "\x00") != strings.Join(appServerArgs, "\x00") {
+			return 30
+		}
+		var line string
+		if _, err := fmt.Fscanln(os.Stdin, &line); err != nil {
+			return 31
+		}
+		fmt.Fprintln(os.Stdout, line)
+		fmt.Fprint(os.Stderr, strings.Repeat("e", maxDiagnosticBytes+1024))
+		return 0
+	case "early-exit":
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprintln(os.Stderr, "early exit")
+		return 17
+	case "process-tree":
+		return runProcessTreeFake()
 	default:
 		return 9
 	}
+}
+
+func runProcessTreeFake() int {
+	switch os.Getenv("STEPAN_CODEXAPP_TREE_LEVEL") {
+	case "":
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), "STEPAN_CODEXAPP_TREE_LEVEL=child")
+		if err := command.Start(); err != nil {
+			return 50
+		}
+		time.Sleep(30 * time.Second)
+	case "child":
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), "STEPAN_CODEXAPP_TREE_LEVEL=grandchild")
+		if err := command.Start(); err != nil {
+			return 51
+		}
+		data, err := json.Marshal([]int{os.Getppid(), os.Getpid(), command.Process.Pid})
+		if err != nil || os.WriteFile(os.Getenv("STEPAN_CODEXAPP_PID_FILE"), data, 0o600) != nil {
+			return 52
+		}
+		time.Sleep(30 * time.Second)
+	case "grandchild":
+		time.Sleep(30 * time.Second)
+	default:
+		return 53
+	}
+	return 0
 }
 
 func runVerticalFake(scenario string) int {
