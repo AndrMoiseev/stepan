@@ -1,10 +1,15 @@
 package specflow
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
+	"path"
 
 	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 )
 
 type State uint8
@@ -14,12 +19,14 @@ const (
 	StateAwaitingBrief
 	StateAwaitingAnswer
 	StateReadyToWrite
+	StateDraft
 )
 
 type Progress struct {
 	State    State
 	Question string
 	SpecID   string
+	Path     string
 }
 
 type initialTurnRunner interface {
@@ -29,15 +36,17 @@ type initialTurnRunner interface {
 
 type Controller struct {
 	runner   initialTurnRunner
+	root     string
 	state    State
 	brief    string
 	thread   *codexapp.Thread
 	question string
 	specID   string
+	path     string
 }
 
-func NewController(runner initialTurnRunner) *Controller {
-	return &Controller{runner: runner}
+func NewController(root string, runner initialTurnRunner) *Controller {
+	return &Controller{root: root, runner: runner}
 }
 
 func (controller *Controller) StartIdea(brief string) (Progress, error) {
@@ -71,7 +80,64 @@ func (controller *Controller) Submit(text string) (Progress, error) {
 }
 
 func (controller *Controller) Progress() Progress {
-	return Progress{State: controller.state, Question: controller.question, SpecID: controller.specID}
+	return Progress{State: controller.state, Question: controller.question, SpecID: controller.specID, Path: controller.path}
+}
+
+func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error) {
+	if controller.state != StateReadyToWrite {
+		return controller.Progress(), fmt.Errorf("initial clarification is not ready to write")
+	}
+	target, err := PrepareSpecTarget(controller.root, controller.specID)
+	if err != nil {
+		return controller.failDraft(fmt.Errorf("prepare specification target: %w", err))
+	}
+	policy, err := codexapp.SingleWriteRootTurnPolicy(target.Directory)
+	if err != nil {
+		return controller.failDraft(fmt.Errorf("prepare write policy: %w", err))
+	}
+	baseline, err := gitsnapshot.Capture(ctx, controller.root)
+	if err != nil {
+		return controller.failDraft(fmt.Errorf("capture pre-write repository: %w", err))
+	}
+
+	output, turnErr := controller.runner.RunTurn(controller.thread, CreatePrompt(target.Directory), codexapp.TurnOptions{
+		OutputSchema: CreateSchema(),
+		Policy:       policy,
+	})
+	var postErrors []error
+	if turnErr != nil {
+		postErrors = append(postErrors, fmt.Errorf("run create turn: %w", turnErr))
+	} else if _, err := DecodeCreateResult(output); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("validate create result: %w", err))
+	}
+	if err := CheckContainment(controller.root, target.Directory); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("verify specification target: %w", err))
+	}
+	if info, err := os.Lstat(target.Entrypoint); err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		postErrors = append(postErrors, fmt.Errorf("verify specification entrypoint %q: %w", target.Entrypoint, err))
+	}
+	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
+	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
+	} else if err := gitsnapshot.CheckBoundary(changed, path.Join("docs", "specs", controller.specID)); err != nil {
+		postErrors = append(postErrors, err)
+	}
+	if err := errors.Join(postErrors...); err != nil {
+		return controller.failDraft(err)
+	}
+
+	controller.state = StateDraft
+	controller.path = target.DisplayPath
+	return controller.Progress(), nil
+}
+
+func (controller *Controller) failDraft(err error) (Progress, error) {
+	controller.reset()
+	return controller.Progress(), fmt.Errorf("create draft failed; cleanup was not performed: %w", err)
 }
 
 func (controller *Controller) run(prompt string) (Progress, error) {
@@ -106,6 +172,7 @@ func (controller *Controller) reset() {
 	controller.thread = nil
 	controller.question = ""
 	controller.specID = ""
+	controller.path = ""
 }
 
 func initialAnswerPrompt(answer string) string {
