@@ -1,0 +1,35 @@
+schema_version: 1
+stage: design
+inputs:
+  idea.md: sha256:252b86a934f93361e9392829c97d14f1f34acc2bd0ea81c823b0973ccb966ffb
+  requirements.md: sha256:eac5a91aaf4e67c941420e490d008d8df2533f45ed4e3d114420e8ed95d4679a
+  design.md: sha256:c6153012be06e2271fdbc38d6a4461e0a6501474c3712ed25f09cf6325c19960
+verdict: changes-required
+findings:
+  - id: DES-R-003
+    severity: blocking
+    references: [DES-007, "Appendix A: semantics.action_defaults, P001-P003, G001-G006, T402, T404, T406, T408, T410-T411, T423, T425, T427", REQ-076, REQ-079, REQ-087, REQ-090, REQ-091, REQ-111, REQ-113]
+    problem: >-
+      The revision adds action defaults, explicit phase semantics, split approval and
+      Git-conflict outcomes, and E001-E004 preparation failures, but the normative
+      oracle remains internally contradictory and does not cover every reachable
+      durable disposition. T402, T404, T406, T408, T410, and T411 say to clear the
+      active attempt in canonical_writes while omitting active_attempt, whose declared
+      default is keep; several therefore produce a state that violates legal_states.
+      T404, T408, T410, and T411 similarly target a new pending kind while the pending
+      action defaults to keep. P001, P003, and G002-G004 publish a recovered target
+      state while target defaults to same, leaving two different resulting states.
+      Additionally, reachable actions record commit_intent as completed, cancelled,
+      abandoned, or isolation-rejected, while Git recovery matches only none or
+      active. No rule defines the next pass for those terminal or rejected
+      dispositions; for example, the scheduled author launch created by T427 cannot
+      reach the scheduled-launch phase after commit_intent becomes abandoned.
+    recommendation: >-
+      Make target, active_attempt, pending, and commit_intent effects explicit and
+      consistent in every affected row, with one authoritative interpretation when
+      canonical_writes and field actions overlap. Define terminal and
+      isolation-rejected intent handling by either archiving the disposition and
+      setting the live intent slot to null or adding exhaustive Git-recovery rows
+      that continue to the next phase. Re-enumerate all 67 rows across every legal
+      state, guard outcome, scheduled launch, active-attempt shape, and intent
+      disposition to prove one unambiguous resulting action for each reachable case.

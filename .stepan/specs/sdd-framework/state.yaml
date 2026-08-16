@@ -1,6 +1,6 @@
 schema_version: 1
 created_at: 2026-08-16T14:13:07Z
-stage: design
+stage: plan
 status: drafting
 automatic_revision_attempts: 0
 approvals:
@@ -10,4 +10,11 @@ approvals:
     artifact_sha256: sha256:eac5a91aaf4e67c941420e490d008d8df2533f45ed4e3d114420e8ed95d4679a
     review_sha256: sha256:a0c803ae6f7886407661ed6a3bbbf43ee2ff6424414fbd945c8707c8849f4efa
     accepted_risks: []
+  design:
+    artifact_sha256: sha256:c6153012be06e2271fdbc38d6a4461e0a6501474c3712ed25f09cf6325c19960
+    review_sha256: sha256:47b3018b7484407bbdab2f2a4b4cb179178b1ad5fdf53ca8be565bf5288b7309
+    accepted_risks:
+      - id: DES-R-003
+        review_sha256: sha256:47b3018b7484407bbdab2f2a4b4cb179178b1ad5fdf53ca8be565bf5288b7309
+        comment: "Давай считать дизайн утвержденным."
 pending: null
