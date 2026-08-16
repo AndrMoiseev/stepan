@@ -8,10 +8,17 @@ description: Run the repository-scoped SDD pre-development flow when the user ex
 ## Load the contract
 
 1. Read `references/protocol.md` completely.
-2. Treat that bundled reference as the complete normative contract. Do not load
+2. Treat that bundled reference as the normative routing contract. Do not load
    a repository-specific SDD document or require one to exist.
-3. Stop without writing if the reference is missing or does not define one
-   unambiguous transition.
+3. Before validating role-owned data or launching a role, read its matching
+   brief under `references/roles/`; do not load unrelated briefs.
+4. From each selected brief's `Contracts` section, resolve only the direct links
+   that apply to the current stage. Load exactly those files under
+   `references/contracts/` and treat them with the brief as the role execution
+   contract. Do not follow links from a contract.
+5. Stop without writing if the protocol is missing, does not define one
+   unambiguous transition, or a required brief or contract is missing,
+   ambiguous, outside its allowed directory, or recursively linked.
 
 ## Route the flow
 
@@ -26,8 +33,11 @@ description: Run the repository-scoped SDD pre-development flow when the user ex
 5. Execute only the deterministic transitions allowed by the protocol. Continue
    automatic role and review work only until the next user checkpoint or blocker.
 6. Launch every substantive role through its project-scoped custom agent with no
-   inherited conversation and only its role brief, declared inputs, expected
-   output, and write boundary. Do not perform a role in the router context.
+   inherited conversation. Build its prompt only from the matching role brief,
+   contracts directly declared by that brief for the current stage, declared
+   inputs and their canonical hashes when reviewing, expected output, write
+   boundary, and current feedback or pending response when applicable. Do not
+   perform a role in the router context.
 7. Verify the actual write boundary after every role. Accept no result that
    changed an unexpected path.
 8. Modify `state.yaml` and persist reviewer output only as router. Never rewrite
