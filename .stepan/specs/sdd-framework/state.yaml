@@ -1,9 +1,13 @@
 schema_version: 1
 created_at: 2026-08-16T14:13:07Z
-stage: requirements
-status: reviewing
+stage: design
+status: drafting
 automatic_revision_attempts: 0
 approvals:
   idea:
     artifact_sha256: sha256:252b86a934f93361e9392829c97d14f1f34acc2bd0ea81c823b0973ccb966ffb
+  requirements:
+    artifact_sha256: sha256:eac5a91aaf4e67c941420e490d008d8df2533f45ed4e3d114420e8ed95d4679a
+    review_sha256: sha256:a0c803ae6f7886407661ed6a3bbbf43ee2ff6424414fbd945c8707c8849f4efa
+    accepted_risks: []
 pending: null
