@@ -23,7 +23,9 @@
   conversation. Pass only declared files and feedback.
 - Let authors write only their own artifact. Let only the router write
   `state.yaml` and `review/*.yaml`.
-- Never silently change an approved artifact or infer a material user decision.
+- Never silently change an approved artifact or infer a product decision. At the
+  requirements stage, treat every unresolved semantic uncertainty as requiring
+  a user question before authoring, revision, review completion, or approval.
 - Never implement code, run a code-review flow, push, merge, or deploy.
 
 Keep project inputs and their discovery rules in each role's project-scoped
@@ -103,6 +105,7 @@ Store one unresolved question or revision request as:
 ```yaml
 pending:
   kind: clarification | revision
+  origin: author | review | router
   stage: design
   request: "..."
   response: null
@@ -145,6 +148,11 @@ Use a read-only sandbox for the reviewer when available. Always snapshot the
 repository before a review and reject the result if the reviewer changed any
 file.
 
+When a role's selected rules permit a blocking question, accept exactly one
+direct question instead of its normal result only if it made no file changes.
+Never reinterpret a question as an artifact, finding correction, or role
+failure.
+
 ## Routing
 
 For `new`:
@@ -158,20 +166,30 @@ For an existing change, read state and verify all recorded hashes before acting.
 Then apply the single matching transition:
 
 - `drafting`: launch the current stage owner;
+- owner returns a valid blocking question: set `awaiting-decision`, store it in
+  `pending` with `kind: clarification` and `origin: author`, and stop;
 - successful `idea` author: set `awaiting-approval`;
 - successful later author: set `reviewing` and launch a fresh reviewer;
 - review `pass`: set `awaiting-approval`;
-- repairable `changes-required`: increment `automatic_revision_attempts`, set
+- review contains a blocking `resolution: user-decision` finding: set
+  `awaiting-decision`, store its direct question in `pending` with
+  `kind: clarification` and `origin: review`, and stop without automatic
+  revision;
+- repairable `changes-required` whose blocking findings all use
+  `resolution: author-revision`: increment `automatic_revision_attempts`, set
   `revising`, launch a fresh owner with findings, then review again;
-- finding requiring user choice: set `awaiting-decision` and persist it in
-  `pending`;
-- third unsuccessful automatic revision: set `awaiting-decision`; do not launch
-  a fourth;
+- third unsuccessful automatic revision: set `awaiting-decision`, store one
+  direct next-step question in `pending` with `kind: revision` and
+  `origin: router`, and do not launch a fourth;
 - `awaiting-approval` or `awaiting-decision`: show the checkpoint and stop;
 - `stage: plan`, `status: approved`: report ready for implementation and stop.
 
 When the user answers `pending`, persist the answer before launching a fresh
-role. Clear `pending` only after that role processes it successfully. Reset the
+role. For `origin: author`, relaunch that owner with the answer. For
+`origin: review`, launch the current stage owner with the review and answer,
+then review the resulting artifact again. For `origin: router`, treat the answer
+as user-directed revision guidance and launch the current stage owner. Clear
+`pending` only after the owner processes the answer successfully. Reset the
 automatic revision counter after a user-directed revision or stage transition.
 
 If a later stage exposes a material upstream defect, return to that artifact's
@@ -187,11 +205,14 @@ Offer only:
 - `revise <feedback>`: reset the automatic revision counter and launch a fresh
   owner, followed by review where applicable;
 - `question <text>`: answer without changing artifacts or state;
-- `accept-risk <finding-ids> [comment]`: record explicit acceptance and advance;
+- `accept-risk <finding-ids> [comment]`: record explicit acceptance of an
+  objective risk and advance;
 - `stop`: make no further transition.
 
 Allow `continue` only for `idea` or a `pass` review. Require `revise` or explicit
-`accept-risk` for blocking findings. Silence never approves.
+`accept-risk` for blocking `author-revision` findings. Never allow
+`accept-risk`, `continue`, or automatic revision to bypass a `user-decision`
+finding or unanswered `pending` question. Silence never approves.
 
 Record each approval under `approvals.<stage>` with `artifact_sha256`, the
 applicable `review_sha256`, and `accepted_risks`. After plan approval, keep
@@ -223,7 +244,8 @@ characters. Record and compare the returned digest unchanged.
   explicit resume may launch a fresh role from saved files.
 - On an unexpected write, hash mismatch, malformed file, unknown schema, or
   manual change to an approved artifact, do not accept, overwrite, reset, or
-  commit. Set `awaiting-decision` when state can be updated safely and show the
+  commit. When state can be updated safely, set `awaiting-decision`, persist one
+  direct question with `kind: clarification` and `origin: router`, and show the
   exact discrepancy.
 - On commit failure, remain at the same checkpoint. Remove only router-created
   temporary/index changes; never roll back user- or hook-created files.

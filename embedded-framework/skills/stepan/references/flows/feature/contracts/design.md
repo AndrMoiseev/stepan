@@ -7,7 +7,7 @@ Keep every required section non-empty. Additional useful sections are allowed.
 ## Overview
 ## Decisions
 ### DES-001 — <short name>
-Covers: REQ-001, ...
+Covers: ADDED Requirement "<exact requirement name>", ...
 Decision: <chosen solution>
 Rationale: <why>
 ## Affected components
@@ -15,5 +15,13 @@ Rationale: <why>
 ## Verification
 ```
 
-Cover every `REQ-*` with at least one stable `DES-*`. Never renumber an existing
-design decision ID.
+Cover every delta entry with at least one stable `DES-*`. Use these exact
+traceability forms:
+
+- `ADDED Requirement "<name>"`
+- `MODIFIED Requirement "<name>"`
+- `REMOVED Requirement "<name>"`
+- `RENAMED Requirement "<old name>" -> "<new name>"`
+
+For a delta with no implementation impact, record and justify that conclusion in
+its covering decision. Never renumber an existing design decision ID.

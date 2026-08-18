@@ -11,8 +11,8 @@
 
 Read approved `idea.md`, `requirements.md`, and the project inputs declared by
 the designer's project-scoped agent. Write only `design.md` using the supplied
-artifact contract. Choose the smallest feasible solution, cover every
-requirement, and state affected components, constraints, risks, trade-offs, and
+artifact contract. Choose the smallest feasible solution, cover every delta
+entry, and state affected components, constraints, risks, trade-offs, and
 verification.
 
 Use the shared requirements rules to interpret the approved requirements. Do not
