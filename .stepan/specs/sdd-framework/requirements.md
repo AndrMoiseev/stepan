@@ -119,11 +119,11 @@ Statement: Reader должен остановить flow без записи п�
 Verification: Fixture с неподдерживаемой версией не изменяется и возвращает явную ошибку совместимости.
 
 ### REQ-030 — Каноническое хеширование
-Statement: Router должен получать canonical SHA-256 артефактов, reviews, manifests и provenance-входов только через `.agents/skills/sdd/scripts/sdd.py`.
+Statement: Router должен получать canonical SHA-256 артефактов, reviews, manifests и provenance-входов только через `../../../embedded-framework/skills/sdd/scripts/sdd.py`.
 Verification: Проверка adapter-кода не находит второй реализации canonicalization или hashing, а golden fixtures обрабатываются helper-скриптом.
 
 ### REQ-031 — Ограничение helper
-Statement: `.agents/skills/sdd/scripts/sdd.py` должен использовать только Python 3 standard library для генерации `spec-id` и canonical hashing.
+Statement: `../../../embedded-framework/skills/sdd/scripts/sdd.py` должен использовать только Python 3 standard library для генерации `spec-id` и canonical hashing.
 Verification: Helper выполняет golden fixtures в чистом Python 3 environment без внешних пакетов.
 
 ### REQ-032 — Baseline approval
@@ -143,7 +143,7 @@ Statement: Router должен зафиксировать source payload и ег
 Verification: После прерывания перед Framer новая сессия восстанавливает тот же source hash без истории чата.
 
 ### REQ-036 — Делегированная генерация spec-id
-Statement: Router должен передать зафиксированный source payload в `.agents/skills/sdd/scripts/sdd.py` и использовать возвращённый helper результат без собственной нормализации.
+Statement: Router должен передать зафиксированный source payload в `../../../embedded-framework/skills/sdd/scripts/sdd.py` и использовать возвращённый helper результат без собственной нормализации.
 Verification: Golden sources дают один и тот же `spec-id` при прямом вызове helper и через Router.
 
 ### REQ-037 — Разрешение коллизии spec-id
@@ -458,7 +458,7 @@ Verification: Снимок успешного event до запуска авто
 
 - Этот контракт охватывает только pre-development flow до `stage: plan`, `status: approved`; реализация, тестирование реализации, code review, rework кода и post-development flow находятся вне scope.
 - Реализация Codex adapter и adapters других систем не входит в текущий результат спецификации; в scope входят их обязательная форма, interoperability constraints и критерии реализуемости.
-- Фиксированными interoperability contracts считаются каталог `.stepan/specs/<spec-id>/`, имена канонических файлов из REQ-016, helper `.agents/skills/sdd/scripts/sdd.py` и repository-scoped agent overrides из REQ-038—REQ-039.
+- Фиксированными interoperability contracts считаются каталог `.stepan/specs/<spec-id>/`, имена канонических файлов из REQ-016, helper `../../../embedded-framework/skills/sdd/scripts/sdd.py` и repository-scoped agent overrides из REQ-038—REQ-039.
 - Portable protocol остаётся provider-neutral. Project-specific document paths не являются частью общего protocol и существуют только в конфигурации конкретной роли.
 - Design выбирает конкретные форматы launch envelope, project-input manifest, accepted-risk storage, transition table, publication intent и recovery journal при условии соблюдения наблюдаемых требований выше.
 - Design выбирает механизм atomic publication и Git isolation; контракт не предполагает, что несколько filesystem/Git записей физически атомарны.

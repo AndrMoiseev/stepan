@@ -1,6 +1,0 @@
-interface:
-  display_name: "SDD Router"
-  short_description: "Run the repository SDD pre-development flow"
-  default_prompt: "Use $sdd to start or continue this repository's pre-development specification flow."
-policy:
-  allow_implicit_invocation: true

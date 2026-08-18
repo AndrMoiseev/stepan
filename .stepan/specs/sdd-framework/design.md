@@ -8,7 +8,7 @@ The implementation has four boundaries:
 
 1. **Portable protocol** — provider-neutral artifact schemas, role contracts, dependency rules, event/guard/effect table, and adapter conformance scenarios. It contains no repository-specific project-document paths.
 2. **Router** — a Python 3 standard-library state-machine engine, validators, publication coordinator, recovery coordinator, and Git checkpoint coordinator. It is the sole writer of `state.yaml` and canonical review files.
-3. **Deterministic helper** — `.agents/skills/sdd/scripts/sdd.py`, the sole implementation of `spec-id` derivation and canonical hashing. The Router invokes its CLI and treats its results as authoritative; it does not duplicate either algorithm.
+3. **Deterministic helper** — `../../../embedded-framework/skills/sdd/scripts/sdd.py`, the sole implementation of `spec-id` derivation and canonical hashing. The Router invokes its CLI and treats its results as authoritative; it does not duplicate either algorithm.
 4. **Adapter and role configurations** — a small runner interface plus repository-scoped `.codex/agents/*.toml` overrides for the first Codex adapter. Each override declares that role's prompt/configuration, project inputs, model, reasoning effort, and sandbox. Other providers can implement the same runner interface without changing the protocol or package.
 
 Canonical flow data lives below `.stepan/specs/<spec-id>/`. Markdown is used for the four authored artifacts. Machine files use a deliberately small JSON data model serialized into the required `.yaml` paths; JSON is a YAML 1.2 subset and can be read and written deterministically with the Python standard library. Router-owned transaction files may temporarily exist under `.stepan/specs/<spec-id>/.router/`, are excluded from approval commits, and are removed after reconciliation.
@@ -75,7 +75,7 @@ Covers: REQ-028, REQ-029, REQ-030, REQ-031, REQ-102
 
 Decision: Serialize `state.yaml`, review files, manifests, risk records, intents, and adapter envelopes as UTF-8 JSON objects using sorted keys, fixed separators, and a trailing newline. This representation is valid YAML 1.2 but needs only `json` from the Python standard library. Every canonical machine record contains integer `schema_version: 1`. Readers accept known older versions only through explicit lossless migrations and stop before any write for a future or lossy version.
 
-All `spec-id` and canonical SHA-256 work is delegated by subprocess/API call to `.agents/skills/sdd/scripts/sdd.py`. The helper exposes typed operations for source/spec-ID handling and for hashing text, file, and JSON-compatible values. The Router never normalizes source text, canonicalizes JSON, or computes a substitute digest; it stores and compares helper outputs. The helper itself remains Python 3 standard-library-only. Byte-identical assertions are limited to helper golden fixtures and re-reading a previously published output; independent generative role runs are compared by contract and provenance, not byte equality.
+All `spec-id` and canonical SHA-256 work is delegated by subprocess/API call to `../../../embedded-framework/skills/sdd/scripts/sdd.py`. The helper exposes typed operations for source/spec-ID handling and for hashing text, file, and JSON-compatible values. The Router never normalizes source text, canonicalizes JSON, or computes a substitute digest; it stores and compares helper outputs. The helper itself remains Python 3 standard-library-only. Byte-identical assertions are limited to helper golden fixtures and re-reading a previously published output; independent generative role runs are compared by contract and provenance, not byte equality.
 
 Rationale: A JSON subset avoids adding a YAML dependency while retaining the required paths and deterministic encoding. A single hashing authority prevents subtly different normalization rules from splitting provenance.
 
@@ -253,7 +253,7 @@ The Router enforces these invariants before and after every durable mutation:
 |---|---|---|
 | Portable protocol | Schemas, role/result types, dependency graph, transition rows, adapter scenarios | Maintainer at implementation time; never a runtime role |
 | Router CLI/core | Event dispatch, guards, validation, role orchestration, provenance, state transitions | Canonical state, reviews, accepted risks, approvals, Router transaction data |
-| `.agents/skills/sdd/scripts/sdd.py` | Authoritative spec-ID generation and canonical hashes | No package mutation; returns deterministic values |
+| `../../../embedded-framework/skills/sdd/scripts/sdd.py` | Authoritative spec-ID generation and canonical hashes | No package mutation; returns deterministic values |
 | Adapter interface | Fresh-context role execution, attempt fencing, and capability mapping | Only the current Router-owned isolated workspace/outbox permitted by invocation |
 | `.codex/agents/*.toml` | Repository-specific role prompt, project inputs, model, reasoning, sandbox | Repository configuration; read-only during a flow |
 | Artifact validators | Markdown contracts, stable IDs, coverage and traceability | None |
@@ -268,7 +268,7 @@ The Router enforces these invariants before and after every durable mutation:
 |---|---|---|
 | Repository-scoped agent overrides remain the source of role settings. | Separate `.codex/agents/*.toml` files remain mandatory and own project inputs, model, reasoning, and sandbox settings. | REQ-038, REQ-039; DES-002 |
 | The common protocol prescribes no global project-document paths. | Protocol exposes only a role-local `project_inputs` abstraction; concrete paths exist solely in that role's TOML and are resolved at invocation time. | REQ-040, REQ-041, REQ-042; DES-002, DES-005 |
-| Spec-ID and canonical hash algorithms remain in `.agents/skills/sdd/scripts/sdd.py`. | Router invokes typed helper operations and stores their outputs; it contains no normalization, canonicalization, suffixing, or hashing implementation. | REQ-030, REQ-031, REQ-034, REQ-036, REQ-037; DES-001, DES-004 |
+| Spec-ID and canonical hash algorithms remain in `../../../embedded-framework/skills/sdd/scripts/sdd.py`. | Router invokes typed helper operations and stores their outputs; it contains no normalization, canonicalization, suffixing, or hashing implementation. | REQ-030, REQ-031, REQ-034, REQ-036, REQ-037; DES-001, DES-004 |
 | The canonical package location and names are interoperability contracts. | All version-controlled flow data is under `.stepan/specs/<spec-id>/` at the eight fixed paths; `.router/` is temporary and excluded from commits. | REQ-015, REQ-016, REQ-017; DES-001, DES-009, DES-010 |
 | The flow ends before implementation. | The only successful terminal state is `plan/approved`; no implementation role or transition exists. | REQ-002, REQ-004, REQ-058, REQ-073; DES-001, DES-007 |
 | Idea has a user checkpoint but no agent review. | Framer publication moves directly to `idea/awaiting-approval`; required reviews begin at requirements. | REQ-050, REQ-061; DES-003, DES-007 |
