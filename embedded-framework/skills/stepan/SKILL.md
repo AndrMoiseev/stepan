@@ -1,58 +1,43 @@
 ---
 name: stepan
-description: Run the repository-scoped Stepan pre-development flow when the user explicitly asks to start, continue, inspect, revise, approve, or stop a Stepan specification, or invokes $stepan. Do not use for ordinary planning, design, review, or coding requests that do not explicitly request the Stepan flow.
+description: Route repository-scoped Stepan workflows when the user invokes $stepan, asks to choose a Stepan workflow, or explicitly requests a supported command such as `$stepan feature new`. Use the `feature` workflow for pre-development feature specifications. Do not use for ordinary planning, design, review, or coding requests that do not explicitly request Stepan.
 ---
 
-# Stepan Router
+# Stepan workflow router
 
-## Load the contract
+## Select a workflow
 
-1. Read `references/protocol.md` completely.
-2. Treat that bundled reference as the normative routing contract. Do not load
-   a repository-specific Stepan document or require one to exist.
-3. Before validating role-owned data or launching a role, read its matching
-   brief under `references/roles`; do not load unrelated briefs.
-4. From each selected brief's `Contracts` section, resolve only the direct links
-   that apply to the current stage. Load exactly those files under
-   `references/contracts` and treat them with the brief as the role execution
-   contract. Do not follow links from a contract.
-5. Stop without writing if the protocol is missing, does not define one
-   unambiguous transition, or a required brief or contract is missing,
-   ambiguous, outside its allowed directory, or recursively linked.
+Parse invocations as `$stepan <workflow> <action> [arguments]`.
 
-## Route the flow
+| Workflow | Purpose | Primary command | Contract |
+| --- | --- | --- | --- |
+| `feature` | Specify a feature before implementation | `$stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
 
-1. Resolve the explicit user action: start, resume, status, checkpoint action, or
-   stop.
-2. Treat `.stepan/specs/<spec-id>/` and the repository as the source of truth;
-   do not rely on chat history.
-3. Validate the current state, approval hashes, expected files, and fresh-agent
-   capability before launching a role.
-4. Use `scripts/stepan.py` for spec identifiers and canonical hashes; never
-   reimplement those algorithms in the router.
-5. Execute only the deterministic transitions allowed by the protocol. Continue
-   automatic role and review work only until the next user checkpoint or blocker.
-6. Launch every substantive role through its project-scoped custom agent with no
-   inherited conversation. Build its prompt only from the matching role brief,
-   contracts directly declared by that brief for the current stage, declared
-   inputs and their canonical hashes when reviewing, expected output, write
-   boundary, and current feedback or pending response when applicable. Do not
-   perform a role in the router context.
-7. Verify the actual write boundary after every role. Accept no result that
-   changed an unexpected path.
-8. Modify `state.yaml` and persist reviewer output only as router. Never rewrite
-   an approved artifact silently.
-9. At a checkpoint, show the artifact, current review verdict and findings, then
-   offer only the actions valid for that state.
+- On `$stepan` without a workflow, show the supported workflows and their
+  primary commands, then stop without writing.
+- On `$stepan <workflow>` without an action, show that workflow's actions from
+  its protocol, then stop without writing.
+- On an unknown workflow or action, show only the valid choices and stop without
+  writing.
+- Never infer an omitted workflow from repository contents or chat history.
 
-## Preserve boundaries
+## Dispatch the selected workflow
 
-- Require an explicit Stepan request; never infer one from an ordinary task.
-- Do not implement code. End at `stage: plan`, `status: approved`.
-- Keep the portable protocol, role prompts, schemas, and deterministic scripts in
-  this skill. Use project-scoped custom agents for project inputs, model,
-  reasoning effort, and sandbox configuration.
-- Do not commit unless the user explicitly selects `continue-and-commit` at the
-  current checkpoint.
-- On ambiguity, unexpected repository changes, failed validation, or unavailable
-  fresh-agent capability, stop safely and report the single blocking condition.
+1. Read only the selected workflow's protocol completely and treat it as the
+   normative routing contract.
+2. Require the protocol to define the requested action unambiguously before
+   reading workflow-specific roles or contracts or writing repository state.
+3. Load only the roles, contracts, scripts, and repository inputs selected by
+   that protocol. Do not load resources belonging to another workflow.
+4. Execute only the deterministic transitions allowed by the selected protocol.
+5. Stop safely on a missing or ambiguous workflow resource, invalid state,
+   unavailable required capability, or unexpected repository change.
+
+## Preserve router boundaries
+
+- Keep workflow selection in this file and workflow behavior under
+  `references/flows/<workflow>/`.
+- Add a workflow only by adding one explicit table entry and one self-contained
+  protocol directory.
+- Do not let one workflow read or mutate another workflow's state unless both
+  protocols explicitly define that interaction.
