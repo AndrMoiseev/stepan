@@ -14,8 +14,9 @@
 
 ## Invariants
 
-- Run only after the Stepan router selects the `feature` workflow from an
-  explicit `$stepan feature <action>` request.
+- Select this workflow only from an explicit `$stepan feature <action>` request.
+  After selection, accept a bare checkpoint response only when the router just
+  offered that response for the loaded specification.
 - Route `idea → requirements → design → plan`; stop after plan approval.
 - Treat repository files, not chat history, as the source of truth.
 - Launch every author and every review as a fresh agent without inherited
@@ -120,16 +121,25 @@ Use the matching brief both to validate role-owned data and to launch a role:
 | reviewer | `roles/reviewer.md` | current review artifacts; previous review when needed | review data | none |
 
 Resolve each selected brief's `Contracts` section before validation or launch.
-Load only direct Markdown links that apply to the current stage, require every
-resolved path to be under this workflow's `contracts/` directory, and reject
-missing, ambiguous, external, or recursive contract references. Do not load an
-unselected contract.
+Load only direct Markdown links that apply to the current stage. Require every
+resolved path to be either under this workflow's `contracts/` directory or the
+skill's `references/modules/` directory. Reject missing, ambiguous, external, or
+recursive references. Do not follow links from a resolved contract or module.
+Do not load an unselected contract or module.
 
-Construct the role prompt from the brief, its resolved contracts, explicit input
-paths and their canonical hashes when reviewing, expected output path, and
-allowed write path. Include current findings or a persisted pending response
-only when the transition requires them. Instruct the role not to inspect parent
-chat or undeclared runtime data. Do not load or quote any unrelated role brief.
+Treat files under `references/modules/` as private role dependencies. Reject a
+module if it contains skill frontmatter, defines a direct command or workflow
+transition, expands the role's write boundary, or attempts to load another
+module. Modules may define only reusable artifact, shared, authoring, consuming,
+or reviewing rules for the selected role.
+
+Construct the role prompt from the brief, then its applicable direct links in
+their written order, then declared project inputs, explicit artifact paths and
+their canonical hashes when reviewing, expected output path, and allowed write
+path. Include current findings or a persisted pending response only when the
+transition requires them. Instruct the role not to inspect parent chat or
+undeclared runtime data. Do not load or quote any unrelated role brief,
+contract, or module.
 
 Use a read-only sandbox for the reviewer when available. Always snapshot the
 repository before a review and reject the result if the reviewer changed any

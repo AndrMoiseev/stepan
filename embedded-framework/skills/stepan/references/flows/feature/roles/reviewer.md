@@ -2,20 +2,24 @@
 
 ## Contracts
 
-Always load the [review data contract](../contracts/review.md). Load artifact
-contracts only for the current review stage:
+Always load the [review data contract](../contracts/review.md). Load only the
+artifact contracts and private modules listed for the current review stage:
 
-| Stage | Artifact contracts |
+| Stage | Contracts and modules |
 | --- | --- |
-| requirements | [`idea.md`](../contracts/idea.md), [`requirements.md`](../contracts/requirements.md) |
-| design | [`idea.md`](../contracts/idea.md), [`requirements.md`](../contracts/requirements.md), [`design.md`](../contracts/design.md) |
-| plan | [`idea.md`](../contracts/idea.md), [`requirements.md`](../contracts/requirements.md), [`design.md`](../contracts/design.md), [`plan.md`](../contracts/plan.md) |
+| requirements | [`idea.md`](../contracts/idea.md), [`requirements.md`](../../../modules/requirements/artifact.md), [`requirements common`](../../../modules/requirements/common.md), [`requirements reviewing`](../../../modules/requirements/reviewing.md) |
+| design | [`idea.md`](../contracts/idea.md), [`requirements.md`](../../../modules/requirements/artifact.md), [`requirements common`](../../../modules/requirements/common.md), [`design.md`](../contracts/design.md) |
+| plan | [`idea.md`](../contracts/idea.md), [`requirements.md`](../../../modules/requirements/artifact.md), [`requirements common`](../../../modules/requirements/common.md), [`design.md`](../contracts/design.md), [`plan.md`](../contracts/plan.md) |
 
 ## Task
 
-Read only the artifacts declared for the current review and the previous review
-when preserving unresolved finding IDs. Do not write any file. Return review data
-matching the supplied review schema.
+Read only the artifacts and private modules declared for the current review, the
+project inputs declared by the reviewer's project-scoped agent, and the previous
+review when preserving unresolved finding IDs. Do not write any file. Return
+review data matching the supplied review schema.
+
+Apply requirements review rules only at the `requirements` stage. Never apply
+requirements authoring rules.
 
 Check correctness, completeness, consistency, testability, scope, traceability,
 feasibility, risks, and unjustified complexity. Ignore style preferences without

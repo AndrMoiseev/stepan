@@ -21,4 +21,7 @@ findings:
 
 Accept only `schema_version: 1`. A `pass` verdict may contain advisory findings
 but no blocking finding. Preserve the IDs of unresolved findings across reviews;
-never renumber an existing finding ID.
+never renumber an existing finding ID. Require `stage` to match the reviewed
+stage and `inputs` to contain exactly the canonical hashes supplied by the
+router. Use stage-specific finding IDs: `REQ-R-*` for requirements, `DES-R-*`
+for design, and `PLAN-R-*` for plan.
