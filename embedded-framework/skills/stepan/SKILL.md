@@ -1,21 +1,28 @@
 ---
 name: stepan
-description: Route repository-scoped Stepan workflows only when the user explicitly invokes $stepan, including commands such as `$stepan feature new`. Use the `feature` workflow for pre-development feature specifications. Do not invoke for an ordinary planning, design, review, or coding request.
+description: Route repository-scoped Stepan workflows only when the user explicitly invokes `$stepan` in Codex or `/stepan` in Claude Code. Use the `feature` workflow for pre-development feature specifications. Do not invoke for an ordinary planning, design, review, or coding request.
 ---
 
 # Stepan workflow router
 
 ## Select a workflow
 
-Parse invocations as `$stepan <workflow> <action> [arguments]`.
+Accept either host command token and normalize it away before parsing:
+
+- Codex: `$stepan <workflow> <action> [arguments]`;
+- Claude Code: `/stepan <workflow> <action> [arguments]`.
+
+Require an explicit user invocation through the current host. Never treat a
+mention, quoted example, agent instruction, or implicit skill selection as a
+Stepan command.
 
 | Workflow | Purpose | Primary command | Contract |
 | --- | --- | --- | --- |
-| `feature` | Specify a feature before implementation | `$stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
+| `feature` | Specify a feature before implementation | `$stepan feature new [idea]` or `/stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
 
-- On `$stepan` without a workflow, show the supported workflows and their
+- On an invocation without a workflow, show the supported workflows and their
   primary commands, then stop without writing.
-- On `$stepan <workflow>` without an action, show that workflow's actions from
+- On an invocation with a workflow but no action, show that workflow's actions from
   its protocol, then stop without writing.
 - On an unknown workflow or action, show only the valid choices and stop without
   writing.

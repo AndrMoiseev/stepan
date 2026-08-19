@@ -6,7 +6,7 @@
 - [Configuration rules](#configuration-rules)
 - [Resolved execution](#resolved-execution)
 - [Role runs](#role-runs)
-- [Codex adapter](#codex-adapter)
+- [Native adapters](#native-adapters)
 - [Mailbox adapter](#mailbox-adapter)
 - [Receipts](#receipts)
 - [Safety and failure rules](#safety-and-failure-rules)
@@ -15,15 +15,16 @@
 
 Read optional project execution configuration only from
 `.stepan/config.yaml`. When it is absent, bind every feature role to a fresh
-default Codex agent that inherits the parent model and reasoning effort. When it
-exists, require this schema and require an explicit binding for every role:
+default native agent on the current host that inherits the parent model and
+reasoning effort. When it exists, require this schema and require an explicit
+binding for every role:
 
 ```yaml
 schema_version: 1
 
 adapters:
   native:
-    kind: codex
+    kind: native
 
   corporate:
     kind: mailbox
@@ -72,17 +73,23 @@ unknown keys rather than guessing their meaning.
 
 Require every adapter to have exactly one supported `kind`:
 
-- `codex`: accept no adapter-specific fields;
+- `native`: accept no adapter-specific fields and resolve it to the current
+  supported host before persisting state;
+- `codex`: accept no adapter-specific fields and require the current host to be
+  Codex;
+- `claude-code`: accept no adapter-specific fields and require the current host
+  to be Claude Code;
 - `mailbox`: require an absolute non-root `root`; accept optional integer
-  `wait_seconds` from `0` through `60`, defaulting to `15`.
+  `wait_seconds` from `0` through `3600`, defaulting to `3600`.
 
 Require every executor to name one declared adapter. Apply the schema selected
 by that adapter:
 
-- For `codex`, require one non-empty `agent`. Resolve it as an available Codex
-  custom or built-in agent. Keep Codex-specific `model` and
-  `model_reasoning_effort` in that agent's TOML configuration; reject those
-  fields in `.stepan/config.yaml`.
+- For `native`, `codex`, or `claude-code`, require one non-empty `agent`.
+  Resolve it as an available custom or built-in agent under the selected host
+  adapter. Keep model and reasoning configuration in that host's agent
+  definition; reject `model`, `reasoning`, `model_reasoning_effort`, and
+  `effort` in `.stepan/config.yaml`.
 - For `mailbox`, require one non-empty opaque `model` string and accept one
   optional non-empty opaque `reasoning` string. Pass both unchanged to the
   daemon. Reject `agent`, `target`, `profile`, or any silent model or reasoning
@@ -105,6 +112,13 @@ Hash `.stepan/config.yaml` with the bundled canonical hash command when the file
 exists. Persist a normalized snapshot containing the source, configuration hash,
 adapters, executors, and role bindings in `state.yaml`. For the built-in default,
 record `source: builtin` and `config_sha256: null`.
+
+Determine the current host from the active runtime and capabilities, never from
+repository files, configuration names, or chat text. Resolve every `native`
+adapter to concrete `kind: codex` or `kind: claude-code` before persisting it.
+Stop before writing when the host cannot be identified, its adapter contract is
+missing, or a concrete adapter kind does not match the current host. This keeps
+existing Codex snapshots valid and prevents an implicit cross-host rebind.
 
 Use the persisted snapshot for the lifetime of that specification. A later edit
 to `.stepan/config.yaml` affects only new specifications. Never rebind an
@@ -144,6 +158,9 @@ Require every executor to read its declared files from the project filesystem,
 write its output atomically, and return only a compact receipt. For an allowed
 blocking question, require no file change and return only the question receipt.
 Instruct every executor to ignore parent chat and undeclared runtime data.
+Host-supplied ambient context is allowed only when the selected native adapter
+declares it. Never treat ambient context as a product input, approval, or
+permission to expand the manifest or write boundary.
 
 After completion, recompute the output hash with the bundled script, verify all
 input hashes, and compare the repository snapshot. Accept exactly the allowed
@@ -152,21 +169,31 @@ deletion, rename, or input change. Do not load a role-owned artifact into router
 context merely to transfer it to the next role; pass its path and canonical
 hash.
 
-## Codex adapter
+## Native adapters
 
-Launch the configured Codex agent as a fresh subagent without inherited
-conversation. Require a capability that can select the configured agent and
-give it project filesystem access. Stop before dispatch if that capability is
-not available.
+After resolving `native` to a concrete host, read only that host's adapter
+contract completely:
 
-Let the selected custom agent's TOML determine its Codex model, reasoning effort,
-and project-scoped instructions. Do not pass competing model or reasoning
-overrides. For the built-in default binding, inherit the parent model and
-reasoning effort.
+| Kind | Contract |
+| --- | --- |
+| `codex` | [`adapters/codex.md`](adapters/codex.md) |
+| `claude-code` | [`adapters/claude-code.md`](adapters/claude-code.md) |
 
-Ask the subagent to write only its allowed output and end with a compact receipt.
-Do not ask it to return the artifact body. Treat a missing, verbose, malformed,
-or contradictory receipt as a failed run even if an output file appeared.
+Treat the selected adapter contract as normative for agent discovery, ambient
+context, model and reasoning configuration, launch, and interrupted-run
+inspection. Require a capability that can select the configured agent, start a
+fresh non-fork run, and give it project filesystem access. Stop before dispatch
+if that capability is unavailable.
+
+For `agent: default`, use the selected adapter's fresh general-purpose default
+and inherit the parent model and reasoning effort. For a named agent, let its
+host configuration determine model, reasoning effort, tools, and project-scoped
+instructions. Do not pass competing overrides.
+
+Ask the subagent to write only its allowed output and end with a compact
+receipt. Do not ask it to return the artifact body. Treat a missing, verbose,
+malformed, or contradictory receipt as a failed run even if an output file
+appeared.
 
 ## Mailbox adapter
 
@@ -175,7 +202,8 @@ root. Publish each request as `<run-id>.json` through a same-directory temporary
 file and atomic rename. Never overwrite an existing request or response.
 
 Publish this request envelope, omitting `reasoning` when the executor does not
-configure it:
+configure it. Replace `<skill-root-relative>` with the canonical skill root
+relative to the project root resolved by the feature protocol:
 
 ```json
 {
@@ -186,8 +214,8 @@ configure it:
   "role": "designer",
   "purpose": "draft",
   "project_root": "/workspace/project",
-  "brief": ".agents/skills/stepan/references/flows/feature/roles/designer.md",
-  "contracts": [".agents/skills/stepan/references/flows/feature/contracts/design.md"],
+  "brief": "<skill-root-relative>/references/flows/feature/roles/designer.md",
+  "contracts": ["<skill-root-relative>/references/flows/feature/contracts/design.md"],
   "inputs": [
     {
       "path": ".stepan/specs/export-data/requirements.md",
@@ -216,8 +244,8 @@ best-effort and never assume it prevented a late response.
 
 Accept exactly one of these response forms. Require JSON and `schema_version: 1`
 for mailbox responses. Require the same status, run, output, and question fields
-semantically from a Codex subagent receipt. Require `executor` metadata for a
-mailbox completion and permit it to be absent from a Codex completion.
+semantically from a native subagent receipt. Require `executor` metadata for a
+mailbox completion and permit it to be absent from a native completion.
 
 For completion:
 

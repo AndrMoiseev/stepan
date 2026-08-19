@@ -15,8 +15,9 @@
 
 ## Invariants
 
-- Select this workflow only from an explicit `$stepan feature <action>` request.
-  After selection, accept a bare checkpoint response only when the router just
+- Select this workflow only from an explicit `$stepan feature <action>` request
+  in Codex or `/stepan feature <action>` request in Claude Code. After
+  selection, accept a bare checkpoint response only when the router just
   offered that response for the loaded specification.
 - Route `idea → requirements → design → plan`; stop after plan approval.
 - Treat repository files, not chat history, as the source of truth.
@@ -31,13 +32,13 @@
 - Never implement code, run a code-review flow, push, merge, or deploy.
 
 Keep project inputs and their discovery rules in each role's project-scoped
-executor configuration. For a Codex executor, keep those rules in its custom
-agent. Do not prescribe repository-wide project documents here. Load only the
-inputs declared for the role being run.
+executor configuration. For a host-native executor, keep those rules in its
+custom agent. Do not prescribe repository-wide project documents here. Load
+only the inputs declared for the role being run.
 
 ## Command surface
 
-Accept these actions after `$stepan feature`:
+Accept these actions after an explicit Stepan `feature` invocation:
 
 - `new [idea]`: create a feature specification; when the idea is omitted, ask
   for it before writing;
@@ -59,11 +60,21 @@ Use the bundled Python script for deterministic identifiers and hashes. It emits
 JSON, uses only the Python 3 standard library, and never writes repository state:
 
 ```text
-python .agents/skills/stepan/scripts/stepan.py spec-id --idea <text> --root .stepan/specs
-python .agents/skills/stepan/scripts/stepan.py run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
-python .agents/skills/stepan/scripts/stepan.py hash <file>...
-python .agents/skills/stepan/scripts/stepan.py self-test
+<python3> "<skill-root>/scripts/stepan.py" spec-id --idea <text> --root .stepan/specs
+<python3> "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
+<python3> "<skill-root>/scripts/stepan.py" hash <file>...
+<python3> "<skill-root>/scripts/stepan.py" self-test
 ```
+
+Resolve `<python3>` as an already available Python 3 command appropriate to the
+host, such as `python3`, `python`, or `py -3`. Do not install Python, use Python
+2, or change interpreter command during one specification run.
+
+Resolve `<skill-root>` as the canonical directory containing the shared router
+`SKILL.md`, following any discovery symlink and compatibility entrypoint link.
+Require it to remain beneath the canonical project root. Use this root for
+every bundled role, contract, module, and script path; never assume a
+host-specific discovery directory.
 
 Stop without writing if the script is unavailable, fails, or returns malformed
 JSON. Do not reproduce its algorithms in a prompt or shell one-liner.
@@ -72,10 +83,10 @@ JSON. Do not reproduce its algorithms in a prompt or shell one-liner.
 
 Read [`execution.md`](execution.md) completely before resolving project
 configuration, creating feature state, or dispatching a role. Treat it as the
-normative contract for project bindings, Codex and mailbox adapters, role-run
+normative contract for project bindings, native and mailbox adapters, role-run
 receipts, bounded waiting, and filesystem verification.
 
-If `.stepan/config.yaml` is absent, use the built-in Codex binding defined by
+If `.stepan/config.yaml` is absent, use the built-in native binding defined by
 the execution contract. If it exists, resolve it before writing and persist the
 normalized execution snapshot in feature state. Never reread project execution
 configuration to rebind an existing specification.
@@ -127,6 +138,9 @@ execution:
     planner: native-default
     reviewer: native-default
 ```
+
+The example is a snapshot resolved on Codex. On Claude Code, persist
+`kind: claude-code` instead. Never persist the unresolved `native` kind.
 
 Allow these values:
 
@@ -209,11 +223,11 @@ For `new`:
 
 For an existing change, read state and verify all recorded hashes before acting.
 If `active_run` is non-null, reconcile that exact run before applying any normal
-status transition: inspect or wait for the existing Codex thread when available,
-or inspect the matching mailbox response. When an interrupted Codex run cannot
-be inspected, preserve it and require an explicit decision to abandon and retry.
-Never dispatch a second run while one is active. Otherwise apply the single
-matching transition:
+status transition: inspect or wait for the existing host subagent when
+available, or inspect the matching mailbox response. When an interrupted host
+run cannot be inspected, preserve it and require an explicit decision to
+abandon and retry. Never dispatch a second run while one is active. Otherwise
+apply the single matching transition:
 
 - `drafting`: dispatch the current stage owner;
 - `waiting-executor`: inspect the active mailbox run; accept its response or
