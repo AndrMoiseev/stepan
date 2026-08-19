@@ -37,4 +37,5 @@ When reviewing `requirements.md`:
 - Recommend the smallest correction that resolves the problem without designing
   the solution or rewriting the artifact.
 
-Do not apply requirements authoring rules or modify any file.
+Do not apply requirements authoring rules or modify an artifact. Write only the
+supplied review output file.

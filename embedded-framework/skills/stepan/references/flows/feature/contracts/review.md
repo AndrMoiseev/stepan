@@ -1,7 +1,7 @@
 # Review data contract
 
-Return data matching this schema. Use the canonical input hashes supplied by the
-router; do not compute or alter them.
+Write data matching this schema only to the supplied review output path. Use the
+canonical input hashes supplied by the router; do not compute or alter them.
 
 ```yaml
 schema_version: 2

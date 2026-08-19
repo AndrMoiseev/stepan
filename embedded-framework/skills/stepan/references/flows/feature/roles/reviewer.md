@@ -14,9 +14,10 @@ artifact contracts and private modules listed for the current review stage:
 ## Task
 
 Read only the artifacts and private modules declared for the current review, the
-project inputs declared by the reviewer's project-scoped agent, and the previous
-review when preserving unresolved finding IDs. Do not write any file. Return
-review data matching the supplied review schema.
+project inputs declared by the reviewer's project-scoped executor configuration,
+and the previous review when preserving unresolved finding IDs. Write review
+data matching the supplied review schema only to the supplied
+`review/<stage>.yaml` output path. Do not modify an artifact or any other file.
 
 Apply requirements review rules only at the `requirements` stage. Never apply
 requirements authoring rules.

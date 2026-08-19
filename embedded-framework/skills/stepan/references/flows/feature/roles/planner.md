@@ -11,9 +11,9 @@
 ## Task
 
 Read all approved artifacts and the project inputs declared by the planner's
-project-scoped agent. Write only `plan.md` using the supplied artifact contract.
-Do not redesign the solution. Produce ordered, verifiable steps covering all
-delta entries and decisions.
+project-scoped executor configuration. Write only the supplied `plan.md` output
+path using the artifact contract. Do not redesign the solution. Produce ordered,
+verifiable steps covering all delta entries and decisions.
 
 Use the shared requirements rules to interpret the approved requirements. Do not
 revise `requirements.md` or apply requirements authoring or review rules.

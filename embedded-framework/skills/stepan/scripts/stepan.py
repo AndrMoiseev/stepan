@@ -12,6 +12,11 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+SPEC_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+STAGES = ("idea", "requirements", "design", "plan")
+ROLES = ("framer", "specifier", "designer", "planner", "reviewer")
+
+
 TRANSLITERATION = str.maketrans(
     {
         "а": "a",
@@ -77,6 +82,18 @@ def collision_result(idea: str, root: Path) -> dict[str, object]:
     }
 
 
+def role_run_id(specification: str, stage: str, role: str, sequence: int) -> str:
+    if len(specification) > 63 or not SPEC_ID_PATTERN.fullmatch(specification):
+        raise ValueError("invalid specification ID")
+    if stage not in STAGES:
+        raise ValueError("invalid stage")
+    if role not in ROLES:
+        raise ValueError("invalid role")
+    if sequence < 1:
+        raise ValueError("sequence must be positive")
+    return f"{specification}--{stage}--{role}--{sequence}"
+
+
 def canonicalize(content: bytes) -> bytes:
     text = content.decode("utf-8")
     if text.startswith("\ufeff"):
@@ -99,6 +116,23 @@ def self_test() -> None:
     long_id = "a" * 63
     assert next_available_spec_id(long_id, {long_id}.__contains__) == "a" * 61 + "-2"
 
+    assert (
+        role_run_id("export-data", "design", "designer", 2)
+        == "export-data--design--designer--2"
+    )
+    for arguments in (
+        ("bad--id", "design", "designer", 1),
+        ("export-data", "invalid", "designer", 1),
+        ("export-data", "design", "invalid", 1),
+        ("export-data", "design", "designer", 0),
+    ):
+        try:
+            role_run_id(*arguments)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid run ID arguments: {arguments!r}")
+
     actual = canonicalize(b"\xef\xbb\xbfa\r\nb\r")
     canonical = canonicalize(b"a\nb\n\n")
     assert actual == canonical == b"a\nb\n"
@@ -112,6 +146,12 @@ def parser() -> argparse.ArgumentParser:
     identifier.add_argument("--idea", required=True)
     identifier.add_argument("--root", type=Path, default=Path(".stepan/specs"))
 
+    run_identifier = commands.add_parser("run-id", help="Generate a role run ID")
+    run_identifier.add_argument("--spec-id", required=True)
+    run_identifier.add_argument("--stage", required=True, choices=STAGES)
+    run_identifier.add_argument("--role", required=True, choices=ROLES)
+    run_identifier.add_argument("--sequence", required=True, type=int)
+
     hashing = commands.add_parser("hash", help="Hash canonical Markdown or YAML")
     hashing.add_argument("files", nargs="+", type=Path)
 
@@ -124,6 +164,12 @@ def main() -> int:
     try:
         if args.command == "spec-id":
             output = collision_result(args.idea, args.root)
+        elif args.command == "run-id":
+            output = {
+                "run_id": role_run_id(
+                    args.spec_id, args.stage, args.role, args.sequence
+                )
+            }
         elif args.command == "hash":
             output = {
                 "files": [
@@ -134,7 +180,7 @@ def main() -> int:
         else:
             self_test()
             output = {"ok": True}
-    except (OSError, UnicodeError) as error:
+    except (OSError, UnicodeError, ValueError) as error:
         print(f"stepan.py: {error}", file=sys.stderr)
         return 1
 
