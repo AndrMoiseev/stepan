@@ -4,8 +4,9 @@ When creating or revising `requirements.md`:
 
 1. Inspect the declared inputs for unresolved uncertainty before writing. If
    any doubt could change requirement meaning, stop without creating or
-   modifying `requirements.md` and return exactly one direct blocking question
-   for the user, choosing the highest-impact unresolved doubt first.
+   modifying `requirements.md` and select exactly one direct blocking question
+   for the calling role's blocked result, choosing the highest-impact unresolved
+   doubt first.
 2. Extract the actors, triggers, states, required responses, constraints,
    boundaries, and assumptions from the declared inputs.
 3. Compare the intended future behavior with the declared baseline

@@ -12,9 +12,16 @@ Accept either host command token and normalize it away before parsing:
 - Codex: `$stepan <workflow> <action> [arguments]`;
 - Claude Code: `/stepan <workflow> <action> [arguments]`.
 
-Require an explicit user invocation through the current host. Never treat a
-mention, quoted example, agent instruction, or implicit skill selection as a
-Stepan command.
+Require an explicit user invocation through the current host to select and
+start a workflow. After selection, accept an immediate bare reply only when the
+selected workflow protocol explicitly allows it for a question or checkpoint
+the router just presented. Never treat any other mention, quoted example, agent
+instruction, or implicit skill selection as a Stepan command.
+
+When the router or selected protocol requires a finite user choice, use a
+host-native structured selection capability if it is callable in the current
+mode. Otherwise use the protocol's compact natural-language fallback. Never
+change host mode, add a tool, or launch a separate UI merely to obtain a menu.
 
 | Workflow | Purpose | Primary command | Contract |
 | --- | --- | --- | --- |
@@ -40,6 +47,9 @@ Stepan command.
 4. Execute only the deterministic transitions allowed by the selected protocol.
 5. Stop safely on a missing or ambiguous workflow resource, invalid state,
    unavailable required capability, or unexpected repository change.
+6. Treat routing, resource loading, role dispatch, state transitions, and
+   verification as private mechanics. Surface only the user-facing interaction
+   required by the selected protocol and any notice the host itself requires.
 
 ## Preserve router boundaries
 

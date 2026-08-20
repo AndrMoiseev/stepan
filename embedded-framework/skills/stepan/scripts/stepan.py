@@ -56,8 +56,8 @@ TRANSLITERATION = str.maketrans(
 )
 
 
-def spec_id(idea: str) -> str:
-    value = idea.lower().translate(TRANSLITERATION)
+def spec_id(id_hint: str) -> str:
+    value = id_hint.lower().translate(TRANSLITERATION)
     value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")[:63].rstrip("-")
     return value or "change"
 
@@ -72,8 +72,8 @@ def next_available_spec_id(base: str, exists: Callable[[str], bool]) -> str:
     return candidate
 
 
-def collision_result(idea: str, root: Path) -> dict[str, object]:
-    base = spec_id(idea)
+def collision_result(id_hint: str, root: Path) -> dict[str, object]:
+    base = spec_id(id_hint)
     exists = lambda candidate: (root / candidate).exists()
     return {
         "spec_id": base,
@@ -107,6 +107,7 @@ def file_hash(path: Path) -> str:
 
 
 def self_test() -> None:
+    assert spec_id("export transaction history") == "export-transaction-history"
     assert spec_id("Ёж и щука") == "yozh-i-shchuka"
     assert spec_id("ъь") == "change"
     assert spec_id("a" * 70) == "a" * 63
@@ -142,8 +143,10 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
 
-    identifier = commands.add_parser("spec-id", help="Generate a Stepan spec ID")
-    identifier.add_argument("--idea", required=True)
+    identifier = commands.add_parser(
+        "spec-id", help="Generate a Stepan spec ID from a semantic hint"
+    )
+    identifier.add_argument("--id-hint", required=True)
     identifier.add_argument("--root", type=Path, default=Path(".stepan/specs"))
 
     run_identifier = commands.add_parser("run-id", help="Generate a role run ID")
@@ -163,7 +166,7 @@ def main() -> int:
     args = parser().parse_args()
     try:
         if args.command == "spec-id":
-            output = collision_result(args.idea, args.root)
+            output = collision_result(args.id_hint, args.root)
         elif args.command == "run-id":
             output = {
                 "run_id": role_run_id(

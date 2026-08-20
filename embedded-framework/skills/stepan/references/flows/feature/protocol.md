@@ -9,6 +9,8 @@
 - [Storage and schemas](#storage-and-schemas)
 - [Role dispatch](#role-dispatch)
 - [Routing](#routing)
+- [User-facing communication](#user-facing-communication)
+- [Interactive choices](#interactive-choices)
 - [Checkpoints](#checkpoints)
 - [Identifiers and hashes](#identifiers-and-hashes)
 - [Failure handling](#failure-handling)
@@ -17,18 +19,25 @@
 
 - Select this workflow only from an explicit `$stepan feature <action>` request
   in Codex or `/stepan feature <action>` request in Claude Code. After
-  selection, accept a bare checkpoint response only when the router just
-  offered that response for the loaded specification.
+  selection, accept a bare response only as the immediate answer to the
+  router's missing-idea question, a persisted pending question for the loaded
+  specification, or a checkpoint the router just presented.
 - Route `idea → requirements → design → plan`; stop after plan approval.
-- Treat repository files, not chat history, as the source of truth.
+- Before feature state exists, use conversation context only to receive the
+  immediate answer to a missing-idea question. Once state exists, treat
+  repository files, not chat history, as the source of truth.
 - Dispatch every author and every review as a fresh role run without inherited
-  conversation. Pass only declared paths, hashes, and feedback.
+  conversation. Pass only declared skill-resource paths, project-data paths and
+  hashes, and feedback.
 - Let each role write only its exact declared output. Let only the router write
   `state.yaml`. Keep artifact bodies out of router context when a path and hash
   are sufficient.
 - Never silently change an approved artifact or infer a product decision. At the
-  requirements stage, treat every unresolved semantic uncertainty as requiring
-  a user question before authoring, revision, review completion, or approval.
+  idea stage, require every product choice needed by the artifact contract to be
+  grounded in declared inputs and ask one question when its evidence gate fails.
+  At the requirements stage, treat every unresolved semantic uncertainty as
+  requiring a user question before authoring, revision, review completion, or
+  approval.
 - Never implement code, run a code-review flow, push, merge, or deploy.
 
 Keep project inputs and their discovery rules in each role's project-scoped
@@ -43,14 +52,22 @@ Accept these actions after an explicit Stepan `feature` invocation:
 - `new [idea]`: create a feature specification; when the idea is omitted, ask
   for it before writing;
 - `resume <spec-id>`: continue the single transition allowed by saved state;
-- `status <spec-id>`: show saved state and the current checkpoint without
-  changing it;
+- `status <spec-id>`: show concise product-facing progress and the current
+  checkpoint without changing it; include internal state only when the user
+  explicitly asks for diagnostics;
 - `continue <spec-id>` and `continue-and-commit <spec-id>`: apply the matching
   checkpoint action;
 - `revise <spec-id> <feedback>`, `question <spec-id> <text>`, and
   `accept-risk <spec-id> <finding-ids> [comment]`: apply the matching checkpoint
   action;
+- `answer <spec-id> <text>`: answer the specification's persisted pending
+  question when it is no longer the immediately preceding dialog turn;
 - `stop <spec-id>`: make no further transition.
+
+These command forms are the durable interface for starting, resuming, or
+addressing a specification outside the immediately preceding interaction. Do
+not require them when the user is responding directly to a question or
+checkpoint presented under the interactive-choice rules.
 
 Reject an omitted or unknown action without reading feature state or writing.
 
@@ -60,7 +77,7 @@ Use the bundled Python script for deterministic identifiers and hashes. It emits
 JSON, uses only the Python 3 standard library, and never writes repository state:
 
 ```text
-<python3> "<skill-root>/scripts/stepan.py" spec-id --idea <text> --root .stepan/specs
+<python3> "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root .stepan/specs
 <python3> "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
 <python3> "<skill-root>/scripts/stepan.py" hash <file>...
 <python3> "<skill-root>/scripts/stepan.py" self-test
@@ -72,9 +89,11 @@ host, such as `python3`, `python`, or `py -3`. Do not install Python, use Python
 
 Resolve `<skill-root>` as the canonical directory containing the shared router
 `SKILL.md`, following any discovery symlink and compatibility entrypoint link.
-Require it to remain beneath the canonical project root. Use this root for
-every bundled role, contract, module, and script path; never assume a
-host-specific discovery directory.
+It may be inside the project or in the host's user-level skill directory. Keep
+it distinct from the canonical project root, require it to be readable, and
+resolve every bundled role, contract, module, and script beneath it. Never
+assume a host-specific discovery directory or require the skill root to be
+project-relative.
 
 Stop without writing if the script is unavailable, fails, or returns malformed
 JSON. Do not reproduce its algorithms in a prompt or shell one-liner.
@@ -98,6 +117,7 @@ Keep one change under:
 ```text
 .stepan/specs/<spec-id>/
 ├── state.yaml
+├── request.md
 ├── idea.md
 ├── requirements.md
 ├── design.md
@@ -112,13 +132,15 @@ Create stage and review files lazily. Create `state.yaml` before launching the
 first role:
 
 ```yaml
-schema_version: 2
+schema_version: 3
 created_at: 2026-08-15T12:00:00Z
+initial_request_sha256: sha256:...
 stage: idea
 status: drafting
 automatic_revision_attempts: 0
 next_run_sequence: 1
 approvals: {}
+clarifications: []
 pending: null
 active_run: null
 execution:
@@ -148,11 +170,19 @@ Allow these values:
 - `status`: `drafting`, `reviewing`, `revising`, `awaiting-approval`,
   `awaiting-decision`, `waiting-executor`, `approved`.
 
-Require `schema_version: 2`, a positive `next_run_sequence`, a normalized
-`execution` snapshot matching the execution contract, and either `null` or one
-valid `active_run`. Permit `waiting-executor` only with an active mailbox run.
-Persist an active run before dispatch and increment `next_run_sequence` only
-after reserving that run ID.
+Require `schema_version: 3`, a positive `next_run_sequence`, a normalized
+`execution` snapshot matching the execution contract, a canonical
+`initial_request_sha256` matching `request.md`, and either `null` or one valid
+`active_run`. Require `clarifications` to be a list of valid completed
+clarification records. Permit `waiting-executor` only with an active mailbox
+run. Persist an active run before dispatch and increment `next_run_sequence`
+only after reserving that run ID.
+
+The router writes `request.md` once when creating the specification. Preserve
+the user's initial idea text after removing only the Stepan command prefix and
+action; encode it as UTF-8 with the canonical trailing newline used by the hash
+helper. Never revise or delete it. Use it, rather than chat history, as the
+framer's durable input.
 
 Store one unresolved question or revision request as:
 
@@ -165,13 +195,29 @@ pending:
   response: null
 ```
 
+After a role accepts an answered clarification, preserve it before clearing or
+replacing `pending`:
+
+```yaml
+clarifications:
+  - stage: idea
+    origin: author
+    question: "Which users may export data?"
+    answer: "Workspace administrators only."
+```
+
+Require each clarification to contain one allowed stage, one allowed origin,
+and non-empty question and answer strings. Preserve insertion order and never
+edit or delete a recorded clarification. These records are durable product
+inputs, not approvals.
+
 ## Role dispatch
 
 Use the matching brief both to validate role-owned data and to launch a role:
 
 | Role | Brief | Artifact inputs | Result | Allowed write |
 | --- | --- | --- | --- | --- |
-| framer | `roles/framer.md` | initial request | `idea.md` | expected `idea.md` only |
+| framer | `roles/framer.md` | `request.md` | `idea.md` | expected `idea.md` only |
 | specifier | `roles/specifier.md` | approved `idea.md` | `requirements.md` | expected `requirements.md` only |
 | designer | `roles/designer.md` | approved `idea.md`, `requirements.md` | `design.md` | expected `design.md` only |
 | planner | `roles/planner.md` | all approved artifacts | `plan.md` | expected `plan.md` only |
@@ -190,36 +236,64 @@ transition, expands the role's write boundary, or attempts to load another
 module. Modules may define only reusable artifact, shared, authoring, consuming,
 or reviewing rules for the selected role.
 
-Construct a compact role-run manifest containing the brief path, applicable
-direct-link paths in their written order, declared project-input paths, explicit
-artifact paths and canonical hashes, expected output path, and allowed write
-path. Include current findings or a persisted pending response only when the
-transition requires them. Let the executor read those files directly; do not
-quote their bodies merely to relay them. Instruct the role not to inspect parent
-chat or undeclared runtime data. Do not load or reference any unrelated role
-brief, contract, or module.
+Construct a compact role-run manifest containing the run ID, brief path,
+applicable direct-link paths in their written order, declared project-input
+paths and canonical hashes, explicit artifact paths and canonical hashes,
+expected output path, allowed write path, and the exact receipt forms from the
+execution contract. Pass skill resources by path only after validating their
+location and structure; do not compute or persist their content hashes. Include
+the ordered clarification history relevant to the role's declared inputs, plus
+current findings or a persisted pending response when the transition requires
+them. Let the executor read files directly; do not quote their bodies merely to
+relay them. Instruct the role not to inspect parent chat or undeclared runtime
+data. Do not load or reference any unrelated role brief, contract, or module.
 
-Snapshot the repository before every role run. Give a role a sandbox restricted
-to its one output when available; otherwise verify the snapshot after completion
-and reject every unexpected change. A reviewer requires write access to its
-exact review file and no other path.
+Give a role a sandbox restricted to its one output when available. Only when an
+exact write sandbox is unavailable, snapshot the project filesystem before the
+role run, verify it after completion, and reject every unexpected change. A
+reviewer requires write access to its exact review file and no other path.
 
-When a role's selected rules permit a blocking question, accept exactly one
-direct question instead of its normal result only if it made no file changes.
-Never reinterpret a question as an artifact, finding correction, or role
-failure.
+When a role's selected rules permit a blocking question, accept only the valid
+`blocked` JSON receipt defined by the execution contract and only if the role
+made no file changes. Reject a raw question as a malformed receipt. Never
+reinterpret a question as an artifact, finding correction, or role failure.
 
 ## Routing
+
+### Initial idea dialog
+
+For `new` without non-whitespace idea text, ask one direct question requesting
+the idea and stop without reading project configuration or writing any file.
+Treat only the user's immediate bare reply as the idea for that same `new`
+transition. If the reply is empty or is itself a question instead of an idea,
+answer when possible and ask again without writing. A later or ambiguous reply
+requires a new explicit `feature new` invocation.
+
+After state exists, a framer must return a valid `blocked` receipt containing
+one question whenever the idea authoring evidence gate fails. Persist its
+question in `pending`, keep `request.md` unchanged, and present only the question
+to the user. Treat the user's immediate bare reply as its answer; otherwise
+require `answer <spec-id> <text>`. Persist the response before launching a fresh
+framer with `request.md`, prior clarification history, and that response. If the
+fresh framer returns another valid blocked receipt, first archive the answered
+pending item in `clarifications`, then replace it with the new pending question
+and continue the dialog. Do not create `idea.md` until the framer can satisfy the
+complete authoring evidence gate without another material product decision.
 
 For `new`:
 
 1. Resolve execution configuration under the execution contract and stop on any
    invalid or unavailable explicit binding.
-2. Generate `spec-id` and collision data with `scripts/stepan.py`, show the result,
-   and resolve a collision before writing.
-3. Create the directory and initial `state.yaml` with the resolved execution
-   snapshot.
-4. Dispatch a fresh framer through its bound adapter.
+2. Derive one `id_hint` from the complete initial idea under the identifier
+   rules, then generate `spec-id` and collision data with `scripts/stepan.py`.
+   Use an uncollided result without announcing the hint or calculation. On
+   collision, present only the choice between resuming `spec_id` and creating
+   `next_available` under the interactive-choice rules before writing.
+3. Create the directory, immutable `request.md`, and initial `state.yaml` with
+   the request hash and resolved execution snapshot. If this initialization
+   cannot complete, remove only files created by this attempt and stop.
+4. Dispatch a fresh framer through its bound adapter, passing `request.md` by
+   path and canonical hash.
 
 For an existing change, read state and verify all recorded hashes before acting.
 If `active_run` is non-null, reconcile that exact run before applying any normal
@@ -231,9 +305,10 @@ apply the single matching transition:
 
 - `drafting`: dispatch the current stage owner;
 - `waiting-executor`: inspect the active mailbox run; accept its response or
-  report that the same run is still pending without redispatching;
-- owner returns a valid blocking question: set `awaiting-decision`, store it in
-  `pending` with `kind: clarification` and `origin: author`, and stop;
+  leave the same run pending without redispatching;
+- owner returns a valid `blocked` receipt: set `awaiting-decision`, store its
+  question in `pending` with `kind: clarification` and `origin: author`, and
+  stop;
 - successful `idea` author: set `awaiting-approval`;
 - successful later author: set `reviewing` and dispatch a fresh reviewer;
 - review `pass`: set `awaiting-approval`;
@@ -247,44 +322,138 @@ apply the single matching transition:
 - third unsuccessful automatic revision: set `awaiting-decision`, store one
   direct next-step question in `pending` with `kind: revision` and
   `origin: router`, and do not launch a fourth;
-- `awaiting-approval` or `awaiting-decision`: show the checkpoint and stop;
-- `stage: plan`, `status: approved`: report ready for implementation and stop.
+- `awaiting-approval` or `awaiting-decision`: present one user-facing checkpoint
+  question and stop;
+- `stage: plan`, `status: approved`: give one short completion outcome and stop.
 
 Before each dispatch, reserve and persist `active_run`, then invoke the bound
-adapter under the execution contract. For a completed receipt, verify hashes and
-the repository snapshot before applying the matching transition and clearing the
-run. For a blocked receipt, require no file changes before persisting its one
-question. For a failed or malformed receipt, preserve the run and stop.
+adapter under the execution contract. For a completed receipt, verify all
+declared project-data hashes and the fallback project snapshot when one was
+taken before applying the matching transition and clearing the run. For a
+blocked receipt, require no file changes before persisting its one question. For
+a failed or malformed receipt, preserve the run and stop.
 
-When the user answers `pending`, persist the answer before launching a fresh
-role. For `origin: author`, relaunch that owner with the answer. For
+When the user answers `pending` through an allowed immediate bare reply or an
+explicit `answer` action, persist the answer before launching a fresh role. For
+`origin: author`, relaunch that owner with the answer. For
 `origin: review`, launch the current stage owner with the review and answer,
 then review the resulting artifact again. For `origin: router`, treat the answer
 as user-directed revision guidance and launch the current stage owner. Clear
-`pending` only after the owner processes the answer successfully. Reset the
-automatic revision counter after a user-directed revision or stage transition.
+`pending` only after the owner processes the answer successfully; archive an
+answered clarification in `clarifications` before clearing or replacing it.
+Keep an answered revision request out of `clarifications`. Reset the automatic
+revision counter after a user-directed revision or stage transition.
 
 If a later stage exposes a material upstream defect, return to that artifact's
 owner, remove approvals for it and all downstream artifacts, and preserve
 downstream files as stale until their input hashes are reviewed again.
 
+## User-facing communication
+
+Treat the workflow's orchestration as private implementation detail, subject to
+any progress, tool, or safety notice the host itself requires.
+
+- Do not narrate resource loading, configuration resolution, stages, roles,
+  subagents, dispatches, state values, hashes, run IDs, snapshots, receipts,
+  verification, or automatic revision attempts. Never relay a role receipt to
+  the user.
+- While the workflow can continue safely without user input, continue without
+  an ordinary chat update and never pause solely to announce progress.
+- Produce a workflow-authored user-facing message only when the workflow needs
+  an answer, choice, approval, or recovery action; the user explicitly requested
+  `status` or `question`; the workflow completed; or it cannot safely continue.
+- When user input is required, present one compact interaction flow containing
+  one question at a time, only the product context needed to answer it, and the
+  valid response choices or form. Do not prepend the internal reason for the
+  pause, such as a role name, state value, transition, or retry count.
+- At an approval checkpoint, identify the artifact to review and open one
+  product-facing choice flow covering the allowed actions: approve and continue,
+  approve and commit, request changes, ask about the artifact, or stop. Do not
+  expose artifact hashes, review-file paths, approval records, or canonical
+  command tokens.
+- On successful completion, give one short outcome and the specification or
+  artifact location needed for later use. Do not recap the execution history.
+- On failure, state the user impact and recovery action concisely. Include an
+  internal identifier or technical detail only when it is necessary to recover
+  safely or identify affected data. Ask one direct question when a user decision
+  can unblock the workflow; do not invent a question for a terminal failure.
+- For `status`, summarize product artifacts already prepared, the decision or
+  work currently pending, and the next user action. Do not dump `state.yaml` or
+  executor details unless the user explicitly requests diagnostics.
+- If the host requires a progress notice, keep workflow-authored wording
+  outcome-oriented and omit private mechanics.
+
+## Interactive choices
+
+Use a host-native structured selection UI when the workflow presents a complete
+finite set of choices and that capability is callable in the current host mode.
+Feature-detect the capability at the moment of interaction. Do not switch host
+or collaboration mode, install or start another tool, open a browser, or fail
+the workflow merely to obtain an interactive menu.
+
+Treat the menu as a presentation layer over existing transitions:
+
+- Offer only actions valid for the current verified state. Use short
+  product-facing labels and descriptions in the user's language, never
+  canonical command tokens, specification IDs already implied by context, or
+  internal state names.
+- Map each terminal selection to exactly one allowed canonical action. Do not
+  write state, approve, commit, revise, or dispatch a role until that terminal
+  selection and any required text have been received.
+- When all terminal actions do not fit the host's option limit, use a shallow
+  menu of non-mutating groups. For an approval checkpoint, group them as
+  `Approve`, `Discuss or change`, and `Stop`; then offer `Continue`, `Continue
+  and commit`, or `Back` under approval, and `Request changes`, `Ask a question`,
+  or `Back` under discussion. `Back` returns to the preceding menu without a
+  state change. Omit or replace any action invalid at the current checkpoint.
+- After `Request changes`, `Ask a question`, or an action requiring finding IDs
+  or a comment, ask for the required free text before mapping the interaction to
+  `revise`, `question`, or `accept-risk`. A group selection alone is never an
+  action or approval.
+- Treat a host-provided free-form or `Other` response as an immediate bare reply.
+  Normalize it only when it unambiguously identifies one valid action; otherwise
+  ask one follow-up without writing.
+
+When no structured selection capability is callable, show the same choices as a
+short numbered list. Accept an immediate ordinal, exact label, or unambiguous
+natural-language equivalent without requiring the Stepan command, action token,
+or specification ID. If the response is ambiguous, repeat only the unresolved
+choice and do not write. Require an explicit command again when the response is
+not immediate, identifies another specification, or resumes the workflow from a
+later conversation turn.
+
+Do not manufacture a menu for an open-ended product question. Ask for free text
+unless the protocol explicitly defines the complete set of mutually exclusive
+answers.
+
 ## Checkpoints
 
-Offer only:
+Keep only these canonical transitions; their tokens are not required as the
+user-facing labels of an immediately presented choice:
 
 - `continue`: approve the current artifact and advance;
 - `continue-and-commit`: approve and create the limited checkpoint commit;
 - `revise <feedback>`: reset the automatic revision counter and dispatch a fresh
   owner, followed by review where applicable;
 - `question <text>`: answer without changing artifacts or state;
+- `answer <text>`: supply the answer to the one persisted pending question;
 - `accept-risk <finding-ids> [comment]`: record explicit acceptance of an
   objective risk and advance;
 - `stop`: make no further transition.
+
+Normalize a terminal menu selection or an immediate fallback reply to exactly
+one of these transitions before applying its existing validation rules. Never
+interpret a category selection, silence, an ambiguous label, or a request for
+more information as approval.
 
 Allow `continue` only for `idea` or a `pass` review. Require `revise` or explicit
 `accept-risk` for blocking `author-revision` findings. Never allow
 `accept-risk`, `continue`, or automatic revision to bypass a `user-decision`
 finding or unanswered `pending` question. Silence never approves.
+
+Allow `answer` only when `pending` is non-null. An immediate bare answer and an
+explicit `answer` command have the same transition semantics; never interpret
+either as approval. Keep `question` read-only and distinct from `answer`.
 
 Record each approval under `approvals.<stage>` with `artifact_sha256`, the
 applicable `review_sha256`, and `accepted_risks`. After plan approval, keep
@@ -300,9 +469,34 @@ Treat JSON returned by `scripts/stepan.py` as the sole source of truth for gener
 identifiers and canonical hashes. Do not reproduce, adjust, or second-guess its
 computations.
 
+Use canonical hashes for project data only: the immutable request, generated
+artifacts and reviews, declared project inputs, and persisted configuration when
+the execution contract requires it. Validate briefs, contracts, modules, and
+bundled scripts as skill resources by canonical path, existence, readability,
+and applicable structure rules; do not hash them to pin a content version for a
+role run.
+
+Before calling `spec-id`, derive exactly one ephemeral `id_hint` from the full
+initial idea after removing the Stepan command prefix and action:
+
+- express the primary product capability or outcome rather than copying the
+  request's opening words;
+- normally use two to five short English content words; a single established
+  product name or acronym is sufficient, and retain a product-significant
+  number when useful;
+- prefer an explicit concise feature name supplied by the user;
+- omit conversational framing, actors that do not distinguish the feature,
+  implementation detail, and any scope not stated by the user.
+
+Treat naming as a non-product decision: do not ask the user to approve the hint,
+persist it as a separate artifact, or let it replace or alter `request.md`. Pass
+the hint unchanged through `--id-hint`; let the script alone normalize it,
+enforce the identifier length, and resolve collisions.
+
 Accept `spec-id` output only when it contains non-empty string fields `spec_id`
 and `next_available` plus a boolean `collision`. When `collision` is false, use
-`spec_id`. When it is true, ask whether to resume `spec_id` or create
+`spec_id`. When it is true, present the two identifiers through the
+interactive-choice rules and ask whether to resume `spec_id` or create
 `next_available`; do not invent another identifier.
 
 Accept `hash` output only when its `files` array contains exactly one entry for
@@ -323,12 +517,15 @@ invent, edit, or reuse a run ID.
 - On a mailbox timeout, remain at `waiting-executor`, preserve the request and
   active run, and stop without treating ordinary waiting as failure.
 - On a late response for an abandoned, completed, or unknown run, do not apply
-  it or modify repository state; report the stale response.
-- On an unexpected write, hash mismatch, malformed file, unknown schema, or
-  manual change to an approved artifact, do not accept, overwrite, reset, or
-  commit. When state can be updated safely, set `awaiting-decision`, persist one
-  direct question with `kind: clarification` and `origin: router`, and show the
-  exact discrepancy.
+  it or modify repository state. Mention it only when it affects the requested
+  action, and keep run details for explicit diagnostics.
+- On an unexpected write, project-data hash mismatch, malformed file, unknown
+  schema, or manual change to an approved artifact, do not accept, overwrite,
+  reset, or commit. When state can be updated safely, set `awaiting-decision`, persist one
+  direct question with `kind: clarification` and `origin: router`, and present
+  only the affected product data and recovery choice needed to answer it. Keep
+  the exact technical discrepancy for explicit diagnostics unless it is needed
+  to identify affected data safely.
 - On commit failure, remain at the same checkpoint. Remove only router-created
   temporary/index changes; never roll back user- or hook-created files.
 - Ask one blocking question at a time. Never turn uncertainty into approval.
