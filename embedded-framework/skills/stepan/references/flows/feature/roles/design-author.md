@@ -5,6 +5,7 @@
 - Input artifact: [`requirements.md`](../../../modules/requirements/artifact.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Shared design rules: [`design common`](../../../modules/design/common.md)
+- Design authoring rules: [`design authoring`](../../../modules/design/authoring.md)
 - Output artifact: [`design.md`](../../../modules/design/artifact.md)
 
 ## Task

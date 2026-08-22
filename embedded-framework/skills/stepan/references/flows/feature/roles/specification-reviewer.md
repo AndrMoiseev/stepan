@@ -5,6 +5,7 @@
 - Input artifacts: [`idea.md`](../../../modules/idea/artifact.md), [`requirements.md`](../../../modules/requirements/artifact.md), [`design.md`](../../../modules/design/artifact.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Shared design rules: [`design common`](../../../modules/design/common.md)
+- Design review rules: [`design reviewing`](../../../modules/design/reviewing.md)
 - Review output: [`review`](../../../modules/review/artifact.md)
 
 ## Task
