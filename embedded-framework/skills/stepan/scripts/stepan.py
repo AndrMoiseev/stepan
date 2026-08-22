@@ -22,7 +22,14 @@ SPEC_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 LOCAL_ID_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
 HASH_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 STAGES = ("idea", "requirements", "design", "plan")
-ROLES = ("framer", "specifier", "designer", "planner", "reviewer")
+ROLES = (
+    "idea-author",
+    "requirements-author",
+    "requirements-reviewer",
+    "design-author",
+    "specification-reviewer",
+    "planner",
+)
 PURPOSES = ("draft", "revise", "review")
 ADAPTER_KINDS = ("codex", "claude-code", "mailbox")
 
@@ -68,28 +75,22 @@ TRANSLITERATION = str.maketrans(
 
 CODEX_AGENT_PROFILES = (
     (
-        "router",
+        "orchestrator",
         "gpt-5.6",
         "high",
-        "Orchestrates the persisted Stepan feature workflow and dispatches roles.",
+        "Orchestrates persisted Stepan workflows and dispatches role runs.",
     ),
     (
-        "framer",
+        "author",
         "gpt-5.6",
         "high",
-        "Frames a raw feature request into a decision-complete product idea.",
+        "Authors the artifact selected by a workflow role brief.",
     ),
     (
-        "specifier",
+        "architect",
         "gpt-5.6",
         "high",
-        "Writes precise, testable requirements from an approved feature idea.",
-    ),
-    (
-        "designer",
-        "gpt-5.6",
-        "high",
-        "Designs a coherent solution from approved feature requirements.",
+        "Authors technical designs selected by a workflow role brief.",
     ),
     (
         "planner",
@@ -112,47 +113,44 @@ adapters:
   codex:
     kind: codex
 
-executors:
-  feature-router:
+profiles:
+  orchestrator:
     adapter: codex
-    agent: stepan_feature_router
+    agent: stepan_orchestrator
 
-  feature-framer:
+  author:
     adapter: codex
-    agent: stepan_feature_framer
+    agent: stepan_author
 
-  feature-specifier:
+  architect:
     adapter: codex
-    agent: stepan_feature_specifier
+    agent: stepan_architect
 
-  feature-designer:
+  planner:
     adapter: codex
-    agent: stepan_feature_designer
+    agent: stepan_planner
 
-  feature-planner:
+  reviewer:
     adapter: codex
-    agent: stepan_feature_planner
-
-  feature-reviewer:
-    adapter: codex
-    agent: stepan_feature_reviewer
+    agent: stepan_reviewer
 
 workflows:
   feature:
-    router: feature-router
+    router: orchestrator
     roles:
-      framer: feature-framer
-      specifier: feature-specifier
-      designer: feature-designer
-      planner: feature-planner
-      reviewer: feature-reviewer
+      idea-author: author
+      requirements-author: author
+      requirements-reviewer: reviewer
+      design-author: architect
+      specification-reviewer: reviewer
+      planner: planner
 """
 
 
-def codex_agent_instructions(role: str) -> str:
-    if role == "router":
+def codex_agent_instructions(profile: str) -> str:
+    if profile == "orchestrator":
         return (
-            "Act only as the dedicated Stepan feature router when given one "
+            "Act only as a Stepan workflow orchestrator when given one "
             "router launch manifest.\n"
             "Read and follow every protocol, execution, router, and adapter "
             "contract declared by that manifest.\n"
@@ -163,7 +161,7 @@ def codex_agent_instructions(role: str) -> str:
             "Return only the exact JSON router result required by the router "
             "contract."
         )
-    return f"""Act only as the Stepan feature {role} when given one role-run manifest.
+    return """Act only as a Stepan workflow role executor when given one role-run manifest.
 Read only the skill resources and project inputs declared by that manifest.
 Follow the selected role brief and its directly linked contracts exactly.
 Write only the manifest's one allowed output; for a blocking question, write no file.
@@ -172,10 +170,10 @@ Return only one exact JSON receipt permitted by the execution contract."""
 
 
 def codex_agent_toml(
-    role: str, model: str, reasoning: str, description: str
+    profile: str, model: str, reasoning: str, description: str
 ) -> str:
-    name = f"stepan_feature_{role}"
-    instructions = codex_agent_instructions(role)
+    name = f"stepan_{profile}"
+    instructions = codex_agent_instructions(profile)
     return (
         f"name = {json.dumps(name)}\n"
         f"description = {json.dumps(description)}\n"
@@ -190,10 +188,10 @@ def codex_agent_toml(
 def codex_init_files() -> tuple[tuple[PurePosixPath, bytes], ...]:
     files = [
         (
-            PurePosixPath(f".codex/agents/stepan_feature_{role}.toml"),
-            codex_agent_toml(role, model, reasoning, description).encode("utf-8"),
+            PurePosixPath(f".codex/agents/stepan_{profile}.toml"),
+            codex_agent_toml(profile, model, reasoning, description).encode("utf-8"),
         )
-        for role, model, reasoning, description in CODEX_AGENT_PROFILES
+        for profile, model, reasoning, description in CODEX_AGENT_PROFILES
     ]
     files.append(
         (PurePosixPath(".stepan/config.yaml"), CODEX_STEPAN_CONFIG.encode("utf-8"))
@@ -384,20 +382,24 @@ def run_reservation(
 
 def expected_output_path(specification: str, stage: str, role: str) -> str:
     owners = {
-        "idea": "framer",
-        "requirements": "specifier",
-        "design": "designer",
+        "idea": "idea-author",
+        "requirements": "requirements-author",
+        "design": "design-author",
         "plan": "planner",
     }
-    if role == "reviewer":
-        if stage == "idea":
-            raise ValueError("idea stage has no reviewer output")
+    review_roles = {"requirements-reviewer", "specification-reviewer"}
+    if role in review_roles:
+        expected_review_stage = (
+            "requirements" if role == "requirements-reviewer" else "design"
+        )
+        if stage != expected_review_stage:
+            raise ValueError("role is not valid for review stage")
         suffix = f"review/{stage}.yaml"
     elif owners.get(stage) == role:
         suffix = f"{stage}.md"
     else:
         raise ValueError("role does not own the selected stage")
-    return f".stepan/specs/{specification}/{suffix}"
+    return f"docs/changes/specs/{specification}/{suffix}"
 
 
 def reserved_state_content(
@@ -415,9 +417,10 @@ def reserved_state_content(
         raise ValueError("invalid executor identifier")
     if purpose not in PURPOSES:
         raise ValueError("invalid run purpose")
-    if role == "reviewer" and purpose != "review":
+    review_roles = {"requirements-reviewer", "specification-reviewer"}
+    if role in review_roles and purpose != "review":
         raise ValueError("reviewer run must use review purpose")
-    if role != "reviewer" and purpose == "review":
+    if role not in review_roles and purpose == "review":
         raise ValueError("author run cannot use review purpose")
     if adapter not in ADAPTER_KINDS:
         raise ValueError("invalid adapter kind")
@@ -723,11 +726,11 @@ def self_test() -> None:
     assert next_available_spec_id(long_id, {long_id}.__contains__) == "a" * 61 + "-2"
 
     assert (
-        role_run_id("export-data", "design", "designer", 2)
-        == "export-data--design--designer--2"
+        role_run_id("export-data", "design", "design-author", 2)
+        == "export-data--design--design-author--2"
     )
-    assert run_reservation("export-data", "design", "designer", 2) == {
-        "run_id": "export-data--design--designer--2",
+    assert run_reservation("export-data", "design", "design-author", 2) == {
+        "run_id": "export-data--design--design-author--2",
         "sequence": 2,
         "next_run_sequence": 3,
     }
@@ -739,16 +742,16 @@ def self_test() -> None:
             "active_run: null\n"
         ),
         "export-data",
-        "idea",
-        "framer",
+        "requirements",
+        "requirements-author",
         "draft",
         "native-default",
         "codex",
-        ".stepan/specs/export-data/idea.md",
+        "docs/changes/specs/export-data/requirements.md",
         "sha256:" + "b" * 64,
     )
     assert reservation == {
-        "run_id": "export-data--idea--framer--2",
+        "run_id": "export-data--requirements--requirements-author--2",
         "sequence": 2,
         "next_run_sequence": 3,
     }
@@ -759,12 +762,12 @@ def self_test() -> None:
         reserved_state_content(
             reserved_state,
             "export-data",
-            "idea",
-            "framer",
+            "requirements",
+            "requirements-author",
             "draft",
             "native-default",
             "codex",
-            ".stepan/specs/export-data/idea.md",
+            "docs/changes/specs/export-data/requirements.md",
             "sha256:" + "b" * 64,
         )
     except ValueError:
@@ -772,10 +775,10 @@ def self_test() -> None:
     else:
         raise AssertionError("reserved a second run over an active run")
     for arguments in (
-        ("bad--id", "design", "designer", 1),
-        ("export-data", "invalid", "designer", 1),
+        ("bad--id", "design", "design-author", 1),
+        ("export-data", "invalid", "design-author", 1),
         ("export-data", "design", "invalid", 1),
-        ("export-data", "design", "designer", 0),
+        ("export-data", "design", "design-author", 0),
     ):
         try:
             role_run_id(*arguments)
@@ -790,33 +793,33 @@ def self_test() -> None:
 
     blocked = {
         "schema_version": 1,
-        "run_id": "export-data--idea--framer--1",
+        "run_id": "export-data--requirements--requirements-author--1",
         "status": "blocked",
         "question": "Кто может экспортировать данные?",
     }
     assert (
         validate_receipt(
             blocked,
-            "export-data--idea--framer--1",
-            ".stepan/specs/export-data/idea.md",
+            "export-data--requirements--requirements-author--1",
+        "docs/changes/specs/export-data/requirements.md",
             "native",
         )
         == blocked
     )
     completed = {
         "schema_version": 1,
-        "run_id": "export-data--idea--framer--2",
+        "run_id": "export-data--requirements--requirements-author--2",
         "status": "completed",
         "output": {
-            "path": ".stepan/specs/export-data/idea.md",
+            "path": "docs/changes/specs/export-data/requirements.md",
             "sha256": "sha256:" + "a" * 64,
         },
     }
     assert (
         validate_receipt(
             completed,
-            "export-data--idea--framer--2",
-            ".stepan/specs/export-data/idea.md",
+            "export-data--requirements--requirements-author--2",
+            "docs/changes/specs/export-data/requirements.md",
             "native",
         )
         == completed
@@ -834,8 +837,8 @@ def self_test() -> None:
     assert (
         validate_receipt(
             mailbox_completed,
-            "export-data--idea--framer--2",
-            ".stepan/specs/export-data/idea.md",
+            "export-data--requirements--requirements-author--2",
+        "docs/changes/specs/export-data/requirements.md",
             "mailbox",
             "requirements-v2",
             "high",
@@ -867,27 +870,27 @@ def self_test() -> None:
         raise AssertionError("accepted a fenced JSON receipt")
 
     for invalid, expected_run_id in (
-        ({**blocked, "extra": True}, "export-data--idea--framer--1"),
+        ({**blocked, "extra": True}, "export-data--requirements--requirements-author--1"),
         (
-            {**blocked, "run_id": "export-data--idea--framer--9"},
-            "export-data--idea--framer--1",
+            {**blocked, "run_id": "export-data--requirements--requirements-author--9"},
+            "export-data--requirements--requirements-author--1",
         ),
         (
             {
                 **completed,
                 "output": {
                     **completed["output"],
-                    "path": ".stepan/specs/export-data/other.md",
+                    "path": "docs/changes/specs/export-data/other.md",
                 },
             },
-            "export-data--idea--framer--2",
+            "export-data--requirements--requirements-author--2",
         ),
     ):
         try:
             validate_receipt(
                 invalid,
                 expected_run_id,
-                ".stepan/specs/export-data/idea.md",
+                "docs/changes/specs/export-data/requirements.md",
                 "native",
             )
         except ValueError:
@@ -912,10 +915,19 @@ def self_test() -> None:
             raise AssertionError(f"accepted invalid router result: {invalid!r}")
 
     expected_files = codex_init_files()
-    assert len(expected_files) == 7
+    assert len(expected_files) == 6
     assert expected_files[-1][0] == PurePosixPath(".stepan/config.yaml")
     assert all(content.endswith(b"\n") for _, content in expected_files)
     assert all(b"\r" not in content for _, content in expected_files)
+    assert expected_files[0][0] == PurePosixPath(
+        ".codex/agents/stepan_orchestrator.toml"
+    )
+    assert expected_files[1][0] == PurePosixPath(
+        ".codex/agents/stepan_author.toml"
+    )
+    assert expected_files[2][0] == PurePosixPath(
+        ".codex/agents/stepan_architect.toml"
+    )
     assert b'model = "gpt-5.6"' in expected_files[0][1]
     assert b'model = "gpt-5.6-terra"' in expected_files[-2][1]
 
@@ -928,7 +940,7 @@ def parser() -> argparse.ArgumentParser:
         "spec-id", help="Generate a Stepan spec ID from a semantic hint"
     )
     identifier.add_argument("--id-hint", required=True)
-    identifier.add_argument("--root", type=Path, default=Path(".stepan/specs"))
+    identifier.add_argument("--root", type=Path, default=Path("docs/changes/specs"))
 
     run_identifier = commands.add_parser("run-id", help="Generate a role run ID")
     run_identifier.add_argument("--spec-id", required=True)

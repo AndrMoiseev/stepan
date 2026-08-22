@@ -23,7 +23,8 @@
   selection, accept a bare response only as the immediate answer to the
   router's missing-idea question, a persisted pending question for the loaded
   specification, or a checkpoint the router just presented.
-- Route `idea → requirements → design → plan`; stop after plan approval.
+- Route `idea → requirements → requirements review → design → specification review
+  → plan`; stop after plan approval.
 - Before feature state exists, use conversation context only to receive the
   immediate answer to a missing-idea question. Once state exists, treat
   repository files, not chat history, as the source of truth.
@@ -34,7 +35,7 @@
   `state.yaml`. Keep artifact bodies out of router context when a path and hash
   are sufficient.
 - Never silently change an approved artifact or infer a product decision. At the
-  idea stage, require every product choice needed by the artifact contract to be
+  requirements authoring, require every product choice needed by the artifact contract to be
   grounded in declared inputs and ask one question when its evidence gate fails.
   At the requirements stage, treat every unresolved semantic uncertainty as
   requiring a user question before authoring, revision, review completion, or
@@ -42,7 +43,7 @@
 - Never implement code, run a code-review flow, push, merge, or deploy.
 
 Keep project inputs and their discovery rules in each role's project-scoped
-executor configuration. For a host-native executor, keep those rules in its
+profile configuration. For a host-native profile, keep those rules in its
 custom agent. Do not prescribe repository-wide project documents here. Load
 only the inputs declared for the role being run.
 
@@ -81,9 +82,9 @@ library. Only `reserve-run` writes feature state, restricted to the verified
 `state.yaml` passed to it:
 
 ```text
-uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root .stepan/specs
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root docs/changes/specs
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
-uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <executor> --adapter <kind> --output <path> --request-sha256 <hash>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <profile> --adapter <kind> --output <path> --request-sha256 <hash>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" hash <file>...
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-receipt --run-id <id> --output <path> --adapter <native|mailbox>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-router-result
@@ -169,7 +170,7 @@ this launch boundary rather than recursively launching itself.
 Keep one change under:
 
 ```text
-.stepan/specs/<spec-id>/
+docs/changes/specs/<spec-id>/
 ├── state.yaml
 ├── request.md
 ├── idea.md
@@ -178,8 +179,7 @@ Keep one change under:
 ├── plan.md
 └── review/
     ├── requirements.yaml
-    ├── design.yaml
-    └── plan.yaml
+    └── design.yaml
 ```
 
 Create stage and review files lazily. Create `state.yaml` before launching the
@@ -203,17 +203,18 @@ execution:
   adapters:
     native:
       kind: codex
-  executors:
+  profiles:
     native-default:
       adapter: native
       agent: default
   bindings:
     router: null
-    framer: native-default
-    specifier: native-default
-    designer: native-default
+    idea-author: native-default
+    requirements-author: native-default
+    requirements-reviewer: native-default
+    design-author: native-default
+    specification-reviewer: native-default
     planner: native-default
-    reviewer: native-default
 ```
 
 The example is a snapshot resolved on Codex. On Claude Code, persist
@@ -234,7 +235,7 @@ run. While `active_run` is non-null, require `next_run_sequence` to equal its
 `sequence + 1`. Persist the active run and returned next sequence together from
 one valid `reserve-run` result, then reread and verify both before dispatch.
 For snapshots created after router-binding support, persist `bindings.router`
-explicitly as either null or one executor name. Accept its omission only from an
+explicitly as either null or one profile name. Accept its omission only from an
 otherwise valid older schema-version-3 snapshot and normalize that omission to
 null in memory without rewriting state merely for migration.
 
@@ -242,7 +243,7 @@ The router writes `request.md` once when creating the specification. Preserve
 the user's initial idea text after removing only the Stepan command prefix and
 action; encode it as UTF-8 with the canonical trailing newline used by the hash
 helper. Never revise or delete it. Use it, rather than chat history, as the
-framer's durable input.
+idea author's durable input.
 
 Store one unresolved question or revision request as:
 
@@ -260,7 +261,7 @@ replacing `pending`:
 
 ```yaml
 clarifications:
-  - stage: idea
+  - stage: requirements
     origin: author
     question: "Which users may export data?"
     answer: "Workspace administrators only."
@@ -277,11 +278,12 @@ Use the matching brief both to validate role-owned data and to launch a role:
 
 | Role | Brief | Artifact inputs | Result | Allowed write |
 | --- | --- | --- | --- | --- |
-| framer | `roles/framer.md` | `request.md` | `idea.md` | expected `idea.md` only |
-| specifier | `roles/specifier.md` | approved `idea.md` | `requirements.md` | expected `requirements.md` only |
-| designer | `roles/designer.md` | approved `idea.md`, `requirements.md` | `design.md` | expected `design.md` only |
+| idea-author | `roles/idea-author.md` | `request.md` and approved clarifications | `idea.md` | expected `idea.md` only |
+| requirements-author | `roles/requirements-author.md` | approved `idea.md`, `request.md`, and approved clarifications | `requirements.md` | expected `requirements.md` only |
+| requirements-reviewer | `roles/requirements-reviewer.md` | `request.md`, approved `idea.md`, `requirements.md` | `review/requirements.yaml` | expected review file only |
+| design-author | `roles/design-author.md` | approved `requirements.md` | `design.md` | expected `design.md` only |
+| specification-reviewer | `roles/specification-reviewer.md` | approved `idea.md`, `requirements.md`, `design.md` | `review/design.yaml` | expected review file only |
 | planner | `roles/planner.md` | all approved artifacts | `plan.md` | expected `plan.md` only |
-| reviewer | `roles/reviewer.md` | current review artifacts; previous review when needed | `review/<stage>.yaml` | expected review file only |
 
 Resolve each selected brief's `Contracts` section before validation or launch.
 Load only direct Markdown links that apply to the current stage. Require every
@@ -304,14 +306,14 @@ execution contract. Pass skill resources by path only after validating their
 location and structure; do not compute or persist their content hashes. Include
 the ordered clarification history relevant to the role's declared inputs, plus
 current findings or a persisted pending response when the transition requires
-them. Let the executor read files directly; do not quote their bodies merely to
+them. Let the selected profile read files directly; do not quote their bodies merely to
 relay them. Instruct the role not to inspect parent chat or undeclared runtime
 data. Do not load or reference any unrelated role brief, contract, or module.
 
 Give a role a sandbox restricted to its one output when available. Only when an
 exact write sandbox is unavailable, snapshot the project filesystem before the
 role run, verify it after completion, and reject every unexpected change. A
-reviewer requires write access to its exact review file and no other path.
+A reviewer requires write access to its exact review file and no other path.
 
 When a role's selected rules permit a blocking question, accept only the valid
 `blocked` JSON receipt defined by the execution contract and only if the role
@@ -329,16 +331,18 @@ transition. If the reply is empty or is itself a question instead of an idea,
 answer when possible and ask again without writing. A later or ambiguous reply
 requires a new explicit `feature new` invocation.
 
-After state exists, a framer must return a valid `blocked` receipt containing
-one question whenever the idea authoring evidence gate fails. Persist its
-question in `pending`, keep `request.md` unchanged, and present only the question
-to the user. Treat the user's immediate bare reply as its answer; otherwise
-require `answer <spec-id> <text>`. Persist the response before launching a fresh
-framer with `request.md`, prior clarification history, and that response. If the
-fresh framer returns another valid blocked receipt, first archive the answered
-pending item in `clarifications`, then replace it with the new pending question
-and continue the dialog. Do not create `idea.md` until the framer can satisfy the
-complete authoring evidence gate without another material product decision.
+After state exists, the idea author must return a valid `blocked` receipt
+containing one question whenever the idea evidence gate fails. The requirements
+author may return the same receipt for unresolved requirements decisions.
+Persist its question in `pending`, keep `request.md` unchanged, and present only
+the question to the user. Treat the user's immediate bare reply as its answer;
+otherwise require `answer <spec-id> <text>`. Persist the response before launching
+a fresh owner with the applicable artifacts, prior clarification history, and
+that response. If it returns another valid blocked receipt, first archive the
+answered pending item in `clarifications`, then replace it with the new pending
+question and continue the dialog. Do not create `idea.md` or `requirements.md`
+until their respective author can satisfy its complete evidence gate without
+another material product decision.
 
 For `new`:
 
@@ -352,7 +356,7 @@ For `new`:
 3. Create the directory, immutable `request.md`, and initial `state.yaml` with
    the request hash and resolved execution snapshot. If this initialization
    cannot complete, remove only files created by this attempt and stop.
-4. Dispatch a fresh framer through its bound adapter, passing `request.md` by
+4. Dispatch a fresh idea author through its bound adapter, passing `request.md` by
    path and canonical hash.
 
 For an existing change, read state and verify all recorded hashes before acting.
@@ -369,9 +373,18 @@ apply the single matching transition:
 - owner returns a valid `blocked` receipt: set `awaiting-decision`, store its
   question in `pending` with `kind: clarification` and `origin: author`, and
   stop;
-- successful `idea` author: set `awaiting-approval`;
-- successful later author: set `reviewing` and dispatch a fresh reviewer;
+- successful idea author: set `awaiting-approval`;
+- successful requirements author: set `reviewing` and dispatch the requirements reviewer;
+- successful design author: set `reviewing` and dispatch the specification reviewer;
+- successful planner: set `awaiting-approval`;
 - review `pass`: set `awaiting-approval`;
+- approval of `idea`: advance to `requirements`, set `drafting`, and dispatch the
+  requirements author;
+- approval of `requirements`: advance to `design`, set `drafting`, and dispatch
+  the design author;
+- approval of `design`: advance to `plan`, set `drafting`, and dispatch the
+  planner;
+- approval of `plan`: set `approved` and stop;
 - review contains a blocking `resolution: user-decision` finding: set
   `awaiting-decision`, store its direct question in `pending` with
   `kind: clarification` and `origin: review`, and stop without automatic
@@ -511,7 +524,7 @@ one of these transitions before applying its existing validation rules. Never
 interpret a category selection, silence, an ambiguous label, or a request for
 more information as approval.
 
-Allow `continue` only for `idea` or a `pass` review. Require `revise` or explicit
+Allow `continue` only for `requirements` or a `pass` review. Require `revise` or explicit
 `accept-risk` for blocking `author-revision` findings. Never allow
 `accept-risk`, `continue`, or automatic revision to bypass a `user-decision`
 finding or unanswered `pending` question. Silence never approves.
@@ -524,7 +537,7 @@ Record each approval under `approvals.<stage>` with `artifact_sha256`, the
 applicable `review_sha256`, and `accepted_risks`. After plan approval, keep
 `stage: plan` and set `status: approved`.
 
-On `continue-and-commit`, commit only `.stepan/specs/<spec-id>/` with message
+On `continue-and-commit`, commit only `docs/changes/specs/<spec-id>/` with message
 `stepan(<spec-id>): approve <stage>`. Do not stage unrelated changes. Do not advance
 until the commit succeeds and its contents are verified.
 

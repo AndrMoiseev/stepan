@@ -3,7 +3,7 @@
 Use this contract only for a normalized adapter with `kind: codex` while the
 current host is Codex.
 
-Resolve a named executor as an available Codex custom or built-in agent. Resolve
+Resolve a named profile as an available Codex custom or built-in agent. Resolve
 `agent: default` as a fresh default Codex agent. Launch it as a fresh subagent
 without inherited conversation and pass only the role-run manifest. Give it
 read access to the manifest's canonical skill root even when the skill is
@@ -29,8 +29,8 @@ A project can configure the named router in `.codex/agents/` (or install the
 equivalent user-level custom agent), for example:
 
 ```toml
-name = "stepan_feature_router"
-description = "Runs the persisted Stepan feature workflow and dispatches its roles."
+name = "stepan_orchestrator"
+description = "Runs persisted Stepan workflows and dispatches their roles."
 model = "gpt-5.6"
 model_reasoning_effort = "high"
 developer_instructions = """
@@ -41,7 +41,7 @@ result object required by the router contract.
 """
 ```
 
-The executor's `agent` value in `.stepan/config.yaml` must equal this custom
+The profile's `agent` value in `.stepan/config.yaml` must equal this custom
 agent's `name`. The model and reasoning settings belong only in the custom agent
 TOML. Apply the return, one format-only repair, and interruption rules from
 `../router.md`; a router final response is not a role receipt.

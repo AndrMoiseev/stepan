@@ -3,7 +3,7 @@
 When reviewing `requirements.md`:
 
 - Evaluate the artifact against its artifact contract, the shared requirements
-  rules, the approved idea, and only the declared project inputs, including the
+  rules, the initial request and completed clarifications, and only the declared project inputs, including the
   declared baseline specification when a delta depends on it.
 - Never choose among plausible requirement interpretations or supply a missing
   product decision. If any unresolved uncertainty could affect meaning, emit

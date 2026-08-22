@@ -5,14 +5,13 @@ canonical input hashes supplied by the router; do not compute or alter them.
 
 ```yaml
 schema_version: 2
-stage: design
+stage: requirements
 inputs:
   idea.md: sha256:...
   requirements.md: sha256:...
-  design.md: sha256:...
 verdict: pass | changes-required
 findings:
-  - id: DES-R-001
+  - id: REQ-R-001
     severity: blocking | advisory
     resolution: author-revision | user-decision | none
     references: [DES-003, 'MODIFIED Requirement "Session Expiration"']
@@ -27,6 +26,9 @@ without a new product decision. Use `none` only for an advisory finding. A
 `pass` verdict may contain advisory findings but no blocking finding or
 `user-decision`. Preserve the IDs of unresolved findings across reviews; never
 renumber an existing finding ID. Require `stage` to match the reviewed stage and
-`inputs` to contain exactly the canonical hashes supplied by the router. Use
+`inputs` to contain exactly the canonical hashes supplied by the router. For
+`requirements`, inputs are `idea.md` and `requirements.md`; for `design`,
+inputs are `idea.md`, `requirements.md`, and `design.md`; for `plan`, inputs
+are `idea.md`, `requirements.md`, `design.md`, and `plan.md`. Use
 stage-specific finding IDs: `REQ-R-*` for requirements, `DES-R-*` for design,
 and `PLAN-R-*` for plan.

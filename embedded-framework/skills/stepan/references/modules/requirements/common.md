@@ -3,7 +3,8 @@
 Apply these rules whenever authoring, reviewing, or consuming
 `requirements.md`:
 
-- Preserve the approved idea's scope and explicit user decisions. Treat only
+- Preserve the initial request's scope, clarified intent, and explicit user
+  decisions. Treat only
   explicit user statements and approved declared inputs as product decisions.
 - Treat every unresolved uncertainty about intended behavior, scope,
   constraints, priorities, acceptance criteria, baseline meaning, or delta
@@ -22,7 +23,7 @@ Apply these rules whenever authoring, reviewing, or consuming
 - Record only assumptions and boundaries explicitly confirmed by the user or an
   approved declared input. Never turn an inference into an assumption to avoid
   asking a question.
-- Maintain traceability from the approved idea and applicable baseline to every
+- Maintain traceability from the initial request, clarifications, and applicable baseline to every
   delta entry. Identify an entry by its delta operation and exact requirement
   name; for a rename, preserve both the exact source and target names.
 - Treat `REMOVED` and `RENAMED` as first-class specification changes even though

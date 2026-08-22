@@ -32,45 +32,40 @@ adapters:
     root: /tmp/mailbox/stepan
     wait_seconds: 15
 
-executors:
-  native-router:
+profiles:
+  orchestrator:
     adapter: native
-    agent: stepan_feature_router
+    agent: stepan_orchestrator
 
-  native-framer:
+  author:
     adapter: native
-    agent: stepan_feature_framer
+    agent: stepan_author
 
-  corporate-specifier:
-    adapter: corporate
-    model: company-requirements-v2
-    reasoning: high
-
-  corporate-designer:
-    adapter: corporate
-    model: company-architect-v3
-    reasoning: xhigh
-
-  native-planner:
+  architect:
     adapter: native
-    agent: stepan_feature_planner
+    agent: stepan_architect
 
-  corporate-reviewer:
+  planner:
+    adapter: native
+    agent: stepan_planner
+
+  reviewer:
     adapter: corporate
     model: company-reviewer-v1
 
 workflows:
   feature:
-    router: native-router
+    router: orchestrator
     roles:
-      framer: native-framer
-      specifier: corporate-specifier
-      designer: corporate-designer
-      planner: native-planner
-      reviewer: corporate-reviewer
+      idea-author: author
+      requirements-author: author
+      requirements-reviewer: reviewer
+      design-author: architect
+      specification-reviewer: reviewer
+      planner: planner
 ```
 
-Treat adapter and executor names as project-local identifiers. Use only
+Treat adapter and profile names as project-local identifiers. Use only
 lowercase ASCII letters, digits, and hyphens, beginning with a letter. Reject
 duplicate names, aliases, merges, anchors, tags, environment interpolation, and
 unknown keys rather than guessing their meaning.
@@ -88,7 +83,7 @@ Require every adapter to have exactly one supported `kind`:
 - `mailbox`: require an absolute non-root `root`; accept optional integer
   `wait_seconds` from `0` through `3600`, defaulting to `3600`.
 
-Require every executor to name one declared adapter. Apply the schema selected
+Require every profile to name one declared adapter. Apply the schema selected
 by that adapter:
 
 - For `native`, `codex`, or `claude-code`, require one non-empty `agent`.
@@ -102,27 +97,29 @@ by that adapter:
   fallback.
 
 Require `workflows.feature` to contain `roles` and optionally `router`, with no
-other keys. Require `roles` to contain exactly `framer`, `specifier`, `designer`,
-`planner`, and `reviewer`, each bound to one declared executor. Treat an omitted
+other keys. Require `roles` to contain exactly `idea-author`,
+`requirements-author`, `requirements-reviewer`, `design-author`,
+`specification-reviewer`, and `planner`, each bound to one declared profile.
+Treat an omitted
 or explicit null `router` as no dedicated router. Otherwise require it to name
-one declared executor backed by a native, `codex`, or `claude-code` adapter and
-require that executor's `agent` to be named rather than `default`. Reject a
+one declared profile backed by a native, `codex`, or `claude-code` adapter and
+require that profile's `agent` to be named rather than `default`. Reject a
 mailbox router: the logical router must interact with the host and launch fresh
 sequential role agents. Never let project configuration change role briefs,
 contracts, artifact paths, write boundaries, routing transitions, approval
 rules, or retry limits.
 
-If `.stepan/config.yaml` is malformed or an explicitly selected executor is
+If `.stepan/config.yaml` is malformed or an explicitly selected profile is
 unavailable, stop before creating or changing feature state. Do not ignore the
 file, merge it with another Stepan configuration, or fall back to a different
-executor.
+profile.
 
 ## Resolved execution
 
 On `new`, resolve configuration before creating the specification directory.
 Hash `.stepan/config.yaml` with the bundled canonical hash command when the file
 exists. Persist a normalized snapshot containing the source, configuration hash,
-adapters, executors, the nullable router binding, and all role bindings in
+adapters, profiles, the nullable router binding, and all role bindings in
 `state.yaml`. For the built-in default, record `source: builtin`,
 `config_sha256: null`, and `bindings.router: null`.
 
@@ -143,8 +140,8 @@ valid. Normalize it to null in memory and do not rewrite state solely to add the
 field. Every newly created snapshot must persist it explicitly.
 
 Before launching a dedicated router or dispatching a role, verify that its
-persisted adapter and executor remain available. If they do not, preserve state
-and require an explicit user decision; do not select an alternative executor
+persisted adapter and profile remain available. If they do not, preserve state
+and require an explicit user decision; do not select an alternative profile
 automatically.
 
 ## Dedicated router runs
@@ -184,14 +181,14 @@ executor. Stop before dispatch on any mismatch. Record:
 
 ```yaml
 active_run:
-  run_id: export-data--design--designer--2
+  run_id: export-data--design--design-author--2
   sequence: 2
   stage: design
-  role: designer
+  role: design-author
   purpose: draft | revise | review
-  executor: corporate-designer
+  executor: architect
   adapter: mailbox
-  output: .stepan/specs/export-data/design.md
+  output: docs/changes/specs/export-data/design.md
   request_sha256: sha256:...
 ```
 
@@ -293,22 +290,22 @@ output paths remain relative to `project_root`. Require request
 ```json
 {
   "schema_version": 2,
-  "run_id": "export-data--design--designer--2",
+  "run_id": "export-data--design--design-author--2",
   "spec_id": "export-data",
   "stage": "design",
-  "role": "designer",
+  "role": "design-author",
   "purpose": "draft",
   "project_root": "/workspace/project",
   "skill_root": "/home/user/.codex/skills/stepan",
-  "brief": "references/flows/feature/roles/designer.md",
+  "brief": "references/flows/feature/roles/design-author.md",
   "contracts": ["references/flows/feature/contracts/design.md"],
   "inputs": [
     {
-      "path": ".stepan/specs/export-data/requirements.md",
+      "path": "docs/changes/specs/export-data/requirements.md",
       "sha256": "sha256:..."
     }
   ],
-  "output": ".stepan/specs/export-data/design.md",
+  "output": "docs/changes/specs/export-data/design.md",
   "executor": {
     "model": "company-architect-v3",
     "reasoning": "xhigh"
@@ -347,10 +344,10 @@ For completion:
 ```json
 {
   "schema_version": 1,
-  "run_id": "export-data--design--designer--2",
+  "run_id": "export-data--design--design-author--2",
   "status": "completed",
   "output": {
-    "path": ".stepan/specs/export-data/design.md",
+    "path": "docs/changes/specs/export-data/design.md",
     "sha256": "sha256:..."
   },
   "executor": {
@@ -371,7 +368,7 @@ For a blocking question:
 ```json
 {
   "schema_version": 1,
-  "run_id": "export-data--design--designer--2",
+  "run_id": "export-data--design--design-author--2",
   "status": "blocked",
   "question": "Must exports include deleted records?"
 }
@@ -382,7 +379,7 @@ For failure:
 ```json
 {
   "schema_version": 1,
-  "run_id": "export-data--design--designer--2",
+  "run_id": "export-data--design--design-author--2",
   "status": "failed",
   "error": "Configured reasoning is unsupported by the selected model."
 }

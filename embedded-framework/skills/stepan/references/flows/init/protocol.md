@@ -31,12 +31,11 @@ Do not recreate generated content in a prompt or shell command. The script may
 inspect only its exact destinations and may create only:
 
 ```text
-.codex/agents/stepan_feature_router.toml
-.codex/agents/stepan_feature_framer.toml
-.codex/agents/stepan_feature_specifier.toml
-.codex/agents/stepan_feature_designer.toml
-.codex/agents/stepan_feature_planner.toml
-.codex/agents/stepan_feature_reviewer.toml
+.codex/agents/stepan_orchestrator.toml
+.codex/agents/stepan_author.toml
+.codex/agents/stepan_architect.toml
+.codex/agents/stepan_planner.toml
+.codex/agents/stepan_reviewer.toml
 .stepan/config.yaml
 ```
 
@@ -51,21 +50,20 @@ Accept only a zero exit status and one JSON object containing exactly
 `schema_version: 1`, `host: codex`, `status`, `created`, and `unchanged`. Require
 `status` to be `created` when `created` is non-empty and `unchanged` otherwise.
 Require `created` and `unchanged` to be disjoint arrays whose union is exactly
-the seven declared paths. Treat malformed output or any other filesystem effect
+the six declared paths. Treat malformed output or any other filesystem effect
 as failure.
 
 ## Recommended Codex profile
 
-The generated `.stepan/config.yaml` binds the dedicated router and all five
-feature roles to project-scoped named Codex agents. Model settings remain in the
-custom agent TOML files:
+The generated `.stepan/config.yaml` declares reusable project-scoped profiles
+and maps the feature roles to them. Model settings remain in the custom agent
+TOML files:
 
 | Agent | Model | Reasoning |
 | --- | --- | --- |
-| router | `gpt-5.6` | `high` |
-| framer | `gpt-5.6` | `high` |
-| specifier | `gpt-5.6` | `high` |
-| designer | `gpt-5.6` | `high` |
+| orchestrator | `gpt-5.6` | `high` |
+| author | `gpt-5.6` | `high` |
+| architect | `gpt-5.6` | `high` |
 | planner | `gpt-5.6-terra` | `high` |
 | reviewer | `gpt-5.6-terra` | `high` |
 
@@ -79,7 +77,7 @@ default, and this workflow must not disturb unrelated project Codex settings.
 
 ## User-facing result
 
-On creation, report that the project-local router and five role agents are
+On creation, report that the project-local profiles and workflow bindings are
 configured and name `.stepan/config.yaml` as the binding entrypoint. When every
 file was already identical, report that configuration was already initialized.
 On conflict, state that no settings were changed and list only the conflicting
