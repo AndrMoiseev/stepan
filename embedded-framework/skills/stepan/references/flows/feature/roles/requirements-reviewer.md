@@ -5,7 +5,7 @@
 - Input artifact: [`requirements.md`](../../../modules/requirements/artifact.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Requirements review rules: [`requirements reviewing`](../../../modules/requirements/reviewing.md)
-- Review output: [`review`](../contracts/review.md)
+- Review output: [`review`](../../../modules/review/artifact.md)
 
 ## Task
 

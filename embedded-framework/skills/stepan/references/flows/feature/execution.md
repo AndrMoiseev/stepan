@@ -298,7 +298,7 @@ output paths remain relative to `project_root`. Require request
   "project_root": "/workspace/project",
   "skill_root": "/home/user/.codex/skills/stepan",
   "brief": "references/flows/feature/roles/design-author.md",
-  "contracts": ["references/flows/feature/contracts/design.md"],
+  "contracts": ["references/modules/design/artifact.md"],
   "inputs": [
     {
       "path": "docs/changes/specs/export-data/requirements.md",

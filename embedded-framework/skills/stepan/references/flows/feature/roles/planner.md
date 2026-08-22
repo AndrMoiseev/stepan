@@ -4,8 +4,8 @@
 
 - Input artifacts: [`idea.md`](../../../modules/idea/artifact.md),
   [`requirements.md`](../../../modules/requirements/artifact.md), and
-  [`design.md`](../contracts/design.md)
-- Output artifact: [`plan.md`](../contracts/plan.md)
+  [`design.md`](../../../modules/design/artifact.md)
+- Output artifact: [`plan.md`](../../../modules/plan/artifact.md)
 - Shared idea rules: [`idea common`](../../../modules/idea/common.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Shared design rules: [`design common`](../../../modules/design/common.md)

@@ -287,9 +287,9 @@ Use the matching brief both to validate role-owned data and to launch a role:
 
 Resolve each selected brief's `Contracts` section before validation or launch.
 Load only direct Markdown links that apply to the current stage. Require every
-resolved path to be either under this workflow's `contracts/` directory or the
-skill's `references/modules/` directory. Reject missing, ambiguous, external, or
-recursive references. Do not follow links from a resolved contract or module.
+resolved path to be under the skill's `references/modules/` directory. Reject
+missing, ambiguous, external, or recursive references. Do not follow links from
+a resolved contract or module.
 Do not load an unselected contract or module.
 
 Treat files under `references/modules/` as private role dependencies. Reject a
