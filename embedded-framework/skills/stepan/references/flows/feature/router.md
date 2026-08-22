@@ -1,8 +1,8 @@
 # Dedicated feature router contract
 
-Use this contract only when the feature launch boundary selects a non-null
-router binding. The primary Stepan conversation is then a thin launcher; the
-fresh named agent selected here is the workflow router for this invocation.
+Use this contract for every feature launch. The primary Stepan conversation is
+a thin launcher; the fresh named agent selected by the required non-null router
+binding is the workflow router for this invocation.
 
 ## Launcher responsibilities
 
@@ -37,8 +37,7 @@ Pass one compact manifest containing only:
 - the canonical project root and canonical skill root;
 - the skill-relative paths to `protocol.md`, `execution.md`, this contract, and
   the selected native adapter contract;
-- for `new`, either the configured path and canonical hash or an explicit
-  built-in source marker;
+- for `new`, the configured path and canonical hash;
 - for an existing specification, the project-relative `state.yaml` path; and
 - the selected router executor name, concrete adapter kind, and named agent.
 

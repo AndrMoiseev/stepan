@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --no-project --no-python-downloads --script
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = []
 # ///
 """Deterministic helpers for the Stepan router."""
@@ -13,9 +13,10 @@ import json
 import os
 import re
 import sys
+import tomllib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from tempfile import mkstemp
+from tempfile import TemporaryDirectory, mkstemp
 
 
 SPEC_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -32,6 +33,8 @@ ROLES = (
 )
 PURPOSES = ("draft", "revise", "review")
 ADAPTER_KINDS = ("codex", "claude-code", "mailbox")
+APPROVAL_ACTIONS = ("continue", "continue-and-commit")
+CODEX_HOST = "codex"
 
 
 TRANSLITERATION = str.maketrans(
@@ -107,44 +110,14 @@ CODEX_AGENT_PROFILES = (
 )
 
 
-CODEX_STEPAN_CONFIG = """schema_version: 1
-
-adapters:
-  codex:
-    kind: codex
-
-profiles:
-  orchestrator:
-    adapter: codex
-    agent: stepan_orchestrator
-
-  author:
-    adapter: codex
-    agent: stepan_author
-
-  architect:
-    adapter: codex
-    agent: stepan_architect
-
-  planner:
-    adapter: codex
-    agent: stepan_planner
-
-  reviewer:
-    adapter: codex
-    agent: stepan_reviewer
-
-workflows:
-  feature:
-    router: orchestrator
-    roles:
-      idea-author: author
-      requirements-author: author
-      requirements-reviewer: reviewer
-      design-author: architect
-      specification-reviewer: reviewer
-      planner: planner
-"""
+CODEX_ROLE_BINDINGS = (
+    ("idea-author", "author"),
+    ("requirements-author", "author"),
+    ("requirements-reviewer", "reviewer"),
+    ("design-author", "architect"),
+    ("specification-reviewer", "reviewer"),
+    ("planner", "planner"),
+)
 
 
 def codex_agent_instructions(profile: str) -> str:
@@ -185,6 +158,145 @@ def codex_agent_toml(
     )
 
 
+def codex_stepan_config() -> str:
+    lines = ["schema_version: 1", "", "adapters:", "  codex:", "    kind: codex"]
+    lines.extend(("", "profiles:"))
+    for profile, _, _, _ in CODEX_AGENT_PROFILES:
+        lines.extend(
+            (
+                f"  {profile}:",
+                "    adapter: codex",
+                f"    agent: stepan_{profile}",
+                "",
+            )
+        )
+    lines.extend(("workflows:", "  feature:", "    router: orchestrator", "    roles:"))
+    lines.extend(f"      {role}: {profile}" for role, profile in CODEX_ROLE_BINDINGS)
+    return "\n".join(lines) + "\n"
+
+
+def parse_generated_mapping_yaml(content: str) -> dict[str, object]:
+    if content.startswith("\ufeff"):
+        raise ValueError("generated YAML must not contain a byte-order mark")
+    if "\r" in content or not content.endswith("\n"):
+        raise ValueError("generated YAML must use LF and end with a newline")
+
+    result: dict[str, object] = {}
+    stack: list[tuple[int, dict[str, object]]] = [(-2, result)]
+    for line_number, line in enumerate(content.splitlines(), 1):
+        if not line:
+            continue
+        match = re.fullmatch(r"( *)([a-z][a-z0-9_-]*):(.*)", line)
+        if match is None or "\t" in line:
+            raise ValueError(f"invalid generated YAML line {line_number}")
+        indentation = len(match.group(1))
+        if indentation % 2:
+            raise ValueError(f"invalid generated YAML indentation on line {line_number}")
+        while stack[-1][0] >= indentation:
+            stack.pop()
+        parent_indentation, parent = stack[-1]
+        if indentation != parent_indentation + 2:
+            raise ValueError(f"invalid generated YAML nesting on line {line_number}")
+
+        key = match.group(2)
+        if key in parent:
+            raise ValueError(f"duplicate generated YAML key on line {line_number}")
+        remainder = match.group(3)
+        if remainder == "":
+            child: dict[str, object] = {}
+            parent[key] = child
+            stack.append((indentation, child))
+            continue
+        if not remainder.startswith(" ") or remainder != f" {remainder[1:].strip()}":
+            raise ValueError(f"invalid generated YAML scalar on line {line_number}")
+        scalar = remainder[1:]
+        if scalar == "null":
+            value: object = None
+        elif re.fullmatch(r"0|[1-9][0-9]*", scalar):
+            value = int(scalar)
+        elif re.fullmatch(r"[A-Za-z0-9_.-]+", scalar):
+            value = scalar
+        else:
+            raise ValueError(f"unsupported generated YAML scalar on line {line_number}")
+        parent[key] = value
+    return result
+
+
+def expected_codex_config() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "adapters": {"codex": {"kind": "codex"}},
+        "profiles": {
+            profile: {"adapter": "codex", "agent": f"stepan_{profile}"}
+            for profile, _, _, _ in CODEX_AGENT_PROFILES
+        },
+        "workflows": {
+            "feature": {
+                "router": "orchestrator",
+                "roles": dict(CODEX_ROLE_BINDINGS),
+            }
+        },
+    }
+
+
+def validate_codex_init_files(
+    files: tuple[tuple[PurePosixPath, bytes], ...],
+) -> None:
+    expected_paths = tuple(
+        PurePosixPath(f".codex/agents/stepan_{profile}.toml")
+        for profile, _, _, _ in CODEX_AGENT_PROFILES
+    ) + (PurePosixPath(".stepan/config.yaml"),)
+    if tuple(path for path, _ in files) != expected_paths:
+        raise ValueError("generated Codex initialization paths are inconsistent")
+
+    parsed_agents: dict[str, dict[str, object]] = {}
+    for (profile, model, reasoning, description), (path, content) in zip(
+        CODEX_AGENT_PROFILES, files[:-1], strict=True
+    ):
+        if content.startswith(b"\xef\xbb\xbf") or b"\r" in content:
+            raise ValueError(f"invalid generated line endings: {path}")
+        try:
+            document = tomllib.loads(content.decode("utf-8"))
+        except (UnicodeError, tomllib.TOMLDecodeError) as error:
+            raise ValueError(f"invalid generated TOML: {path}") from error
+        expected_name = f"stepan_{profile}"
+        expected_document = {
+            "name": expected_name,
+            "description": description,
+            "model": model,
+            "model_reasoning_effort": reasoning,
+            "developer_instructions": codex_agent_instructions(profile) + "\n",
+        }
+        if document != expected_document:
+            raise ValueError(f"generated TOML fields are inconsistent: {path}")
+        if path.stem != document["name"] or document["name"] == "default":
+            raise ValueError(f"generated agent filename and name differ: {path}")
+        parsed_agents[profile] = document
+
+    config_path, config_content = files[-1]
+    try:
+        config_text = config_content.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"invalid generated YAML encoding: {config_path}") from error
+    config = parse_generated_mapping_yaml(config_text)
+    if config != expected_codex_config():
+        raise ValueError("generated Codex configuration is inconsistent")
+
+    profiles = config["profiles"]
+    feature = config["workflows"]["feature"]
+    router_profile = feature["router"]
+    if not isinstance(profiles, dict) or not isinstance(router_profile, str):
+        raise ValueError("generated Codex router binding is invalid")
+    router = profiles.get(router_profile)
+    if not isinstance(router, dict) or router.get("agent") != "stepan_orchestrator":
+        raise ValueError("generated Codex router binding is inconsistent")
+    if (
+        parsed_agents[router_profile]["model"] != "gpt-5.6"
+        or parsed_agents[router_profile]["model_reasoning_effort"] != "high"
+    ):
+        raise ValueError("generated Codex orchestrator is not on the strong model")
+
+
 def codex_init_files() -> tuple[tuple[PurePosixPath, bytes], ...]:
     files = [
         (
@@ -194,9 +306,39 @@ def codex_init_files() -> tuple[tuple[PurePosixPath, bytes], ...]:
         for profile, model, reasoning, description in CODEX_AGENT_PROFILES
     ]
     files.append(
-        (PurePosixPath(".stepan/config.yaml"), CODEX_STEPAN_CONFIG.encode("utf-8"))
+        (PurePosixPath(".stepan/config.yaml"), codex_stepan_config().encode("utf-8"))
     )
-    return tuple(files)
+    result = tuple(files)
+    validate_codex_init_files(result)
+    return result
+
+
+def validate_codex_contract_examples(
+    files: tuple[tuple[PurePosixPath, bytes], ...]
+) -> None:
+    skill_root = Path(__file__).resolve().parent.parent
+    init_contract = (skill_root / "references/flows/init/protocol.md").read_text(
+        encoding="utf-8"
+    )
+    expected_command = (
+        'uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" '
+        'init-codex --host codex --project-root "<project-root>"'
+    )
+    if expected_command not in init_contract:
+        raise ValueError("init contract command does not match init-codex arguments")
+    for path, _ in files:
+        if path.as_posix() not in init_contract:
+            raise ValueError(f"init contract omits generated path: {path}")
+
+    codex_adapter = (
+        skill_root / "references/flows/feature/adapters/codex.md"
+    ).read_text(encoding="utf-8")
+    examples = re.findall(r"```toml\n(.*?)```", codex_adapter, flags=re.DOTALL)
+    if len(examples) != 1:
+        raise ValueError("Codex adapter must contain one orchestrator TOML example")
+    orchestrator_toml = files[0][1].decode("utf-8")
+    if examples[0] != orchestrator_toml:
+        raise ValueError("Codex adapter orchestrator example differs from generated TOML")
 
 
 def _validate_init_target(project_root: Path, relative: PurePosixPath) -> Path:
@@ -266,7 +408,9 @@ def _rollback_codex_init(
             pass
 
 
-def initialize_codex(project_root: Path) -> dict[str, object]:
+def initialize_codex(project_root: Path, current_host: str) -> dict[str, object]:
+    if current_host != CODEX_HOST:
+        raise ValueError("init-codex requires the current host to be Codex")
     if not project_root.exists() or not project_root.is_dir():
         raise ValueError("project root must be an existing directory")
     project_root = project_root.resolve(strict=True)
@@ -380,6 +524,44 @@ def run_reservation(
     }
 
 
+def approval_transition(
+    action: str,
+    stage: str,
+    status: str,
+    pending: bool,
+    review_verdict: str | None,
+    unresolved_user_decision: bool,
+) -> dict[str, object]:
+    if action not in APPROVAL_ACTIONS:
+        raise ValueError("invalid approval action")
+    if stage not in STAGES:
+        raise ValueError("invalid approval stage")
+    if status != "awaiting-approval":
+        raise ValueError("approval requires awaiting-approval status")
+    if pending:
+        raise ValueError("approval is forbidden while pending is non-null")
+    if unresolved_user_decision:
+        raise ValueError("approval is forbidden with an unresolved user-decision")
+    if stage in {"requirements", "design"}:
+        if review_verdict != "pass":
+            raise ValueError(f"{stage} approval requires a passing review")
+    elif review_verdict is not None:
+        raise ValueError(f"{stage} approval must not use a review verdict")
+
+    next_stage = {
+        "idea": "requirements",
+        "requirements": "design",
+        "design": "plan",
+        "plan": "plan",
+    }[stage]
+    return {
+        "approved_stage": stage,
+        "next_stage": next_stage,
+        "next_status": "approved" if stage == "plan" else "drafting",
+        "commit": action == "continue-and-commit",
+    }
+
+
 def expected_output_path(specification: str, stage: str, role: str) -> str:
     owners = {
         "idea": "idea-author",
@@ -434,6 +616,9 @@ def reserved_state_content(
     if content.startswith("\ufeff"):
         raise ValueError("state file must not contain a byte-order mark")
     lines = content.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    schema_lines = [line for line in lines if line.startswith("schema_version:")]
+    if schema_lines != ["schema_version: 1"]:
+        raise ValueError("state schema_version must be 1")
     sequence_matches = [
         (index, match)
         for index, line in enumerate(lines)
@@ -734,9 +919,58 @@ def self_test() -> None:
         "sequence": 2,
         "next_run_sequence": 3,
     }
+    approval_cases = {
+        "idea": None,
+        "requirements": "pass",
+        "design": "pass",
+        "plan": None,
+    }
+    for stage, review_verdict in approval_cases.items():
+        results = [
+            approval_transition(
+                action,
+                stage,
+                "awaiting-approval",
+                False,
+                review_verdict,
+                False,
+            )
+            for action in APPROVAL_ACTIONS
+        ]
+        assert results[0]["approved_stage"] == results[1]["approved_stage"] == stage
+        assert results[0]["next_stage"] == results[1]["next_stage"]
+        assert results[0]["next_status"] == results[1]["next_status"]
+        assert results[0]["commit"] is False
+        assert results[1]["commit"] is True
+
+    invalid_approvals = (
+        ("idea", "drafting", False, None, False),
+        ("idea", "awaiting-approval", False, "pass", False),
+        ("requirements", "awaiting-approval", False, None, False),
+        ("requirements", "awaiting-approval", False, "changes-required", False),
+        ("design", "awaiting-approval", True, "pass", False),
+        ("plan", "awaiting-approval", False, None, True),
+    )
+    for action in APPROVAL_ACTIONS:
+        for stage, status, pending, review_verdict, user_decision in invalid_approvals:
+            try:
+                approval_transition(
+                    action,
+                    stage,
+                    status,
+                    pending,
+                    review_verdict,
+                    user_decision,
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(
+                    f"accepted invalid approval state: {action}, {stage}, {status}"
+                )
     reserved_state, reservation = reserved_state_content(
         (
-            "schema_version: 3\n"
+            "schema_version: 1\n"
             "next_run_sequence: 2\n"
             "pending: null\n"
             "active_run: null\n"
@@ -774,6 +1008,22 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("reserved a second run over an active run")
+    try:
+        reserved_state_content(
+            "schema_version: 3\nnext_run_sequence: 1\nactive_run: null\n",
+            "export-data",
+            "idea",
+            "idea-author",
+            "draft",
+            "author",
+            "codex",
+            "docs/changes/specs/export-data/idea.md",
+            "sha256:" + "b" * 64,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted obsolete feature state schema version")
     for arguments in (
         ("bad--id", "design", "design-author", 1),
         ("export-data", "invalid", "design-author", 1),
@@ -915,6 +1165,7 @@ def self_test() -> None:
             raise AssertionError(f"accepted invalid router result: {invalid!r}")
 
     expected_files = codex_init_files()
+    validate_codex_contract_examples(expected_files)
     assert len(expected_files) == 6
     assert expected_files[-1][0] == PurePosixPath(".stepan/config.yaml")
     assert all(content.endswith(b"\n") for _, content in expected_files)
@@ -930,6 +1181,56 @@ def self_test() -> None:
     )
     assert b'model = "gpt-5.6"' in expected_files[0][1]
     assert b'model = "gpt-5.6-terra"' in expected_files[-2][1]
+
+    expected_paths = [path.as_posix() for path, _ in expected_files]
+    with TemporaryDirectory(prefix="stepan-self-test-") as temporary:
+        temporary_root = Path(temporary)
+
+        wrong_host_root = temporary_root / "wrong-host"
+        wrong_host_root.mkdir()
+        try:
+            initialize_codex(wrong_host_root, "claude-code")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("initialized Codex files on a non-Codex host")
+        assert list(wrong_host_root.iterdir()) == []
+
+        fresh_root = temporary_root / "fresh"
+        fresh_root.mkdir()
+        created = initialize_codex(fresh_root, "codex")
+        assert created == {
+            "schema_version": 1,
+            "host": "codex",
+            "status": "created",
+            "created": expected_paths,
+            "unchanged": [],
+        }
+        unchanged = initialize_codex(fresh_root, "codex")
+        assert unchanged == {
+            "schema_version": 1,
+            "host": "codex",
+            "status": "unchanged",
+            "created": [],
+            "unchanged": expected_paths,
+        }
+
+        conflict_root = temporary_root / "conflict"
+        conflict_path = conflict_root / ".codex/agents/stepan_orchestrator.toml"
+        conflict_path.parent.mkdir(parents=True)
+        conflict_path.write_text("conflict\n", encoding="utf-8", newline="\n")
+        try:
+            initialize_codex(conflict_root, "codex")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("initialized files despite a preflight conflict")
+        assert conflict_path.read_bytes() == b"conflict\n"
+        assert sorted(
+            path.relative_to(conflict_root).as_posix()
+            for path in conflict_root.rglob("*")
+            if path.is_file()
+        ) == [".codex/agents/stepan_orchestrator.toml"]
 
 
 def parser() -> argparse.ArgumentParser:
@@ -947,6 +1248,19 @@ def parser() -> argparse.ArgumentParser:
     run_identifier.add_argument("--stage", required=True, choices=STAGES)
     run_identifier.add_argument("--role", required=True, choices=ROLES)
     run_identifier.add_argument("--sequence", required=True, type=int)
+
+    approval = commands.add_parser(
+        "approval-transition",
+        help="Validate one feature approval checkpoint transition",
+    )
+    approval.add_argument("--action", required=True, choices=APPROVAL_ACTIONS)
+    approval.add_argument("--stage", required=True, choices=STAGES)
+    approval.add_argument("--status", required=True)
+    approval.add_argument("--pending", action="store_true")
+    approval.add_argument(
+        "--review-verdict", choices=("pass", "changes-required")
+    )
+    approval.add_argument("--unresolved-user-decision", action="store_true")
 
     reservation = commands.add_parser(
         "reserve-run", help="Atomically reserve one role run in state.yaml"
@@ -981,6 +1295,7 @@ def parser() -> argparse.ArgumentParser:
     initializer = commands.add_parser(
         "init-codex", help="Create recommended project-local Codex agents"
     )
+    initializer.add_argument("--host", required=True)
     initializer.add_argument("--project-root", type=Path, default=Path("."))
 
     commands.add_parser("self-test", help="Run built-in checks")
@@ -998,6 +1313,15 @@ def main() -> int:
                     args.spec_id, args.stage, args.role, args.sequence
                 )
             }
+        elif args.command == "approval-transition":
+            output = approval_transition(
+                args.action,
+                args.stage,
+                args.status,
+                args.pending,
+                args.review_verdict,
+                args.unresolved_user_decision,
+            )
         elif args.command == "reserve-run":
             output = reserve_run_in_state(
                 args.state,
@@ -1029,7 +1353,7 @@ def main() -> int:
         elif args.command == "validate-router-result":
             output = validate_router_result(parse_json_receipt(sys.stdin.read()))
         elif args.command == "init-codex":
-            output = initialize_codex(args.project_root)
+            output = initialize_codex(args.project_root, args.host)
         else:
             self_test()
             output = {"ok": True}

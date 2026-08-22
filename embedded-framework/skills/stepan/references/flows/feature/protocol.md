@@ -84,6 +84,7 @@ library. Only `reserve-run` writes feature state, restricted to the verified
 ```text
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root docs/changes/specs
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" approval-transition --action <continue|continue-and-commit> --stage <stage> --status <status> [--review-verdict <pass|changes-required>] [--pending] [--unresolved-user-decision]
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <profile> --adapter <kind> --output <path> --request-sha256 <hash>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" hash <file>...
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-receipt --run-id <id> --output <path> --adapter <native|mailbox>
@@ -132,10 +133,12 @@ configuration, creating feature state, or dispatching a role. Treat it as the
 normative contract for project bindings, native and mailbox adapters, role-run
 receipts, bounded waiting, and filesystem verification.
 
-If `.stepan/config.yaml` is absent, use the built-in native binding defined by
-the execution contract. If it exists, resolve it before writing and persist the
-normalized execution snapshot in feature state. Never reread project execution
-configuration to rebind an existing specification.
+Require `.stepan/config.yaml`, resolve it before writing, and persist the
+normalized execution snapshot in feature state. On Codex, direct the user to
+`$stepan init codex` when the file is absent. On another host, require an
+equivalent valid project configuration created outside this workflow. Never use
+a built-in default, and never reread project execution configuration to rebind
+an existing specification.
 
 ## Router launch boundary
 
@@ -146,22 +149,21 @@ Stepan conversation and the logical feature router.
 Apply the boundary only after the action is known and, for `new`, non-whitespace
 idea text is available. Select its source as follows:
 
-- for `new`, use only the current `.stepan/config.yaml`, with no router when the
-  file is absent or its optional feature router binding is null;
+- for `new`, use only the current `.stepan/config.yaml` and require its feature
+  router binding to resolve to a named native agent on the current host;
 - for an existing specification, use only the persisted execution snapshot in
-  its verified `state.yaml`; and
+  its verified `state.yaml` and require the same non-null named router binding;
+  and
 - for an immediate pre-state collision choice, reuse the exact configuration
   path, hash, and router binding from the immediately preceding interaction and
   stop if the file changed.
 
-Treat a missing router field in an older valid schema-version-3 execution
-snapshot as null. Never apply a newly configured router to an existing
-specification whose snapshot has no router binding.
-
-When the selected binding is null, the current primary conversation remains the
-logical router and follows this protocol directly. When it is non-null, follow
-`router.md`: launch exactly the bound named agent, relay its single user-facing
-result, and perform no feature transition in the primary conversation. A named
+Follow `router.md` for every launch: launch exactly the bound named agent, relay
+its single user-facing result, and perform no feature transition in the primary
+conversation. If the named router cannot be resolved or launched with nested
+role-dispatch capability, report an unsupported or misconfigured host runtime
+and stop without changing feature state. Never fall back to a null binding, the
+primary conversation, `agent: default`, another agent, or another model. A named
 agent launched under that contract is already the logical router and must skip
 this launch boundary rather than recursively launching itself.
 
@@ -186,7 +188,7 @@ Create stage and review files lazily. Create `state.yaml` before launching the
 first role:
 
 ```yaml
-schema_version: 3
+schema_version: 1
 created_at: 2026-08-15T12:00:00Z
 initial_request_sha256: sha256:...
 stage: idea
@@ -198,23 +200,35 @@ clarifications: []
 pending: null
 active_run: null
 execution:
-  source: builtin
-  config_sha256: null
+  source: project
+  config_sha256: sha256:...
   adapters:
-    native:
+    codex:
       kind: codex
   profiles:
-    native-default:
-      adapter: native
-      agent: default
+    orchestrator:
+      adapter: codex
+      agent: stepan_orchestrator
+    author:
+      adapter: codex
+      agent: stepan_author
+    architect:
+      adapter: codex
+      agent: stepan_architect
+    planner:
+      adapter: codex
+      agent: stepan_planner
+    reviewer:
+      adapter: codex
+      agent: stepan_reviewer
   bindings:
-    router: null
-    idea-author: native-default
-    requirements-author: native-default
-    requirements-reviewer: native-default
-    design-author: native-default
-    specification-reviewer: native-default
-    planner: native-default
+    router: orchestrator
+    idea-author: author
+    requirements-author: author
+    requirements-reviewer: reviewer
+    design-author: architect
+    specification-reviewer: reviewer
+    planner: planner
 ```
 
 The example is a snapshot resolved on Codex. On Claude Code, persist
@@ -226,18 +240,15 @@ Allow these values:
 - `status`: `drafting`, `reviewing`, `revising`, `awaiting-approval`,
   `awaiting-decision`, `waiting-executor`, `approved`.
 
-Require `schema_version: 3`, a positive `next_run_sequence`, a normalized
+Require `schema_version: 1`, a positive `next_run_sequence`, a normalized
 `execution` snapshot matching the execution contract, a canonical
 `initial_request_sha256` matching `request.md`, and either `null` or one valid
 `active_run`. Require `clarifications` to be a list of valid completed
 clarification records. Permit `waiting-executor` only with an active mailbox
-run. While `active_run` is non-null, require `next_run_sequence` to equal its
+run. Require `bindings.router` to name the configured native orchestrator. While
+`active_run` is non-null, require `next_run_sequence` to equal its
 `sequence + 1`. Persist the active run and returned next sequence together from
 one valid `reserve-run` result, then reread and verify both before dispatch.
-For snapshots created after router-binding support, persist `bindings.router`
-explicitly as either null or one profile name. Accept its omission only from an
-otherwise valid older schema-version-3 snapshot and normalize that omission to
-null in memory without rewriting state merely for migration.
 
 The router writes `request.md` once when creating the specification. Preserve
 the user's initial idea text after removing only the Stepan command prefix and
@@ -524,10 +535,22 @@ one of these transitions before applying its existing validation rules. Never
 interpret a category selection, silence, an ambiguous label, or a request for
 more information as approval.
 
-Allow `continue` only for `requirements` or a `pass` review. Require `revise` or explicit
-`accept-risk` for blocking `author-revision` findings. Never allow
-`accept-risk`, `continue`, or automatic revision to bypass a `user-decision`
-finding or unanswered `pending` question. Silence never approves.
+Before either `continue` or `continue-and-commit`, derive the checkpoint facts
+from verified state and the applicable review, then require the bundled
+`approval-transition` command to accept them. Both actions have identical
+eligibility: `status` must be `awaiting-approval`, `pending` must be null, and no
+`user-decision` finding may be unresolved. An idea is eligible only after the
+successful idea-author transition established its checkpoint; requirements are
+eligible only with `review-verdict: pass`; design is eligible only with
+`review-verdict: pass`; and a plan is eligible only after the successful planner
+transition established its checkpoint. Pass no review verdict for idea or plan.
+Treat any validator rejection as an invalid checkpoint and do not approve,
+commit, or advance.
+
+Require `revise` or explicit `accept-risk` for blocking `author-revision`
+findings. Never allow `accept-risk`, either approval action, or automatic
+revision to bypass a `user-decision` finding or unanswered `pending` question.
+Silence never approves.
 
 Allow `answer` only when `pending` is non-null. An immediate bare answer and an
 explicit `answer` command have the same transition semantics; never interpret

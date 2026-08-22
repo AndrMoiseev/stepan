@@ -30,14 +30,15 @@ equivalent user-level custom agent), for example:
 
 ```toml
 name = "stepan_orchestrator"
-description = "Runs persisted Stepan workflows and dispatches their roles."
+description = "Orchestrates persisted Stepan workflows and dispatches role runs."
 model = "gpt-5.6"
 model_reasoning_effort = "high"
 developer_instructions = """
-Act only as the dedicated Stepan feature router when given its router manifest.
-Read and follow the declared protocol, execution, router, and adapter contracts.
-Never invoke the Stepan skill recursively and return only the exact router
-result object required by the router contract.
+Act only as a Stepan workflow orchestrator when given one router launch manifest.
+Read and follow every protocol, execution, router, and adapter contract declared by that manifest.
+Never invoke the Stepan skill recursively or treat parent conversation as product input.
+Dispatch only the fresh role runs selected by the persisted workflow state.
+Return only the exact JSON router result required by the router contract.
 """
 ```
 

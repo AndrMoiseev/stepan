@@ -25,7 +25,7 @@ change host mode, add a tool, or launch a separate UI merely to obtain a menu.
 
 | Workflow | Purpose | Primary command | Contract |
 | --- | --- | --- | --- |
-| `init` | Create recommended project-local Stepan host configuration | `$stepan init codex` or `/stepan init codex` | [`references/flows/init/protocol.md`](references/flows/init/protocol.md) |
+| `init` | Create recommended project-local Stepan host configuration | `$stepan init codex` (Codex only) | [`references/flows/init/protocol.md`](references/flows/init/protocol.md) |
 | `feature` | Specify a feature before implementation | `$stepan feature new [idea]` or `/stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
 
 - On an invocation without a workflow, show the supported workflows and their

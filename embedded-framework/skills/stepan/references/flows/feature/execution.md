@@ -14,11 +14,10 @@
 
 ## Project configuration
 
-Read optional project execution configuration only from
-`.stepan/config.yaml`. When it is absent, bind every feature role to a fresh
-default native agent on the current host that inherits the parent model and
-reasoning effort. When it exists, require this schema and require an explicit
-binding for every role:
+Read required project execution configuration only from
+`.stepan/config.yaml`. When it is absent, stop before creating or changing
+feature state; on Codex, direct the user to `$stepan init codex`. Require this
+schema, one named orchestrator, and an explicit binding for every role:
 
 ```yaml
 schema_version: 1
@@ -96,16 +95,15 @@ by that adapter:
   daemon. Reject `agent`, `target`, `profile`, or any silent model or reasoning
   fallback.
 
-Require `workflows.feature` to contain `roles` and optionally `router`, with no
-other keys. Require `roles` to contain exactly `idea-author`,
+Require `workflows.feature` to contain exactly `router` and `roles`. Require
+`roles` to contain exactly `idea-author`,
 `requirements-author`, `requirements-reviewer`, `design-author`,
 `specification-reviewer`, and `planner`, each bound to one declared profile.
-Treat an omitted
-or explicit null `router` as no dedicated router. Otherwise require it to name
-one declared profile backed by a native, `codex`, or `claude-code` adapter and
-require that profile's `agent` to be named rather than `default`. Reject a
-mailbox router: the logical router must interact with the host and launch fresh
-sequential role agents. Never let project configuration change role briefs,
+Require `router` to name one declared profile backed by a native, `codex`, or
+`claude-code` adapter and require that profile's `agent` to be named rather than
+`default`. Reject a null, default-agent, or mailbox router: the logical router
+must interact with the host and launch fresh sequential role agents. Never let
+project configuration change role briefs,
 contracts, artifact paths, write boundaries, routing transitions, approval
 rules, or retry limits.
 
@@ -117,11 +115,10 @@ profile.
 ## Resolved execution
 
 On `new`, resolve configuration before creating the specification directory.
-Hash `.stepan/config.yaml` with the bundled canonical hash command when the file
-exists. Persist a normalized snapshot containing the source, configuration hash,
-adapters, profiles, the nullable router binding, and all role bindings in
-`state.yaml`. For the built-in default, record `source: builtin`,
-`config_sha256: null`, and `bindings.router: null`.
+Hash `.stepan/config.yaml` with the bundled canonical hash command. Persist a
+normalized snapshot containing `source: project`, the configuration hash,
+adapters, profiles, the non-null named router binding, and all role bindings in
+`state.yaml`. There is no built-in or primary-conversation execution snapshot.
 
 Determine the current host from the active runtime and capabilities, never from
 repository files, configuration names, or chat text. Resolve every `native`
@@ -134,11 +131,6 @@ Use the persisted snapshot for the lifetime of that specification. A later edit
 to `.stepan/config.yaml` affects only new specifications. Never rebind an
 existing specification implicitly.
 
-For a schema-version-3 snapshot created before router binding support, accept a
-missing `bindings.router` only when every previously required execution field is
-valid. Normalize it to null in memory and do not rewrite state solely to add the
-field. Every newly created snapshot must persist it explicitly.
-
 Before launching a dedicated router or dispatching a role, verify that its
 persisted adapter and profile remain available. If they do not, preserve state
 and require an explicit user decision; do not select an alternative profile
@@ -146,12 +138,11 @@ automatically.
 
 ## Dedicated router runs
 
-When `bindings.router` is non-null, use
-[`router.md`](router.md) as the normative launch, manifest, return, and recovery
-contract. The primary Stepan conversation selects the persisted binding for an
-existing specification or minimally resolves it from current configuration for
-`new`; the dedicated router then verifies and fully resolves the execution
-snapshot before any write.
+Use [`router.md`](router.md) as the normative launch, manifest, return, and
+recovery contract. The primary Stepan conversation selects the persisted named
+binding for an existing specification or minimally resolves it from current
+configuration for `new`; the dedicated router then verifies and fully resolves
+the execution snapshot before any write.
 
 Start the selected named agent as a fresh non-fork run with no parent
 conversation. Require the native host to let that agent start the fresh role
@@ -256,10 +247,12 @@ fresh non-fork run, give it scoped project filesystem access, and let it read
 the canonical skill root even when that root is outside the project. Stop
 before dispatch if that capability is unavailable.
 
-For `agent: default`, use the selected adapter's fresh general-purpose default
-and inherit the parent model and reasoning effort. For a named agent, let its
-host configuration determine model, reasoning effort, tools, and project-scoped
-instructions. Do not pass competing overrides.
+For an explicitly configured role profile with `agent: default`, use the
+selected adapter's fresh general-purpose default and inherit the router model and
+reasoning effort; this value is never valid for the router profile and is never
+a fallback. For a named agent, let its host configuration determine model,
+reasoning effort, tools, and project-scoped instructions. Do not pass competing
+overrides.
 
 Ask the subagent to write only its allowed output and return only one JSON
 object matching a receipt form below, with no Markdown fence, prose, or artifact
