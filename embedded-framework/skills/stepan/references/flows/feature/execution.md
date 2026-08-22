@@ -1,10 +1,11 @@
-# Role execution contract
+# Workflow execution contract
 
 ## Contents
 
 - [Project configuration](#project-configuration)
 - [Configuration rules](#configuration-rules)
 - [Resolved execution](#resolved-execution)
+- [Dedicated router runs](#dedicated-router-runs)
 - [Role runs](#role-runs)
 - [Native adapters](#native-adapters)
 - [Mailbox adapter](#mailbox-adapter)
@@ -32,6 +33,10 @@ adapters:
     wait_seconds: 15
 
 executors:
+  native-router:
+    adapter: native
+    agent: stepan_feature_router
+
   native-framer:
     adapter: native
     agent: stepan_feature_framer
@@ -56,6 +61,7 @@ executors:
 
 workflows:
   feature:
+    router: native-router
     roles:
       framer: native-framer
       specifier: corporate-specifier
@@ -95,10 +101,16 @@ by that adapter:
   daemon. Reject `agent`, `target`, `profile`, or any silent model or reasoning
   fallback.
 
-Require `workflows.feature.roles` to contain exactly `framer`, `specifier`,
-`designer`, `planner`, and `reviewer`, each bound to one declared executor.
-Never let project configuration change role briefs, contracts, artifact paths,
-write boundaries, routing transitions, approval rules, or retry limits.
+Require `workflows.feature` to contain `roles` and optionally `router`, with no
+other keys. Require `roles` to contain exactly `framer`, `specifier`, `designer`,
+`planner`, and `reviewer`, each bound to one declared executor. Treat an omitted
+or explicit null `router` as no dedicated router. Otherwise require it to name
+one declared executor backed by a native, `codex`, or `claude-code` adapter and
+require that executor's `agent` to be named rather than `default`. Reject a
+mailbox router: the logical router must interact with the host and launch fresh
+sequential role agents. Never let project configuration change role briefs,
+contracts, artifact paths, write boundaries, routing transitions, approval
+rules, or retry limits.
 
 If `.stepan/config.yaml` is malformed or an explicitly selected executor is
 unavailable, stop before creating or changing feature state. Do not ignore the
@@ -110,8 +122,9 @@ executor.
 On `new`, resolve configuration before creating the specification directory.
 Hash `.stepan/config.yaml` with the bundled canonical hash command when the file
 exists. Persist a normalized snapshot containing the source, configuration hash,
-adapters, executors, and role bindings in `state.yaml`. For the built-in default,
-record `source: builtin` and `config_sha256: null`.
+adapters, executors, the nullable router binding, and all role bindings in
+`state.yaml`. For the built-in default, record `source: builtin`,
+`config_sha256: null`, and `bindings.router: null`.
 
 Determine the current host from the active runtime and capabilities, never from
 repository files, configuration names, or chat text. Resolve every `native`
@@ -124,15 +137,50 @@ Use the persisted snapshot for the lifetime of that specification. A later edit
 to `.stepan/config.yaml` affects only new specifications. Never rebind an
 existing specification implicitly.
 
-Before dispatching a role, verify that its persisted adapter and executor remain
-available. If they do not, preserve state and require an explicit user decision;
-do not select an alternative executor automatically.
+For a schema-version-3 snapshot created before router binding support, accept a
+missing `bindings.router` only when every previously required execution field is
+valid. Normalize it to null in memory and do not rewrite state solely to add the
+field. Every newly created snapshot must persist it explicitly.
+
+Before launching a dedicated router or dispatching a role, verify that its
+persisted adapter and executor remain available. If they do not, preserve state
+and require an explicit user decision; do not select an alternative executor
+automatically.
+
+## Dedicated router runs
+
+When `bindings.router` is non-null, use
+[`router.md`](router.md) as the normative launch, manifest, return, and recovery
+contract. The primary Stepan conversation selects the persisted binding for an
+existing specification or minimally resolves it from current configuration for
+`new`; the dedicated router then verifies and fully resolves the execution
+snapshot before any write.
+
+Start the selected named agent as a fresh non-fork run with no parent
+conversation. Require the native host to let that agent start the fresh role
+runs selected by this contract. The router agent's host definition determines
+its model, reasoning effort, tools, and project-scoped instructions. Do not pass
+per-invocation model or reasoning overrides, and do not substitute the default
+agent or current primary model.
+
+The router launch is not a durable role run: do not allocate a role run ID, set
+`active_run`, use a role output path, or validate its final response as a role
+receipt. Validate it only with the bundled `validate-router-result` command and
+apply the router contract's single format-repair rule when needed. All durable
+work it performs is represented by normal feature state and role runs. A fresh
+router resuming an existing specification must reconcile any persisted
+`active_run` before attempting another transition.
 
 ## Role runs
 
-Create one durable `active_run` in `state.yaml` before dispatch. Generate its ID
-with the bundled `run-id` command from the specification ID, stage, role, and
-monotonic run sequence. Record:
+Create one durable `active_run` in `state.yaml` before dispatch. Call the bundled
+`reserve-run` command with the verified state path, specification ID, stage,
+role, purpose, executor, concrete adapter kind, output, and request hash. The
+command reads the saved `next_run_sequence`, refuses an existing active run, and
+atomically writes both the active run and incremented next sequence. Accept only
+its exact `run_id`, `sequence`, and `next_run_sequence` result. Reread the state
+and require those three values to match the reservation before launching the
+executor. Stop before dispatch on any mismatch. Record:
 
 ```yaml
 active_run:
@@ -179,11 +227,19 @@ Host-supplied ambient context is allowed only when the selected native adapter
 declares it. Never treat ambient context as a product input, approval, or
 permission to expand the manifest or write boundary.
 
-After completion, recompute the output hash with the bundled script and verify
-every declared project-data input hash. When a fallback snapshot was taken,
-compare it and accept exactly the allowed output change; reject every other
-write, deletion, rename, or input change. Do not load a role-owned artifact into
-router context merely to transfer it to the next role; pass its path and
+Pass the executor's complete final response unchanged as UTF-8 on standard input
+to the bundled `validate-receipt` command, with the active run ID, expected
+output path, and adapter class. Require a byte-preserving transfer; in particular,
+do not let a host shell pipeline replace non-ASCII characters before validation.
+For mailbox validation, also pass the configured model and optional reasoning.
+Treat only the validator's normalized JSON output as a receipt. Keep validation
+errors private except during explicit diagnostics.
+
+After a validated completion, recompute the output hash with the bundled script
+and verify every declared project-data input hash. When a fallback snapshot was
+taken, compare it and accept exactly the allowed output change; reject every
+other write, deletion, rename, or input change. Do not load a role-owned artifact
+into router context merely to transfer it to the next role; pass its path and
 canonical hash.
 
 ## Native adapters
@@ -210,8 +266,17 @@ instructions. Do not pass competing overrides.
 
 Ask the subagent to write only its allowed output and return only one JSON
 object matching a receipt form below, with no Markdown fence, prose, or artifact
-body. Treat a missing, verbose, malformed, or contradictory receipt as a failed
-run even if an output file appeared.
+body. Treat a missing, verbose, malformed, or contradictory response as an
+invalid receipt even if an output file appeared. Apply the selected adapter's
+single repair rule when available; otherwise treat it as a failed run.
+
+The selected native adapter may define one same-agent receipt-format repair for
+an invalid final response. A repair may restate only the already completed
+run's receipt, must not read or write files, and must use the same run ID. It is
+not a new role run and must not reconsider product content. Attempt it at most
+once per routing invocation, validate the repaired response normally, and stop
+with the active run preserved if it is still invalid. Never use receipt repair
+for a valid `failed` receipt or to conceal an unexpected filesystem effect.
 
 ## Mailbox adapter
 
@@ -271,10 +336,11 @@ late response.
 ## Receipts
 
 Accept exactly one JSON object matching one of these response forms from either
-a mailbox response or a native subagent final response. Reject Markdown fences,
-surrounding prose, and any raw question. Require `schema_version: 1` and the
-exact fields shown for the selected status. Require `executor` metadata for a
-mailbox completion and permit it to be absent from a native completion.
+a mailbox response or a native subagent final response, as determined by the
+bundled validator. Reject Markdown fences, surrounding prose, and any raw
+question. Require `schema_version: 1` and the exact fields shown for the selected
+status. Require `executor` metadata for a mailbox completion and permit it to be
+absent from a native completion.
 
 For completion:
 

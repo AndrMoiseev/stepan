@@ -16,6 +16,22 @@ Let the selected agent's Markdown frontmatter determine its model, effort,
 tools, and project-scoped instructions. Do not pass per-invocation model or
 effort overrides. The default agent inherits the router's model and effort.
 
+## Dedicated router launch
+
+For a non-null feature router binding, require a named custom agent; never use
+`agent: default`. Start it as a fresh non-fork subagent with only the dedicated
+router manifest from `../router.md`. Require the current Claude Code runtime to
+let that subagent launch the fresh child agents needed for role runs. If named
+agent selection or nested role dispatch is unavailable, the explicit binding is
+unavailable and the workflow must stop without falling back to the primary
+conversation. Keep its model and effort in the selected custom agent's Markdown
+frontmatter, not `.stepan/config.yaml`.
+
+Apply the return, one format-only repair, and interruption rules from
+`../router.md`; a router final response is not a role receipt.
+
+## Role run
+
 Require the subagent's final response to contain only one JSON receipt matching
 the execution contract, without Markdown fences, surrounding prose, or an
 artifact body.

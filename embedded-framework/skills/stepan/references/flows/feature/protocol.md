@@ -6,6 +6,7 @@
 - [Command surface](#command-surface)
 - [Tooling](#tooling)
 - [Execution](#execution)
+- [Router launch boundary](#router-launch-boundary)
 - [Storage and schemas](#storage-and-schemas)
 - [Role dispatch](#role-dispatch)
 - [Routing](#routing)
@@ -73,15 +74,33 @@ Reject an omitted or unknown action without reading feature state or writing.
 
 ## Tooling
 
-Use the bundled Python script for deterministic identifiers and hashes. It emits
-JSON, uses only the Python 3 standard library, and never writes repository state:
+Use the bundled Python script for deterministic identifiers, run reservations,
+hashes, and receipt validation. It emits JSON and uses only the Python 3 standard
+library. Only `reserve-run` writes repository state, restricted to the verified
+`state.yaml` passed to it:
 
 ```text
 <python3> "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root .stepan/specs
 <python3> "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
+<python3> "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <executor> --adapter <kind> --output <path> --request-sha256 <hash>
 <python3> "<skill-root>/scripts/stepan.py" hash <file>...
+<python3> "<skill-root>/scripts/stepan.py" validate-receipt --run-id <id> --output <path> --adapter <native|mailbox>
+<python3> "<skill-root>/scripts/stepan.py" validate-router-result
 <python3> "<skill-root>/scripts/stepan.py" self-test
 ```
+
+Use `reserve-run`, not `run-id`, for workflow dispatch. It reads the saved next
+sequence and atomically writes both the active run and incremented next sequence;
+keep `run-id` only as a compatibility helper. Pass one executor response to
+`validate-receipt` on
+standard input as unchanged UTF-8 without embedding untrusted response text in a
+shell command. Do not use a host pipeline whose encoding can replace or
+transliterate characters; stop if byte-preserving UTF-8 transfer is unavailable.
+For a mailbox completion, also pass `--requested-model` and the configured
+optional `--requested-reasoning`.
+Pass a dedicated router's complete final response to `validate-router-result`
+under the same stdin and encoding rules. Relay only the validated `message` and
+use its `continuation` solely to recognize the immediately following reply.
 
 Resolve `<python3>` as an already available Python 3 command appropriate to the
 host, such as `python3`, `python`, or `py -3`. Do not install Python, use Python
@@ -95,8 +114,11 @@ resolve every bundled role, contract, module, and script beneath it. Never
 assume a host-specific discovery directory or require the skill root to be
 project-relative.
 
-Stop without writing if the script is unavailable, fails, or returns malformed
-JSON. Do not reproduce its algorithms in a prompt or shell one-liner.
+For every read-only command, stop without writing if the script is unavailable,
+fails, or returns malformed JSON. If `reserve-run` fails or its JSON is lost,
+reread `state.yaml`: continue only when one complete reservation can be verified
+there, otherwise stop. Never invoke `reserve-run` again while `active_run` is
+non-null. Do not reproduce the script's algorithms in a prompt or shell one-liner.
 
 ## Execution
 
@@ -109,6 +131,34 @@ If `.stepan/config.yaml` is absent, use the built-in native binding defined by
 the execution contract. If it exists, resolve it before writing and persist the
 normalized execution snapshot in feature state. Never reread project execution
 configuration to rebind an existing specification.
+
+## Router launch boundary
+
+Read [`router.md`](router.md) completely before loading a feature role or
+changing feature state. It defines an optional boundary between the primary
+Stepan conversation and the logical feature router.
+
+Apply the boundary only after the action is known and, for `new`, non-whitespace
+idea text is available. Select its source as follows:
+
+- for `new`, use only the current `.stepan/config.yaml`, with no router when the
+  file is absent or its optional feature router binding is null;
+- for an existing specification, use only the persisted execution snapshot in
+  its verified `state.yaml`; and
+- for an immediate pre-state collision choice, reuse the exact configuration
+  path, hash, and router binding from the immediately preceding interaction and
+  stop if the file changed.
+
+Treat a missing router field in an older valid schema-version-3 execution
+snapshot as null. Never apply a newly configured router to an existing
+specification whose snapshot has no router binding.
+
+When the selected binding is null, the current primary conversation remains the
+logical router and follows this protocol directly. When it is non-null, follow
+`router.md`: launch exactly the bound named agent, relay its single user-facing
+result, and perform no feature transition in the primary conversation. A named
+agent launched under that contract is already the logical router and must skip
+this launch boundary rather than recursively launching itself.
 
 ## Storage and schemas
 
@@ -154,6 +204,7 @@ execution:
       adapter: native
       agent: default
   bindings:
+    router: null
     framer: native-default
     specifier: native-default
     designer: native-default
@@ -175,8 +226,13 @@ Require `schema_version: 3`, a positive `next_run_sequence`, a normalized
 `initial_request_sha256` matching `request.md`, and either `null` or one valid
 `active_run`. Require `clarifications` to be a list of valid completed
 clarification records. Permit `waiting-executor` only with an active mailbox
-run. Persist an active run before dispatch and increment `next_run_sequence`
-only after reserving that run ID.
+run. While `active_run` is non-null, require `next_run_sequence` to equal its
+`sequence + 1`. Persist the active run and returned next sequence together from
+one valid `reserve-run` result, then reread and verify both before dispatch.
+For snapshots created after router-binding support, persist `bindings.router`
+explicitly as either null or one executor name. Accept its omission only from an
+otherwise valid older schema-version-3 snapshot and normalize that omission to
+null in memory without rewriting state merely for migration.
 
 The router writes `request.md` once when creating the specification. Preserve
 the user's initial idea text after removing only the Stepan command prefix and
@@ -326,12 +382,17 @@ apply the single matching transition:
   question and stop;
 - `stage: plan`, `status: approved`: give one short completion outcome and stop.
 
-Before each dispatch, reserve and persist `active_run`, then invoke the bound
-adapter under the execution contract. For a completed receipt, verify all
-declared project-data hashes and the fallback project snapshot when one was
-taken before applying the matching transition and clearing the run. For a
-blocked receipt, require no file changes before persisting its one question. For
-a failed or malformed receipt, preserve the run and stop.
+Before each dispatch, invoke bundled `reserve-run` once against verified state;
+do not edit `active_run` or `next_run_sequence` directly. Reread its atomic state
+replacement, require it to match the returned reservation, and only then invoke
+the bound adapter under the execution contract. Validate every executor response
+with the bundled receipt validator. For a completed receipt, verify all declared
+project-data hashes and the fallback project snapshot when one was taken before
+applying the matching transition and clearing the run. For a blocked receipt,
+require no file changes before persisting its one question. For an invalid
+receipt, use at most one same-agent format repair when the selected native
+adapter defines it; otherwise preserve the run and stop. For a valid failed
+receipt or an invalid repaired receipt, preserve the run and stop.
 
 When the user answers `pending` through an allowed immediate bare reply or an
 explicit `answer` action, persist the answer before launching a fresh role. For
@@ -465,9 +526,9 @@ until the commit succeeds and its contents are verified.
 
 ## Identifiers and hashes
 
-Treat JSON returned by `scripts/stepan.py` as the sole source of truth for generated
-identifiers and canonical hashes. Do not reproduce, adjust, or second-guess its
-computations.
+Treat JSON returned by `scripts/stepan.py` as the sole source of truth for
+generated identifiers, run reservations, canonical hashes, and validated
+receipts. Do not reproduce, adjust, or second-guess its computations.
 
 Use canonical hashes for project data only: the immutable request, generated
 artifacts and reviews, declared project inputs, and persisted configuration when
@@ -504,16 +565,19 @@ every requested file. Require each entry to contain a string `path` and a
 `sha256` value formatted as `sha256:` followed by 64 lowercase hexadecimal
 characters. Record and compare the returned digest unchanged.
 
-Accept `run-id` output only when it contains exactly one non-empty string field
-`run_id` equal to `<spec-id>--<stage>--<role>--<sequence>`. Require the supplied
-specification ID, stage, role, and positive sequence to match saved state. Never
-invent, edit, or reuse a run ID.
+Accept `reserve-run` output only when it contains exactly the non-empty
+string `run_id`, positive integer `sequence`, and positive integer
+`next_run_sequence`. Require `sequence` to equal the saved next sequence,
+`next_run_sequence` to equal `sequence + 1`, and `run_id` to equal
+`<spec-id>--<stage>--<role>--<sequence>`. Never invent, edit, or reuse a run ID
+or calculate the next sequence independently.
 
 ## Failure handling
 
 - On a role failure or interruption, preserve durable state and stop. A later
   explicit resume must inspect any persisted active run before launching a fresh
-  role.
+  role. An invalid native response may receive only the selected adapter's one
+  same-agent format repair before this stop rule applies.
 - On a mailbox timeout, remain at `waiting-executor`, preserve the request and
   active run, and stop without treating ordinary waiting as failure.
 - On a late response for an abandoned, completed, or unknown run, do not apply
