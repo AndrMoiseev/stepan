@@ -15,12 +15,17 @@ installing a model or tool, or modifying any other project file.
 ## Deterministic execution
 
 Resolve the canonical project root from the current workspace and the canonical
-skill root under the shared router rules. Resolve an already available Python 3
-command without installing Python. Run exactly:
+skill root under the shared router rules. Require an already available `uv`
+executable without installing `uv` or Python. Run exactly:
 
 ```text
-<python3> "<skill-root>/scripts/stepan.py" init-codex --project-root "<project-root>"
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" init-codex --project-root "<project-root>"
 ```
+
+Keep both isolation flags and their order. Never fall back to `python`,
+`python3`, or `py`. `--no-project` prevents this initialization command from
+discovering or synchronizing the project's Python environment, and
+`--no-python-downloads` prevents an implicit interpreter download.
 
 Do not recreate generated content in a prompt or shell command. The script may
 inspect only its exact destinations and may create only:

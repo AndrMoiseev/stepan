@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --no-project --no-python-downloads --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = []
+# ///
 """Deterministic helpers for the Stepan router."""
 
 from __future__ import annotations

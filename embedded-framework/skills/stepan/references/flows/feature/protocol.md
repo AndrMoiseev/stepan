@@ -74,19 +74,20 @@ Reject an omitted or unknown action without reading feature state or writing.
 
 ## Tooling
 
-Use the bundled Python script for deterministic identifiers, run reservations,
-hashes, and receipt validation. It emits JSON and uses only the Python 3 standard
-library. Only `reserve-run` writes repository state, restricted to the verified
+Use the bundled Python script through `uv` for deterministic identifiers, run
+reservations, hashes, receipt validation, and project initialization. It emits
+JSON, declares no third-party dependencies, and uses only the Python standard
+library. Only `reserve-run` writes feature state, restricted to the verified
 `state.yaml` passed to it:
 
 ```text
-<python3> "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root .stepan/specs
-<python3> "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
-<python3> "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <executor> --adapter <kind> --output <path> --request-sha256 <hash>
-<python3> "<skill-root>/scripts/stepan.py" hash <file>...
-<python3> "<skill-root>/scripts/stepan.py" validate-receipt --run-id <id> --output <path> --adapter <native|mailbox>
-<python3> "<skill-root>/scripts/stepan.py" validate-router-result
-<python3> "<skill-root>/scripts/stepan.py" self-test
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root .stepan/specs
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" run-id --spec-id <id> --stage <stage> --role <role> --sequence <n>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <executor> --adapter <kind> --output <path> --request-sha256 <hash>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" hash <file>...
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-receipt --run-id <id> --output <path> --adapter <native|mailbox>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-router-result
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" self-test
 ```
 
 Use `reserve-run`, not `run-id`, for workflow dispatch. It reads the saved next
@@ -102,9 +103,12 @@ Pass a dedicated router's complete final response to `validate-router-result`
 under the same stdin and encoding rules. Relay only the validated `message` and
 use its `continuation` solely to recognize the immediately following reply.
 
-Resolve `<python3>` as an already available Python 3 command appropriate to the
-host, such as `python3`, `python`, or `py -3`. Do not install Python, use Python
-2, or change interpreter command during one specification run.
+Require an already available `uv` executable and use the exact option order
+shown above for every bundled-script call. `--no-project` prevents discovery,
+installation, or synchronization of the current project's Python environment;
+`--no-python-downloads` prevents an implicit interpreter download. Do not
+install `uv` or Python, fall back to `python`, `python3`, or `py`, omit either
+isolation flag, or change the launch form during one specification run.
 
 Resolve `<skill-root>` as the canonical directory containing the shared router
 `SKILL.md`, following any discovery symlink and compatibility entrypoint link.
