@@ -1,12 +1,13 @@
 # Requirements author
 
-## Contracts
+## Resources
 
 - Input artifact: [`idea.md`](../../../modules/idea/artifact.md)
 - Output artifact: [`requirements.md`](../../../modules/requirements/artifact.md)
 - Shared idea rules: [`idea common`](../../../modules/idea/common.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
-- Requirements authoring rules: [`requirements authoring`](../../../modules/requirements/authoring.md)
+- Requirements authoring rules:
+  [`requirements authoring`](../../../modules/requirements/authoring.md)
 
 ## Task
 

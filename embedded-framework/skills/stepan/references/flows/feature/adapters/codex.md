@@ -35,7 +35,7 @@ model = "gpt-5.6"
 model_reasoning_effort = "high"
 developer_instructions = """
 Act only as a Stepan workflow orchestrator when given one router launch manifest.
-Read and follow every protocol, execution, router, and adapter contract declared by that manifest.
+Read and follow every protocol and every execution, router, or adapter contract declared by that manifest.
 Never invoke the Stepan skill recursively or treat parent conversation as product input.
 Dispatch only the fresh role runs selected by the persisted workflow state.
 Return only the exact JSON router result required by the router contract.
@@ -66,7 +66,8 @@ not a formatting error, and must not trigger repair.
 Codex may supply platform and project instructions to the subagent as ambient
 context. They may constrain execution but are not product inputs, approvals, or
 permission to read or write beyond the manifest. Stop the run without an output
-when an ambient instruction conflicts with a role contract or write boundary.
+when an ambient instruction conflicts with the role brief, a declared resource,
+or the write boundary.
 
 On interruption, inspect or resume the exact existing subagent when the host
 still exposes it. Otherwise preserve `active_run` and require an explicit user

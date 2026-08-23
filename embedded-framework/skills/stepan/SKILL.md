@@ -23,7 +23,7 @@ host-native structured selection capability if it is callable in the current
 mode. Otherwise use the protocol's compact natural-language fallback. Never
 change host mode, add a tool, or launch a separate UI merely to obtain a menu.
 
-| Workflow | Purpose | Primary command | Contract |
+| Workflow | Purpose | Primary command | Protocol |
 | --- | --- | --- | --- |
 | `init` | Create recommended project-local Stepan host configuration | `$stepan init codex` (Codex only) | [`references/flows/init/protocol.md`](references/flows/init/protocol.md) |
 | `feature` | Specify a feature before implementation | `$stepan feature new [idea]` or `/stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
@@ -41,15 +41,16 @@ change host mode, add a tool, or launch a separate UI merely to obtain a menu.
 1. Read only the selected workflow's protocol completely and treat it as the
    normative routing contract.
 2. Require the protocol to define the requested action unambiguously before
-   reading workflow-specific roles or contracts or writing repository state.
+   reading workflow-specific role briefs or resources or writing repository
+   state.
 3. Apply the selected protocol's launcher boundary before loading any role when
    that protocol defines one. If it selects a dedicated router, launch exactly
    that named agent under the protocol's router contract and relay only its
    user-facing result. Do not also execute workflow transitions in this
    conversation.
-4. Otherwise load only the roles, contracts, private modules, scripts, and
-   repository inputs selected by that protocol. Do not load resources belonging
-   to another workflow.
+4. Otherwise load only the role briefs, directly declared resources, scripts,
+   and repository inputs selected by that protocol. Do not load resources
+   belonging to another workflow.
 5. Execute only the deterministic transitions allowed by the selected protocol.
 6. Stop safely on a missing or ambiguous workflow resource, invalid state,
    unavailable required capability, or unexpected repository change.

@@ -154,8 +154,8 @@ def codex_agent_instructions(profile: str) -> str:
         return (
             "Act only as a Stepan workflow orchestrator when given one "
             "router launch manifest.\n"
-            "Read and follow every protocol, execution, router, and adapter "
-            "contract declared by that manifest.\n"
+            "Read and follow every protocol and every execution, router, or "
+            "adapter contract declared by that manifest.\n"
             "Never invoke the Stepan skill recursively or treat parent "
             "conversation as product input.\n"
             "Dispatch only the fresh role runs selected by the persisted "
@@ -609,11 +609,15 @@ def role_resource_manifest(skill_root: Path, role: str) -> dict[str, object]:
     if brief_path.is_symlink() or not brief_path.is_file():
         raise ValueError("role brief is unavailable")
     content = read_bounded_utf8(brief_path, "role brief", CONTROL_FILE_MAX_BYTES)
-    contracts_section = content.split("## Task", 1)[0]
+    if content.count("## Resources\n") != 1 or content.count("## Task\n") != 1:
+        raise ValueError(
+            "role brief must contain one Resources section and one Task section"
+        )
+    resources_section = content.split("## Task", 1)[0]
     resources: list[str] = []
     modules_root = (skill_root / "references/modules").resolve(strict=True)
     modules_prefix = str(modules_root) + os.sep
-    for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", contracts_section):
+    for match in re.finditer(r"\[[^\]]+\]\(([^)]+)\)", resources_section):
         target = match.group(1)
         resolved = (brief_path.parent / target).resolve(strict=True)
         if not str(resolved).startswith(modules_prefix) or not resolved.is_file():
@@ -643,16 +647,94 @@ def validate_role_manifest_examples(skill_root: Path) -> None:
         if isinstance(value, dict) and value.get("brief") == ROLE_BRIEFS["design-author"]:
             examples.append(value)
     if len(examples) != 2:
-        raise ValueError("execution contract must show native and mailbox role manifests")
+        raise ValueError("execution contract must show common and mailbox role manifests")
     expected_resources = role_resource_manifest(skill_root, "design-author")["resources"]
     if any(example.get("resources") != expected_resources for example in examples):
         raise ValueError("role manifest example resources differ from the role brief")
-    native = next((value for value in examples if "executor" not in value), None)
+    common = next((value for value in examples if "executor" not in value), None)
     mailbox = next((value for value in examples if "executor" in value), None)
-    if native is None or mailbox is None:
-        raise ValueError("role manifest examples must distinguish native and mailbox")
-    if {key: value for key, value in mailbox.items() if key != "executor"} != native:
-        raise ValueError("native and mailbox role manifests have different semantics")
+    if common is None or mailbox is None:
+        raise ValueError("role manifest examples must show common and mailbox forms")
+    if {key: value for key, value in mailbox.items() if key != "executor"} != common:
+        raise ValueError("common and mailbox role manifests have different semantics")
+
+    yaml_blocks = re.findall(r"```yaml\n(.*?)```", execution_contract, flags=re.DOTALL)
+    if len(yaml_blocks) != 2:
+        raise ValueError("execution contract must show configuration and active-run YAML")
+    config = require_object(
+        parse_strict_yaml(yaml_blocks[0], "execution configuration example"),
+        "execution configuration example",
+        {"schema_version", "adapters", "profiles", "workflows"},
+    )
+    if config["schema_version"] != 1:
+        raise ValueError("execution configuration example must use schema version 1")
+    active_document = require_object(
+        parse_strict_yaml(yaml_blocks[1], "execution active-run example"),
+        "execution active-run example",
+        {"active_run"},
+    )
+    active = require_object(
+        active_document["active_run"],
+        "execution active-run example",
+        {
+            "run_id",
+            "sequence",
+            "stage",
+            "role",
+            "purpose",
+            "executor",
+            "adapter",
+            "output",
+            "request_sha256",
+        },
+    )
+    feature = require_object(
+        require_object(config["workflows"], "example workflows", {"feature"})[
+            "feature"
+        ],
+        "example feature workflow",
+        {"router", "roles"},
+    )
+    roles = require_object(feature["roles"], "example feature roles", set(ROLES))
+    if roles.get(active["role"]) != active["executor"]:
+        raise ValueError("execution active run does not match its role binding")
+    profiles = config["profiles"]
+    adapters = config["adapters"]
+    if not isinstance(profiles, dict) or active["executor"] not in profiles:
+        raise ValueError("execution active run names an unknown profile")
+    profile = require_object(
+        profiles[active["executor"]],
+        "execution active profile",
+        {"adapter", "project_inputs"},
+        {"agent", "model", "reasoning"},
+    )
+    if not isinstance(adapters, dict) or profile["adapter"] not in adapters:
+        raise ValueError("execution active profile names an unknown adapter")
+    configured_adapter = require_object(
+        adapters[profile["adapter"]],
+        "execution active adapter",
+        {"kind"},
+        {"root", "wait_seconds"},
+    )["kind"]
+    if configured_adapter == "native":
+        if active["adapter"] not in {"codex", "claude-code"}:
+            raise ValueError("native example profile has a non-native active adapter")
+    elif active["adapter"] != configured_adapter:
+        raise ValueError("execution active adapter differs from its configured profile")
+    for field in ("run_id", "stage", "role", "purpose", "output"):
+        if common.get(field) != active[field]:
+            raise ValueError(f"role manifest example differs from active run: {field}")
+    if configured_adapter == "mailbox":
+        executor = require_object(
+            mailbox["executor"],
+            "mailbox manifest example executor",
+            {"model"},
+            {"reasoning"},
+        )
+        if executor["model"] != profile.get("model") or executor.get(
+            "reasoning"
+        ) != profile.get("reasoning"):
+            raise ValueError("mailbox manifest executor differs from its configured profile")
 
 
 def validate_codex_init_files(
@@ -1959,20 +2041,34 @@ def validate_review_value(
         if not re.fullmatch(re.escape(prefix) + r"[0-9]{3}", identifier) or identifier in seen_ids:
             raise ValueError("invalid or duplicate review finding ID")
         seen_ids.add(identifier)
-        if finding["severity"] not in {"blocking", "advisory"}:
+        severity = finding["severity"]
+        resolution = finding["resolution"]
+        if severity not in {"blocking", "advisory"}:
             raise ValueError("invalid finding severity")
-        if finding["resolution"] not in {"author-revision", "user-decision", "none"}:
+        if resolution not in {"author-revision", "user-decision", "none"}:
             raise ValueError("invalid finding resolution")
-        if not isinstance(finding["references"], list) or any(
+        if severity == "advisory" and resolution != "none":
+            raise ValueError("advisory finding must use resolution none")
+        if severity == "blocking" and resolution not in {
+            "author-revision",
+            "user-decision",
+        }:
+            raise ValueError(
+                "blocking finding must use author-revision or user-decision"
+            )
+        references = finding["references"]
+        if not isinstance(references, list) or not references or any(
             not isinstance(reference, str) or not reference.strip()
-            for reference in finding["references"]
+            for reference in references
         ):
-            raise ValueError("finding references must be non-empty strings")
+            raise ValueError("finding references must be a non-empty list of strings")
         require_non_empty_string(finding["problem"], "finding problem")
         require_non_empty_string(finding["recommendation"], "finding recommendation")
-        blocking = blocking or finding["severity"] == "blocking"
+        blocking = blocking or severity == "blocking"
     if review["verdict"] == "pass" and blocking:
         raise ValueError("passing review must not contain blocking findings")
+    if review["verdict"] == "changes-required" and not blocking:
+        raise ValueError("changes-required review must contain a blocking finding")
     return review
 
 
@@ -2989,6 +3085,84 @@ findings: []
         assert validate_review_path(review_path, "requirements", review_inputs)[
             "verdict"
         ] == "pass"
+        expected_review_inputs = [parse_input_hash(value) for value in review_inputs]
+        blocking_finding = {
+            "id": "REQ-R-001",
+            "severity": "blocking",
+            "resolution": "author-revision",
+            "references": ['ADDED Requirement "Export History"'],
+            "problem": "The export scope is incomplete.",
+            "recommendation": "Define the export scope from approved inputs.",
+        }
+        changes_required_review = {
+            "schema_version": 2,
+            "stage": "requirements",
+            "inputs": expected_review_inputs,
+            "verdict": "changes-required",
+            "findings": [blocking_finding],
+        }
+        assert (
+            validate_review_value(
+                changes_required_review, "requirements", expected_review_inputs
+            )["verdict"]
+            == "changes-required"
+        )
+        advisory_finding = {
+            **blocking_finding,
+            "id": "REQ-R-002",
+            "severity": "advisory",
+            "resolution": "none",
+        }
+        advisory_review = {
+            **changes_required_review,
+            "verdict": "pass",
+            "findings": [advisory_finding],
+        }
+        assert (
+            validate_review_value(
+                advisory_review, "requirements", expected_review_inputs
+            )["verdict"]
+            == "pass"
+        )
+        invalid_reviews = (
+            {**changes_required_review, "findings": []},
+            {**changes_required_review, "findings": [advisory_finding]},
+            {
+                **changes_required_review,
+                "findings": [{**blocking_finding, "resolution": "none"}],
+            },
+            {
+                **changes_required_review,
+                "findings": [{**blocking_finding, "references": []}],
+            },
+            {
+                **changes_required_review,
+                "verdict": "pass",
+                "findings": [blocking_finding],
+            },
+            {
+                **changes_required_review,
+                "verdict": "pass",
+                "findings": [
+                    {
+                        **blocking_finding,
+                        "severity": "advisory",
+                        "resolution": "author-revision",
+                    }
+                ],
+            },
+        )
+        for invalid_review in invalid_reviews:
+            try:
+                validate_review_value(
+                    invalid_review, "requirements", expected_review_inputs
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(
+                    "accepted an inconsistent review verdict or finding"
+                )
         try:
             validate_review_path(review_path, "requirements", review_inputs[:1])
         except ValueError:

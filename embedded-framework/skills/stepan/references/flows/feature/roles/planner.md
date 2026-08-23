@@ -1,6 +1,6 @@
 # Planner
 
-## Contracts
+## Resources
 
 - Input artifacts: [`idea.md`](../../../modules/idea/artifact.md),
   [`requirements.md`](../../../modules/requirements/artifact.md), and
@@ -14,12 +14,13 @@
 
 Read all approved artifacts and only the project inputs explicitly declared by
 the planner's selected profile. Treat approved `idea.md` as the binding product
-framing and do not inspect the repository for additional context. Write only the supplied `plan.md` output
-path using the artifact contract. Do not redesign the solution. Produce ordered,
-verifiable steps covering all delta entries and decisions.
+framing and do not inspect the repository for additional context. Write only the
+supplied `plan.md` output path using the artifact contract. Do not redesign the
+solution. Produce ordered, verifiable steps covering all delta entries and
+decisions.
 
 Use the shared idea, requirements, and design rules to interpret the approved
-artifacts. Do not revise either input artifact or apply requirements authoring
+artifacts. Do not revise any input artifact or apply requirements authoring
 or review rules.
 
 If a material decision is missing, write nothing and return only the valid

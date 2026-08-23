@@ -40,9 +40,9 @@ Claude Code supplies `CLAUDE.md` instructions and a git-status snapshot to
 custom and general-purpose subagents. Treat them only as ambient host context:
 they may constrain execution but are not product inputs, approvals, or
 permission to inspect undeclared files or write beyond the manifest. Stop the
-run without an output when ambient instructions conflict with a role contract
-or write boundary. When a project requires an executor with no ambient project
-context, bind that role to the mailbox adapter instead.
+run without an output when ambient instructions conflict with the role brief, a
+declared resource, or the write boundary. When a project requires an executor
+with no ambient project context, bind that role to the mailbox adapter instead.
 
 On interruption, inspect or resume the exact existing subagent when Claude Code
 still exposes its agent ID. Otherwise preserve `active_run` and require an

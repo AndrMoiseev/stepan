@@ -1,6 +1,6 @@
 # Technical design author
 
-## Contracts
+## Resources
 
 - Input artifact: [`idea.md`](../../../modules/idea/artifact.md)
 - Input artifact: [`requirements.md`](../../../modules/requirements/artifact.md)

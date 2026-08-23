@@ -35,8 +35,9 @@
   `state.yaml`. Keep artifact bodies out of router context when a path and hash
   are sufficient.
 - Never silently change an approved artifact or infer a product decision. At the
-  requirements authoring, require every product choice needed by the artifact contract to be
-  grounded in declared inputs and ask one question when its evidence gate fails.
+  requirements authoring stage, require every product choice needed by the
+  artifact contract to be grounded in declared inputs and ask one question when
+  its evidence gate fails.
   At the requirements stage, treat every unresolved semantic uncertainty as
   requiring a user question before authoring, revision, review completion, or
   approval.
@@ -125,9 +126,9 @@ Resolve `<skill-root>` as the canonical directory containing the shared router
 `SKILL.md`, following any discovery symlink and compatibility entrypoint link.
 It may be inside the project or in the host's user-level skill directory. Keep
 it distinct from the canonical project root, require it to be readable, and
-resolve every bundled role, contract, module, and script beneath it. Never
-assume a host-specific discovery directory or require the skill root to be
-project-relative.
+resolve every bundled role brief, directly declared resource, and script beneath
+it. Never assume a host-specific discovery directory or require the skill root
+to be project-relative.
 
 For every read-only command, stop without writing if the script is unavailable,
 fails, or returns malformed JSON. If `reserve-run` fails or its JSON is lost,
@@ -260,12 +261,13 @@ action. It enforces `schema_version: 1`, the `specification` identity and exact
 state-file location, a positive `next_run_sequence`, a normalized `execution`
 snapshot matching the execution contract, a canonical
 `initial_request_sha256` matching `request.md`, unchanged pinned project inputs,
-and either `null` or one valid `active_run`. Require `clarifications` to be a list of valid completed
-clarification records. Permit `waiting-executor` only with an active mailbox
-run. Require `bindings.router` to name the configured native orchestrator. While
-`active_run` is non-null, require `next_run_sequence` to equal its
-`sequence + 1`. Persist the active run and returned next sequence together from
-one valid `reserve-run` result, then reread and verify both before dispatch.
+and either `null` or one valid `active_run`. Require `clarifications` to be a
+list of valid completed clarification records. Permit `waiting-executor` only
+with an active mailbox run. Require `bindings.router` to name the configured
+native orchestrator. While `active_run` is non-null, require
+`next_run_sequence` to equal its `sequence + 1`. Persist the active run and
+returned next sequence together from one valid `reserve-run` result, then reread
+and verify both before dispatch.
 
 The router writes `request.md` once when creating the specification. Preserve
 the user's initial idea text after removing only the Stepan command prefix and
@@ -297,10 +299,10 @@ clarifications:
 ```
 
 Set `resume_purpose` from the run that blocked, or to `revise` for review- and
-router-origin questions. Require each clarification to contain one allowed stage, one allowed origin,
-and non-empty question and answer strings. Preserve insertion order and never
-edit or delete a recorded clarification. These records are durable product
-inputs, not approvals.
+router-origin questions. Require each clarification to contain one allowed
+stage, one allowed origin, and non-empty question and answer strings. Preserve
+insertion order and never edit or delete a recorded clarification. These records
+are durable product inputs, not approvals.
 
 ## Role dispatch
 
@@ -315,13 +317,12 @@ Use the matching brief both to validate role-owned data and to launch a role:
 | specification-reviewer | `roles/specification-reviewer.md` | request, approved idea, clarifications, requirements, design, selected profile inputs, previous review on re-review | `review/design.yaml` | expected review file only |
 | planner | `roles/planner.md` | all approved artifacts and selected profile inputs | `plan.md` | expected `plan.md` only |
 
-Resolve each selected brief's `Contracts` section with bundled
+Resolve each selected brief's `Resources` section with bundled
 `role-resources` before validation or launch. Use every direct Markdown link in
-written order. Require every
-resolved path to be under the skill's `references/modules/` directory. Reject
-missing, ambiguous, external, or recursive references. Do not follow links from
-a resolved contract or module.
-Do not load an unselected contract or module.
+written order. Require every resolved path to be under the skill's
+`references/modules/` directory. Reject missing, ambiguous, external, or
+recursive references. Do not follow links from a resolved resource. Do not load
+an unselected resource.
 
 Treat files under `references/modules/` as private role dependencies. Reject a
 module if it contains skill frontmatter, defines a direct command or workflow
@@ -332,18 +333,19 @@ or reviewing rules for the selected role.
 Construct the common role-run manifest defined by `execution.md`, including the
 run ID, brief path, ordered `resources`, project-data `inputs` with canonical
 hashes, applicable revision `feedback`, expected output, allowed write, and the
-exact receipt forms from the execution contract. Pass skill resources by path only after validating their
-location and structure; do not compute or persist their content hashes. Include
-the ordered clarification history relevant to the role's declared inputs, plus
-current findings, the previous review and its unresolved IDs, or a persisted
-pending response when the transition requires them. Let the selected profile read files directly; do not quote their bodies merely to
-relay them. Instruct the role not to inspect parent chat or undeclared runtime
-data. Do not load or reference any unrelated role brief, contract, or module.
+exact receipt forms from the execution contract. Pass skill resources by path
+only after validating their location and structure; do not compute or persist
+their content hashes. Include the ordered clarification history relevant to the
+role's declared inputs, plus current findings, the previous review and its
+unresolved IDs, or a persisted pending response when the transition requires
+them. Let the selected profile read files directly; do not quote their bodies
+merely to relay them. Instruct the role not to inspect parent chat or undeclared
+runtime data. Do not load or reference any unrelated role brief or resource.
 
 Give a role a sandbox restricted to its one output when available. Only when an
 exact write sandbox is unavailable, snapshot the project filesystem before the
 role run, verify it after completion, and reject every unexpected change. A
-A reviewer requires write access to its exact review file and no other path.
+reviewer requires write access to its exact review file and no other path.
 
 When a role's selected rules permit a blocking question, accept only the valid
 `blocked` JSON receipt defined by the execution contract and only if the role
@@ -404,8 +406,10 @@ apply the single matching transition:
   question in `pending` with `kind: clarification` and `origin: author`, and
   stop;
 - successful idea author: set `awaiting-approval`;
-- structurally valid successful requirements author: set `reviewing` and dispatch the requirements reviewer;
-- structurally valid successful design author: set `reviewing` and dispatch the specification reviewer;
+- structurally valid successful requirements author: set `reviewing` and
+  dispatch the requirements reviewer;
+- structurally valid successful design author: set `reviewing` and dispatch the
+  specification reviewer;
 - structurally valid successful planner: set `awaiting-approval`;
 - structurally valid review `pass`: set `awaiting-approval`;
 - approval of `idea`: advance to `requirements`, set `drafting`, and dispatch the
@@ -437,24 +441,25 @@ with the bundled receipt validator. For a completed receipt, verify all declared
 project-data hashes, run the applicable artifact or review structural validator,
 and verify the fallback project snapshot when one was taken before applying the
 matching transition and clearing the run. A valid receipt alone never proves a
-valid artifact. For a blocked receipt,
-require no file changes before persisting its one question. For an invalid
-receipt, use at most one same-agent format repair when the selected native
-adapter defines it; otherwise preserve the run and stop. For a valid failed
-receipt or an invalid repaired receipt, preserve the run and stop.
+valid artifact. For a blocked receipt, require no file changes before persisting
+its one question. For an invalid receipt, use at most one same-agent format
+repair when the selected native adapter defines it; otherwise preserve the run
+and stop. For a valid failed receipt or an invalid repaired receipt, preserve
+the run and stop.
 
 When the user answers `pending` through an allowed immediate bare reply or an
 explicit `answer` action, persist the answer, set status to `drafting` for
 `resume_purpose: draft` or `revising` for `resume_purpose: revise`, and then
 reserve a fresh role run. Keep the answered pending record until that role
-successfully processes it. For `origin: author`, relaunch that owner with the answer. For
-`origin: review`, launch the current stage owner with the review and answer,
-then review the resulting artifact again. For `origin: router`, treat the answer
-as user-directed revision guidance and launch the current stage owner. Every
-review-driven revision receives the previous review path/hash and unresolved
-finding IDs; the next review receives the same previous review evidence. Clear
-`pending` only after the owner processes the answer successfully; archive an
-answered clarification in `clarifications` before clearing or replacing it.
+successfully processes it. For `origin: author`, relaunch that owner with the
+answer. For `origin: review`, launch the current stage owner with the review and
+answer, then review the resulting artifact again. For `origin: router`, treat
+the answer as user-directed revision guidance and launch the current stage
+owner. Every review-driven revision receives the previous review path/hash and
+unresolved finding IDs; the next review receives the same previous review
+evidence. Clear `pending` only after the owner processes the answer successfully;
+archive an answered clarification in `clarifications` before clearing or
+replacing it.
 Keep an answered revision request out of `clarifications`. Reset the automatic
 revision counter after a user-directed revision or stage transition.
 
@@ -586,8 +591,8 @@ applicable `review_sha256`, and `accepted_risks`. After plan approval, keep
 `stage: plan` and set `status: approved`.
 
 On `continue-and-commit`, commit only `docs/changes/specs/<spec-id>/` with message
-`stepan(<spec-id>): approve <stage>`. Do not stage unrelated changes. Do not advance
-until the commit succeeds and its contents are verified.
+`stepan(<spec-id>): approve <stage>`. Do not stage unrelated changes. Do not
+advance until the commit succeeds and its contents are verified.
 
 ## Identifiers and hashes
 
@@ -597,11 +602,11 @@ configuration/state structures, resource manifests, artifacts, reviews, and
 receipts. Do not reproduce, adjust, or second-guess its computations.
 
 Use canonical hashes for project data only: the immutable request, generated
-artifacts and reviews, declared project inputs, and persisted configuration when
-the execution contract requires it. Validate briefs, directly linked resources, and
-bundled scripts as skill resources by canonical path, existence, readability,
-and applicable structure rules; do not hash them to pin a content version for a
-role run.
+artifacts and reviews, declared project inputs, and persisted configuration
+when the execution contract requires it. Validate briefs, directly linked
+resources, and bundled scripts as skill resources by canonical path, existence,
+readability, and applicable structure rules; do not hash them to pin a content
+version for a role run.
 
 Before calling `spec-id`, derive exactly one ephemeral `id_hint` from the full
 initial idea after removing the Stepan command prefix and action:
@@ -650,13 +655,13 @@ or calculate the next sequence independently.
   it or modify repository state. Mention it only when it affects the requested
   action, and keep run details for explicit diagnostics.
 - On an unexpected write, project-data hash mismatch, deterministic structural
-  validation failure, malformed file, unknown
-  schema, or manual change to an approved artifact, do not accept, overwrite,
-  reset, or commit. When state can be updated safely, set `awaiting-decision`, persist one
-  direct question with `kind: clarification` and `origin: router`, and present
-  only the affected product data and recovery choice needed to answer it. Keep
-  the exact technical discrepancy for explicit diagnostics unless it is needed
-  to identify affected data safely.
+  validation failure, malformed file, unknown schema, or manual change to an
+  approved artifact, do not accept, overwrite, reset, or commit. When state can
+  be updated safely, set `awaiting-decision`, persist one direct question with
+  `kind: clarification` and `origin: router`, and present only the affected
+  product data and recovery choice needed to answer it. Keep the exact technical
+  discrepancy for explicit diagnostics unless it is needed to identify affected
+  data safely.
 - On commit failure, remain at the same checkpoint. Remove only router-created
   temporary/index changes; never roll back user- or hook-created files.
 - Ask one blocking question at a time. Never turn uncertainty into approval.
