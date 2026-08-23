@@ -3,7 +3,8 @@
 When reviewing `requirements.md`:
 
 - Evaluate the artifact against its artifact contract, the shared requirements
-  rules, the initial request and completed clarifications, and only the declared project inputs, including the
+  rules, approved `idea.md` as binding product framing, the initial request and
+  completed clarifications as its evidence, and only the declared project inputs, including the
   declared baseline specification when a delta depends on it.
 - Never choose among plausible requirement interpretations or supply a missing
   product decision. If any unresolved uncertainty could affect meaning, emit
@@ -36,6 +37,9 @@ When reviewing `requirements.md`:
   delta reference from the artifact contract when available.
 - Recommend the smallest correction that resolves the problem without designing
   the solution or rewriting the artifact.
+- On re-review, read the previous review supplied in feedback and preserve every
+  finding ID whose underlying problem remains unresolved. Never allocate a new
+  ID merely because the author revised the artifact.
 
 Do not apply requirements authoring rules or modify an artifact. Write only the
 supplied review output file.

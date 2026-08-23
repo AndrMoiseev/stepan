@@ -11,10 +11,14 @@
 ## Task
 
 Read approved `idea.md`, the immutable `request.md`, ordered clarification
-history, persisted answers, and project inputs declared by the selected profile.
-Clarify remaining product decisions only through the allowed blocking-question
-protocol, then write the supplied `requirements.md` output path using the idea,
-requirements, and authoring rules.
+history, persisted answers, and only the project inputs explicitly declared by
+the selected profile. Treat approved `idea.md` as the binding product-framing
+contract. Use the request and clarifications as evidence for that approved
+framing, never as permission to reinterpret or silently broaden it. Do not
+inspect the repository for additional context. Clarify remaining product
+decisions only through the allowed blocking-question protocol, then write the
+supplied `requirements.md` output path using the idea, requirements, and
+authoring rules.
 
 Do not design the technical solution or write any other file. If a material
 product decision is missing, write nothing and return only the valid `blocked`

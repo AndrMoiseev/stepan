@@ -9,7 +9,8 @@
 ## Task
 
 Read immutable `request.md`, ordered clarification history, persisted answers,
-and project inputs declared by the selected profile. Clarify the requested
+and only the project inputs explicitly declared by the selected profile. Do not
+inspect the repository for additional context. Clarify the requested
 outcome and write only the supplied `idea.md` output path using the artifact,
 shared, and authoring rules.
 

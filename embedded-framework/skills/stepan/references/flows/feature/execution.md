@@ -10,6 +10,7 @@
 - [Native adapters](#native-adapters)
 - [Mailbox adapter](#mailbox-adapter)
 - [Receipts](#receipts)
+- [Validation boundary](#validation-boundary)
 - [Safety and failure rules](#safety-and-failure-rules)
 
 ## Project configuration
@@ -35,22 +36,32 @@ profiles:
   orchestrator:
     adapter: native
     agent: stepan_orchestrator
+    project_inputs: []
 
   author:
     adapter: native
     agent: stepan_author
+    project_inputs:
+      - docs/product/baseline.md
 
   architect:
-    adapter: native
-    agent: stepan_architect
+    adapter: corporate
+    model: company-architect-v3
+    reasoning: xhigh
+    project_inputs:
+      - docs/architecture/current-system.md
 
   planner:
     adapter: native
     agent: stepan_planner
+    project_inputs:
+      - docs/architecture/current-system.md
 
   reviewer:
     adapter: corporate
     model: company-reviewer-v1
+    project_inputs:
+      - docs/product/baseline.md
 
 workflows:
   feature:
@@ -82,8 +93,13 @@ Require every adapter to have exactly one supported `kind`:
 - `mailbox`: require an absolute non-root `root`; accept optional integer
   `wait_seconds` from `0` through `3600`, defaulting to `3600`.
 
-Require every profile to name one declared adapter. Apply the schema selected
-by that adapter:
+Require every profile to name one declared adapter and an ordered
+`project_inputs` list. Each entry is one normalized project-relative regular-file
+path; an empty list is explicit and valid. Reject absolute paths, `.` or `..`
+segments, duplicates, symlinks, directories, missing files, files over 10 MiB,
+and paths that escape the canonical project root. Do not discover or infer an
+input from repository contents or from custom-agent instructions. Apply the
+remaining schema selected by the adapter:
 
 - For `native`, `codex`, or `claude-code`, require one non-empty `agent`.
   Resolve it as an available custom or built-in agent under the selected host
@@ -110,15 +126,19 @@ rules, or retry limits.
 If `.stepan/config.yaml` is malformed or an explicitly selected profile is
 unavailable, stop before creating or changing feature state. Do not ignore the
 file, merge it with another Stepan configuration, or fall back to a different
-profile.
+profile. If a declared input is missing or changed, name that product-data path
+and ask the user to restore it or update configuration; do not ask a role to
+search for a replacement.
 
 ## Resolved execution
 
-On `new`, resolve configuration before creating the specification directory.
-Hash `.stepan/config.yaml` with the bundled canonical hash command. Persist a
-normalized snapshot containing `source: project`, the configuration hash,
-adapters, profiles, the non-null named router binding, and all role bindings in
-`state.yaml`. There is no built-in or primary-conversation execution snapshot.
+On `new`, run the bundled `validate-config` command before creating the
+specification directory. Persist its normalized snapshot containing
+`source: project`, the configuration hash, concrete adapters, profiles, each
+profile's ordered project-input paths and hashes, the non-null named router
+binding, and all role bindings in `state.yaml`. There is no built-in or
+primary-conversation execution snapshot. Treat validator output, not a prompt's
+interpretation of YAML, as the normalized source of truth.
 
 Determine the current host from the active runtime and capabilities, never from
 repository files, configuration names, or chat text. Resolve every `native`
@@ -134,7 +154,9 @@ existing specification implicitly.
 Before launching a dedicated router or dispatching a role, verify that its
 persisted adapter and profile remain available. If they do not, preserve state
 and require an explicit user decision; do not select an alternative profile
-automatically.
+automatically. Resolve every persisted project-input path beneath the canonical
+project root and require its current canonical hash to match the snapshot before
+each role run.
 
 ## Dedicated router runs
 
@@ -162,13 +184,16 @@ router resuming an existing specification must reconcile any persisted
 ## Role runs
 
 Create one durable `active_run` in `state.yaml` before dispatch. Call the bundled
-`reserve-run` command with the verified state path, specification ID, stage,
-role, purpose, executor, concrete adapter kind, output, and request hash. The
-command reads the saved `next_run_sequence`, refuses an existing active run, and
-atomically writes both the active run and incremented next sequence. Accept only
-its exact `run_id`, `sequence`, and `next_run_sequence` result. Reread the state
-and require those three values to match the reservation before launching the
-executor. Stop before dispatch on any mismatch. Record:
+`reserve-run` command with the canonical project root, verified state path,
+specification ID, stage, role, purpose, executor, concrete adapter kind, output,
+and request hash. The command strictly validates the complete state, its exact
+location and specification identity, `request.md` hash, pinned project inputs,
+stage and status, role and purpose, output, persisted binding, and absence of an
+active run. It then atomically writes both the active run and incremented next
+sequence. Accept only its exact `run_id`, `sequence`, and `next_run_sequence`
+result. Reread the state through `validate-state` and require those three values
+to match the reservation before launching the executor. Stop before dispatch on
+any mismatch. Record:
 
 ```yaml
 active_run:
@@ -178,28 +203,91 @@ active_run:
   role: design-author
   purpose: draft | revise | review
   executor: architect
-  adapter: mailbox
+  adapter: codex
   output: docs/changes/specs/export-data/design.md
   request_sha256: sha256:...
 ```
 
-Give the executor exact paths for the selected role brief, applicable direct
-contracts and modules, declared project inputs, approved artifacts, current
-feedback when applicable, and its single allowed output. Pass skill resources
-by canonical path only. Pass project data by path and canonical hash; project
-data includes the immutable request, generated artifacts and reviews, and
-declared project inputs. Do not copy artifact or contract bodies through the
-router's context merely to relay them.
+Build the role's skill-resource portion only from the bundled `role-resources`
+result. It contains the brief and every resource linked directly by that brief,
+in written order. Pass those skill resources by path only. Build `inputs` only
+from the immutable request, approved artifacts, applicable current artifacts,
+and the selected profile's persisted project inputs, each with its exact
+project-relative path and canonical hash. Do not let a role discover other
+repository data or copy artifact or resource bodies through router context.
 
-Keep skill resources and project data in separate path domains. Briefs,
-contracts, modules, and bundled scripts may be outside the project but must
-resolve beneath the canonical skill root. Project inputs, state, artifacts, and
-role outputs must resolve beneath the canonical project root.
+Keep skill resources and project data in separate manifest fields and path
+domains. Briefs, modules, and bundled scripts may be outside the project but
+must resolve beneath the canonical skill root. Project inputs, state, artifacts,
+reviews, and role outputs must resolve beneath the canonical project root.
 
 Before dispatch, require every selected skill resource to exist, be readable,
 and resolve beneath the canonical skill root. Apply the workflow's direct-link
 and module-structure rules, but do not compute, persist, or compare content
 hashes for skill resources as part of a role run.
+
+Use this common manifest shape for both native and mailbox runs. Include
+`feedback` only for a revision or answered question. A review-driven revision
+must include the previous review path and hash plus the unresolved finding IDs
+in their existing order. The validator requires that path to be the current
+stage's review, validates its structure and hash, and requires the ID list to
+equal its blocking finding IDs in written order. The author must retain those
+IDs as feedback, and the next reviewer must preserve an ID whenever its finding
+remains unresolved.
+Pass the complete JSON manifest unchanged as bounded UTF-8 on standard input to
+bundled `validate-role-manifest` and dispatch or publish only its validated
+output.
+
+```json
+{
+  "schema_version": 2,
+  "run_id": "export-data--design--design-author--2",
+  "spec_id": "export-data",
+  "stage": "design",
+  "role": "design-author",
+  "purpose": "revise",
+  "project_root": "/workspace/project",
+  "skill_root": "/home/user/.codex/skills/stepan",
+  "brief": "references/flows/feature/roles/design-author.md",
+  "resources": [
+    "references/modules/idea/artifact.md",
+    "references/modules/requirements/artifact.md",
+    "references/modules/idea/common.md",
+    "references/modules/requirements/common.md",
+    "references/modules/design/common.md",
+    "references/modules/design/authoring.md",
+    "references/modules/design/artifact.md"
+  ],
+  "inputs": [
+    {
+      "path": "docs/changes/specs/export-data/request.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/changes/specs/export-data/idea.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/changes/specs/export-data/requirements.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/architecture/current-system.md",
+      "sha256": "sha256:..."
+    }
+  ],
+  "clarifications": [],
+  "feedback": {
+    "previous_review": {
+      "path": "docs/changes/specs/export-data/review/design.yaml",
+      "sha256": "sha256:..."
+    },
+    "unresolved_finding_ids": ["DES-R-001"]
+  },
+  "output": "docs/changes/specs/export-data/design.md",
+  "allowed_write": "docs/changes/specs/export-data/design.md"
+}
+```
 
 Prefer an executor sandbox restricted to the single allowed output. Only when
 the host cannot provide that exact write boundary, snapshot the project
@@ -224,7 +312,11 @@ Treat only the validator's normalized JSON output as a receipt. Keep validation
 errors private except during explicit diagnostics.
 
 After a validated completion, recompute the output hash with the bundled script
-and verify every declared project-data input hash. When a fallback snapshot was
+and verify every declared project-data input hash. Then run `validate-artifact`
+for requirements, design, or plan output, or `validate-review` with the exact
+ordered manifest inputs for review output. A valid receipt proves only the
+transport result and claimed output path/hash; it never proves artifact or
+review structure and cannot authorize a state transition by itself. When a fallback snapshot was
 taken, compare it and accept exactly the allowed output change; reject every
 other write, deletion, rename, or input change. Do not load a role-owned artifact
 into router context merely to transfer it to the next role; pass its path and
@@ -274,10 +366,13 @@ Use `<root>/requests/` and `<root>/responses/` beneath the configured mailbox
 root. Publish each request as `<run-id>.json` through a same-directory temporary
 file and atomic rename. Never overwrite an existing request or response.
 
-Publish this request envelope, omitting `reasoning` when the executor does not
-configure it. Send the canonical skill root independently of the project root;
-skill resource paths are relative to `skill_root`, while project input and
-output paths remain relative to `project_root`. Require request
+Publish the common role-run manifest unchanged as the request envelope and add
+only `executor`, omitting its `reasoning` when the executor does not configure
+it. Require its model and optional reasoning to equal the values pinned for the
+selected profile, and require the manifest adapter class to match the active
+mailbox run. Send the canonical skill root independently of the project root;
+skill resource paths are relative to `skill_root`, while project inputs,
+feedback, and output paths remain relative to `project_root`. Require request
 `schema_version: 2`:
 
 ```json
@@ -287,18 +382,47 @@ output paths remain relative to `project_root`. Require request
   "spec_id": "export-data",
   "stage": "design",
   "role": "design-author",
-  "purpose": "draft",
+  "purpose": "revise",
   "project_root": "/workspace/project",
   "skill_root": "/home/user/.codex/skills/stepan",
   "brief": "references/flows/feature/roles/design-author.md",
-  "contracts": ["references/modules/design/artifact.md"],
+  "resources": [
+    "references/modules/idea/artifact.md",
+    "references/modules/requirements/artifact.md",
+    "references/modules/idea/common.md",
+    "references/modules/requirements/common.md",
+    "references/modules/design/common.md",
+    "references/modules/design/authoring.md",
+    "references/modules/design/artifact.md"
+  ],
   "inputs": [
+    {
+      "path": "docs/changes/specs/export-data/request.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/changes/specs/export-data/idea.md",
+      "sha256": "sha256:..."
+    },
     {
       "path": "docs/changes/specs/export-data/requirements.md",
       "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/architecture/current-system.md",
+      "sha256": "sha256:..."
     }
   ],
+  "clarifications": [],
+  "feedback": {
+    "previous_review": {
+      "path": "docs/changes/specs/export-data/review/design.yaml",
+      "sha256": "sha256:..."
+    },
+    "unresolved_finding_ids": ["DES-R-001"]
+  },
   "output": "docs/changes/specs/export-data/design.md",
+  "allowed_write": "docs/changes/specs/export-data/design.md",
   "executor": {
     "model": "company-architect-v3",
     "reasoning": "xhigh"
@@ -331,6 +455,11 @@ bundled validator. Reject Markdown fences, surrounding prose, and any raw
 question. Require `schema_version: 1` and the exact fields shown for the selected
 status. Require `executor` metadata for a mailbox completion and permit it to be
 absent from a native completion.
+
+Reject a request, response, receipt, router result, configuration, state, or
+review control file larger than 256 KiB before parsing it. Artifact files use a
+separate 2 MiB structural-validation bound; declared project inputs use a 10 MiB
+bound.
 
 For completion:
 
@@ -383,6 +512,21 @@ configured model and require its optional `reasoning` to match exactly. Require
 non-empty effective model metadata; accept effective reasoning only as an
 opaque non-empty string. Never accept an executor-selected fallback as the
 requested configuration.
+
+## Validation boundary
+
+Bundled validators deterministically enforce exact configuration, state,
+manifest, receipt, and review fields; schemas and size limits; paths and hashes;
+stage/run eligibility; required Markdown sections; stable identifier syntax and
+uniqueness; and requirements-to-design-to-plan traceability. Run them before the
+state transition that consumes each result.
+
+Role authors and reviewers remain responsible for semantic correctness: whether
+the approved product intent is faithfully represented, requirements are
+complete and testable, a design decision is technically sound, a plan is
+practical, a review finding is substantively correct, and an unresolved finding
+still describes the same problem. Passing deterministic validation or returning
+a valid receipt never proves those semantic properties.
 
 ## Safety and failure rules
 

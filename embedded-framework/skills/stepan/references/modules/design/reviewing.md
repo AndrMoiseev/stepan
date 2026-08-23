@@ -27,6 +27,9 @@ When reviewing `design.md`:
   delta or `DES-*` reference when available.
 - Recommend the smallest correction that resolves the problem without
   redesigning the solution or rewriting the artifact.
+- On re-review, read the previous review supplied in feedback and preserve every
+  finding ID whose underlying problem remains unresolved. Never allocate a new
+  ID merely because the design changed.
 
 Do not apply design authoring rules, modify any artifact, or review
 implementation code. Write only the supplied review output file.

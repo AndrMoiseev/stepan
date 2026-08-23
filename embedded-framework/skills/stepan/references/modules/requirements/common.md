@@ -3,9 +3,11 @@
 Apply these rules whenever authoring, reviewing, or consuming
 `requirements.md`:
 
-- Preserve the initial request's scope, clarified intent, and explicit user
-  decisions. Treat only
-  explicit user statements and approved declared inputs as product decisions.
+- Preserve approved `idea.md` as the binding scope and product framing. Treat
+  the initial request, clarification history, and declared project inputs as
+  evidence for that approved framing, not as permission to silently reinterpret
+  it. Treat only explicit user decisions and approved declared inputs as new
+  product authority.
 - Treat every unresolved uncertainty about intended behavior, scope,
   constraints, priorities, acceptance criteria, baseline meaning, or delta
   classification as a blocking need for user clarification. Never resolve it
@@ -28,3 +30,5 @@ Apply these rules whenever authoring, reviewing, or consuming
   name; for a rename, preserve both the exact source and target names.
 - Treat `REMOVED` and `RENAMED` as first-class specification changes even though
   they do not contain behavioral scenarios.
+- Read only project inputs explicitly listed in the role manifest. Never search
+  the repository for an undeclared baseline or substitute a likely document.

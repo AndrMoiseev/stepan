@@ -7,8 +7,12 @@ canonical input hashes supplied by the router; do not compute or alter them.
 schema_version: 2
 stage: requirements
 inputs:
-  idea.md: sha256:...
-  requirements.md: sha256:...
+  - path: docs/changes/specs/export-data/request.md
+    sha256: sha256:...
+  - path: docs/changes/specs/export-data/idea.md
+    sha256: sha256:...
+  - path: docs/changes/specs/export-data/requirements.md
+    sha256: sha256:...
 verdict: pass | changes-required
 findings:
   - id: REQ-R-001
@@ -26,9 +30,14 @@ without a new product decision. Use `none` only for an advisory finding. A
 `pass` verdict may contain advisory findings but no blocking finding or
 `user-decision`. Preserve the IDs of unresolved findings across reviews; never
 renumber an existing finding ID. Require `stage` to match the reviewed stage and
-`inputs` to contain exactly the canonical hashes supplied by the router. For
-`requirements`, inputs are `idea.md` and `requirements.md`; for `design`,
-inputs are `idea.md`, `requirements.md`, and `design.md`; for `plan`, inputs
-are `idea.md`, `requirements.md`, `design.md`, and `plan.md`. Use
+`inputs` to be an ordered list containing exactly the project-relative paths and
+canonical hashes supplied in the role manifest, including the immutable
+request, applicable artifacts, and selected profile project inputs. The
+clarification history is manifest data rather than a file hash. On re-review,
+use the previous review feedback to preserve every finding ID whose problem
+remains unresolved. For requirements review, include request, idea,
+requirements, and declared project inputs; for design review, include request,
+idea, requirements, design, and declared project inputs; for plan review, include
+request, idea, requirements, design, plan, and declared project inputs. Use
 stage-specific finding IDs: `REQ-R-*` for requirements, `DES-R-*` for design,
 and `PLAN-R-*` for plan.

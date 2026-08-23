@@ -5,8 +5,10 @@ When creating or revising `design.md`:
 1. Read the approved requirements and identify every delta entry, its
    observable behavior, constraints, and verification implications before
    choosing a solution.
-2. If a technical choice depends on an unresolved product decision, stop
-   without writing and return exactly one highest-impact blocking question.
+2. Make technical decisions supported by the approved contracts and declared
+   evidence. Stop without writing and return exactly one highest-impact
+   blocking question only when a decision depends on unresolved product intent,
+   unavailable required evidence, or authority the role does not have.
 3. Create at least one stable `DES-*` decision for every requirement delta.
    Use the exact traceability form from the artifact contract; do not silently
    merge unrelated deltas or leave a delta uncovered.
@@ -29,3 +31,6 @@ When creating or revising `design.md`:
    shared design rules before returning it.
 
 Do not revise requirements or make a product decision on the user's behalf.
+On revision, consume the previous review and unresolved finding IDs from
+feedback; address those findings without renumbering or dropping their identity
+from the evidence passed to the next reviewer.

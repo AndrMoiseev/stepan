@@ -61,8 +61,11 @@ as failure.
 ## Recommended Codex profile
 
 The generated `.stepan/config.yaml` declares reusable project-scoped profiles
-and maps the feature roles to them. Model settings remain in the custom agent
-TOML files:
+and maps the feature roles to them. Every generated profile contains the
+explicit empty declaration `project_inputs: []`; the project owner may later
+replace it with an ordered list of project-relative evidence files, after which
+another init correctly reports a conflict. Model settings remain in the custom
+agent TOML files:
 
 | Profile | Agent name and filename stem | Model | Reasoning |
 | --- | --- | --- | --- |

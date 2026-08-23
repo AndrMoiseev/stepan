@@ -10,3 +10,7 @@ Apply these rules whenever authoring or consuming `idea.md`:
   questions;
 - keep the framing implementation-neutral and traceable to the original
   request.
+- once approved, treat `idea.md` as the binding product-framing contract for
+  requirements, design, review, and planning; downstream roles may use its
+  request and clarification evidence to verify traceability but may not
+  reinterpret the approved framing silently.

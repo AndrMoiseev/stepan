@@ -37,4 +37,6 @@ When creating or revising `requirements.md`:
 
 Never make a product decision on the user's behalf. Missing baseline evidence,
 conflicting sources, multiple plausible interpretations, or uncertainty about
-whether a detail matters all require the same stop-and-question behavior.
+whether a detail matters all require the same stop-and-question behavior. When
+baseline evidence is required but not declared, ask the user to add or identify
+that specific baseline as a profile `project_inputs` entry; do not search for it.

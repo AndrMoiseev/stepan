@@ -60,10 +60,13 @@ The named agent must start without inherited conversation and:
    or answer, completes, or cannot proceed safely.
 
 For `new`, fully validate and normalize project execution configuration under
-`execution.md` before creating state. Require the selected router binding to
-match the manifest, then persist the complete snapshot, including that binding.
-For an existing specification, use only its persisted snapshot and require its
-router binding to match the manifest; never rebind from current configuration.
+`execution.md` with bundled `validate-config` before creating state. Require the
+selected router binding to match the manifest, then persist the complete
+snapshot, including that binding and every declared project-input path/hash.
+For an existing specification, require bundled `validate-state` to accept the
+declared state path and pinned inputs, use only its persisted snapshot, and
+require its router binding to match the manifest; never rebind from current
+configuration.
 
 The dedicated router may launch role agents but must not launch another router,
 invoke the Stepan skill recursively, expose parent chat as product input, or

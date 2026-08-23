@@ -12,8 +12,9 @@
 
 ## Task
 
-Read all approved artifacts and the project inputs declared by the planner's
-project-scoped profile configuration. Write only the supplied `plan.md` output
+Read all approved artifacts and only the project inputs explicitly declared by
+the planner's selected profile. Treat approved `idea.md` as the binding product
+framing and do not inspect the repository for additional context. Write only the supplied `plan.md` output
 path using the artifact contract. Do not redesign the solution. Produce ordered,
 verifiable steps covering all delta entries and decisions.
 
