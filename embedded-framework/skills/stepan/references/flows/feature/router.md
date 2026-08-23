@@ -1,8 +1,10 @@
 # Dedicated feature router contract
 
-Use this contract for every feature launch. The primary Stepan conversation is
-a thin launcher; the fresh named agent selected by the required non-null router
-binding is the workflow router for this invocation.
+Use this contract for every feature launch. The required non-null router binding
+always selects one named agent. Ordinarily the primary Stepan conversation is a
+thin launcher for a fresh named router. A host adapter may instead require that
+the current main thread already be that named router when the host cannot nest
+the role agents beneath a router subagent.
 
 ## Launcher responsibilities
 
@@ -13,9 +15,11 @@ Before launching, the primary conversation must:
 2. select the router only from the source allowed by the execution contract:
    current project configuration for `new`, or the persisted execution snapshot
    for an existing specification;
-3. resolve the binding to one named native agent on the current host and verify
-   that the host can start it as a fresh non-fork agent which may itself launch
-   the feature's sequential role agents;
+3. resolve the binding to one named native agent on the current host and apply
+   the selected adapter's router mode: either verify that the host can start it
+   as a fresh non-fork agent which may itself launch the feature's sequential
+   role agents, or verify that the current main thread already has that exact
+   named-agent identity and configured runtime settings;
 4. for a configured `new`, hash `.stepan/config.yaml` with the bundled helper;
    and
 5. make no repository write and load no role brief, role resource, artifact,
@@ -27,9 +31,13 @@ mailbox router, an unavailable named agent, a host mismatch, or a changed
 configuration hash. Do not fall back to the primary model or another agent when
 an explicit router binding cannot be honored.
 
+In verified main-thread mode, end the launcher phase after these checks and
+continue only as the dedicated router. Treat all unrelated conversation history
+as undeclared ambient context, never as product input or workflow authority.
+
 ## Router launch manifest
 
-Pass one compact manifest containing only:
+Build one compact manifest containing only:
 
 - `schema_version: 1` and `workflow: feature`;
 - the normalized invocation kind (`action` or `immediate-reply`), action, known
@@ -41,13 +49,18 @@ Pass one compact manifest containing only:
 - for an existing specification, the project-relative `state.yaml` path; and
 - the selected router executor name, concrete adapter kind, and named agent.
 
-Do not pass parent conversation history, summaries of artifacts, role contents,
-or undeclared repository data. Do not ask the named agent to invoke `$stepan` or
-`/stepan`; that would recurse through the launcher.
+In fresh-agent mode, pass only this manifest to the named agent. In verified
+main-thread mode, retain it only as the private normalized control object for
+the current invocation. In either mode, do not pass or consume parent
+conversation history, summaries of artifacts, role contents, or undeclared
+repository data. Do not ask the named agent to invoke `$stepan` or `/stepan`;
+that would recurse through the launcher.
 
 ## Dedicated router responsibilities
 
-The named agent must start without inherited conversation and:
+In fresh-agent mode, the named agent must start without inherited conversation.
+In verified main-thread mode, it must first discard unrelated conversation from
+its product-input set. The named agent then:
 
 1. read `protocol.md`, `execution.md`, this contract, and the selected adapter
    contract completely from the declared canonical skill root;
@@ -99,12 +112,14 @@ immediate bare reply is not allowed. Otherwise use exactly one of:
   before feature state exists.
 
 The launcher passes the complete response unchanged as byte-preserved UTF-8 to
-the bundled `validate-router-result` command. It relays only the validated
-`message`. A valid continuation is ephemeral: it lets only the immediately
-following bare reply select this workflow and, for `state`, its exact
-specification. A later response requires an explicit command. For `pre-state`,
-also retain the preceding normalized `new` invocation and exact configuration
-hash in conversation context and stop if either can no longer be matched.
+the bundled `validate-router-result` command and relays only the validated
+`message`. In verified main-thread mode, the router constructs the same result,
+validates it through that command, and presents only the validated `message`.
+A valid continuation is ephemeral: it lets only the immediately following bare
+reply select this workflow and, for `state`, its exact specification. A later
+response requires an explicit command. For `pre-state`, also retain the
+preceding normalized `new` invocation and exact configuration hash in
+conversation context and stop if either can no longer be matched.
 
 If validation fails and the same router agent is still available, the launcher
 may send exactly one format-only follow-up. It must identify this as a transport

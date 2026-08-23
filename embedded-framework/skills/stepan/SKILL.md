@@ -25,7 +25,7 @@ change host mode, add a tool, or launch a separate UI merely to obtain a menu.
 
 | Workflow | Purpose | Primary command | Protocol |
 | --- | --- | --- | --- |
-| `init` | Create recommended project-local Stepan host configuration | `$stepan init codex` (Codex only) | [`references/flows/init/protocol.md`](references/flows/init/protocol.md) |
+| `init` | Create recommended project-local Stepan host configuration | `$stepan init codex`, `$stepan init claude`, or `/stepan init claude` | [`references/flows/init/protocol.md`](references/flows/init/protocol.md) |
 | `feature` | Specify a feature before implementation | `$stepan feature new [idea]` or `/stepan feature new [idea]` | [`references/flows/feature/protocol.md`](references/flows/feature/protocol.md) |
 
 - On an invocation without a workflow, show the supported workflows and their
@@ -44,10 +44,13 @@ change host mode, add a tool, or launch a separate UI merely to obtain a menu.
    reading workflow-specific role briefs or resources or writing repository
    state.
 3. Apply the selected protocol's launcher boundary before loading any role when
-   that protocol defines one. If it selects a dedicated router, launch exactly
-   that named agent under the protocol's router contract and relay only its
-   user-facing result. Do not also execute workflow transitions in this
-   conversation.
+   that protocol defines one. If it selects a dedicated router, either launch
+   exactly that named agent or require the current main thread already to be
+   that named agent, as the selected host adapter explicitly requires. In the
+   launch case, relay only its user-facing result and do not also execute
+   workflow transitions in this conversation. In the verified main-thread
+   case, execute only as that dedicated router and reject unrelated conversation
+   history as product input.
 4. Otherwise load only the role briefs, directly declared resources, scripts,
    and repository inputs selected by that protocol. Do not load resources
    belonging to another workflow.

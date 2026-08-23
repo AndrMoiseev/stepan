@@ -47,6 +47,7 @@ PURPOSES = ("draft", "revise", "review")
 ADAPTER_KINDS = ("codex", "claude-code", "mailbox")
 APPROVAL_ACTIONS = ("continue", "continue-and-commit")
 CODEX_HOST = "codex"
+CLAUDE_CODE_HOST = "claude-code"
 CONTROL_FILE_MAX_BYTES = 256 * 1024
 ARTIFACT_MAX_BYTES = 2 * 1024 * 1024
 PROJECT_INPUT_MAX_BYTES = 10 * 1024 * 1024
@@ -149,6 +150,43 @@ CODEX_ROLE_BINDINGS = (
 )
 
 
+CLAUDE_AGENT_PROFILES = (
+    (
+        "orchestrator",
+        "opus",
+        "high",
+        "Orchestrates persisted Stepan workflows and dispatches role runs.",
+    ),
+    (
+        "author",
+        "opus",
+        "high",
+        "Authors the artifact selected by a workflow role brief.",
+    ),
+    (
+        "architect",
+        "opus",
+        "high",
+        "Authors technical designs selected by a workflow role brief.",
+    ),
+    (
+        "planner",
+        "sonnet",
+        "high",
+        "Produces an implementation plan from approved specification artifacts.",
+    ),
+    (
+        "reviewer",
+        "sonnet",
+        "high",
+        "Reviews one Stepan artifact for blocking product and consistency risks.",
+    ),
+)
+
+
+CLAUDE_ROLE_BINDINGS = CODEX_ROLE_BINDINGS
+
+
 def codex_agent_instructions(profile: str) -> str:
     if profile == "orchestrator":
         return (
@@ -202,6 +240,298 @@ def codex_stepan_config() -> str:
         )
     lines.extend(("workflows:", "  feature:", "    router: orchestrator", "    roles:"))
     lines.extend(f"      {role}: {profile}" for role, profile in CODEX_ROLE_BINDINGS)
+    return "\n".join(lines) + "\n"
+
+
+def claude_agent_instructions(profile: str) -> str:
+    if profile == "orchestrator":
+        return (
+            "Act only as the named Stepan workflow orchestrator for this project.\n"
+            "Before any workflow transition, require the current Claude Code "
+            "agent name, model family, and effort to match this project agent "
+            "definition; stop on a mismatch or unavailable runtime value.\n"
+            "Read and follow every protocol and every execution, router, or "
+            "adapter contract selected by the explicit Stepan invocation.\n"
+            "Never invoke the Stepan skill recursively or treat unrelated "
+            "conversation history as product input.\n"
+            "Dispatch only the fresh role runs selected by persisted workflow "
+            "state."
+        )
+    return (
+        "Act only as a Stepan workflow role executor when given one role-run "
+        "manifest.\n"
+        "Read only the skill resources and project inputs declared by that "
+        "manifest.\n"
+        "Follow the selected role brief and its ordered directly linked "
+        "resources exactly.\n"
+        "Write only the manifest's one allowed output; for a blocking question, "
+        "write no file.\n"
+        "Ignore parent conversation and undeclared runtime data as product "
+        "inputs.\n"
+        "Return only one exact JSON receipt permitted by the execution contract."
+    )
+
+
+def claude_agent_markdown(
+    profile: str, model: str, effort: str, description: str
+) -> str:
+    name = f"stepan-{profile}"
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"description: {json.dumps(description)}\n"
+        f"model: {model}\n"
+        f"effort: {effort}\n"
+        "---\n\n"
+        f"{claude_agent_instructions(profile)}\n"
+    )
+
+
+def claude_runtime_check_script() -> str:
+    return '''#!/usr/bin/env -S uv run --no-project --no-python-downloads --script
+"""Validate Stepan's project-local Claude Code runtime settings."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+
+MAX_INPUT_BYTES = 256 * 1024
+AGENT_PATTERN = re.compile(r"stepan-[a-z]+")
+
+
+def fail(message: str, hook: bool) -> int:
+    reason = f"Stepan Claude configuration mismatch: {message}"
+    if hook:
+        print(
+            json.dumps(
+                {
+                    "continue": False,
+                    "stopReason": reason,
+                    "systemMessage": reason,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    print(reason, file=sys.stderr)
+    return 1
+
+
+def model_matches(actual: str, family: str) -> bool:
+    value = actual.lower()
+    return value == family or re.search(
+        rf"(?:^|[^a-z]){re.escape(family)}(?:[^a-z]|$)", value
+    ) is not None
+
+
+def read_agent_definition(
+    project_root: Path, agent: str, model_family: str, effort: str
+) -> None:
+    if not AGENT_PATTERN.fullmatch(agent):
+        raise ValueError("invalid expected agent name")
+    root = project_root.resolve(strict=True)
+    if root.parent == root:
+        raise ValueError("project root must not be a filesystem root")
+    path = root / ".claude" / "agents" / f"{agent}.md"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"missing regular project agent definition: {path}")
+    resolved = path.resolve(strict=True)
+    try:
+        resolved.relative_to(root)
+    except ValueError as error:
+        raise ValueError("project agent definition escapes the project root") from error
+    content = path.read_bytes()
+    if len(content) > MAX_INPUT_BYTES:
+        raise ValueError("project agent definition is too large")
+    text = content.decode("utf-8")
+    if text.startswith("\\ufeff") or "\\r" in text or not text.startswith("---\\n"):
+        raise ValueError("project agent definition has invalid encoding or frontmatter")
+    frontmatter, separator, _ = text[4:].partition("\\n---\\n")
+    if not separator:
+        raise ValueError("project agent definition has invalid frontmatter")
+    fields: dict[str, str] = {}
+    for line in frontmatter.splitlines():
+        key, marker, value = line.partition(": ")
+        if not marker or key in fields:
+            raise ValueError("project agent definition has invalid frontmatter fields")
+        fields[key] = value
+    if set(fields) != {"name", "description", "model", "effort"}:
+        raise ValueError("project agent definition fields differ from initialization")
+    if fields["name"] != agent:
+        raise ValueError("project agent name differs from its binding")
+    if fields["model"] != model_family:
+        raise ValueError("project agent model differs from its binding")
+    if fields["effort"] != effort:
+        raise ValueError("project agent effort differs from its binding")
+
+
+def session_start(args: argparse.Namespace) -> int:
+    try:
+        read_agent_definition(
+            args.project_root, args.agent, args.model_family, args.effort
+        )
+        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+        if len(raw) > MAX_INPUT_BYTES:
+            raise ValueError("SessionStart input is too large")
+        event = json.loads(raw.decode("utf-8"))
+        if not isinstance(event, dict) or event.get("hook_event_name") != "SessionStart":
+            raise ValueError("invalid SessionStart hook input")
+        if event.get("agent_type") != args.agent:
+            raise ValueError(
+                f"active agent is {event.get('agent_type')!r}, expected {args.agent!r}"
+            )
+        model = event.get("model")
+        if not isinstance(model, str) or not model_matches(model, args.model_family):
+            raise ValueError(
+                f"active model is {model!r}, expected family {args.model_family!r}"
+            )
+        effort_value = event.get("effort")
+        active_effort = (
+            effort_value.get("level") if isinstance(effort_value, dict) else None
+        ) or os.environ.get("CLAUDE_EFFORT")
+        if active_effort != args.effort:
+            raise ValueError(
+                f"active effort is {active_effort!r}, expected {args.effort!r}"
+            )
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        return fail(str(error), True)
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": (
+                        "Stepan verified the project router agent, model family, "
+                        "and effort for this session."
+                    ),
+                }
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def role_preflight(args: argparse.Namespace) -> int:
+    try:
+        read_agent_definition(
+            args.project_root, args.agent, args.model_family, args.effort
+        )
+        model_override = os.environ.get("CLAUDE_CODE_SUBAGENT_MODEL")
+        if model_override and model_override != "inherit":
+            raise ValueError(
+                "CLAUDE_CODE_SUBAGENT_MODEL overrides project role agents"
+            )
+        effort_override = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL")
+        if effort_override and effort_override != args.effort:
+            raise ValueError(
+                "CLAUDE_CODE_EFFORT_LEVEL differs from the project role effort"
+            )
+    except (OSError, UnicodeError, ValueError) as error:
+        return fail(str(error), False)
+    print(
+        json.dumps(
+            {
+                "agent": args.agent,
+                "model_family": args.model_family,
+                "effort": args.effort,
+                "status": "verified",
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    commands = result.add_subparsers(dest="command", required=True)
+    for command in ("session-start", "role-preflight"):
+        check = commands.add_parser(command)
+        check.add_argument("--project-root", required=True, type=Path)
+        check.add_argument("--agent", required=True)
+        check.add_argument("--model-family", required=True, choices=("opus", "sonnet"))
+        check.add_argument("--effort", required=True, choices=("low", "medium", "high", "xhigh", "max"))
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    if args.command == "session-start":
+        return session_start(args)
+    return role_preflight(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+
+def expected_claude_settings() -> dict[str, object]:
+    return {
+        "agent": "stepan-orchestrator",
+        "hooks": {
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "uv",
+                            "args": [
+                                "run",
+                                "--no-project",
+                                "--no-python-downloads",
+                                "${CLAUDE_PROJECT_DIR}/.claude/hooks/stepan-runtime.py",
+                                "session-start",
+                                "--project-root",
+                                "${CLAUDE_PROJECT_DIR}",
+                                "--agent",
+                                "stepan-orchestrator",
+                                "--model-family",
+                                "opus",
+                                "--effort",
+                                "high",
+                            ],
+                            "timeout": 10,
+                        }
+                    ]
+                }
+            ]
+        },
+    }
+
+
+def claude_settings() -> str:
+    return json.dumps(expected_claude_settings(), indent=2) + "\n"
+
+
+def claude_stepan_config() -> str:
+    lines = [
+        "schema_version: 1",
+        "",
+        "adapters:",
+        "  claude:",
+        "    kind: claude-code",
+    ]
+    lines.extend(("", "profiles:"))
+    for profile, _, _, _ in CLAUDE_AGENT_PROFILES:
+        lines.extend(
+            (
+                f"  {profile}:",
+                "    adapter: claude",
+                f"    agent: stepan-{profile}",
+                "    project_inputs: []",
+                "",
+            )
+        )
+    lines.extend(("workflows:", "  feature:", "    router: orchestrator", "    roles:"))
+    lines.extend(f"      {role}: {profile}" for role, profile in CLAUDE_ROLE_BINDINGS)
     return "\n".join(lines) + "\n"
 
 
@@ -384,6 +714,27 @@ def expected_codex_config() -> dict[str, object]:
             "feature": {
                 "router": "orchestrator",
                 "roles": dict(CODEX_ROLE_BINDINGS),
+            }
+        },
+    }
+
+
+def expected_claude_config() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "adapters": {"claude": {"kind": "claude-code"}},
+        "profiles": {
+            profile: {
+                "adapter": "claude",
+                "agent": f"stepan-{profile}",
+                "project_inputs": [],
+            }
+            for profile, _, _, _ in CLAUDE_AGENT_PROFILES
+        },
+        "workflows": {
+            "feature": {
+                "router": "orchestrator",
+                "roles": dict(CLAUDE_ROLE_BINDINGS),
             }
         },
     }
@@ -811,6 +1162,110 @@ def codex_init_files() -> tuple[tuple[PurePosixPath, bytes], ...]:
     return result
 
 
+def validate_claude_init_files(
+    files: tuple[tuple[PurePosixPath, bytes], ...],
+) -> None:
+    expected_paths = tuple(
+        PurePosixPath(f".claude/agents/stepan-{profile}.md")
+        for profile, _, _, _ in CLAUDE_AGENT_PROFILES
+    ) + (
+        PurePosixPath(".claude/settings.json"),
+        PurePosixPath(".claude/hooks/stepan-runtime.py"),
+        PurePosixPath(".stepan/config.yaml"),
+    )
+    if tuple(path for path, _ in files) != expected_paths:
+        raise ValueError("generated Claude initialization paths are inconsistent")
+
+    parsed_agents: dict[str, dict[str, object]] = {}
+    for (profile, model, effort, description), (path, content) in zip(
+        CLAUDE_AGENT_PROFILES, files[:-3], strict=True
+    ):
+        if content.startswith(b"\xef\xbb\xbf") or b"\r" in content:
+            raise ValueError(f"invalid generated line endings: {path}")
+        try:
+            text = content.decode("utf-8")
+        except UnicodeError as error:
+            raise ValueError(f"invalid generated Markdown encoding: {path}") from error
+        if not text.startswith("---\n"):
+            raise ValueError(f"generated Claude agent lacks frontmatter: {path}")
+        frontmatter, separator, body = text[4:].partition("\n---\n")
+        if not separator:
+            raise ValueError(f"generated Claude agent has invalid frontmatter: {path}")
+        document = parse_generated_mapping_yaml(frontmatter + "\n")
+        expected_name = f"stepan-{profile}"
+        expected_document = {
+            "name": expected_name,
+            "description": description,
+            "model": model,
+            "effort": effort,
+        }
+        if document != expected_document:
+            raise ValueError(f"generated Claude agent fields are inconsistent: {path}")
+        if path.stem != expected_name:
+            raise ValueError(f"generated Claude agent filename and name differ: {path}")
+        if body != "\n" + claude_agent_instructions(profile) + "\n":
+            raise ValueError(f"generated Claude agent instructions are inconsistent: {path}")
+        parsed_agents[profile] = document
+
+    settings_path, settings_content = files[-3]
+    try:
+        settings = json.loads(settings_content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid generated JSON: {settings_path}") from error
+    if settings != expected_claude_settings():
+        raise ValueError("generated Claude project settings are inconsistent")
+
+    hook_path, hook_content = files[-2]
+    if hook_content != claude_runtime_check_script().encode("utf-8"):
+        raise ValueError(f"generated Claude runtime hook is inconsistent: {hook_path}")
+
+    config_path, config_content = files[-1]
+    try:
+        config_text = config_content.decode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"invalid generated YAML encoding: {config_path}") from error
+    config = parse_generated_mapping_yaml(config_text)
+    if config != expected_claude_config():
+        raise ValueError("generated Claude configuration is inconsistent")
+
+    profiles = config["profiles"]
+    router_profile = config["workflows"]["feature"]["router"]
+    router = profiles.get(router_profile) if isinstance(profiles, dict) else None
+    if not isinstance(router, dict) or router.get("agent") != "stepan-orchestrator":
+        raise ValueError("generated Claude router binding is inconsistent")
+    if (
+        parsed_agents[router_profile]["model"] != "opus"
+        or parsed_agents[router_profile]["effort"] != "high"
+    ):
+        raise ValueError("generated Claude orchestrator settings are inconsistent")
+
+
+def claude_init_files() -> tuple[tuple[PurePosixPath, bytes], ...]:
+    files = [
+        (
+            PurePosixPath(f".claude/agents/stepan-{profile}.md"),
+            claude_agent_markdown(profile, model, effort, description).encode("utf-8"),
+        )
+        for profile, model, effort, description in CLAUDE_AGENT_PROFILES
+    ]
+    files.extend(
+        (
+            (PurePosixPath(".claude/settings.json"), claude_settings().encode("utf-8")),
+            (
+                PurePosixPath(".claude/hooks/stepan-runtime.py"),
+                claude_runtime_check_script().encode("utf-8"),
+            ),
+            (
+                PurePosixPath(".stepan/config.yaml"),
+                claude_stepan_config().encode("utf-8"),
+            ),
+        )
+    )
+    result = tuple(files)
+    validate_claude_init_files(result)
+    return result
+
+
 def validate_codex_contract_examples(
     files: tuple[tuple[PurePosixPath, bytes], ...]
 ) -> None:
@@ -838,6 +1293,36 @@ def validate_codex_contract_examples(
     orchestrator_toml = files[0][1].decode("utf-8")
     if examples[0] != orchestrator_toml:
         raise ValueError("Codex adapter orchestrator example differs from generated TOML")
+
+
+def validate_claude_contract_examples(
+    files: tuple[tuple[PurePosixPath, bytes], ...]
+) -> None:
+    skill_root = Path(__file__).resolve().parent.parent
+    init_contract = (skill_root / "references/flows/init/protocol.md").read_text(
+        encoding="utf-8"
+    )
+    expected_command = (
+        'uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" '
+        'init-claude --host <codex|claude-code> --project-root "<project-root>"'
+    )
+    if expected_command not in init_contract:
+        raise ValueError("init contract command does not match init-claude arguments")
+    for path, _ in files:
+        if path.as_posix() not in init_contract:
+            raise ValueError(f"init contract omits generated path: {path}")
+
+    claude_adapter = (
+        skill_root / "references/flows/feature/adapters/claude-code.md"
+    ).read_text(encoding="utf-8")
+    examples = re.findall(r"```markdown\n(.*?)```", claude_adapter, flags=re.DOTALL)
+    if len(examples) != 1:
+        raise ValueError("Claude adapter must contain one orchestrator Markdown example")
+    orchestrator_markdown = files[0][1].decode("utf-8")
+    if examples[0] != orchestrator_markdown:
+        raise ValueError(
+            "Claude adapter orchestrator example differs from generated Markdown"
+        )
 
 
 def _validate_init_target(project_root: Path, relative: PurePosixPath) -> Path:
@@ -887,7 +1372,7 @@ def _ensure_init_parent(
             created_directories.append((current, (stat.st_dev, stat.st_ino)))
 
 
-def _rollback_codex_init(
+def _rollback_init(
     created_files: list[tuple[Path, tuple[int, int]]],
     created_directories: list[tuple[Path, tuple[int, int]]],
 ) -> None:
@@ -907,16 +1392,17 @@ def _rollback_codex_init(
             pass
 
 
-def initialize_codex(project_root: Path, current_host: str) -> dict[str, object]:
-    if current_host != CODEX_HOST:
-        raise ValueError("init-codex requires the current host to be Codex")
+def _initialize_project_files(
+    project_root: Path,
+    files: tuple[tuple[PurePosixPath, bytes], ...],
+    result_host: str,
+) -> dict[str, object]:
     if not project_root.exists() or not project_root.is_dir():
         raise ValueError("project root must be an existing directory")
     project_root = project_root.resolve(strict=True)
     if project_root.parent == project_root:
         raise ValueError("project root must not be a filesystem root")
 
-    files = codex_init_files()
     missing: list[tuple[PurePosixPath, Path, bytes]] = []
     unchanged: list[str] = []
     conflicts: list[str] = []
@@ -963,16 +1449,30 @@ def initialize_codex(project_root: Path, current_host: str) -> dict[str, object]
                 raise ValueError(f"could not verify created file: {relative}")
             created.append(relative.as_posix())
     except (OSError, ValueError):
-        _rollback_codex_init(created_files, created_directories)
+        _rollback_init(created_files, created_directories)
         raise
 
     return {
         "schema_version": 1,
-        "host": "codex",
+        "host": result_host,
         "status": "created" if created else "unchanged",
         "created": created,
         "unchanged": unchanged,
     }
+
+
+def initialize_codex(project_root: Path, current_host: str) -> dict[str, object]:
+    if current_host != CODEX_HOST:
+        raise ValueError("init-codex requires the current host to be Codex")
+    return _initialize_project_files(project_root, codex_init_files(), CODEX_HOST)
+
+
+def initialize_claude(project_root: Path, current_host: str) -> dict[str, object]:
+    if current_host not in {CODEX_HOST, CLAUDE_CODE_HOST}:
+        raise ValueError("init-claude requires Codex or Claude Code as the current host")
+    return _initialize_project_files(
+        project_root, claude_init_files(), CLAUDE_CODE_HOST
+    )
 
 
 def spec_id(id_hint: str) -> str:
@@ -2768,6 +3268,8 @@ def self_test() -> None:
 
     expected_files = codex_init_files()
     validate_codex_contract_examples(expected_files)
+    claude_expected_files = claude_init_files()
+    validate_claude_contract_examples(claude_expected_files)
     skill_root = Path(__file__).resolve().parent.parent
     for role in ROLES:
         manifest = role_resource_manifest(skill_root, role)
@@ -2797,6 +3299,19 @@ def self_test() -> None:
     )
     assert b'model = "gpt-5.6"' in expected_files[0][1]
     assert b'model = "gpt-5.6-terra"' in expected_files[-2][1]
+    assert len(claude_expected_files) == 8
+    assert claude_expected_files[0][0] == PurePosixPath(
+        ".claude/agents/stepan-orchestrator.md"
+    )
+    assert claude_expected_files[-3][0] == PurePosixPath(".claude/settings.json")
+    assert claude_expected_files[-2][0] == PurePosixPath(
+        ".claude/hooks/stepan-runtime.py"
+    )
+    assert claude_expected_files[-1][0] == PurePosixPath(".stepan/config.yaml")
+    assert all(content.endswith(b"\n") for _, content in claude_expected_files)
+    assert all(b"\r" not in content for _, content in claude_expected_files)
+    assert b"model: opus\n" in claude_expected_files[0][1]
+    assert b"model: sonnet\n" in claude_expected_files[-4][1]
 
     expected_paths = [path.as_posix() for path, _ in expected_files]
     with TemporaryDirectory(prefix="stepan-self-test-") as temporary:
@@ -2811,6 +3326,44 @@ def self_test() -> None:
         else:
             raise AssertionError("initialized Codex files on a non-Codex host")
         assert list(wrong_host_root.iterdir()) == []
+
+        unsupported_host_root = temporary_root / "unsupported-host"
+        unsupported_host_root.mkdir()
+        try:
+            initialize_claude(unsupported_host_root, "other")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("initialized Claude files on an unsupported host")
+        assert list(unsupported_host_root.iterdir()) == []
+
+        claude_root = temporary_root / "claude"
+        claude_root.mkdir()
+        claude_paths = [path.as_posix() for path, _ in claude_expected_files]
+        claude_created = initialize_claude(claude_root, "codex")
+        assert claude_created == {
+            "schema_version": 1,
+            "host": "claude-code",
+            "status": "created",
+            "created": claude_paths,
+            "unchanged": [],
+        }
+        claude_unchanged = initialize_claude(claude_root, "claude-code")
+        assert claude_unchanged == {
+            "schema_version": 1,
+            "host": "claude-code",
+            "status": "unchanged",
+            "created": [],
+            "unchanged": claude_paths,
+        }
+        claude_snapshot = validate_project_config_path(
+            claude_root / ".stepan/config.yaml", claude_root, "claude-code"
+        )
+        assert claude_snapshot["bindings"]["router"] == "orchestrator"
+        assert claude_snapshot["profiles"]["reviewer"]["agent"] == "stepan-reviewer"
+        assert json.loads(
+            (claude_root / ".claude/settings.json").read_text()
+        ) == expected_claude_settings()
 
         fresh_root = temporary_root / "fresh"
         fresh_root.mkdir()
@@ -3275,6 +3828,25 @@ findings: []
             if path.is_file()
         ) == [".codex/agents/stepan_orchestrator.toml"]
 
+        claude_conflict_root = temporary_root / "claude-conflict"
+        claude_conflict_path = (
+            claude_conflict_root / ".claude/agents/stepan-orchestrator.md"
+        )
+        claude_conflict_path.parent.mkdir(parents=True)
+        claude_conflict_path.write_text("conflict\n", encoding="utf-8", newline="\n")
+        try:
+            initialize_claude(claude_conflict_root, "codex")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("initialized Claude files despite a preflight conflict")
+        assert claude_conflict_path.read_bytes() == b"conflict\n"
+        assert sorted(
+            path.relative_to(claude_conflict_root).as_posix()
+            for path in claude_conflict_root.rglob("*")
+            if path.is_file()
+        ) == [".claude/agents/stepan-orchestrator.md"]
+
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
@@ -3385,6 +3957,12 @@ def parser() -> argparse.ArgumentParser:
     initializer.add_argument("--host", required=True)
     initializer.add_argument("--project-root", type=Path, default=Path("."))
 
+    claude_initializer = commands.add_parser(
+        "init-claude", help="Create recommended project-local Claude Code agents"
+    )
+    claude_initializer.add_argument("--host", required=True)
+    claude_initializer.add_argument("--project-root", type=Path, default=Path("."))
+
     commands.add_parser("self-test", help="Run built-in checks")
     return result
 
@@ -3469,6 +4047,8 @@ def main() -> int:
             output = validate_router_result(parse_json_receipt(sys.stdin.read()))
         elif args.command == "init-codex":
             output = initialize_codex(args.project_root, args.host)
+        elif args.command == "init-claude":
+            output = initialize_claude(args.project_root, args.host)
         else:
             self_test()
             output = {"ok": True}

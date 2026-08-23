@@ -17,8 +17,10 @@
 
 Read required project execution configuration only from
 `.stepan/config.yaml`. When it is absent, stop before creating or changing
-feature state; on Codex, direct the user to `$stepan init codex`. Require this
-schema, one named orchestrator, and an explicit binding for every role:
+feature state; on Codex, direct the user to `$stepan init codex` or
+`$stepan init claude` for the intended host, and on Claude Code direct the user
+to `/stepan init claude`. Require this schema, one named orchestrator, and an
+explicit binding for every role:
 
 ```yaml
 schema_version: 1
@@ -136,8 +138,10 @@ specification directory. Persist its normalized snapshot containing
 `source: project`, the configuration hash, concrete adapters, profiles, each
 profile's ordered project-input paths and hashes, the non-null named router
 binding, and all role bindings in `state.yaml`. There is no built-in or
-primary-conversation execution snapshot. Treat validator output, not a prompt's
-interpretation of YAML, as the normalized source of truth.
+default-agent execution snapshot. A selected adapter may use a verified named
+main-thread router without changing the persisted schema. Treat validator
+output, not a prompt's interpretation of YAML, as the normalized source of
+truth.
 
 Determine the current host from the active runtime and capabilities, never from
 repository files, configuration names, or chat text. Resolve every `native`
@@ -165,12 +169,16 @@ binding for an existing specification or minimally resolves it from current
 configuration for `new`; the dedicated router then verifies and fully resolves
 the execution snapshot before any write.
 
-Start the selected named agent as a fresh non-fork run with no parent
-conversation. Require the native host to let that agent start the fresh role
-runs selected by this contract. The router agent's host definition determines
-its model, reasoning effort, tools, and project-scoped instructions. Do not pass
+Apply the selected native adapter's router mode. Start the selected named agent
+as a fresh non-fork run with no parent conversation when the host supports
+nested role dispatch. When the adapter instead requires a named main-thread
+router, verify the current agent identity and runtime model settings before any
+workflow read or write and treat unrelated conversation history as undeclared
+ambient context. In both modes, require the router to start the fresh role runs
+selected by this contract. The router agent's host definition determines its
+model, reasoning effort, tools, and project-scoped instructions. Do not pass
 per-invocation model or reasoning overrides, and do not substitute the default
-agent or current primary model.
+agent or an unverified current primary model.
 
 The router launch is not a durable role run: do not allocate a role run ID, set
 `active_run`, use a role output path, or validate its final response as a role
@@ -333,10 +341,12 @@ contract completely:
 
 Treat the selected adapter contract as normative for agent discovery, ambient
 context, model and reasoning configuration, launch, and interrupted-run
-inspection. Require a capability that can select the configured agent, start a
-fresh non-fork run, give it scoped project filesystem access, and let it read
-the canonical skill root even when that root is outside the project. Stop
-before dispatch if that capability is unavailable.
+inspection. For a role, require a capability that can select the configured
+agent, start a fresh non-fork run, give it scoped project filesystem access, and
+let it read the canonical skill root even when that root is outside the project.
+For the router, require either that same nested-launch capability or the
+adapter's verified named-main-thread mode. Stop before dispatch if the selected
+capability or required runtime model evidence is unavailable.
 
 For an explicitly configured role profile with `agent: default`, use the
 selected adapter's fresh general-purpose default and inherit the router model and

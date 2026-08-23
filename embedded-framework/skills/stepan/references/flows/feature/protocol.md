@@ -145,16 +145,15 @@ receipts, bounded waiting, and filesystem verification.
 
 Require `.stepan/config.yaml`, resolve it before writing, and persist the
 normalized execution snapshot in feature state. On Codex, direct the user to
-`$stepan init codex` when the file is absent. On another host, require an
-equivalent valid project configuration created outside this workflow. Never use
-a built-in default, and never reread project execution configuration to rebind
-an existing specification.
+`$stepan init codex` when the file is absent. On Claude Code, direct the user to
+`/stepan init claude`. Never use a built-in default, and never reread project
+execution configuration to rebind an existing specification.
 
 ## Router launch boundary
 
 Read [`router.md`](router.md) completely before loading a feature role or
 changing feature state. It defines an optional boundary between the primary
-Stepan conversation and the logical feature router.
+Stepan launcher phase and the logical feature router.
 
 Apply the boundary only after the action is known and, for `new`, non-whitespace
 idea text is available. Select its source as follows:
@@ -168,14 +167,17 @@ idea text is available. Select its source as follows:
   path, hash, and router binding from the immediately preceding interaction and
   stop if the file changed.
 
-Follow `router.md` for every launch: launch exactly the bound named agent, relay
-its single user-facing result, and perform no feature transition in the primary
-conversation. If the named router cannot be resolved or launched with nested
-role-dispatch capability, report an unsupported or misconfigured host runtime
-and stop without changing feature state. Never fall back to a null binding, the
-primary conversation, `agent: default`, another agent, or another model. A named
-agent launched under that contract is already the logical router and must skip
-this launch boundary rather than recursively launching itself.
+Follow `router.md` and the selected native adapter for every launch. In
+fresh-agent mode, launch exactly the bound named agent, relay its single
+user-facing result, and perform no feature transition in the launcher. In
+verified main-thread mode, require the current main thread already to be the
+bound named agent with matching runtime model settings, end the launcher phase,
+and execute only as that logical router. If the required mode cannot be
+validated or cannot dispatch fresh role runs, report an unsupported or
+misconfigured host runtime and stop without changing feature state. Never fall
+back to a null binding, an ordinary primary conversation, `agent: default`,
+another agent, or another model. A named agent already operating as the logical
+router must skip this launch boundary rather than recursively launching itself.
 
 ## Storage and schemas
 
