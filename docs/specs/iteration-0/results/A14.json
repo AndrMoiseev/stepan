@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "scenario": "A14",
+  "outcome": "PASS",
+  "observation": {
+    "inherited_mode_used_as_default": false,
+    "user_config_layer_observed": true,
+    "project_config_layer_observed": true,
+    "project_tool_setting_observed": "web_search=disabled",
+    "plugin_hook_count": 3,
+    "hook_source": "plugin",
+    "installed_plugin_count": 11,
+    "enabled_plugin_count": 11,
+    "mcp_server_count": 3,
+    "managed_requirements_present": false,
+    "on_request_allowed": true,
+    "read_only_allowed": true,
+    "expected_project_instruction_source_observed": true,
+    "process_exited_without_force": true
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "38977c86d3fac29aad2a6119830e2955e36c01f4",
+    "platform": "windows/amd64"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a14-inherited/raw-summary.json",
+      "sha256": "243e458897ec0c55bcd86a453d60fc5e4d13874ab7d5fd94e19c7b01f9c47a94"
+    },
+    {
+      "ref": ".stepan/spike/task7-live-20260811/a14-inherited/evidence/stdout.jsonl",
+      "sha256": "7d27f209941b21118716a1d435ddf0e710bdddf7f8de1981f8d70f7df8eac465"
+    }
+  ]
+}

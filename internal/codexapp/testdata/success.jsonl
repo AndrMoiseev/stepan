@@ -1,0 +1,5 @@
+{"id":1,"result":{"codexHome":"<codex-home>","platformFamily":"windows","platformOs":"windows","userAgent":"codex_cli_rs/0.147.0"}}
+{"id":2,"result":{"requirements":null}}
+{"id":3,"result":{"thread":{"id":"thread-replay"}}}
+{"id":4,"result":{"turn":{"id":"turn-replay"}}}
+{"method":"turn/completed","params":{"threadId":"thread-replay","turn":{"id":"turn-replay","status":"completed","items":[{"id":"item-replay","type":"agentMessage","phase":"final_answer","text":"{\"result\":\"ok\",\"nonce\":\"replay\"}"}]}}}

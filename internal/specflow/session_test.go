@@ -1,0 +1,201 @@
+package specflow
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/codexapp"
+)
+
+func TestSessionIsLazyAndReusesRuntime(t *testing.T) {
+	starts := 0
+	runtime := &fakeAppRuntime{}
+	session := newSession(func() (appRuntime, error) {
+		starts++
+		return runtime, nil
+	})
+	defer session.Close()
+	if starts != 0 {
+		t.Fatal("runtime started while idle")
+	}
+	if _, err := session.StartThread(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StartThread(); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 1 || runtime.threads != 2 {
+		t.Fatalf("starts = %d, threads = %d", starts, runtime.threads)
+	}
+}
+
+func TestSessionRestartsAfterRuntimeError(t *testing.T) {
+	crash := errors.New("crash")
+	runtimes := []*fakeAppRuntime{{turnErr: crash}, {}}
+	starts := 0
+	session := newSession(func() (appRuntime, error) {
+		runtime := runtimes[starts]
+		starts++
+		return runtime, nil
+	})
+	defer session.Close()
+	thread, err := session.StartThread()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.RunTurn(thread, "prompt", codexapp.TurnOptions{}); !errors.Is(err, crash) {
+		t.Fatalf("turn error = %v", err)
+	}
+	if runtimes[0].closes != 1 {
+		t.Fatal("failed runtime was not closed")
+	}
+	if _, err := session.StartThread(); err != nil {
+		t.Fatal(err)
+	}
+	if starts != 2 || runtimes[1].threads != 1 {
+		t.Fatalf("starts = %d, replacement threads = %d", starts, runtimes[1].threads)
+	}
+}
+
+func TestSessionInterruptUsesRuntimeInterrupt(t *testing.T) {
+	runtime := &fakeAppRuntime{}
+	session := newSession(func() (appRuntime, error) { return runtime, nil })
+	if _, err := session.StartThread(); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.interrupts != 1 {
+		t.Fatalf("interrupts = %d", runtime.interrupts)
+	}
+	if _, err := session.StartThread(); !errors.Is(err, codexapp.ErrRuntimeClosed) {
+		t.Fatalf("start after interrupt = %v", err)
+	}
+}
+
+func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
+	repo := initDraftRepository(t)
+	head := draftGit(t, repo, "rev-parse", "HEAD")
+	runtime := &fakeAppRuntime{}
+	runtime.turn = func(_ string, options codexapp.TurnOptions) (json.RawMessage, error) {
+		switch string(options.OutputSchema) {
+		case string(InitialSchema()):
+			id := fmt.Sprintf("flow-%d", runtime.threads)
+			return json.RawMessage(fmt.Sprintf(`{"status":"READY_TO_WRITE","spec_id":%q}`, id)), nil
+		case string(CreateSchema()):
+			directory := filepath.Join(repo, "docs", "specs", fmt.Sprintf("flow-%d", runtime.threads))
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(filepath.Join(directory, "specification.md"), []byte("draft"), 0o600); err != nil {
+				return nil, err
+			}
+			return json.RawMessage(`{"status":"WRITTEN"}`), nil
+		default:
+			return nil, errors.New("unexpected schema")
+		}
+	}
+	starts := 0
+	session := newSession(func() (appRuntime, error) { starts++; return runtime, nil })
+	controller := NewController(repo, session)
+	ui := &controllerUI{controller: controller, ideas: []string{"one", "two"}}
+	err := RunInteractive(context.Background(), controller, ui, session.Interrupt)
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if starts != 1 || runtime.threads != 2 || runtime.interrupts != 1 {
+		t.Fatalf("starts = %d, threads = %d, interrupts = %d", starts, runtime.threads, runtime.interrupts)
+	}
+	if got := draftGit(t, repo, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD changed from %s to %s", head, got)
+	}
+	if content, err := os.ReadFile(filepath.Join(repo, "tracked.txt")); err != nil || string(content) != "original\n" {
+		t.Fatalf("source changed: %q, %v", content, err)
+	}
+}
+
+func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
+	repo := initDraftRepository(t)
+	crashed := &fakeAppRuntime{turnErr: codexapp.ErrAppServerExited}
+	replacement := &fakeAppRuntime{turn: func(_ string, _ codexapp.TurnOptions) (json.RawMessage, error) {
+		return json.RawMessage(`{"status":"NEEDS_INPUT","message":"question"}`), nil
+	}}
+	runtimes := []*fakeAppRuntime{crashed, replacement}
+	starts := 0
+	session := newSession(func() (appRuntime, error) { runtime := runtimes[starts]; starts++; return runtime, nil })
+	controller := NewController(repo, session)
+	ui := &controllerUI{controller: controller, ideas: []string{"crash", "restart"}, stopAfterInitialQuestion: true}
+	err := RunInteractive(context.Background(), controller, ui, session.Interrupt)
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if starts != 2 || crashed.closes != 1 || replacement.threads != 1 {
+		t.Fatalf("starts = %d, crashed closes = %d, replacement threads = %d", starts, crashed.closes, replacement.threads)
+	}
+	if len(ui.reported) != 1 || !errors.Is(ui.reported[0], codexapp.ErrAppServerExited) {
+		t.Fatalf("reported errors = %v", ui.reported)
+	}
+}
+
+type fakeAppRuntime struct {
+	threads    int
+	turnErr    error
+	turn       func(string, codexapp.TurnOptions) (json.RawMessage, error)
+	closes     int
+	interrupts int
+}
+
+func (runtime *fakeAppRuntime) StartThread() (*codexapp.Thread, error) {
+	runtime.threads++
+	return &codexapp.Thread{ID: "thread"}, nil
+}
+
+func (runtime *fakeAppRuntime) RunTurn(_ *codexapp.Thread, prompt string, options codexapp.TurnOptions) (json.RawMessage, error) {
+	if runtime.turn != nil {
+		return runtime.turn(prompt, options)
+	}
+	return json.RawMessage(`{}`), runtime.turnErr
+}
+
+func (runtime *fakeAppRuntime) Interrupt() error { runtime.interrupts++; return nil }
+func (runtime *fakeAppRuntime) Close() error     { runtime.closes++; return nil }
+
+type controllerUI struct {
+	controller               *Controller
+	ideas                    []string
+	mainCalls                int
+	reported                 []error
+	stopAfterInitialQuestion bool
+}
+
+func (ui *controllerUI) Main() (Progress, error) {
+	if ui.mainCalls == len(ui.ideas) {
+		return Progress{}, ErrCanceled
+	}
+	brief := ui.ideas[ui.mainCalls]
+	ui.mainCalls++
+	return ui.controller.StartIdea(brief)
+}
+
+func (ui *controllerUI) InitialAnswer(string) (Progress, error) {
+	if ui.stopAfterInitialQuestion {
+		return Progress{}, ErrCanceled
+	}
+	panic("unexpected initial answer")
+}
+
+func (ui *controllerUI) Draft(_ context.Context, _ Progress) (Progress, error) {
+	return ui.controller.Approve()
+}
+
+func (*controllerUI) ChangeAnswer(context.Context, string) (Progress, error) {
+	panic("unexpected change answer")
+}
+
+func (ui *controllerUI) ReportError(err error) { ui.reported = append(ui.reported, err) }

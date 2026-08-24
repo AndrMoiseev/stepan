@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "scenario": "A05",
+  "outcome": "PASS",
+  "observation": {
+    "proposed_paths_observed_before_decision": true,
+    "approval_kind": "file_change",
+    "pending_count": 2,
+    "accepted_count": 1,
+    "declined_count": 1,
+    "sent_count": 2,
+    "allowed_marker_present": true,
+    "protected_marker_present": false,
+    "head_unchanged": true,
+    "candidate_snapshot_before_first_approval": "aa9cd6ef2db0b07e7e45428e586e4e8b3c1985b1:299885d581f86eddf6d3b117efecd1fd8f172d25",
+    "candidate_snapshot_before_second_approval": "aa9cd6ef2db0b07e7e45428e586e4e8b3c1985b1:a82cfd3c288ed3486232e06a03a1b6d553debde3",
+    "candidate_snapshot_after_operations": "aa9cd6ef2db0b07e7e45428e586e4e8b3c1985b1:a82cfd3c288ed3486232e06a03a1b6d553debde3"
+  },
+  "external_postconditions": {
+    "workspace_git_status": "only expected untracked allowed marker",
+    "remote_count": 0
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "controller_commit": "8011938f56238688b2b1c4d06ac13c39d8835300",
+    "go": "1.26.5",
+    "platform": "windows/amd64",
+    "schema_bundle_manifest_sha256": "eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a05-4e1c93/raw-summary.json",
+      "sha256": "08f6094f0daee90b7bdf21299eb080edf992d8b6379d300282fcf1f013c31b7c"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a05-4e1c93/evidence/normalized-events.jsonl",
+      "sha256": "e0ad9e72238c92f54b90d7eaecf2e9dd3cf84e000bbbb291251e6d673b5274cc"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a05-4e1c93/evidence/approvals.jsonl",
+      "sha256": "7b2a54d588e429aadc23834918a1954a37d65d241e2758821bebc3639b812b68"
+    },
+    {
+      "ref": ".stepan/spike/task5-live-20260811/a05-4e1c93/evidence/result.json",
+      "sha256": "b8f523ffe609fab607dbfa0442d764d5e65516467a7a5b27c80061d8c5c6c924"
+    }
+  ]
+}

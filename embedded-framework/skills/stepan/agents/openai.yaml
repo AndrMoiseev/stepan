@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stepan"
+  short_description: "Choose and run repository-scoped Stepan workflows"
+  default_prompt: "Use $stepan to show the available workflows, $stepan init codex or $stepan init claude to configure this project, or $stepan feature new to start a feature specification."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,7 @@
+schema_version: 1
+stage: requirements
+inputs:
+  idea.md: sha256:252b86a934f93361e9392829c97d14f1f34acc2bd0ea81c823b0973ccb966ffb
+  requirements.md: sha256:eac5a91aaf4e67c941420e490d008d8df2533f45ed4e3d114420e8ed95d4679a
+verdict: pass
+findings: []

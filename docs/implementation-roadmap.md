@@ -4,6 +4,11 @@
 
 MVP строится как один жёстко заданный последовательный workflow. На первом этапе не создаются DSL, пользовательская настройка стадий, параллельный scheduler или универсальный adapter API.
 
+Этот роадмап задаёт примерное направление развития, а не строгий план или
+обязательство сохранить нумерацию и объём этапов. Авторитетные границы конкретной
+итерации определяет её утверждённая спецификация; они могут меняться по
+результатам предыдущих итераций и dogfooding.
+
 Работа идёт короткими вертикальными итерациями. Первая пригодная для dogfooding версия должна появиться до завершения полного MVP и использоваться для реализации следующих итераций.
 
 Ориентировочная оценка для одного разработчика:
@@ -18,33 +23,39 @@ MVP строится как один жёстко заданный послед�
 
 Оценка: 2–3 дня.
 
+Статус: **завершена, spike passed with caveats**. Решение и обязательные
+workarounds: [ADR 0001](adr/0001-codex-app-server-containment.md). Фактические
+результаты: [отчёт итерации 0](specs/iteration-0/report.md).
+
+Детальный объём, сценарии и критерии готовности зафиксированы в [спецификации итерации 0](specs/iteration-0/specification.md).
+
 ### Цель
 
 Проверить, что Codex CLI можно использовать как управляемый subprocess, не реализуя собственный агентский runtime.
 
 ### Проверяемые возможности
 
-- Запуск `codex exec` без shell-интерполяции аргументов.
-- Чтение JSONL-событий.
-- Получение и сохранение session ID.
+- Запуск `codex app-server --stdio` без shell-интерполяции аргументов.
+- Двусторонний JSON-RPC/JSONL transport и server approvals.
+- Получение, сохранение и resume thread ID.
 - Структурированный финальный ответ через JSON Schema.
 - Продолжение сессии.
 - Раздельная обработка stdout, stderr и exit code.
 - Корректная обработка предупреждений в stderr при успешном exit code.
-- Отмена процесса и таймаут.
-- Режимы `read-only` и `workspace-write`.
+- Ограничения отмены процесса, timeout и process-tree lifecycle.
+- Фактическая граница `readOnly` и role workspace isolation.
 - Поведение при невалидном ответе, обрыве и превышении времени.
 - Влияние пользовательской конфигурации Codex.
 - Quoting, пути и сигналы завершения на целевых ОС.
 
 ### Технические решения по итогам spike
 
-- Кроссплатформенный MVP или Windows-only.
-- Минимально поддерживаемая версия Codex CLI.
-- Способ изоляции framework-owned конфигурации Codex от пользовательской.
-- Механизм отмены и восстановления процесса.
-- Формат durable-состояния и append-only журнала событий.
-- Способ вычисления точного candidate snapshot до commit.
+- Windows-only MVP с pinned `codex-cli 0.147.0`.
+- Source-blind роли в отдельном role workspace без production source.
+- Доверенный Codex profile и fail-closed config/plugin/MCP inventory.
+- `turn/interrupt` с bounded grace и Windows Job Object containment.
+- Durable approval state и append-only журнал событий.
+- Candidate snapshot как `HEAD OID + tree OID` через независимый temp-index.
 
 ### Результат
 
@@ -53,7 +64,10 @@ MVP строится как один жёстко заданный послед�
 - Зафиксированный внутренний контракт интеграции с Codex.
 - Решение по поддерживаемым ОС.
 
-Локально установлен Codex CLI `0.147.0`. Текущий интерфейс предоставляет необходимые для spike механизмы. Согласно [официальной документации Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli), `codex exec` поддерживает JSONL, output schema, sandbox modes и resume.
+App Server `0.147.0` принят как version-specific transport. Матрица spike
+содержит `9 PASS / 4 FAIL / 3 BLOCKED`; отрицательные исходы сохранены как
+evidence и закрываются compensating controls ADR 0001, а не broad permissions
+или experimental API.
 
 ## Итерация 1. Первый walking slice
 
@@ -69,6 +83,9 @@ MVP строится как один жёстко заданный послед�
 
 - Проверка, что текущий каталог является Git-репозиторием.
 - Отказ от запуска при грязном рабочем дереве.
+- Preflight pinned Codex/schema и allowlisted effective config.
+- Windows Job Object containment до начала App Server turn.
+- Материализация отдельного role workspace для source-blind ролей.
 - Создание run ID.
 - Минимальный `state.json`.
 - Запись событий запуска Codex.
@@ -82,6 +99,10 @@ MVP строится как один жёстко заданный послед�
 ### Критерий готовности
 
 Stepan реализует, проверяет и коммитит одну настоящую небольшую доработку самого Stepan без запуска интерактивного Codex CLI.
+
+Дополнительно проходят containment invariants ADR 0001: source canary не виден
+source-blind роли, после cancel/timeout нет App Server/потомков, а effective
+config не содержит незаявленных источников.
 
 С этого момента следующие итерации по возможности выполняются через Stepan.
 
@@ -309,6 +330,8 @@ MVP готов, когда одновременно выполняются сл�
 
 ### 2. Усиление изоляции
 
+- Замена временного отдельного role workspace на native restricted roots только
+  после повторных live-сценариев и пересмотра ADR 0001.
 - Превентивные path capabilities вместо одного post-check.
 - Network policy.
 - Изоляция credentials.
@@ -354,6 +377,9 @@ MVP готов, когда одновременно выполняются сл�
 - Write-set conflict detection.
 - Последовательные conflict zones.
 - Ограниченный параллелизм после измерения его реальной пользы.
+
+Worktree здесь является механизмом Git-организации и conflict isolation, а не
+границей чтения production source.
 
 ### 8. PR, CI и delivery-интеграции
 

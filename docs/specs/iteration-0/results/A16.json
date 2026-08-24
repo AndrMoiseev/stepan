@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "scenario": "A16",
+  "outcome": "PASS",
+  "evidence_mode": "live A01 baseline plus fake App Server warning and fault injection",
+  "observation": {
+    "warning_case": {
+      "source": "fake",
+      "probe_outcome": "PASS",
+      "stderr_nonempty": true,
+      "process_exit_code": 0,
+      "terminal_status": "completed"
+    },
+    "protocol_failure_case": {
+      "source": "fake",
+      "probe_outcome": "FAIL",
+      "failure_class": "protocol_failure",
+      "process_exit_code": 0,
+      "terminal_observed": false
+    },
+    "process_failure_case": {
+      "source": "fake",
+      "probe_outcome": "FAIL",
+      "failure_class": "process_failure",
+      "process_exit_code": 7
+    }
+  },
+  "external_postconditions": {
+    "workspace_git_statuses": "clean",
+    "workspace_heads": "unborn",
+    "remote_count": 0,
+    "local_credential_setting_count": 0
+  },
+  "versions": {
+    "codex_cli": "0.147.0",
+    "codex_executable_sha256": "935a1911ed2556e4ffcec995f4886ac2ac425863ba26fed264df62e30272ad9d",
+    "probe_sha256": "5b1dc5b9c6d17d722b0c21dfe8ce3ea81982817735398900157fea8fc5d8eb29",
+    "fake_sha256": "74b7eec3c777b2766bb3b91eaaceaf40c7dafc6ee0b5662d38b750365661e081",
+    "go": "1.26.5",
+    "platform": "windows/amd64"
+  },
+  "evidence": [
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a01-final-evidence/result.json",
+      "sha256": "c015acf0ec94627411f2f343653ce368d009e50d96f482db8538be7e4afee423"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a16-warning-evidence/result.json",
+      "sha256": "e75144ab4f04286a76aa9c0183ee6e6ead113fb1f0fcc779a5c83ed86b4bf2ef"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a16-warning-evidence/stderr.log",
+      "sha256": "86a10149acbe95519ea3283d26d57491ede09bd3010cdb756358f66352236b79"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a16-protocol-evidence/result.json",
+      "sha256": "41378db403b8b7e998e13ff12ba9b35aff95bb908a2896bc3494434c0ac144fc"
+    },
+    {
+      "ref": ".stepan/spike/task4-live-20260810/a16-process-evidence/result.json",
+      "sha256": "4dbcf8a4012ae0cf544ccdcd22b0858d4743d467924aafae8ac63bdea1ab2af8"
+    }
+  ]
+}

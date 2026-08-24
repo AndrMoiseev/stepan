@@ -1,1 +1,4 @@
 /.idea/
+/.stepan/*
+!/.stepan/specs/
+!/.stepan/specs/**

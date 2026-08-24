@@ -1,0 +1,26 @@
+package main
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestPreflightRejectsUnsupportedPlatformBeforeHandles(t *testing.T) {
+	err := preflight("linux", "amd64", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "require windows/amd64") {
+		t.Fatalf("preflight error = %v", err)
+	}
+}
+
+func TestPreflightRejectsRedirectedInput(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "redirected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	err = preflight("windows", "amd64", file, file)
+	if err == nil || !strings.Contains(err.Error(), "stdin must be a Windows console") {
+		t.Fatalf("preflight error = %v", err)
+	}
+}
