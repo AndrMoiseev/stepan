@@ -5,6 +5,7 @@ package processjob
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -77,6 +78,13 @@ func New() (*Job, error) {
 		return nil, windowsCallError(callErr)
 	}
 	return job, nil
+}
+
+func (j *Job) Prepare(command *exec.Cmd) error {
+	if command == nil {
+		return errors.New("process command is required")
+	}
+	return nil
 }
 
 func (j *Job) Assign(process *os.Process) error {

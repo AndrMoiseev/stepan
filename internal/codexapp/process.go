@@ -106,6 +106,11 @@ func (process *Process) Start() error {
 	}
 
 	process.command, process.stdin, process.stdout, process.stderr, process.job = command, stdin, stdout, stderr, job
+	if err := job.Prepare(command); err != nil {
+		process.startErr = fmt.Errorf("prepare App Server containment: %w", err)
+		process.closePartial()
+		return process.startErr
+	}
 	if err := command.Start(); err != nil {
 		process.startErr = fmt.Errorf("start App Server: %w", err)
 		process.closePartial()
