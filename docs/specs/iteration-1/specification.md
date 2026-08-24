@@ -249,15 +249,19 @@ Stepan с любого экрана.
 
 ### 5.4. Process lifecycle
 
-- Поддерживается только Windows native/amd64 и `codex-cli 0.147.0`.
+- Поддерживаются Windows native/amd64, macOS native/arm64 и
+  `codex-cli 0.147.0`.
 - `codex` разрешается через `PATH` без участия shell; несовпадающая версия
   завершает `/idea` ошибкой до создания thread.
-- App Server назначается Windows Job Object до первого turn. Если containment
-  установить нельзя, flow не начинается.
+- App Server помещается в платформенный supervisor до первого turn: Windows Job
+  Object или отдельную Darwin process group. Если containment установить
+  нельзя, flow не начинается.
 - При `Ctrl+C` во время turn Stepan best-effort отправляет `turn/interrupt`,
-  ждёт до трёх секунд и затем закрывает Job Object со всем деревом процессов.
-- При `Ctrl+C` вне turn Job Object закрывается сразу.
-- После завершения Stepan App Server и его потомки не должны оставаться живыми.
+  ждёт до трёх секунд и затем закрывает supervisor со всем контролируемым
+  деревом процессов.
+- При `Ctrl+C` вне turn supervisor закрывается сразу.
+- После завершения Stepan App Server и контролируемые supervisor потомки не
+  должны оставаться живыми.
 - Автоматического timeout turn в этой итерации нет.
 
 ### 5.5. Prompt contract
@@ -412,8 +416,8 @@ effective config, hooks, plugins и MCP. Это локальное dogfood-ис�
   credentials или необратимыми внешними эффектами.
 
 Остаются обязательными pinned `codex-cli 0.147.0`, stable App Server contract,
-отключённая в turn сеть, write boundary каталога спецификации и Windows Job
-Object containment.
+отключённая в turn сеть, write boundary каталога спецификации и платформенный
+process containment.
 
 ### 5.7. Состояние и artifacts
 
@@ -480,7 +484,8 @@ index, HEAD и существовавшие изменения не модифи
 - обязательный `specification.md` и сохранение partial files при ошибке;
 - завершение flow после approval и новый thread для следующего `/idea`;
 - возврат в основной режим после падения App Server;
-- Windows Job Object cleanup после `Ctrl+C`.
+- Windows Job Object cleanup после `Ctrl+C`. macOS process-group cleanup
+  проверяется отдельным ручным планом на Apple Silicon.
 
 Интерактивная state machine тестируется отдельно от terminal rendering; тесты
 не воспроизводят внутреннее поведение `huh`.
@@ -503,8 +508,8 @@ Live-проверка подтверждает, что разработчик н
 - `go test ./...` проходит без сети и без запуска настоящего Codex;
 - новый `cmd/stepan` реализует пользовательские истории и критерии приёмки этой
   спецификации;
-- pinned version, structured output, write boundary и Job Object gates работают
-  fail-closed;
+- pinned version, structured output, write boundary и platform containment gates
+  работают fail-closed;
 - после `Ctrl+C` не остаётся App Server или его потомков;
 - live dogfood создаёт и утверждает спецификацию реальной следующей доработки
   Stepan без открытия интерактивного Codex CLI;

@@ -363,9 +363,10 @@ MVP готов, когда одновременно выполняются сл�
 
 ### 6. Кроссплатформенная полировка и installer
 
-Если MVP пришлось ограничить Windows:
+Нативный runtime для macOS/arm64 добавлен отдельным compatibility change после
+первого walking slice. Остаются:
 
-- macOS и Linux;
+- Linux и Intel Mac;
 - единое поведение subprocess, сигналов и путей;
 - диагностика установки Codex и Git;
 - безопасное обновление framework-owned файлов.

@@ -85,7 +85,8 @@ MVP работает в текущем checkout и использует толь
 - Выполняет задачи плана последовательно.
 - Использует отдельные сессии Codex для разных ролей.
 - Запускает source-blind роли в физически отдельном role workspace.
-- Ограничивает дерево App Server средствами Windows Job Object.
+- Ограничивает дерево App Server платформенным supervisor: Windows Job Object
+  или Darwin process group.
 - Проверяет effective Codex config, hooks, plugins и MCP до turn.
 - Запускает детерминированные проверки.
 - Независимо верифицирует результат каждой задачи.
@@ -120,7 +121,8 @@ MVP работает в текущем checkout и использует толь
 Первоначально поддерживаются задачи, которые:
 
 - выполняются целиком в локальном репозитории;
-- выполняются на Windows native с принятой pinned версией Codex;
+- выполняются на Windows native/amd64 или macOS native/arm64 с принятой pinned
+  версией Codex;
 - не требуют production credentials;
 - не имеют необратимых внешних эффектов;
 - допускают проверку локальными командами;
@@ -197,7 +199,7 @@ Codex получает:
 Перед turn Stepan:
 
 - проверяет role workspace и не полагается на `readOnly` как read boundary;
-- назначает App Server в отдельный Windows Job Object;
+- помещает App Server в отдельный Windows Job Object или Darwin process group;
 - сверяет effective config, requirements, instruction sources, hooks, plugins и
   MCP с allowlist;
 - запрещает dynamic broad/session grants; новый разрешённый input означает новый
