@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/codexexec"
+	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
 
@@ -129,8 +130,8 @@ func (process *Process) Start() error {
 }
 
 func preflight(executable, workspace string) (string, error) {
-	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
-		return "", fmt.Errorf("unsupported platform %s/%s: require windows/amd64", runtime.GOOS, runtime.GOARCH)
+	if err := platformsupport.Validate(runtime.GOOS, runtime.GOARCH); err != nil {
+		return "", err
 	}
 	executable, err := resolveExecutable(executable)
 	if err != nil {

@@ -2,6 +2,12 @@
 
 package main
 
-import "os"
+import (
+	"os"
 
-func isConsole(*os.File) bool { return false }
+	"github.com/charmbracelet/x/term"
+)
+
+func isConsole(file *os.File) bool {
+	return file != nil && term.IsTerminal(file.Fd())
+}

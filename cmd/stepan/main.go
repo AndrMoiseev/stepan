@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"runtime"
 
+	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
@@ -48,14 +49,20 @@ func run(ctx context.Context) int {
 }
 
 func preflight(goos, goarch string, stdin, stdout *os.File) error {
-	if goos != "windows" || goarch != "amd64" {
-		return fmt.Errorf("unsupported platform %s/%s: require windows/amd64", goos, goarch)
+	if err := platformsupport.Validate(goos, goarch); err != nil {
+		return err
 	}
 	if !isConsole(stdin) {
-		return errors.New("stdin must be a Windows console terminal")
+		if goos == "windows" {
+			return errors.New("stdin must be a Windows console terminal")
+		}
+		return errors.New("stdin must be a terminal")
 	}
 	if !isConsole(stdout) {
-		return errors.New("stdout must be a Windows console terminal")
+		if goos == "windows" {
+			return errors.New("stdout must be a Windows console terminal")
+		}
+		return errors.New("stdout must be a terminal")
 	}
 	return nil
 }
