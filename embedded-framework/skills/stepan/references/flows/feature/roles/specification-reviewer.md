@@ -10,6 +10,7 @@
 - Shared design rules: [`design common`](../../../modules/design/common.md)
 - Design review rules: [`design reviewing`](../../../modules/design/reviewing.md)
 - Review output: [`review`](../../../modules/review/artifact.md)
+- Decision reporting rules: [`audit decisions`](../../../modules/audit/decisions.md)
 
 ## Task
 
@@ -26,3 +27,9 @@ review contract.
 Do not modify any input artifact; the supplied review output is the only allowed
 write. Review the design checkpoint only; do not review implementation code or
 produce a plan.
+
+In the final `completed` receipt, report one `VERDICT` decision and one decision
+for every blocking or advisory `DES-R-*` finding in the validated review. Each
+finding decision must use the same ID and references as that finding. The
+supplied `review/design.yaml` is the sole permitted filesystem write. A
+`blocked` or `failed` receipt remains minimal and contains no `decisions`.

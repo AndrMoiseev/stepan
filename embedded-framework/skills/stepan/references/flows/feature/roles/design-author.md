@@ -9,6 +9,7 @@
 - Shared design rules: [`design common`](../../../modules/design/common.md)
 - Design authoring rules: [`design authoring`](../../../modules/design/authoring.md)
 - Output artifact: [`design.md`](../../../modules/design/artifact.md)
+- Decision reporting rules: [`audit decisions`](../../../modules/audit/decisions.md)
 
 ## Task
 
@@ -29,3 +30,9 @@ design author decide. A blocking question is allowed only when the solution
 depends on missing product intent, unavailable required evidence, or authority
 the role does not have. Then write nothing and return only the valid `blocked`
 JSON receipt with exactly one direct question.
+
+In the final `completed` receipt, report the complete current design decision
+snapshot: every `DES-*` in the validated `design.md` appears exactly once, with
+a `technical`, `compatibility`, or `risk` kind and only existing `DES-*`
+references. The supplied `design.md` is the sole permitted filesystem write. A
+`blocked` or `failed` receipt remains minimal and contains no `decisions`.

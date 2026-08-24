@@ -5,6 +5,7 @@
 - [Invariants](#invariants)
 - [Command surface](#command-surface)
 - [Tooling](#tooling)
+- [Audit contract](#audit-contract)
 - [Execution](#execution)
 - [Router launch boundary](#router-launch-boundary)
 - [Storage and schemas](#storage-and-schemas)
@@ -31,9 +32,22 @@
 - Dispatch every author and every review as a fresh role run without inherited
   conversation. Pass only declared skill-resource paths, project-data paths and
   hashes, and feedback.
-- Let each role write only its exact declared output. Let only the router write
-  `state.yaml`. Keep artifact bodies out of router context when a path and hash
+- Let each role write only its exact declared output. Let only the logical
+  router, through the workflow's atomic state operations, write `state.yaml`.
+  Only bundled deterministic operations may create, parse,
+  validate, or extend `mem-log.md`; roles must never receive it as an input or
+  allowed write. Keep artifact bodies out of router context when a path and hash
   are sufficient.
+- Treat the verified state and approved artifacts as current product truth.
+  Treat `mem-log.md` only as the chronological audit record; never use it to
+  reinterpret product intent or reconstruct a role input.
+- Couple every product-state mutation with its complete audit batch in the same
+  atomic state replacement. Flush a non-empty audit outbox before any later
+  transition, reservation, dispatch, approval, commit, or completion. Dispatch
+  a role only after its durable reservation event has been flushed.
+- Pause on any audit recording or integrity failure. Never continue with an
+  unaudited state change, rewrite prior audit bytes, or append to an untrusted
+  log.
 - Never silently change an approved artifact or infer a product decision. At the
   requirements authoring stage, require every product choice needed by the
   artifact contract to be grounded in declared inputs and ask one question when
@@ -57,16 +71,18 @@ Accept these actions after an explicit Stepan `feature` invocation:
   for it before writing;
 - `resume <spec-id>`: continue the single transition allowed by saved state;
 - `status <spec-id>`: show concise product-facing progress and the current
-  checkpoint without changing it; include internal state only when the user
-  explicitly asks for diagnostics;
+  checkpoint without changing product state or adding an event; it may finish
+  one valid interrupted audit-outbox flush before reporting, and includes
+  internal state only when the user explicitly asks for diagnostics;
 - `continue <spec-id>` and `continue-and-commit <spec-id>`: apply the matching
   checkpoint action;
 - `revise <spec-id> <feedback>`, `question <spec-id> <text>`, and
   `accept-risk <spec-id> <finding-ids> [comment]`: apply the matching checkpoint
-  action;
+  action; `question` is product-state read-only but audit-recording;
 - `answer <spec-id> <text>`: answer the specification's persisted pending
   question when it is no longer the immediately preceding dialog turn;
-- `stop <spec-id>`: make no further transition.
+- `stop <spec-id>`: make no further product transition after durably recording
+  the explicit stop action.
 
 These command forms are the durable interface for starting, resuming, or
 addressing a specification outside the immediately preceding interaction. Do
@@ -79,11 +95,17 @@ Reject an omitted or unknown action without reading feature state or writing.
 
 Use the bundled Python script through `uv` for deterministic identifiers,
 configuration and state validation, resource manifests, run reservations,
-hashes, artifact and review structure, receipt validation, and project
-initialization. It emits
-JSON, declares no third-party dependencies, and uses only the Python standard
-library. Only `reserve-run` writes feature state, restricted to the verified
-`state.yaml` passed to it:
+hashes, artifact and review structure, receipt validation, feature
+initialization, role-result acceptance, table-defined workflow transitions,
+audit flushing, and checkpoint commits. It emits JSON,
+declares no third-party dependencies, and uses only the Python standard
+library. The feature-state mutation commands are `initialize-feature`,
+`reserve-run`, `accept-role-result`, `workflow-transition`, `flush-audit`, and
+`checkpoint-commit`;
+each is restricted to
+the verified project root, specification, and state paths supplied to it. No
+prompt or shell snippet may reproduce audit parsing, rendering, hashing,
+extension, decision diffing, or crash recovery:
 
 ```text
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" spec-id --id-hint <text> --root docs/changes/specs
@@ -91,9 +113,14 @@ uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" run-i
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" approval-transition --action <continue|continue-and-commit> --stage <stage> --status <status> [--review-verdict <pass|changes-required>] [--pending] [--unresolved-user-decision]
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-config --config <config.yaml> --project-root <project-root> --host <codex|claude-code>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-state --state <state.yaml> --project-root <project-root> --spec-id <id>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" initialize-feature --project-root <project-root> --spec-id <id>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" flush-audit --state <state.yaml> --project-root <project-root> --spec-id <id>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" checkpoint-commit --state <state.yaml> --project-root <project-root> --spec-id <id>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" role-resources --skill-root <skill-root> --role <role>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-role-manifest --skill-root <skill-root> --project-root <project-root> --state <state.yaml> --spec-id <id> --adapter <native|mailbox>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" reserve-run --state <state.yaml> --project-root <project-root> --spec-id <id> --stage <stage> --role <role> --purpose <purpose> --executor <profile> --adapter <kind> --output <path> --request-sha256 <hash>
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" accept-role-result --state <state.yaml> --project-root <project-root> --spec-id <id> [--input <path>=sha256:<digest> ...] [--review-question <text>]
+uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" workflow-transition --state <state.yaml> --project-root <project-root> --spec-id <id> --name <table-name>
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" hash <file>...
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-artifact --kind <requirements|design|plan> --file <path> [--requirements <path>] [--design <path>]
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" validate-review --file <path> --stage <requirements|design> --input <path=hash>...
@@ -102,10 +129,22 @@ uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" valid
 uv run --no-project --no-python-downloads "<skill-root>/scripts/stepan.py" self-test
 ```
 
+Pass `initialize-feature` one exact JSON object containing `initial_request` and
+the normalized `execution` snapshot on standard input. Pass a completed receipt
+to `accept-role-result`, and repeat `--input` in the exact validated role-manifest
+order. Use `--review-question` only for the table branches that persist a review
+user decision or the third automatic-failure question. Pass
+`workflow-transition` the exact JSON object selected by the executable table;
+never add unknown fields or reproduce its mutations or event construction.
+`flush-audit` and `checkpoint-commit` read no standard input. Only invoke
+`checkpoint-commit` for a persisted `continue-and-commit` intent after its
+selection batch is durable; never reproduce its Git staging, trailer, index, or
+recovery logic in shell commands.
+
 Use `reserve-run`, not `run-id`, for workflow dispatch. It reads the saved next
-sequence and atomically writes both the active run and incremented next sequence;
-keep `run-id` only as a compatibility helper. Pass one executor response to
-`validate-receipt` on
+sequence and atomically writes the active run, incremented next sequence, and
+reservation audit outbox; keep `run-id` only as a non-workflow identifier helper.
+Pass one executor response to `validate-receipt` on
 standard input as unchanged UTF-8 without embedding untrusted response text in a
 shell command. Do not use a host pipeline whose encoding can replace or
 transliterate characters; stop if byte-preserving UTF-8 transfer is unavailable.
@@ -131,10 +170,31 @@ it. Never assume a host-specific discovery directory or require the skill root
 to be project-relative.
 
 For every read-only command, stop without writing if the script is unavailable,
-fails, or returns malformed JSON. If `reserve-run` fails or its JSON is lost,
-reread `state.yaml`: continue only when one complete reservation can be verified
-there, otherwise stop. Never invoke `reserve-run` again while `active_run` is
-non-null. Do not reproduce the script's algorithms in a prompt or shell one-liner.
+fails, or returns malformed JSON. If a mutating command fails or its JSON is
+lost, reread the exact state and log through the bundled operations. When a
+complete outbox is present, invoke only `flush-audit`; do not retry the state
+mutation. `validate-state` intentionally rejects the narrow crash window in
+which the log replacement is durable but state metadata is stale; only
+`flush-audit` may recognize and finish that recovery. Never invoke `reserve-run`
+again while `active_run` is non-null, or accept another result while an outbox
+is pending. Do not reproduce the script's algorithms in a prompt or shell
+one-liner.
+
+## Audit contract
+
+Read [`audit-log-spec.md`](audit-log-spec.md) completely before reading,
+creating, or changing feature state, accepting a role result, dispatching a
+role, or recovering an interrupted workflow. Treat it as the single normative
+contract for the audit state schema, completed-receipt decisions, event
+registry, canonical Markdown, append-only integrity, transactional outbox,
+provenance, and recovery. This protocol defines when those mechanisms are used
+and does not restate their detailed schemas.
+
+The dedicated logical router may queue validated event data only as part of the
+workflow operation that owns the corresponding state change. Only the bundled
+operations may initialize, parse, render, hash, extend, or validate the log.
+Never expose `mem-log.md`, event IDs, hashes, decision-index data, or outbox
+contents to roles or ordinary user-facing communication.
 
 ## Execution
 
@@ -186,6 +246,7 @@ Keep one change under:
 ```text
 docs/changes/specs/<spec-id>/
 ├── state.yaml
+├── mem-log.md
 ├── request.md
 ├── idea.md
 ├── requirements.md
@@ -196,8 +257,11 @@ docs/changes/specs/<spec-id>/
     └── design.yaml
 ```
 
-Create stage and review files lazily. Create `state.yaml` before launching the
-first role:
+Create stage and review files lazily. Create and mutually validate
+`request.md`, `mem-log.md`, and `state.yaml` before launching the first role. The
+state has this shape. `audit` is a required mapping, but its complete, strict
+schema is intentionally not repeated here; construct and validate it only from
+`audit-log-spec.md`:
 
 ```yaml
 schema_version: 1
@@ -212,6 +276,8 @@ approvals: {}
 clarifications: []
 pending: null
 active_run: null
+checkpoint_commit: null
+audit: <required mapping from audit-log-spec.md>
 execution:
   source: project
   config_sha256: sha256:...
@@ -258,24 +324,30 @@ Allow these values:
 - `status`: `drafting`, `reviewing`, `revising`, `awaiting-approval`,
   `awaiting-decision`, `waiting-executor`, `approved`.
 
-Require bundled `validate-state` to accept the file before every existing-state
-action. It enforces `schema_version: 1`, the `specification` identity and exact
-state-file location, a positive `next_run_sequence`, a normalized `execution`
-snapshot matching the execution contract, a canonical
-`initial_request_sha256` matching `request.md`, unchanged pinned project inputs,
-and either `null` or one valid `active_run`. Require `clarifications` to be a
-list of valid completed clarification records. Permit `waiting-executor` only
-with an active mailbox run. Require `bindings.router` to name the configured
-native orchestrator. While `active_run` is non-null, require
-`next_run_sequence` to equal its `sequence + 1`. Persist the active run and
-returned next sequence together from one valid `reserve-run` result, then reread
-and verify both before dispatch.
+Require bundled `validate-state` to accept the file and its exact
+specification-local `mem-log.md` before every existing-state action, except the
+narrow interrupted-flush recovery owned by `flush-audit`. It enforces
+`schema_version: 1`, the `specification` identity and exact state-file location,
+a positive `next_run_sequence`, a normalized `execution` snapshot matching the
+execution contract, a canonical `initial_request_sha256` matching `request.md`,
+unchanged pinned project inputs, the complete audit integrity and metadata
+contract, either `null` or one valid `active_run`, and either `null` or one
+strict checkpoint-commit intent at an idle approval checkpoint. States without
+the required audit object or `checkpoint_commit` field are invalid and have no
+compatibility or migration path.
+Require `clarifications` to be a list of valid completed clarification records.
+Permit `waiting-executor` only with an active mailbox run. Require
+`bindings.router` to name the configured native orchestrator. While `active_run`
+is non-null, require `next_run_sequence` to equal its `sequence + 1`.
 
-The router writes `request.md` once when creating the specification. Preserve
-the user's initial idea text after removing only the Stepan command prefix and
-action; encode it as UTF-8 with the canonical trailing newline used by the hash
-helper. Never revise or delete it. Use it, rather than chat history, as the
-idea author's durable input.
+The router creates the immutable request only through `initialize-feature`.
+Preserve the user's initial idea text after removing only the Stepan command
+prefix and action and pass it unchanged in the initialization input. The
+operation creates and mutually validates `request.md`, `mem-log.md`, and
+`state.yaml` as one initialization attempt, including the initial request and
+lifecycle audit events; on failure it rolls back only paths created by that
+attempt. Never revise or delete `request.md`. Use it, rather than chat history
+or the audit copy, as the idea author's durable input.
 
 Store one unresolved question or revision request as:
 
@@ -305,6 +377,8 @@ router-origin questions. Require each clarification to contain one allowed
 stage, one allowed origin, and non-empty question and answer strings. Preserve
 insertion order and never edit or delete a recorded clarification. These records
 are durable product inputs, not approvals.
+Their audit events are chronological evidence only and never replace these
+records.
 
 ## Role dispatch
 
@@ -342,7 +416,11 @@ role's declared inputs, plus current findings, the previous review and its
 unresolved IDs, or a persisted pending response when the transition requires
 them. Let the selected profile read files directly; do not quote their bodies
 merely to relay them. Instruct the role not to inspect parent chat or undeclared
-runtime data. Do not load or reference any unrelated role brief or resource.
+runtime data. On `purpose: revise`, include the current role-owned artifact as
+the final ordinary workflow input before pinned profile inputs, as required by
+`execution.md`. Never include `state.yaml` or `mem-log.md`, and never grant the
+role permission to write either. Do not load or reference any unrelated role
+brief or resource.
 
 Give a role a sandbox restricted to its one output when available. Only when an
 exact write sandbox is unavailable, snapshot the project filesystem before the
@@ -353,6 +431,9 @@ When a role's selected rules permit a blocking question, accept only the valid
 `blocked` JSON receipt defined by the execution contract and only if the role
 made no file changes. Reject a raw question as a malformed receipt. Never
 reinterpret a question as an artifact, finding correction, or role failure.
+Atomically apply the selected pending-state change and queue the linked
+run-result and blocking-question events; flush them before presenting the
+question.
 
 ## Routing
 
@@ -368,15 +449,18 @@ requires a new explicit `feature new` invocation.
 After state exists, the idea author must return a valid `blocked` receipt
 containing one question whenever the idea evidence gate fails. The requirements
 author may return the same receipt for unresolved requirements decisions.
-Persist its question in `pending`, keep `request.md` unchanged, and present only
-the question to the user. Treat the user's immediate bare reply as its answer;
-otherwise require `answer <spec-id> <text>`. Persist the response before launching
-a fresh owner with the applicable artifacts, prior clarification history, and
-that response. If it returns another valid blocked receipt, first archive the
-answered pending item in `clarifications`, then replace it with the new pending
-question and continue the dialog. Do not create `idea.md` or `requirements.md`
-until their respective author can satisfy its complete evidence gate without
-another material product decision.
+Persist its question in `pending` and queue the run-result and
+`blocking-question` audit records in the same atomic state replacement. Flush
+them before presenting only the question to the user; keep `request.md`
+unchanged. Treat the user's immediate bare reply as its answer; otherwise
+require `answer <spec-id> <text>`. Persist the response verbatim and queue its
+`user-response` event atomically, then flush before launching a fresh owner with
+the applicable artifacts, prior clarification history, and that response. If it
+returns another valid blocked receipt, first archive the answered pending item
+in `clarifications`, then replace it with the new pending question and queue the
+corresponding accepted-normalization or blocking events as applicable. Do not
+create `idea.md` or `requirements.md` until their respective author can satisfy
+its complete evidence gate without another material product decision.
 
 For `new`:
 
@@ -387,26 +471,45 @@ For `new`:
    Use an uncollided result without announcing the hint or calculation. On
    collision, present only the choice between resuming `spec_id` and creating
    `next_available` under the interactive-choice rules before writing.
-3. Create the directory, immutable `request.md`, and initial `state.yaml` with
-   the request hash and resolved execution snapshot. If this initialization
-   cannot complete, remove only files created by this attempt and stop.
-4. Dispatch a fresh idea author through its bound adapter, passing `request.md` by
-   path and canonical hash.
+3. Pass the exact initial request and resolved execution snapshot to bundled
+   `initialize-feature`. Accept only its mutually validated `request.md`,
+   `mem-log.md`, and `state.yaml`; do not hand-create or repair one member of the
+   triple. If initialization cannot complete, rely on its scoped rollback and
+   stop.
+4. When a collision choice was made, record the user's verbatim selection and
+   canonical choice in the selected existing or newly created specification and
+   flush it before another transition.
+5. Reserve a fresh idea-author run, flush its reservation event, and dispatch it
+   through the bound adapter with `request.md` by path and canonical hash.
 
-For an existing change, read state and verify all recorded hashes before acting.
-If `active_run` is non-null, reconcile that exact run before applying any normal
-status transition: inspect or wait for the existing host subagent when
-available, or inspect the matching mailbox response. When an interrupted host
-run cannot be inspected, preserve it and require an explicit decision to
-abandon and retry. Never dispatch a second run while one is active. Otherwise
-apply the single matching transition:
+For an existing change, validate state, the complete audit log, and all recorded
+hashes before acting. If a valid outbox remains from an interrupted operation,
+finish it idempotently with `flush-audit` before interpreting or applying any
+later product transition. `status` may perform that recovery and then report
+without adding an event. If the pending transaction or log cannot be validated,
+pause without changing product state or attempting an append.
+
+If `active_run` is non-null after any required flush, reconcile that exact run
+before applying a normal status transition: inspect or wait for the existing
+host subagent when available, or inspect the matching mailbox response. When an
+interrupted host run cannot be inspected, preserve it and require an explicit
+recovery decision; record and flush that choice before abandonment or retry.
+Never dispatch a second run while one is active. Otherwise apply the single
+matching transition. Every accepted bullet below means one atomic primary-state
+mutation plus its complete audit batch, followed by a successful flush before
+the next dispatch, transition, checkpoint, or user-facing result:
+
+An explicit resume after a recorded stop or recoverable interruption queues the
+canonical recovery choice and workflow-resumed lifecycle evidence and flushes
+them before continuing. A resume that merely finishes an interrupted outbox
+does not duplicate the state change or its event batch.
 
 - `drafting`: dispatch the current stage owner;
 - `waiting-executor`: inspect the active mailbox run; accept its response or
   leave the same run pending without redispatching;
 - owner returns a valid `blocked` receipt: set `awaiting-decision`, store its
   question in `pending` with `kind: clarification` and `origin: author`, and
-  stop;
+  stop only after its linked run-result and question evidence is durable;
 - successful idea author: set `awaiting-approval`;
 - structurally valid successful requirements author: set `reviewing` and
   dispatch the requirements reviewer;
@@ -420,39 +523,68 @@ apply the single matching transition:
   the design author;
 - approval of `design`: advance to `plan`, set `drafting`, and dispatch the
   planner;
-- approval of `plan`: set `approved` and stop;
+- approval of `plan`: set `approved`, record workflow completion with the
+  accepted plan evidence, and stop only after both are durable;
 - review contains a blocking `resolution: user-decision` finding: set
   `awaiting-decision`, store its direct question in `pending` with
   `kind: clarification` and `origin: review`, and stop without automatic
-  revision;
+  revision after the review-result and question evidence is durable;
 - repairable `changes-required` whose blocking findings all use
   `resolution: author-revision`: increment `automatic_revision_attempts`, set
-  `revising`, dispatch a fresh owner with findings, then review again;
+  `revising`, record the automatic revision start, dispatch a fresh owner with
+  findings, then review again;
 - third unsuccessful automatic revision: set `awaiting-decision`, store one
   direct next-step question in `pending` with `kind: revision` and
-  `origin: router`, and do not launch a fourth;
+  `origin: router`, record the reached limit and blocking question, and do not
+  launch a fourth;
 - `awaiting-approval` or `awaiting-decision`: present one user-facing checkpoint
   question and stop;
 - `stage: plan`, `status: approved`: give one short completion outcome and stop.
 
-Before each dispatch, invoke bundled `reserve-run` once against verified state;
-do not edit `active_run` or `next_run_sequence` directly. Reread its atomic state
-replacement, require it to match the returned reservation, and only then invoke
-the bound adapter under the execution contract. Validate every executor response
-with the bundled receipt validator. For a completed receipt, verify all declared
-project-data hashes, run the applicable artifact or review structural validator,
-and verify the fallback project snapshot when one was taken before applying the
-matching transition and clearing the run. A valid receipt alone never proves a
-valid artifact. For a blocked receipt, require no file changes before persisting
-its one question. For an invalid receipt, use at most one same-agent format
-repair when the selected native adapter defines it; otherwise preserve the run
-and stop. For a valid failed receipt or an invalid repaired receipt, preserve
-the run and stop.
+Before each dispatch, require a valid log and an empty outbox, then invoke
+bundled `reserve-run` once against verified state; do not edit `active_run`,
+`next_run_sequence`, or its reservation event directly. Reread its atomic state
+replacement, require it to match the returned reservation, flush the outbox,
+and revalidate state. Invoke the bound adapter only after the exact
+`role-run-reserved` event is durable. A reservation without a successful flush
+is not dispatch permission.
+
+Validate every executor response with the bundled receipt validator. For a
+completed receipt, verify the fallback project snapshot when one was required,
+then invoke `accept-role-result` with the unchanged completed receipt and the
+exact ordered manifest input hashes. Treat its deterministic validation of the
+receipt, current inputs, output, artifact or review, decision coverage, durable
+reservation evidence, canonical receipt hash, and table-selected result routing
+as one acceptance boundary. Supply `--review-question` only for a
+changes-required review that creates a user-decision checkpoint or reaches the
+third automatic failure. The command atomically clears `active_run`, applies the
+matching status, pending, clarification, and retry-counter mutation, and queues
+the run completion, artifact-or-review acceptance, accepted user
+normalizations, decision diff, and any blocking or automatic-revision event.
+Flush that batch before the next action. A valid receipt alone never proves a
+valid artifact or authorizes a transition.
+
+For a blocked receipt, require no file changes before applying table transition
+`role-blocked`, which atomically records its result and pending question. For a
+valid failed receipt use `role-failed`; for a native interruption use
+`native-run-interrupted`. These transitions apply the protocol's durable
+run-state policy and record the corresponding lifecycle outcome whenever the
+audit log remains trusted. For an invalid receipt, use at
+most one same-agent format repair when the selected native adapter defines it;
+otherwise preserve the run and stop. Receipt repair may change only the response
+format and may not invent decisions or executor provenance. For a mailbox run
+already in `waiting-executor`, first apply and flush its exact table outcome:
+`mailbox-wait-completed`, `mailbox-wait-timeout`,
+`mailbox-response-malformed`, or `mailbox-wait-interrupted`. Completion,
+malformed response, and interruption restore the active run's underlying status;
+timeout leaves the same run in `waiting-executor`. Invoke completed-result
+acceptance only after the completed outcome is durable.
 
 When the user answers `pending` through an allowed immediate bare reply or an
 explicit `answer` action, persist the answer, set status to `drafting` for
 `resume_purpose: draft` or `revising` for `resume_purpose: revise`, and then
-reserve a fresh role run. Keep the answered pending record until that role
+queue its verbatim response event in that same atomic state replacement. Flush
+it before reserving a fresh role run. Keep the answered pending record until that role
 successfully processes it. For `origin: author`, relaunch that owner with the
 answer. For `origin: review`, launch the current stage owner with the review and
 answer, then review the resulting artifact again. For `origin: router`, treat
@@ -467,7 +599,11 @@ revision counter after a user-directed revision or stage transition.
 
 If a later stage exposes a material upstream defect, return to that artifact's
 owner, remove approvals for it and all downstream artifacts, and preserve
-downstream files as stale until their input hashes are reviewed again.
+downstream files as stale until their input hashes are reviewed again. Queue the
+upstream invalidation, stage return, and any user input that caused it with that
+state change; flush before dispatching the earlier owner. Never treat downstream
+files or historical audit decisions as current after their upstream inputs were
+invalidated.
 
 ## User-facing communication
 
@@ -476,8 +612,10 @@ any progress, tool, or safety notice the host itself requires.
 
 - Do not narrate resource loading, configuration resolution, stages, roles,
   subagents, dispatches, state values, hashes, run IDs, snapshots, receipts,
-  verification, or automatic revision attempts. Never relay a role receipt to
-  the user.
+  verification, automatic revision attempts, log writes, outbox flushes, event
+  IDs, or recovery internals. Never relay a role receipt or expose the audit log
+  to the user unless explicit diagnostics require the minimum detail needed for
+  safe recovery.
 - While the workflow can continue safely without user input, continue without
   an ordinary chat update and never pause solely to announce progress.
 - Produce a workflow-authored user-facing message only when the workflow needs
@@ -493,14 +631,17 @@ any progress, tool, or safety notice the host itself requires.
   expose artifact hashes, review-file paths, approval records, or canonical
   command tokens.
 - On successful completion, give one short outcome and the specification or
-  artifact location needed for later use. Do not recap the execution history.
+  artifact location needed for later use, only after the completion audit batch
+  is durable. Do not recap the execution or audit history.
 - On failure, state the user impact and recovery action concisely. Include an
   internal identifier or technical detail only when it is necessary to recover
   safely or identify affected data. Ask one direct question when a user decision
   can unblock the workflow; do not invent a question for a terminal failure.
 - For `status`, summarize product artifacts already prepared, the decision or
   work currently pending, and the next user action. Do not dump `state.yaml` or
-  executor details unless the user explicitly requests diagnostics.
+  executor or audit details unless the user explicitly requests diagnostics.
+  A successfully recovered outbox does not add a status event or require an
+  audit-mechanics announcement.
 - If the host requires a progress notice, keep workflow-authored wording
   outcome-oriented and omit private mechanics.
 
@@ -552,32 +693,42 @@ answers.
 Keep only these canonical transitions; their tokens are not required as the
 user-facing labels of an immediately presented choice:
 
-- `continue`: approve the current artifact and advance;
-- `continue-and-commit`: approve and create the limited checkpoint commit;
-- `revise <feedback>`: reset the automatic revision counter and dispatch a fresh
-  owner, followed by review where applicable;
-- `question <text>`: answer without changing artifacts or state;
+- `continue`: approve the current artifact, durably record the approval, and
+  advance;
+- `continue-and-commit`: approve, durably record the approval and commit
+  selection, then create the limited checkpoint commit;
+- `revise <feedback>`: reset the automatic revision counter, persist the
+  canonical router revision request plus the verbatim feedback as an answered
+  `pending` revision input, and dispatch a fresh owner followed by review where
+  applicable; record the same feedback in the audit trail before dispatch and
+  clear the primary pending input only after successful owner acceptance;
+- `question <text>`: keep product state, artifacts, approval, stage, and
+  checkpoint unchanged, while recording the user's question and the router's
+  linked answer before returning it;
 - `answer <text>`: supply the answer to the one persisted pending question;
 - `accept-risk <finding-ids> [comment]`: record explicit acceptance of an
-  objective risk and advance;
-- `stop`: make no further transition.
+  objective risk in product approval state and the audit trail, then advance;
+- `stop`: durably record the explicit stop and make no further product
+  transition.
 
 Normalize a terminal menu selection or an immediate fallback reply to exactly
 one of these transitions before applying its existing validation rules. Never
 interpret a category selection, silence, an ambiguous label, or a request for
 more information as approval.
 
-Before either `continue` or `continue-and-commit`, derive the checkpoint facts
-from verified state and the applicable review, then require the bundled
-`approval-transition` command to accept them. Both actions have identical
-eligibility: `status` must be `awaiting-approval`, `pending` must be null, and no
-`user-decision` finding may be unresolved. An idea is eligible only after the
-successful idea-author transition established its checkpoint; requirements are
-eligible only with `review-verdict: pass`; design is eligible only with
-`review-verdict: pass`; and a plan is eligible only after the successful planner
-transition established its checkpoint. Pass no review verdict for idea or plan.
-Treat any validator rejection as an invalid checkpoint and do not approve,
-commit, or advance.
+Before `continue`, `continue-and-commit`, or `accept-risk`, derive the checkpoint
+facts from verified state and the applicable review, then apply table transition
+`approve-stage`. `status` must be `awaiting-approval`, `pending` and
+`checkpoint_commit` must be null, and no `user-decision` finding may be
+unresolved. An idea is eligible only after its durable artifact acceptance;
+requirements and design need the matching durable accepted review; and a plan
+needs its durable artifact acceptance. Ordinary approval requires a passing
+review. `accept-risk` instead requires a changes-required review whose blocking
+findings are all `author-revision`, and its sorted finding IDs must cover that
+set exactly; it advances with approval action `continue` and never selects a
+commit in the same input. Treat any script rejection as an invalid checkpoint
+and do not approve, commit, or advance. Also require a trusted audit log and an
+empty outbox before accepting the action.
 
 Require `revise` or explicit `accept-risk` for blocking `author-revision`
 findings. Never allow `accept-risk`, either approval action, or automatic
@@ -586,15 +737,34 @@ Silence never approves.
 
 Allow `answer` only when `pending` is non-null. An immediate bare answer and an
 explicit `answer` command have the same transition semantics; never interpret
-either as approval. Keep `question` read-only and distinct from `answer`.
+either as approval. Keep `question` product-state read-only and distinct from
+`answer`, but atomically queue and flush its `user-question` and linked
+`agent-answer` records before replying.
 
 Record each approval under `approvals.<stage>` with `artifact_sha256`, the
 applicable `review_sha256`, and `accepted_risks`. After plan approval, keep
-`stage: plan` and set `status: approved`.
+`stage: plan` and set `status: approved`. Queue the canonical approval, accepted
+risk when applicable, stage entry, and final completion events with their
+owning mutations under the audit contract. Do not announce advancement or final
+completion until the required batches are durable.
 
-On `continue-and-commit`, commit only `docs/changes/specs/<spec-id>/` with message
-`stepan(<spec-id>): approve <stage>`. Do not stage unrelated changes. Do not
-advance until the commit succeeds and its contents are verified.
+On `continue-and-commit`, the table transition first persists strict
+`checkpoint_commit` intent and the approval/selection outbox in one state
+replacement. Flush it and resolve the writer-assigned event ID from the durable
+`selection_event_key`; never recover intent from `mem-log.md` or predict an ID.
+Then invoke bundled `checkpoint-commit`; do not invoke Git directly. It rejects
+pre-existing staged changes inside `docs/changes/specs/<spec-id>/`, preserves the
+exact staged meaning of every unrelated path, commits only that directory with
+subject `stepan(<spec-id>): approve <stage>` and the required audit trailer, and
+verifies the resulting HEAD, parent, message, and exact tree before applying the
+success primitive. It may recover only an exact matching commit at current
+`HEAD`; a matching historical commit below another HEAD is a concurrent-history
+hard stop. Do not predict a commit SHA into the audit log or advance before the
+bundled operation verifies success. A failed outcome keeps the same primary
+checkpoint intent for an explicit retry and preserves user- or hook-created
+working changes. The operation runs the repository's commit hooks exactly once
+through its isolated hook boundary; never pre-run, bypass, or repeat them from
+the router.
 
 ## Identifiers and hashes
 
@@ -647,12 +817,18 @@ or calculate the next sequence independently.
 
 ## Failure handling
 
-- On a role failure or interruption, preserve durable state and stop. A later
-  explicit resume must inspect any persisted active run before launching a fresh
-  role. An invalid native response may receive only the selected adapter's one
-  same-agent format repair before this stop rule applies.
-- On a mailbox timeout, remain at `waiting-executor`, preserve the request and
-  active run, and stop without treating ordinary waiting as failure.
+- On a role failure or interruption, preserve durable state, queue and flush the
+  corresponding lifecycle outcome when the audit log remains trusted, and stop.
+  A later explicit resume must inspect any persisted active run before launching
+  a fresh role. An invalid native response may receive only the selected
+  adapter's one same-agent format repair before this stop rule applies; the
+  repair cannot add decisions or provenance that the original run did not
+  return.
+- On a mailbox timeout, atomically set `waiting-executor` and queue the bounded
+  wait lifecycle evidence, flush it, preserve the request and active run, and
+  stop without treating ordinary waiting as failure. On resume, record and flush
+  the wait outcome before accepting a response or reporting another bounded
+  wait.
 - On a late response for an abandoned, completed, or unknown run, do not apply
   it or modify repository state. Mention it only when it affects the requested
   action, and keep run details for explicit diagnostics.
@@ -660,10 +836,21 @@ or calculate the next sequence independently.
   validation failure, malformed file, unknown schema, or manual change to an
   approved artifact, do not accept, overwrite, reset, or commit. When state can
   be updated safely, set `awaiting-decision`, persist one direct question with
-  `kind: clarification` and `origin: router`, and present only the affected
-  product data and recovery choice needed to answer it. Keep the exact technical
-  discrepancy for explicit diagnostics unless it is needed to identify affected
-  data safely.
+  `kind: clarification` and `origin: router`, and queue the trusted
+  workflow-integrity and blocking-question evidence in the same replacement.
+  Flush before presenting only the affected product data and recovery choice
+  needed to answer it. Keep the exact technical discrepancy for explicit
+  diagnostics unless it is needed to identify affected data safely.
+- On any malformed, changed, truncated, manually appended, hash-mismatched, or
+  otherwise untrusted `mem-log.md`, audit state, or outbox, stop without changing
+  product state and without appending an integrity-failure event to the
+  untrusted log. Require explicit recovery outside the normal feature flow.
+- On any failure to queue or flush required audit evidence, pause the workflow.
+  Never downgrade it to a warning or continue with an unaudited dispatch,
+  approval, transition, commit, or completion.
 - On commit failure, remain at the same checkpoint. Remove only router-created
-  temporary/index changes; never roll back user- or hook-created files.
-- Ask one blocking question at a time. Never turn uncertainty into approval.
+  temporary/index changes; never roll back user- or hook-created files. When the
+  audit log remains trusted, queue and flush the commit-failure lifecycle result
+  without editing the already durable approval or commit-selection event.
+- Ask one blocking question at a time. Persist and flush it before presentation;
+  never turn uncertainty into approval.

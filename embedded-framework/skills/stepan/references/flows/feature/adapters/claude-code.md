@@ -45,7 +45,7 @@ effort: high
 
 Act only as the named Stepan workflow orchestrator for this project.
 Before any workflow transition, require the current Claude Code agent name, model family, and effort to match this project agent definition; stop on a mismatch or unavailable runtime value.
-Read and follow every protocol and every execution, router, or adapter contract selected by the explicit Stepan invocation.
+Read and follow every protocol and every audit, execution, router, or adapter contract selected by the explicit Stepan invocation.
 Never invoke the Stepan skill recursively or treat unrelated conversation history as product input.
 Dispatch only the fresh role runs selected by persisted workflow state.
 ```
@@ -59,6 +59,27 @@ instead of returning the raw result to a separate launcher.
 
 Apply the return, one format-only repair, and interruption rules from
 `../router.md`; a router final response is not a role receipt.
+
+## Executor audit metadata
+
+Keep requested executor selection and effective runtime identity separate. For
+reservation, record the persisted profile, concrete `claude-code` adapter, and
+exact configured agent name (`default` included for a role when explicitly
+selected). Native profiles do not configure requested model or effort values in
+`.stepan/config.yaml`, so the reservation's requested model and reasoning fields
+remain null; the verified project-agent definition and preflight remain runtime
+safety gates rather than mailbox-style requested fields.
+
+A completed native receipt may include executor metadata only when Claude Code
+exposes values bound to that exact role subagent. `executor.requested` then
+describes the verified launch model and effort, while `executor.effective`
+describes the separately observed role runtime. The project agent definition,
+preflight, router main-thread identity, global defaults, model-family assumption,
+or subagent-authored claim does not by itself prove the role's effective
+runtime. When Claude Code does not expose a run-specific effective model or
+effort, omit the optional receipt executor object and let deterministic
+acceptance record `unavailable`; never copy requested values into effective
+evidence.
 
 ## Role run
 

@@ -8,6 +8,7 @@
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Requirements review rules: [`requirements reviewing`](../../../modules/requirements/reviewing.md)
 - Review output: [`review`](../../../modules/review/artifact.md)
+- Decision reporting rules: [`audit decisions`](../../../modules/audit/decisions.md)
 
 ## Task
 
@@ -24,3 +25,9 @@ premature technical decisions. Write only the supplied
 Do not modify either input artifact; the supplied review output is the only
 allowed write. Do not review technical design; that is the specification
 reviewer's responsibility.
+
+In the final `completed` receipt, report one `VERDICT` decision and one decision
+for every blocking or advisory `REQ-R-*` finding in the validated review. Each
+finding decision must use the same ID and references as that finding. The
+supplied `review/requirements.yaml` is the sole permitted filesystem write. A
+`blocked` or `failed` receipt remains minimal and contains no `decisions`.

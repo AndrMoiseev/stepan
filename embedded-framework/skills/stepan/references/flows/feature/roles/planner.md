@@ -9,6 +9,7 @@
 - Shared idea rules: [`idea common`](../../../modules/idea/common.md)
 - Shared requirements rules: [`requirements common`](../../../modules/requirements/common.md)
 - Shared design rules: [`design common`](../../../modules/design/common.md)
+- Decision reporting rules: [`audit decisions`](../../../modules/audit/decisions.md)
 
 ## Task
 
@@ -26,3 +27,10 @@ or review rules.
 If a material decision is missing, write nothing and return only the valid
 `blocked` JSON receipt required by the role-run manifest. Put one minimal
 question in the `question` field; do not return a raw question or prose.
+
+In the final `completed` receipt, report only material dependency, ordering,
+rollout, or verification decisions in the complete current snapshot. Key and
+reference each decision with an existing `STEP-*`; do not duplicate incidental
+plan steps merely to make the snapshot non-empty. The supplied `plan.md` is the
+sole permitted filesystem write. A `blocked` or `failed` receipt remains minimal
+and contains no `decisions`.

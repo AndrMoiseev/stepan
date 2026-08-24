@@ -5,6 +5,7 @@
 - [Project configuration](#project-configuration)
 - [Configuration rules](#configuration-rules)
 - [Resolved execution](#resolved-execution)
+- [Audit boundary and executor provenance](#audit-boundary-and-executor-provenance)
 - [Dedicated router runs](#dedicated-router-runs)
 - [Role runs](#role-runs)
 - [Native adapters](#native-adapters)
@@ -161,6 +162,45 @@ automatically. Resolve every persisted project-input path beneath the canonical
 project root and require its current canonical hash to match the snapshot before
 each role run.
 
+## Audit boundary and executor provenance
+
+Apply the complete normative audit contract in
+[`audit-log-spec.md`](audit-log-spec.md) whenever feature state exists. Validate
+the specification-local state and log before reservation, dispatch, result
+acceptance, waiting, recovery, or another state transition. A non-empty audit
+outbox blocks all of those operations except its own idempotent flush. A
+`status` request may finish a valid interrupted flush, but adds no event.
+
+Roles never read or write `state.yaml` or `mem-log.md`; neither path may appear
+in a role manifest. The logical router may queue lifecycle, interaction, and
+decision event data with its owning state transition, but only bundled
+deterministic operations create, parse, render, hash, extend, recover, or
+validate the Markdown log. The audit record is execution evidence, not a role
+input or current product authority.
+
+Checkpoint Git execution is likewise outside every role run. After the durable
+approval selection, the logical router uses only bundled `checkpoint-commit`;
+it does not place Git commands, the audit log, state, or repository index in a
+role manifest. The operation verifies the exact specification tree and commit
+linkage before the workflow success transition, and preserves the same
+checkpoint on a failed or unsafe Git outcome.
+
+Keep requested and effective executor evidence separate:
+
+- run reservation records the persisted profile, concrete adapter, configured
+  native agent, or requested mailbox model and reasoning exactly as selected;
+- run completion records effective model and reasoning only when the selected
+  host or validated mailbox receipt can verify those values for that exact run;
+  otherwise it records `unavailable`; and
+- never infer effective identity from a profile name, named-agent definition,
+  model family or alias, router runtime, chat text, or executor self-description.
+
+Completed result acceptance computes the canonical receipt evidence hash under
+the audit contract. The run-completion event, accepted artifact or review, user
+normalizations, and role decision events all link to that same receipt hash.
+The router must use the bundled result-acceptance output and must not recreate
+the receipt hashing or provenance rules.
+
 ## Dedicated router runs
 
 Use [`router.md`](router.md) as the normative launch, manifest, return, and
@@ -190,17 +230,22 @@ router resuming an existing specification must reconcile any persisted
 
 ## Role runs
 
-Create one durable `active_run` in `state.yaml` before dispatch. Call the bundled
-`reserve-run` command with the canonical project root, verified state path,
-specification ID, stage, role, purpose, executor, concrete adapter kind, output,
-and request hash. The command strictly validates the complete state, its exact
-location and specification identity, `request.md` hash, pinned project inputs,
-stage and status, role and purpose, output, persisted binding, and absence of an
-active run. It then atomically writes both the active run and incremented next
-sequence. Accept only its exact `run_id`, `sequence`, and `next_run_sequence`
-result. Reread the state through `validate-state` and require those three values
-to match the reservation before launching the executor. Stop before dispatch on
-any mismatch. Record:
+Create one durable `active_run` and its audit reservation before dispatch. Call
+the bundled `reserve-run` command with the canonical project root, verified
+state path, specification ID, stage, role, purpose, executor, concrete adapter
+kind, output, and request hash. The command strictly validates the complete
+state and log, exact location and identity, `request.md` hash, pinned project
+inputs, stage and status, role and purpose, output, persisted binding, absence
+of an active run, and an empty audit outbox. It then atomically writes the active
+run, incremented next sequence, and complete reservation outbox. Accept only its
+exact `run_id`, `sequence`, and `next_run_sequence` result.
+
+Reread the queued state, require those three values and the pending reservation
+transaction to match, and invoke bundled `flush-audit`. Revalidate state and
+require the exact run's reservation event to be durable before constructing or
+publishing its manifest. Stop before dispatch on any mismatch or flush failure.
+Never treat an `active_run` alone as proof that dispatch is permitted. The
+primary run fields remain:
 
 ```yaml
 active_run:
@@ -228,6 +273,15 @@ domains. Briefs, modules, and bundled scripts may be outside the project but
 must resolve beneath the canonical skill root. Project inputs, state, artifacts,
 reviews, and role outputs must resolve beneath the canonical project root.
 
+For `purpose: revise`, append the current role-owned artifact to the ordinary
+workflow inputs before the selected profile's ordered pinned project inputs,
+even though that exact path is also the sole output and allowed write. Its
+pre-revision bytes and canonical hash are validated before dispatch; the
+executor must read them before atomically replacing that same path. Do not add
+the current artifact for `purpose: draft`. This revision rule applies to
+`idea.md`, `requirements.md`, `design.md`, and `plan.md` for their owning roles;
+it never grants access to `mem-log.md`.
+
 Before dispatch, require every selected skill resource to exist, be readable,
 and resolve beneath the canonical skill root. Apply the workflow's direct-link
 and module-structure rules, but do not compute, persist, or compare content
@@ -241,6 +295,11 @@ stage's review, validates its structure and hash, and requires the ID list to
 equal its blocking finding IDs in written order. The author must retain those
 IDs as feedback, and the next reviewer must preserve an ID whenever its finding
 remains unresolved.
+Every answered pending item supplies `pending_response` from primary state. For
+`pending.kind: revision`, also supply `revision_request` with those exact same
+persisted verbatim bytes; the validator rejects a different value or a
+`revision_request` with no revision pending source. A direct `revise` action
+therefore survives interruption without requiring a role to read the audit log.
 Pass the complete JSON manifest unchanged as bounded UTF-8 on standard input to
 bundled `validate-role-manifest` and dispatch or publish only its validated
 output.
@@ -263,7 +322,8 @@ output.
     "references/modules/requirements/common.md",
     "references/modules/design/common.md",
     "references/modules/design/authoring.md",
-    "references/modules/design/artifact.md"
+    "references/modules/design/artifact.md",
+    "references/modules/audit/decisions.md"
   ],
   "inputs": [
     {
@@ -276,6 +336,10 @@ output.
     },
     {
       "path": "docs/changes/specs/export-data/requirements.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/changes/specs/export-data/design.md",
       "sha256": "sha256:..."
     },
     {
@@ -318,16 +382,34 @@ For mailbox validation, also pass the configured model and optional reasoning.
 Treat only the validator's normalized JSON output as a receipt. Keep validation
 errors private except during explicit diagnostics.
 
-After a validated completion, recompute the output hash with the bundled script
-and verify every declared project-data input hash. Then run `validate-artifact`
-for requirements, design, or plan output, or `validate-review` with the exact
-ordered manifest inputs for review output. A valid receipt proves only the
-transport result and claimed output path/hash; it never proves artifact or
-review structure and cannot authorize a state transition by itself. When a fallback snapshot was
-taken, compare it and accept exactly the allowed output change; reject every
-other write, deletion, rename, or input change. Do not load a role-owned artifact
-into router context merely to transfer it to the next role; pass its path and
-canonical hash.
+For a completed receipt, compare any fallback filesystem snapshot first and
+accept exactly the allowed output change; reject every other write, deletion,
+rename, or input change. Then pass the same unchanged receipt to bundled
+`accept-role-result` with one `--input <path>=<hash>` argument for every manifest
+input in exact order. That operation revalidates the receipt; all ordinary
+input hashes; the output path, bytes, and hash; artifact or review structure;
+role-specific decision coverage; and durable run-reservation evidence. For the
+exact current role-owned artifact on `purpose: revise`, its manifest hash proves
+the bytes read before dispatch; result acceptance instead verifies the replaced
+path against the new receipt output hash. No other input/output alias receives
+this exception.
+
+`accept-role-result` computes the canonical receipt hash, atomically clears
+`active_run`, applies the executable table's matching result status, pending,
+clarification, and retry-counter mutation, and queues the complete
+result-acceptance, decision-diff, and branch-specific audit batch. Flush that
+outbox and revalidate state before any later action. A valid receipt proves only
+the transport claim until this complete acceptance boundary succeeds; it cannot
+authorize a transition by itself. Do
+not load a role-owned artifact into router context merely to transfer it to the
+next role; pass its path and canonical hash.
+
+Do not call `accept-role-result` while state is `waiting-executor`. First apply
+and flush `mailbox-wait-completed`, which restores the active run's underlying
+`drafting`, `revising`, or `reviewing` status, then use the same acceptance
+operation. Timeout remains waiting; malformed and interrupted outcomes restore
+the underlying status but preserve the run for their recovery policy. Immediate
+mailbox completion before entering a wait state may be accepted directly.
 
 ## Native adapters
 
@@ -354,6 +436,15 @@ reasoning effort; this value is never valid for the router profile and is never
 a fallback. For a named agent, let its host configuration determine model,
 reasoning effort, tools, and project-scoped instructions. Do not pass competing
 overrides.
+
+A native completed receipt may include `executor` only when the selected
+adapter can bind requested and effective model/reasoning evidence to that exact
+role run. Its `requested` object describes verified host launch settings; its
+`effective` object describes separately observed runtime identity. When that
+evidence is unavailable, omit `executor`; deterministic acceptance records
+`unavailable` effective values. Never use the router's identity, a profile or
+agent name, static agent configuration alone, inherited-default assumptions, or
+agent-authored text as effective runtime evidence.
 
 Ask the subagent to write only its allowed output and return only one JSON
 object matching a receipt form below, with no Markdown fence, prose, or artifact
@@ -402,7 +493,8 @@ feedback, and output paths remain relative to `project_root`. Require request
     "references/modules/requirements/common.md",
     "references/modules/design/common.md",
     "references/modules/design/authoring.md",
-    "references/modules/design/artifact.md"
+    "references/modules/design/artifact.md",
+    "references/modules/audit/decisions.md"
   ],
   "inputs": [
     {
@@ -415,6 +507,10 @@ feedback, and output paths remain relative to `project_root`. Require request
     },
     {
       "path": "docs/changes/specs/export-data/requirements.md",
+      "sha256": "sha256:..."
+    },
+    {
+      "path": "docs/changes/specs/export-data/design.md",
       "sha256": "sha256:..."
     },
     {
@@ -448,13 +544,15 @@ the configured executor cannot access the skill root, fail the run without
 copying the installed skill into the project.
 
 Poll only for the configured bounded wait. When no response is present, keep
-`active_run`, set workflow status to `waiting-executor`, and stop. Present only
-the product-facing fact that work is still in progress and the action needed to
+`active_run`, atomically set workflow status to `waiting-executor`, and queue the
+bounded wait-started audit evidence. Flush it before stopping. Present only the
+product-facing fact that work is still in progress and the action needed to
 resume; include the run ID only when it is necessary for safe recovery. Do not
 mention mailbox polling or adapter mechanics. On `resume`, inspect the same
-response before considering a redispatch. Never create a second request for an
-active run. Treat cancellation as best-effort and never assume it prevented a
-late response.
+response before considering a redispatch, then queue and flush the exact
+wait-ended outcome before accepting a completion or beginning another bounded
+wait. Never create a second request for an active run. Treat cancellation as
+best-effort and never assume it prevented a late response.
 
 ## Receipts
 
@@ -463,7 +561,9 @@ a mailbox response or a native subagent final response, as determined by the
 bundled validator. Reject Markdown fences, surrounding prose, and any raw
 question. Require `schema_version: 1` and the exact fields shown for the selected
 status. Require `executor` metadata for a mailbox completion and permit it to be
-absent from a native completion.
+absent from a native completion. Every completed receipt also requires the
+`decisions` full snapshot defined by `audit-log-spec.md`; blocked and failed
+receipts retain their minimal forms and must not include decisions.
 
 Reject a request, response, receipt, router result, configuration, state, or
 review control file larger than 256 KiB before parsing it. Artifact files use a
@@ -481,6 +581,23 @@ For completion:
     "path": "docs/changes/specs/export-data/design.md",
     "sha256": "sha256:..."
   },
+  "decisions": [
+    {
+      "key": "DES-002",
+      "authority": "agent",
+      "kind": "technical",
+      "summary": "Use an asynchronous export job.",
+      "rationale": "Export generation may exceed the HTTP request lifetime.",
+      "alternatives": [
+        {
+          "option": "Generate the export synchronously.",
+          "rejected_because": "Large exports may exceed the request timeout."
+        }
+      ],
+      "references": ["DES-002"],
+      "source_event_keys": []
+    }
+  ],
   "executor": {
     "requested": {
       "model": "company-architect-v3",
@@ -493,6 +610,15 @@ For completion:
   }
 }
 ```
+
+The eight decision fields shown are exact. `authority: agent` receipts are full
+current material-decision snapshots used for introduced, revised, unchanged,
+and retired diffing; `authority: user` records only a role's accepted
+normalization linked to prior declared user-input event keys. Apply the
+role-specific kinds, key forms, reference coverage, alternatives, limits, and
+semantic rules from `audit-log-spec.md`. The router must not derive missing
+decisions from the artifact, add private reasoning, or repair a completed
+receipt that omitted the required array.
 
 For a blocking question:
 
@@ -518,9 +644,11 @@ For failure:
 
 For mailbox completion, require `executor.requested.model` to equal the
 configured model and require its optional `reasoning` to match exactly. Require
-non-empty effective model metadata; accept effective reasoning only as an
-opaque non-empty string. Never accept an executor-selected fallback as the
-requested configuration.
+`executor.effective.model` and optional effective reasoning to contain only
+runtime values the daemon can verify for that exact execution; use the literal
+`unavailable` when a value cannot be verified. Never copy the requested value
+into `effective`, accept an executor-selected fallback as the requested
+configuration, or infer effective identity from the receipt's prose.
 
 ## Validation boundary
 
@@ -529,6 +657,13 @@ manifest, receipt, and review fields; schemas and size limits; paths and hashes;
 stage/run eligibility; required Markdown sections; stable identifier syntax and
 uniqueness; and requirements-to-design-to-plan traceability. Run them before the
 state transition that consumes each result.
+
+They also enforce audit state, log location and bounds, canonical Markdown,
+event schemas and hash chain, whole-file metadata, decision index, outbox head
+binding, durable reservation evidence, completed decision coverage, receipt
+evidence hashes, and idempotent flush recovery. Ordinary validation must reject
+an interrupted log/state mismatch; only `flush-audit` owns the exact recovery
+window defined by the audit contract.
 
 Role authors and reviewers remain responsible for semantic correctness: whether
 the approved product intent is faithfully represented, requirements are
@@ -550,9 +685,15 @@ a valid receipt never proves those semantic properties.
 - Reject unknown receipt fields, mismatched run IDs, duplicate responses,
   malformed hashes, oversized control files, and response paths not declared in
   the request.
+- Reject `state.yaml` or a role manifest without the mandatory audit boundary,
+  any role access to `mem-log.md`, a reservation or dispatch with a pending
+  outbox, and a result whose run reservation is not already durable.
 - Preserve `active_run` after interruption, timeout, or malformed response so a
   later explicit `resume` can inspect the same run.
 - Clear `active_run` only after accepting its receipt and verifying filesystem
-  effects, or after recording an explicit user-directed abandonment.
+  effects while queueing its result audit batch, or after recording and flushing
+  an explicit user-directed abandonment.
+- Stop on audit integrity or flush failure. Never rewrite previous log bytes,
+  append to an untrusted log, or continue an unaudited workflow operation.
 - Never expose secrets in project configuration, requests, receipts, prompts,
   or persisted workflow state.

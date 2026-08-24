@@ -35,7 +35,7 @@ model = "gpt-5.6"
 model_reasoning_effort = "high"
 developer_instructions = """
 Act only as a Stepan workflow orchestrator when given one router launch manifest.
-Read and follow every protocol and every execution, router, or adapter contract declared by that manifest.
+Read and follow every protocol and every audit, execution, router, or adapter contract declared by that manifest.
 Never invoke the Stepan skill recursively or treat parent conversation as product input.
 Dispatch only the fresh role runs selected by the persisted workflow state.
 Return only the exact JSON router result required by the router contract.
@@ -46,6 +46,26 @@ The profile's `agent` value in `.stepan/config.yaml` must equal this custom
 agent's `name`. The model and reasoning settings belong only in the custom agent
 TOML. Apply the return, one format-only repair, and interruption rules from
 `../router.md`; a router final response is not a role receipt.
+
+## Executor audit metadata
+
+Keep requested executor selection and effective runtime identity separate. For
+reservation, record the persisted profile, concrete `codex` adapter, and exact
+configured agent name (`default` included for a role when explicitly selected).
+Native profiles do not configure a requested model or reasoning value in
+`.stepan/config.yaml`, so the reservation's requested model and reasoning fields
+remain null; do not copy values from agent TOML into those mailbox-oriented
+fields.
+
+A completed native receipt may include executor metadata only when Codex exposes
+run-specific evidence that the router can verify. `executor.requested` then
+describes the exact launch settings selected by the host, while
+`executor.effective` describes the model and reasoning actually reported for
+that same role subagent. A custom-agent TOML file, selected agent name, inherited
+router settings, router runtime identity, model alias, or subagent-authored claim
+is not by itself effective-runtime evidence. If Codex does not expose the value
+for that run, omit the optional receipt executor object and let deterministic
+acceptance record `unavailable`; never guess or copy the requested value.
 
 ## Role run
 
@@ -61,7 +81,9 @@ reconsider its result, or add explanation, and must return exactly one receipt
 object in one of the forms supplied by the original role-run manifest. Validate
 the follow-up response normally. Do not spawn a replacement agent, allocate a
 new run ID, or attempt a second repair. A valid `failed` receipt is a role result,
-not a formatting error, and must not trigger repair.
+not a formatting error, and must not trigger repair. The repair cannot add or
+change decisions or executor metadata that were absent from the original final
+response.
 
 Codex may supply platform and project instructions to the subagent as ambient
 context. They may constrain execution but are not product inputs, approvals, or
