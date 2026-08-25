@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-var ErrTurnInProgress = errors.New("a turn is already in progress")
+var ErrTurnInProgress = agentruntime.ErrTurnInProgress
 
 type Thread struct {
 	ID         string
@@ -19,21 +21,17 @@ type Thread struct {
 	cwd        string
 }
 
-type TurnOptions struct {
-	OutputSchema json.RawMessage
-	Policy       TurnPolicy
-}
+type TurnOptions = agentruntime.TurnOptions
+type TurnPolicy = agentruntime.TurnPolicy
 
-type TurnPolicy struct{ writableRoot string }
-
-func ReadOnlyTurnPolicy() TurnPolicy { return TurnPolicy{} }
+func ReadOnlyTurnPolicy() TurnPolicy { return agentruntime.ReadOnlyTurnPolicy() }
 
 func SingleWriteRootTurnPolicy(root string) (TurnPolicy, error) {
 	root, err := canonicalPath(root)
 	if err != nil {
 		return TurnPolicy{}, fmt.Errorf("canonicalize writable root: %w", err)
 	}
-	return TurnPolicy{writableRoot: root}, nil
+	return agentruntime.SingleWriteRootTurnPolicy(root)
 }
 
 type turnRun struct {
@@ -79,6 +77,7 @@ func (connection *Connection) StartThread(cwd string) (*Thread, error) {
 }
 
 func (connection *Connection) RunTurn(thread *Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
+	options = options.Clone()
 	if thread == nil || thread.connection != connection || thread.ID == "" {
 		return nil, errors.New("invalid thread handle")
 	}
@@ -251,10 +250,11 @@ func (run *turnRun) evaluateApproval(kind ApprovalKind, ids approvalIDs, permiss
 }
 
 func writableRoots(policy TurnPolicy) []string {
-	if policy.writableRoot == "" {
+	root, ok := policy.WritableRoot()
+	if !ok {
 		return nil
 	}
-	return []string{policy.writableRoot}
+	return []string{root}
 }
 
 func (run *turnRun) observeFileChanges(message Message) error {

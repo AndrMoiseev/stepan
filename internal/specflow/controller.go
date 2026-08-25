@@ -9,7 +9,7 @@ import (
 	"path"
 	"path/filepath"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 )
 
@@ -33,8 +33,8 @@ type Progress struct {
 }
 
 type initialTurnRunner interface {
-	StartThread() (*codexapp.Thread, error)
-	RunTurn(*codexapp.Thread, string, codexapp.TurnOptions) (json.RawMessage, error)
+	StartThread() (agentruntime.Thread, error)
+	RunTurn(agentruntime.Thread, string, agentruntime.TurnOptions) (json.RawMessage, error)
 }
 
 type Controller struct {
@@ -42,7 +42,7 @@ type Controller struct {
 	root     string
 	state    State
 	brief    string
-	thread   *codexapp.Thread
+	thread   agentruntime.Thread
 	question string
 	specID   string
 	path     string
@@ -90,9 +90,9 @@ func (controller *Controller) AskQuestion(question string) (Progress, error) {
 	if controller.state != StateDraft {
 		return controller.Progress(), fmt.Errorf("specification draft is not available")
 	}
-	output, err := controller.runner.RunTurn(controller.thread, QuestionPrompt(question), codexapp.TurnOptions{
+	output, err := controller.runner.RunTurn(controller.thread, QuestionPrompt(question), agentruntime.TurnOptions{
 		OutputSchema: QuestionSchema(),
-		Policy:       codexapp.ReadOnlyTurnPolicy(),
+		Policy:       agentruntime.ReadOnlyTurnPolicy(),
 	})
 	if err != nil {
 		controller.reset()
@@ -146,7 +146,7 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 	if err != nil {
 		return controller.failDraft(fmt.Errorf("prepare specification target: %w", err))
 	}
-	policy, err := codexapp.SingleWriteRootTurnPolicy(target.Directory)
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(target.Directory)
 	if err != nil {
 		return controller.failDraft(fmt.Errorf("prepare write policy: %w", err))
 	}
@@ -155,7 +155,7 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 		return controller.failDraft(fmt.Errorf("capture pre-write repository: %w", err))
 	}
 
-	output, turnErr := controller.runner.RunTurn(controller.thread, CreatePrompt(target.Directory), codexapp.TurnOptions{
+	output, turnErr := controller.runner.RunTurn(controller.thread, CreatePrompt(target.Directory), agentruntime.TurnOptions{
 		OutputSchema: CreateSchema(),
 		Policy:       policy,
 	})
@@ -175,9 +175,9 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 }
 
 func (controller *Controller) analyzeChange(ctx context.Context, prompt string) (Progress, error) {
-	output, err := controller.runner.RunTurn(controller.thread, prompt, codexapp.TurnOptions{
+	output, err := controller.runner.RunTurn(controller.thread, prompt, agentruntime.TurnOptions{
 		OutputSchema: ChangeSchema(),
-		Policy:       codexapp.ReadOnlyTurnPolicy(),
+		Policy:       agentruntime.ReadOnlyTurnPolicy(),
 	})
 	if err != nil {
 		controller.reset()
@@ -202,7 +202,7 @@ func (controller *Controller) updateDraft(ctx context.Context) (Progress, error)
 	if err := CheckContainment(controller.root, target.Directory); err != nil {
 		return controller.failUpdate(fmt.Errorf("verify specification target: %w", err))
 	}
-	policy, err := codexapp.SingleWriteRootTurnPolicy(target.Directory)
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(target.Directory)
 	if err != nil {
 		return controller.failUpdate(fmt.Errorf("prepare write policy: %w", err))
 	}
@@ -210,7 +210,7 @@ func (controller *Controller) updateDraft(ctx context.Context) (Progress, error)
 	if err != nil {
 		return controller.failUpdate(fmt.Errorf("capture pre-write repository: %w", err))
 	}
-	output, turnErr := controller.runner.RunTurn(controller.thread, UpdatePrompt(target.Directory), codexapp.TurnOptions{
+	output, turnErr := controller.runner.RunTurn(controller.thread, UpdatePrompt(target.Directory), agentruntime.TurnOptions{
 		OutputSchema: UpdateSchema(),
 		Policy:       policy,
 	})
@@ -268,9 +268,9 @@ func (controller *Controller) target() SpecTarget {
 }
 
 func (controller *Controller) run(prompt string) (Progress, error) {
-	output, err := controller.runner.RunTurn(controller.thread, prompt, codexapp.TurnOptions{
+	output, err := controller.runner.RunTurn(controller.thread, prompt, agentruntime.TurnOptions{
 		OutputSchema: InitialSchema(),
-		Policy:       codexapp.ReadOnlyTurnPolicy(),
+		Policy:       agentruntime.ReadOnlyTurnPolicy(),
 	})
 	if err != nil {
 		controller.reset()

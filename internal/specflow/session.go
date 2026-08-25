@@ -4,34 +4,29 @@ import (
 	"encoding/json"
 	"sync"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-type appRuntime interface {
-	StartThread() (*codexapp.Thread, error)
-	RunTurn(*codexapp.Thread, string, codexapp.TurnOptions) (json.RawMessage, error)
-	Interrupt() error
-	Close() error
-}
+type runtimeSlot struct{ runtime agentruntime.Runtime }
 
-type runtimeSlot struct{ runtime appRuntime }
+// appRuntime is kept as a local test-facing name while the implementation
+// depends on the provider-neutral runtime contract.
+type appRuntime = agentruntime.Runtime
 
 // Session lazily owns the single App Server used by one interactive process.
 type Session struct {
-	start func() (appRuntime, error)
+	start func() (agentruntime.Runtime, error)
 
 	mu      sync.Mutex
 	runtime *runtimeSlot
 	stopped bool
 }
 
-func NewSession(executable, workspace string) *Session {
-	return newSession(func() (appRuntime, error) { return codexapp.StartRuntime(executable, workspace) })
-}
+func NewSession(start func() (agentruntime.Runtime, error)) *Session { return newSession(start) }
 
-func newSession(start func() (appRuntime, error)) *Session { return &Session{start: start} }
+func newSession(start func() (agentruntime.Runtime, error)) *Session { return &Session{start: start} }
 
-func (session *Session) StartThread() (*codexapp.Thread, error) {
+func (session *Session) StartThread() (agentruntime.Thread, error) {
 	slot, err := session.current()
 	if err != nil {
 		return nil, err
@@ -43,12 +38,12 @@ func (session *Session) StartThread() (*codexapp.Thread, error) {
 	return thread, err
 }
 
-func (session *Session) RunTurn(thread *codexapp.Thread, prompt string, options codexapp.TurnOptions) (json.RawMessage, error) {
+func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
 	session.mu.Lock()
 	slot := session.runtime
 	session.mu.Unlock()
 	if slot == nil {
-		return nil, codexapp.ErrRuntimeClosed
+		return nil, agentruntime.ErrRuntimeClosed
 	}
 	output, err := slot.runtime.RunTurn(thread, prompt, options)
 	if err != nil {
@@ -65,7 +60,7 @@ func (session *Session) current() (*runtimeSlot, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if session.stopped {
-		return nil, codexapp.ErrRuntimeClosed
+		return nil, agentruntime.ErrRuntimeClosed
 	}
 	if session.runtime == nil {
 		runtime, err := session.start()

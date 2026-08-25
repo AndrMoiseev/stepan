@@ -106,11 +106,16 @@ func ChangeSchema() json.RawMessage   { return json.RawMessage(changeSchema) }
 func UpdateSchema() json.RawMessage   { return json.RawMessage(updateSchema) }
 func QuestionSchema() json.RawMessage { return json.RawMessage(questionSchema) }
 
+// FlowEnvelopeSchema is the immutable union accepted by a long-lived Claude
+// client. Individual stages keep using their narrower schemas and decoders.
+func FlowEnvelopeSchema() json.RawMessage { return append(json.RawMessage(nil), flowEnvelopeSchema...) }
+
 const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"type":"string","enum":["READY_TO_WRITE"]},"spec_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","spec_id"],"additionalProperties":false}]}`
 const createSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["WRITTEN"]}},"required":["status"],"additionalProperties":false}`
 const changeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"type":"string","enum":["READY_TO_UPDATE"]}},"required":["status"],"additionalProperties":false}]}`
 const updateSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["UPDATED"]}},"required":["status"],"additionalProperties":false}`
 const questionSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["ANSWERED"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false}`
+const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_WRITE"},"spec_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","spec_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"WRITTEN"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
 
 func DecodeInitialResult(data []byte) (Result, error) {
 	return decodeResult(data, StatusNeedsInput, StatusReadyToWrite)
@@ -130,6 +135,10 @@ func DecodeUpdateResult(data []byte) (Result, error) {
 
 func DecodeQuestionResult(data []byte) (Result, error) {
 	return decodeResult(data, StatusAnswered)
+}
+
+func DecodeFlowEnvelope(data []byte) (Result, error) {
+	return decodeResult(data, StatusNeedsInput, StatusReadyToWrite, StatusWritten, StatusAnswered, StatusReadyToUpdate, StatusUpdated)
 }
 
 func decodeResult(data []byte, allowed ...Status) (Result, error) {

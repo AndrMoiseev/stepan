@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
@@ -28,28 +28,28 @@ func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
 	first := filepath.Join(repo, "docs", "specs", "acceptance-flow")
 	second := filepath.Join(repo, "docs", "specs", "second-flow")
 	runtime := &acceptanceRuntime{t: t, steps: []acceptanceStep{
-		{InitialSchema(), InitialPrompt(`literal "brief"`), codexapp.ReadOnlyTurnPolicy(), `{"status":"NEEDS_INPUT","message":"One question?"}`, func() {
+		{InitialSchema(), InitialPrompt(`literal "brief"`), agentruntime.ReadOnlyTurnPolicy(), `{"status":"NEEDS_INPUT","message":"One question?"}`, func() {
 			assertMissing(t, first)
 		}},
-		{InitialSchema(), initialAnswerPrompt("answer"), codexapp.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"acceptance-flow"}`, nil},
+		{InitialSchema(), initialAnswerPrompt("answer"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"acceptance-flow"}`, nil},
 		{CreateSchema(), CreatePrompt(first), mustWritePolicy(t, first), `{"status":"WRITTEN"}`, func() {
 			assertMissing(t, first)
 			writeAcceptanceFile(t, filepath.Join(first, "specification.md"), "created")
 			writeAcceptanceFile(t, filepath.Join(first, "details.md"), "details")
 		}},
-		{QuestionSchema(), QuestionPrompt("What is current?"), codexapp.ReadOnlyTurnPolicy(), `{"status":"ANSWERED","message":"manual before question"}`, func() {
+		{QuestionSchema(), QuestionPrompt("What is current?"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"ANSWERED","message":"manual before question"}`, func() {
 			assertFile(t, filepath.Join(first, "specification.md"), "manual before question")
 		}},
-		{ChangeSchema(), ChangePrompt("Change color"), codexapp.ReadOnlyTurnPolicy(), `{"status":"NEEDS_INPUT","message":"Which color?"}`, func() {
+		{ChangeSchema(), ChangePrompt("Change color"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"NEEDS_INPUT","message":"Which color?"}`, func() {
 			assertFile(t, filepath.Join(first, "specification.md"), "manual before change")
 		}},
-		{ChangeSchema(), changeAnswerPrompt("Blue"), codexapp.ReadOnlyTurnPolicy(), `{"status":"READY_TO_UPDATE"}`, func() {
+		{ChangeSchema(), changeAnswerPrompt("Blue"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_UPDATE"}`, func() {
 			assertFile(t, filepath.Join(first, "specification.md"), "manual before answer")
 		}},
 		{UpdateSchema(), UpdatePrompt(first), mustWritePolicy(t, first), `{"status":"UPDATED"}`, func() {
 			writeAcceptanceFile(t, filepath.Join(first, "specification.md"), "blue")
 		}},
-		{InitialSchema(), InitialPrompt("second idea"), codexapp.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"second-flow"}`, nil},
+		{InitialSchema(), InitialPrompt("second idea"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"second-flow"}`, nil},
 		{CreateSchema(), CreatePrompt(second), mustWritePolicy(t, second), `{"status":"WRITTEN"}`, func() {
 			writeAcceptanceFile(t, filepath.Join(second, "specification.md"), "second")
 		}},
@@ -102,7 +102,7 @@ func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 	repo := initDraftRepository(t)
 	target := filepath.Join(repo, "docs", "specs", "interrupted-flow")
 	runtime := &acceptanceRuntime{t: t, steps: []acceptanceStep{
-		{InitialSchema(), InitialPrompt("brief"), codexapp.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"interrupted-flow"}`, nil},
+		{InitialSchema(), InitialPrompt("brief"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"interrupted-flow"}`, nil},
 		{CreateSchema(), CreatePrompt(target), mustWritePolicy(t, target), `{"status":"WRITTEN"}`, func() {
 			writeAcceptanceFile(t, filepath.Join(target, "specification.md"), "unfinished")
 		}},
@@ -118,7 +118,7 @@ func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 	if err := session.Interrupt(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.StartThread(); !errors.Is(err, codexapp.ErrRuntimeClosed) {
+	if _, err := session.StartThread(); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		t.Fatalf("interrupted session resumed: %v", err)
 	}
 	assertFile(t, filepath.Join(target, "specification.md"), "unfinished")
@@ -135,35 +135,39 @@ func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 type acceptanceStep struct {
 	schema json.RawMessage
 	prompt string
-	policy codexapp.TurnPolicy
+	policy agentruntime.TurnPolicy
 	output string
 	action func()
 }
 
 type acceptanceTurn struct {
-	thread  *codexapp.Thread
+	thread  *testThread
 	prompt  string
-	options codexapp.TurnOptions
+	options agentruntime.TurnOptions
 }
 
 type acceptanceRuntime struct {
 	t          *testing.T
-	threads    []*codexapp.Thread
+	threads    []*testThread
 	turns      []acceptanceTurn
 	steps      []acceptanceStep
 	step       int
 	interrupts int
 }
 
-func (runtime *acceptanceRuntime) StartThread() (*codexapp.Thread, error) {
-	thread := &codexapp.Thread{ID: fmt.Sprintf("thread-%d", len(runtime.threads)+1)}
+func (runtime *acceptanceRuntime) StartThread() (agentruntime.Thread, error) {
+	thread := &testThread{ID: fmt.Sprintf("thread-%d", len(runtime.threads)+1)}
 	runtime.threads = append(runtime.threads, thread)
 	return thread, nil
 }
 
-func (runtime *acceptanceRuntime) RunTurn(thread *codexapp.Thread, prompt string, options codexapp.TurnOptions) (json.RawMessage, error) {
+func (runtime *acceptanceRuntime) RunTurn(thread agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
 	runtime.t.Helper()
-	runtime.turns = append(runtime.turns, acceptanceTurn{thread, prompt, options})
+	codexThread, ok := thread.(*testThread)
+	if !ok {
+		return nil, fmt.Errorf("unexpected thread type %T", thread)
+	}
+	runtime.turns = append(runtime.turns, acceptanceTurn{codexThread, prompt, options})
 	if runtime.step >= len(runtime.steps) {
 		return nil, errors.New("unexpected turn")
 	}
@@ -255,9 +259,9 @@ func (ui *acceptanceUI) ChangeAnswer(ctx context.Context, question string) (Prog
 
 func (ui *acceptanceUI) ReportError(err error) { ui.t.Fatalf("unexpected flow error: %v", err) }
 
-func mustWritePolicy(t *testing.T, root string) codexapp.TurnPolicy {
+func mustWritePolicy(t *testing.T, root string) agentruntime.TurnPolicy {
 	t.Helper()
-	policy, err := codexapp.SingleWriteRootTurnPolicy(root)
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(root)
 	if err != nil {
 		t.Fatal(err)
 	}

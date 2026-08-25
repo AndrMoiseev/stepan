@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	charm.land/huh/v2 v2.0.3
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/severity1/claude-agent-sdk-go v0.6.22
 )
 
 require (

@@ -8,6 +8,9 @@ import (
 	"os/signal"
 	"runtime"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/claudeapp"
+	"github.com/AndrMoiseev/stepan/internal/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
@@ -15,10 +18,16 @@ import (
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	os.Exit(run(ctx))
+	os.Exit(run(ctx, os.Args[1:]))
 }
 
-func run(ctx context.Context) int {
+func run(ctx context.Context, args []string) int {
+	config, err := parseAgentConfig(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start Stepan:", err)
+		fmt.Fprintln(os.Stderr, usageText)
+		return 2
+	}
 	if err := preflight(runtime.GOOS, runtime.GOARCH, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "start Stepan:", err)
 		return 2
@@ -34,7 +43,7 @@ func run(ctx context.Context) int {
 		return 2
 	}
 
-	session := specflow.NewSession("codex", root)
+	session := specflow.NewSession(runtimeFactory(config, root))
 	defer session.Close()
 	controller := specflow.NewController(root, session)
 	err = specflow.RunInteractive(ctx, controller, specflow.NewUI(controller), session.Interrupt)
@@ -46,6 +55,21 @@ func run(ctx context.Context) int {
 		return 2
 	}
 	return 0
+}
+
+func runtimeFactory(config agentConfig, root string) func() (agentruntime.Runtime, error) {
+	switch config.kind {
+	case agentClaude:
+		return func() (agentruntime.Runtime, error) {
+			return claudeapp.StartRuntime(claudeapp.Config{
+				Executable:     config.executable,
+				Workspace:      root,
+				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
+			})
+		}
+	default:
+		return func() (agentruntime.Runtime, error) { return codexapp.StartRuntime(config.executable, root) }
+	}
 }
 
 func preflight(goos, goarch string, stdin, stdout *os.File) error {

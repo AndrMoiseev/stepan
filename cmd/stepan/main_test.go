@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -10,6 +11,12 @@ func TestPreflightRejectsUnsupportedPlatformBeforeHandles(t *testing.T) {
 	err := preflight("linux", "amd64", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "require windows/amd64") {
 		t.Fatalf("preflight error = %v", err)
+	}
+}
+
+func TestRunRejectsClaudeWithoutCLIPathBeforeTerminalPreflight(t *testing.T) {
+	if code := run(context.Background(), []string{"--agent", "claude"}); code != 2 {
+		t.Fatalf("exit code = %d", code)
 	}
 }
 

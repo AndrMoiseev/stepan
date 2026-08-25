@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 func TestSessionIsLazyAndReusesRuntime(t *testing.T) {
@@ -48,7 +48,7 @@ func TestSessionRestartsAfterRuntimeError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := session.RunTurn(thread, "prompt", codexapp.TurnOptions{}); !errors.Is(err, crash) {
+	if _, err := session.RunTurn(thread, "prompt", agentruntime.TurnOptions{}); !errors.Is(err, crash) {
 		t.Fatalf("turn error = %v", err)
 	}
 	if runtimes[0].closes != 1 {
@@ -74,7 +74,7 @@ func TestSessionInterruptUsesRuntimeInterrupt(t *testing.T) {
 	if runtime.interrupts != 1 {
 		t.Fatalf("interrupts = %d", runtime.interrupts)
 	}
-	if _, err := session.StartThread(); !errors.Is(err, codexapp.ErrRuntimeClosed) {
+	if _, err := session.StartThread(); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		t.Fatalf("start after interrupt = %v", err)
 	}
 }
@@ -83,7 +83,7 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 	repo := initDraftRepository(t)
 	head := draftGit(t, repo, "rev-parse", "HEAD")
 	runtime := &fakeAppRuntime{}
-	runtime.turn = func(_ string, options codexapp.TurnOptions) (json.RawMessage, error) {
+	runtime.turn = func(_ string, options agentruntime.TurnOptions) (json.RawMessage, error) {
 		switch string(options.OutputSchema) {
 		case string(InitialSchema()):
 			id := fmt.Sprintf("flow-%d", runtime.threads)
@@ -122,8 +122,8 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 
 func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
 	repo := initDraftRepository(t)
-	crashed := &fakeAppRuntime{turnErr: codexapp.ErrAppServerExited}
-	replacement := &fakeAppRuntime{turn: func(_ string, _ codexapp.TurnOptions) (json.RawMessage, error) {
+	crashed := &fakeAppRuntime{turnErr: agentruntime.ErrRuntimeExited}
+	replacement := &fakeAppRuntime{turn: func(_ string, _ agentruntime.TurnOptions) (json.RawMessage, error) {
 		return json.RawMessage(`{"status":"NEEDS_INPUT","message":"question"}`), nil
 	}}
 	runtimes := []*fakeAppRuntime{crashed, replacement}
@@ -138,7 +138,7 @@ func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
 	if starts != 2 || crashed.closes != 1 || replacement.threads != 1 {
 		t.Fatalf("starts = %d, crashed closes = %d, replacement threads = %d", starts, crashed.closes, replacement.threads)
 	}
-	if len(ui.reported) != 1 || !errors.Is(ui.reported[0], codexapp.ErrAppServerExited) {
+	if len(ui.reported) != 1 || !errors.Is(ui.reported[0], agentruntime.ErrRuntimeExited) {
 		t.Fatalf("reported errors = %v", ui.reported)
 	}
 }
@@ -146,17 +146,17 @@ func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
 type fakeAppRuntime struct {
 	threads    int
 	turnErr    error
-	turn       func(string, codexapp.TurnOptions) (json.RawMessage, error)
+	turn       func(string, agentruntime.TurnOptions) (json.RawMessage, error)
 	closes     int
 	interrupts int
 }
 
-func (runtime *fakeAppRuntime) StartThread() (*codexapp.Thread, error) {
+func (runtime *fakeAppRuntime) StartThread() (agentruntime.Thread, error) {
 	runtime.threads++
-	return &codexapp.Thread{ID: "thread"}, nil
+	return &testThread{ID: "thread"}, nil
 }
 
-func (runtime *fakeAppRuntime) RunTurn(_ *codexapp.Thread, prompt string, options codexapp.TurnOptions) (json.RawMessage, error) {
+func (runtime *fakeAppRuntime) RunTurn(_ agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
 	if runtime.turn != nil {
 		return runtime.turn(prompt, options)
 	}
@@ -173,6 +173,8 @@ type controllerUI struct {
 	reported                 []error
 	stopAfterInitialQuestion bool
 }
+
+type testThread struct{ ID string }
 
 func (ui *controllerUI) Main() (Progress, error) {
 	if ui.mainCalls == len(ui.ideas) {
