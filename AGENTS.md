@@ -34,3 +34,12 @@ Cross-build проверяет только компиляцию. Runtime-при
 notarization пока не поддерживаются.
 
 Для запуска тестов отдельного пакета используйте `go test ./путь/к/пакету`, например `go test ./internal/specflow`.
+
+## GitHub Actions
+
+Для локальной проверки всех workflow используйте закреплённую версию
+`actionlint`:
+
+```text
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+```
