@@ -1,4 +1,4 @@
-# Stepan: спецификация итерации 1
+﻿# Stepan: спецификация итерации 1
 
 Статус: черновик
 
@@ -454,7 +454,7 @@ write boundary и допустимый structured status. Только одно�
 
 - `cmd/stepan` — тонкая сборка интерактивного приложения;
 - `internal/specflow` — конкретная state machine flow идеи и prompt contracts;
-- `internal/codexapp` — существующие transport, correlation и approval policy,
+- `internal/agentruntime/codexapp` — существующие transport, correlation и approval policy,
   расширенные long-lived App Server client с несколькими thread/turn;
 - `internal/gitsnapshot` и Git CLI — проверка состояния до и после write-turn;
 - `charm.land/huh/v2` — единственная новая UI-зависимость.

@@ -1,4 +1,4 @@
-# Stepan: задачи реализации итерации 1
+﻿# Stepan: задачи реализации итерации 1
 
 Статус: черновик для ревью  
 Основание: [спецификация итерации 1](specification.md)  
@@ -156,10 +156,10 @@
 
 ### I1-04. Управляемый процесс App Server и pinned preflight
 
-**Результат:** `internal/codexapp` запускает один contained
+**Результат:** `internal/agentruntime/codexapp` запускает один contained
 `codex app-server --stdio`, проверив платформу и версию до protocol turn.
 
-**Граница commit:** process lifecycle в `internal/codexapp`, fake subprocess и
+**Граница commit:** process lifecycle в `internal/agentruntime/codexapp`, fake subprocess и
 тесты; probe остаётся совместимым.
 
 **Критерии приёмки:**
@@ -187,14 +187,14 @@
 - [ ] Проверить отсутствие потомков после normal close и failed startup.
 - [ ] Не менять probe lifecycle сверх необходимого общего кода.
 
-**Проверка:** `go test ./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### I1-05. Долгоживущее JSON-RPC соединение
 
 **Результат:** поверх существующего transport работает одно соединение с одним
 handshake и несколькими последовательными client requests.
 
-**Граница commit:** connection/dispatcher в `internal/codexapp`, fake protocol
+**Граница commit:** connection/dispatcher в `internal/agentruntime/codexapp`, fake protocol
 сценарии и тесты.
 
 **Критерии приёмки:**
@@ -225,14 +225,14 @@ handshake и несколькими последовательными client re
   ожидающем response.
 - [ ] Прогнать существующие sanitized replay fixtures.
 
-**Проверка:** `go test ./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### I1-06. Thread/turn API и structured final output
 
 **Результат:** долгоживущий client создаёт несколько threads и выполняет
 несколько turns одного thread с отдельной JSON Schema на каждый turn.
 
-**Граница commit:** thread/turn API и тесты в `internal/codexapp`.
+**Граница commit:** thread/turn API и тесты в `internal/agentruntime/codexapp`.
 
 **Критерии приёмки:**
 
@@ -261,14 +261,14 @@ handshake и несколькими последовательными client re
 - [ ] Добавить table tests всех malformed/contradictory terminal вариантов.
 - [ ] Подтвердить, что thread ID не сохраняется на диск.
 
-**Проверка:** `go test ./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### I1-07. In-memory per-turn approval policy
 
 **Результат:** каждый turn получает ровно свои read/write permissions; file
 change принимается автоматически только внутри каталога текущей спецификации.
 
-**Граница commit:** approval evaluation и turn options в `internal/codexapp`,
+**Граница commit:** approval evaluation и turn options в `internal/agentruntime/codexapp`,
 тесты; durable probe policy остаётся рабочей.
 
 **Критерии приёмки:**
@@ -300,14 +300,14 @@ change принимается автоматически только внутр
   symlink/reparse обхода и session grant.
 - [ ] Проверить, что в temporary repository не появились `.stepan` и artifacts.
 
-**Проверка:** `go test ./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### I1-08. Interrupt, shutdown и повторный запуск после сбоя
 
 **Результат:** runtime безопасно завершает активный turn и App Server, а после
 аварии позволяет создать новый процесс без resume старого flow.
 
-**Граница commit:** lifecycle/cancellation в `internal/codexapp` и Windows fake
+**Граница commit:** lifecycle/cancellation в `internal/agentruntime/codexapp` и Windows fake
 process-tree tests.
 
 **Критерии приёмки:**
@@ -336,7 +336,7 @@ process-tree tests.
 - [ ] Добавить тест crash → новый process/thread, исключив reuse старого ID.
 - [ ] Не добавлять автоматический timeout обычного turn.
 
-**Проверка:** `go test ./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### I1-09. Prompt contracts и строгие схемы результатов
 
@@ -607,7 +607,7 @@ tests без terminal rendering.
 - [ ] Проверить, что Git `HEAD` и исходные файлы вне тестового spec root не
   изменились.
 
-**Проверка:** `go test ./cmd/stepan ./internal/specflow ./internal/codexapp` и
+**Проверка:** `go test ./cmd/stepan ./internal/specflow ./internal/agentruntime/codexapp` и
 `go test ./...`.
 
 ### I1-16. Сквозные fake-сценарии и регрессионный gate

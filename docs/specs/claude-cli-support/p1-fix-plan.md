@@ -1,4 +1,4 @@
-# План исправления P1-замечаний Claude CLI
+﻿# План исправления P1-замечаний Claude CLI
 
 Статус: готов к реализации  
 Основание: ревью реализации
@@ -67,7 +67,7 @@ hooks, MCP, plugins или дополнительные tools через лок�
 **Автоматическая проверка:**
 
 ```text
-go test ./internal/claudeapp
+go test ./internal/agentruntime/claudeapp
 ```
 
 ### P1-02. Исправить разрешение относительных путей write-tools
@@ -119,9 +119,9 @@ writable root.
 **Автоматическая проверка:**
 
 ```text
-go test ./internal/claudeapp
-go test -count=20 ./internal/claudeapp
-go test -race ./internal/claudeapp
+go test ./internal/agentruntime/claudeapp
+go test -count=20 ./internal/agentruntime/claudeapp
+go test -race ./internal/agentruntime/claudeapp
 ```
 
 ### P1-03. Сделать запуск runtime отменяемым и очистить partial Connect
@@ -176,9 +176,9 @@ mutex и имеет один общий terminal path. Отмена до или 
 **Автоматическая проверка:**
 
 ```text
-go test ./internal/claudeapp ./internal/specflow ./cmd/stepan
-go test -count=20 ./internal/claudeapp ./internal/specflow ./cmd/stepan
-go test -race ./internal/claudeapp ./internal/specflow
+go test ./internal/agentruntime/claudeapp ./internal/specflow ./cmd/stepan
+go test -count=20 ./internal/agentruntime/claudeapp ./internal/specflow ./cmd/stepan
+go test -race ./internal/agentruntime/claudeapp ./internal/specflow
 ```
 
 ### P1-04. Ввести строгую границу response stream для каждого turn
@@ -233,9 +233,9 @@ duplicate или conflicting terminal result попасть в следующи�
 **Автоматическая проверка:**
 
 ```text
-go test ./internal/claudeapp ./internal/specflow
-go test -count=20 ./internal/claudeapp ./internal/specflow
-go test -race ./internal/claudeapp ./internal/specflow
+go test ./internal/agentruntime/claudeapp ./internal/specflow
+go test -count=20 ./internal/agentruntime/claudeapp ./internal/specflow
+go test -race ./internal/agentruntime/claudeapp ./internal/specflow
 ```
 
 ## 4. Итоговый автоматический gate
@@ -244,8 +244,8 @@ go test -race ./internal/claudeapp ./internal/specflow
 
 ```text
 go test ./...
-go test -count=20 ./internal/claudeapp ./internal/specflow ./cmd/stepan
-go test -race ./internal/claudeapp ./internal/specflow
+go test -count=20 ./internal/agentruntime/claudeapp ./internal/specflow ./cmd/stepan
+go test -race ./internal/agentruntime/claudeapp ./internal/specflow
 ```
 
 P1-исправления считаются принятыми, если все перечисленные команды завершились

@@ -1,4 +1,4 @@
-# ADR 0002: Текущий стек и архитектурный baseline
+﻿# ADR 0002: Текущий стек и архитектурный baseline
 
 Статус: **предложено**
 
@@ -45,8 +45,8 @@ flowchart LR
     User[Пользователь] --> CLI[cmd/stepan]
     CLI --> Flow[internal/specflow]
     Flow --> Contract[internal/agentruntime]
-    Contract --> App[internal/codexapp]
-    Contract --> Claude[internal/claudeapp]
+    Contract --> App[internal/agentruntime/codexapp]
+    Contract --> Claude[internal/agentruntime/claudeapp]
     Flow --> Git[internal/gitsnapshot]
     App --> Job[internal/processjob]
     CLI --> Platform[internal/platformsupport]
@@ -69,11 +69,11 @@ flowchart LR
   preflight и обработка завершения процесса.
 - `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
   prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
-- `internal/codexapp` — lifecycle App Server, JSON-RPC transport, thread/turn,
+- `internal/agentruntime/codexapp` — lifecycle App Server, JSON-RPC transport, thread/turn,
   correlation, structured output и fail-closed approval policy.
 - `internal/agentruntime` — provider-neutral contract session/thread, turn,
   policy и lifecycle.
-- `internal/claudeapp` — Claude SDK adapter с exact tool allowlist и
+- `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
   turn-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
   сравнение до/после turn и проверка write boundary.
@@ -172,7 +172,7 @@ baseline.
 - [`go.mod`](../../go.mod)
 - [`cmd/stepan`](../../cmd/stepan/)
 - [`internal/specflow`](../../internal/specflow/)
-- [`internal/codexapp`](../../internal/codexapp/)
+- [`internal/agentruntime/codexapp`](../../internal/agentruntime/codexapp/)
 - [`internal/gitsnapshot`](../../internal/gitsnapshot/)
 - [`internal/processjob`](../../internal/processjob/)
 - [ADR 0001](0001-codex-app-server-containment.md)

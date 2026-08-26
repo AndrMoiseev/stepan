@@ -1,4 +1,4 @@
-# Stepan: спецификация поддержки Claude Code-совместимого CLI
+﻿# Stepan: спецификация поддержки Claude Code-совместимого CLI
 
 Статус: черновик
 
@@ -76,7 +76,7 @@ Stepan, не открывая Claude CLI отдельно.
 - provider-neutral runtime contract, достаточный текущему `specflow`;
 - адаптация существующего Codex runtime к этому контракту без изменения его
   поведения;
-- новый `internal/claudeapp` поверх `claude-agent-sdk-go` Client API;
+- новый `internal/agentruntime/claudeapp` поверх `claude-agent-sdk-go` Client API;
 - одна долгоживущая SDK connection на интерактивный процесс Stepan;
 - отдельная логическая Claude session на каждый `/idea`;
 - строгий structured output и локальная проверка схемы каждого хода;
@@ -365,7 +365,7 @@ Live-проверка требуется на каждой платформе, �
 21. Unit и fake integration suite не требуют Claude, корпоративной сети или
     авторизации.
 22. Точная версия SDK присутствует в `go.mod`/`go.sum`; SDK types не выходят за
-    `internal/claudeapp`.
+    `internal/agentruntime/claudeapp`.
 23. `go test ./...`, `go vet ./...` и `git diff --check` проходят.
 24. Поддержка корпоративного форка не объявляется принятой, пока обязательные
     сценарии ручного плана не получили `PASS` на целевой платформе.

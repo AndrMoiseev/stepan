@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 )
 
 func main() {

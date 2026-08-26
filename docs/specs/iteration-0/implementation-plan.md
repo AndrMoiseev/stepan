@@ -1,4 +1,4 @@
-# Stepan: план реализации итерации 0
+﻿# Stepan: план реализации итерации 0
 
 Статус: готов к ревью  
 Основание: [спецификация итерации 0](specification.md), редакция 2  
@@ -25,7 +25,7 @@ Timebox: 2–3 рабочих дня одного разработчика
 - `internal/gitsnapshot` с Git-native candidate snapshot.
 
 Этот код не переименовывается и не переделывается в App Server client. Новый
-двусторонний transport реализуется рядом в `internal/codexapp`. Из legacy-кода
+двусторонний transport реализуется рядом в `internal/agentruntime/codexapp`. Из legacy-кода
 переносятся только небольшие уже проверенные приёмы; общий framework выделяется
 только при фактической необходимости.
 
@@ -54,8 +54,8 @@ Timebox: 2–3 рабочих дня одного разработчика
 
 ```text
 cmd/codex-appserver-probe/
-internal/codexapp/
-internal/codexapp/testdata/
+internal/agentruntime/codexapp/
+internal/agentruntime/codexapp/testdata/
 internal/gitsnapshot/
 docs/specs/iteration-0/
   implementation-plan.md
@@ -63,7 +63,7 @@ docs/specs/iteration-0/
   report.md
 ```
 
-В `internal/codexapp` должны появиться только необходимые ответственности:
+В `internal/agentruntime/codexapp` должны появиться только необходимые ответственности:
 запуск процесса, JSONL/JSON-RPC framing, correlation, thread/turn lifecycle,
 approval policy, durable state и artifacts. Разбиение по файлам выполняется по
 мере роста кода, а не заранее по одному типу на файл.
@@ -119,7 +119,7 @@ live stream.
 - [ ] Покрыть handshake error, approvals, concurrent requests, malformed и
   oversized lines, stderr flood, зависание и unresolved approval.
 
-Проверка: `go test ./internal/codexapp` проходит без установленного Codex и без
+Проверка: `go test ./internal/agentruntime/codexapp` проходит без установленного Codex и без
 сети.
 
 Контрольная точка: replay и fake subprocess используют тот же parser, writer и

@@ -1,4 +1,4 @@
-# Stepan: спецификация итерации 0
+﻿# Stepan: спецификация итерации 0
 
 Редакция: 2 — approval-driven App Server spike
 
@@ -175,8 +175,8 @@ probe, воспроизводимые fixtures и зафиксированный
 
 ```text
 cmd/codex-appserver-probe/
-internal/codexapp/
-internal/codexapp/testdata/
+internal/agentruntime/codexapp/
+internal/agentruntime/codexapp/testdata/
 docs/specs/iteration-0/codex-integration-contract.md
 docs/specs/iteration-0/report.md
 ```

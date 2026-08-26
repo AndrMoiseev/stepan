@@ -9,8 +9,8 @@ import (
 	"runtime"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/claudeapp"
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )

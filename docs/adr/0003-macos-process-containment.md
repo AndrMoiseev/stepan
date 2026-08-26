@@ -1,4 +1,4 @@
-# ADR 0003: macOS/arm64 и containment через process group
+﻿# ADR 0003: macOS/arm64 и containment через process group
 
 Статус: **принято**
 
@@ -34,7 +34,7 @@ containment процесса остаются ответственностью �
 2. `Assign(*os.Process)` сразу после успешного `Start` и до protocol operation;
 3. повторно вызываемый `Close()` для принудительного завершения containment.
 
-Оба пути запуска Codex — `internal/codexapp` и `internal/codexexec` — обязаны
+Оба пути запуска Codex — `internal/agentruntime/codexapp` и `internal/codexexec` — обязаны
 использовать этот lifecycle. Ошибка любой операции является fail-closed.
 
 На Windows `Prepare` не меняет команду, `Assign` помещает процесс в Job Object,

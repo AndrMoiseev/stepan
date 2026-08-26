@@ -1,4 +1,4 @@
-# Stepan: план совместимости с macOS
+﻿# Stepan: план совместимости с macOS
 
 Статус: реализация завершена; нативная ручная приёмка ожидается
 
@@ -99,7 +99,7 @@ supervisor/`launchd`-архитектуры и не входит в текущи
 
 ### MAC-01. Единая матрица платформ
 
-**Результат:** executable и `internal/codexapp` одинаково принимают
+**Результат:** executable и `internal/agentruntime/codexapp` одинаково принимают
 Windows/amd64 и macOS/arm64.
 
 **Изменения:**
@@ -147,7 +147,7 @@ Windows/amd64 и macOS/arm64.
 **Изменения:**
 
 - [x] Вызывать подготовку supervisor до `Start` в
-  `internal/codexapp/process.go`.
+  `internal/agentruntime/codexapp/process.go`.
 - [x] Сделать то же в `internal/codexexec/runner.go`.
 - [x] На ошибке назначения сначала закрывать supervisor, затем завершать и
   дожидаться непосредственного процесса.

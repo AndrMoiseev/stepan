@@ -1,4 +1,4 @@
-# Stepan: задачи поддержки Claude Code-совместимого CLI
+﻿# Stepan: задачи поддержки Claude Code-совместимого CLI
 
 Статус: черновик для ревью  
 Основание: [спецификация](specification.md)  
@@ -16,7 +16,7 @@ Live-среда: корпоративный Claude Code-совместимый C
   а не создаётся общий provider framework, registry или DSL.
 - До подключения Claude все Codex tests обязаны остаться зелёными; временное
   ослабление Codex containment, approvals или schema checks запрещено.
-- SDK types не выходят из `internal/claudeapp`; `specflow` знает только
+- SDK types не выходят из `internal/agentruntime/claudeapp`; `specflow` знает только
   provider-neutral contract.
 - Exact SDK version закрепляется в `go.mod`. Диапазон версий, floating branch и
   автоматическое обновление запрещены.
@@ -92,7 +92,7 @@ policy и lifecycle, которые уже нужны `specflow`.
 **Результат:** `codexapp.Runtime` реализует `agentruntime.Runtime`, сохраняя
 App Server protocol, exact version pin, approvals и process containment.
 
-**Граница commit:** `internal/codexapp`, его tests и минимальные совместимые
+**Граница commit:** `internal/agentruntime/codexapp`, его tests и минимальные совместимые
 aliases только там, где они нужны для безопасной миграции.
 
 **Критерии приёмки:**
@@ -119,8 +119,8 @@ aliases только там, где они нужны для безопасно�
 - [ ] Обновить compile-time interface assertion.
 - [ ] Запустить lifecycle tests повторно для выявления race.
 
-**Проверка:** `go test ./internal/codexapp`, `go test -count=10
-./internal/codexapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/codexapp`, `go test -count=10
+./internal/agentruntime/codexapp` и `go test ./...`.
 
 ### CC-03. `specflow` полностью отвязан от `codexapp`
 
@@ -132,7 +132,7 @@ aliases только там, где они нужны для безопасно�
 
 **Критерии приёмки:**
 
-- `rg "internal/codexapp" internal/specflow` не находит imports.
+- `rg "internal/agentruntime/codexapp" internal/specflow` не находит imports.
 - Controller не проверяет provider name и не ветвится по Codex/Claude.
 - Lazy start, reuse между flows, discard после runtime error и final close
   сохраняются.
@@ -151,7 +151,7 @@ aliases только там, где они нужны для безопасно�
   диагностической cause.
 - [ ] Не создавать registry providers в `specflow`.
 
-**Проверка:** `go test ./internal/specflow ./internal/codexapp ./cmd/stepan` и
+**Проверка:** `go test ./internal/specflow ./internal/agentruntime/codexapp ./cmd/stepan` и
 `go test ./...`.
 
 ### CC-04. Явный выбор provider и абсолютного executable
@@ -190,17 +190,17 @@ aliases только там, где они нужны для безопасно�
 ### CC-05. Закреплён SDK и введён тестируемый Claude client seam
 
 **Результат:** exact версия `claude-agent-sdk-go` добавлена в модуль, а
-`internal/claudeapp` изолирует минимальную часть Client API за локальным
+`internal/agentruntime/claudeapp` изолирует минимальную часть Client API за локальным
 интерфейсом.
 
-**Граница commit:** `go.mod`, `go.sum`, skeleton `internal/claudeapp`, SDK API
+**Граница commit:** `go.mod`, `go.sum`, skeleton `internal/agentruntime/claudeapp`, SDK API
 contract tests. Runtime поведения ещё нет.
 
 **Критерии приёмки:**
 
 - В `go.mod` записана точная tagged версия, выбранная после просмотра changelog
   и публичного API; используется стандартная Go checksum verification.
-- SDK imports существуют только внутри `internal/claudeapp` и его tests.
+- SDK imports существуют только внутри `internal/agentruntime/claudeapp` и его tests.
 - Локальный seam содержит лишь `Connect`, `Disconnect`, `QueryWithSession`,
   `ReceiveResponse`/эквивалент и `Interrupt`.
 - Factory SDK client можно заменить fake без процесса или сети.
@@ -217,7 +217,7 @@ contract tests. Runtime поведения ещё нет.
 - [ ] Добавить dependency injection только в package-private constructor.
 - [ ] Выполнить `go mod tidy` и проверить неожиданный dependency growth.
 
-**Проверка:** `go mod tidy`, `go test ./internal/claudeapp` и `go test ./...`.
+**Проверка:** `go mod tidy`, `go test ./internal/agentruntime/claudeapp` и `go test ./...`.
 
 ### CC-06. Общий flow envelope schema для Claude
 
@@ -258,7 +258,7 @@ envelopes текущего `/idea`, пригодную для настройки
 **Результат:** один options builder создаёт закрытую Claude-конфигурацию из
 validated executable, workspace и envelope schema.
 
-**Граница commit:** `internal/claudeapp` config/options и tests через
+**Граница commit:** `internal/agentruntime/claudeapp` config/options и tests через
 `claudecode.NewOptions`; процесс ещё можно не запускать.
 
 **Критерии приёмки:**
@@ -287,14 +287,14 @@ validated executable, workspace и envelope schema.
 - [ ] Использовать bounded stderr callback/writer без записи prompts и env.
 - [ ] Проверить созданный `Options` field-by-field в test.
 
-**Проверка:** `go test ./internal/claudeapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/claudeapp` и `go test ./...`.
 
 ### CC-08. Permission evaluator для пяти файловых tools
 
 **Результат:** thread-safe callback разрешает только файловую операцию,
 допустимую активной turn policy.
 
-**Граница commit:** `internal/claudeapp` permission/path evaluator и tests;
+**Граница commit:** `internal/agentruntime/claudeapp` permission/path evaluator и tests;
 при необходимости маленький общий path helper без SDK imports.
 
 **Критерии приёмки:**
@@ -324,15 +324,15 @@ validated executable, workspace и envelope schema.
 - [ ] Добавить race test конкурентного callback с cancel/close.
 - [ ] Проверить case-insensitive Windows containment и volume mismatch.
 
-**Проверка:** `go test ./internal/claudeapp`, `go test -race
-./internal/claudeapp` на поддерживаемой машине и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/claudeapp`, `go test -race
+./internal/agentruntime/claudeapp` на поддерживаемой машине и `go test ./...`.
 
 ### CC-09. Строгий collector terminal structured output
 
 **Результат:** adapter превращает поток SDK messages одного query в ровно один
 provider-neutral JSON object либо классифицированную ошибку.
 
-**Граница commit:** `internal/claudeapp` message collector/decoder и fake tests.
+**Граница commit:** `internal/agentruntime/claudeapp` message collector/decoder и fake tests.
 
 **Критерии приёмки:**
 
@@ -356,7 +356,7 @@ provider-neutral JSON object либо классифицированную ош�
 - [ ] Добавить fixtures: success, null structured output, error result,
   duplicate result, disconnect и cancel.
 
-**Проверка:** `go test ./internal/claudeapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/claudeapp` и `go test ./...`.
 
 ### CC-10. Claude runtime, sessions и последовательные turns
 
@@ -364,7 +364,7 @@ provider-neutral JSON object либо классифицированную ош�
 одном SDK Client.
 
 **Граница commit:** runtime implementation и unit/fake integration tests внутри
-`internal/claudeapp`.
+`internal/agentruntime/claudeapp`.
 
 **Критерии приёмки:**
 
@@ -394,8 +394,8 @@ provider-neutral JSON object либо классифицированную ош�
 - [ ] Добавить compile-time assertion `agentruntime.Runtime`.
 - [ ] Проверить close до connect failure и partial initialization.
 
-**Проверка:** `go test ./internal/claudeapp`, `go test -count=20
-./internal/claudeapp` и `go test ./...`.
+**Проверка:** `go test ./internal/agentruntime/claudeapp`, `go test -count=20
+./internal/agentruntime/claudeapp` и `go test ./...`.
 
 ### CC-11. Composition root и полный `/idea` через Claude
 
@@ -431,7 +431,7 @@ integration fixtures. Реальный CLI не нужен.
 - [ ] Проверить два последовательных flows и отсутствие context leakage.
 - [ ] Проверить invalid Claude config до TTY loop и runtime start.
 
-**Проверка:** `go test ./cmd/stepan ./internal/specflow ./internal/claudeapp` и
+**Проверка:** `go test ./cmd/stepan ./internal/specflow ./internal/agentruntime/claudeapp` и
 `go test ./...`.
 
 ### CC-12. Interrupt, close, crash recovery и диагностика
@@ -439,7 +439,7 @@ integration fixtures. Реальный CLI не нужен.
 **Результат:** все terminal paths Claude adapter bounded, идемпотентны и
 согласованы с exit semantics Stepan.
 
-**Граница commit:** `internal/claudeapp`, `internal/specflow`, `cmd/stepan` и
+**Граница commit:** `internal/agentruntime/claudeapp`, `internal/specflow`, `cmd/stepan` и
 lifecycle tests.
 
 **Критерии приёмки:**
@@ -467,7 +467,7 @@ lifecycle tests.
 - [ ] Проверить отсутствие goroutine/channel leaks через повторные tests.
 - [ ] Не обращаться к OS process enumeration из production-кода первой версии.
 
-**Проверка:** `go test -count=20 ./internal/claudeapp ./internal/specflow
+**Проверка:** `go test -count=20 ./internal/agentruntime/claudeapp ./internal/specflow
 ./cmd/stepan`, затем `go test ./...`.
 
 ### CC-13. Provider conformance и сквозные fake-сценарии
@@ -505,7 +505,7 @@ lifecycle tests.
 - [ ] Проверить `go vet` и `git diff --check`.
 
 **Проверка:** `go test ./...`, `go test -count=20 ./internal/agentruntime
-./internal/claudeapp ./internal/specflow`, `go vet ./...`,
+./internal/agentruntime/claudeapp ./internal/specflow`, `go vet ./...`,
 `git diff --check`.
 
 ### CC-14. ADR, platform build gates и подготовка live-приёмки
