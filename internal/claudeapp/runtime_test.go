@@ -15,6 +15,10 @@ import (
 
 func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	config := testConfig(t)
+	validated, _, err := validateConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fake := &fakeClient{messages: []claudecode.Message{
 		&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "READY_TO_WRITE", "spec_id": "one"}},
 		&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "WRITTEN"}},
@@ -47,7 +51,7 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	if first == second {
 		t.Fatal("two ideas received the same thread handle")
 	}
-	assertLockedOptions(t, options, config)
+	assertLockedOptions(t, options, validated)
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +201,10 @@ func TestStartRuntimeCleansUpPartialConnect(t *testing.T) {
 }
 
 func TestPermissionEvaluatorFailsClosed(t *testing.T) {
-	workspace := t.TempDir()
+	workspace, err := canonicalDirectory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	inside := filepath.Join(workspace, "inside.txt")
 	if err := os.WriteFile(inside, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
