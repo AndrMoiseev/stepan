@@ -139,7 +139,11 @@ func initRepository(t *testing.T) string {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
 	}
-	return repo
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func gitStatus(t *testing.T, repo string) string {

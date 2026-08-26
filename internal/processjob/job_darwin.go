@@ -96,8 +96,21 @@ func (j *Job) Close() error {
 			j.closeErr = fmt.Errorf("refusing to kill unsafe process group %d", pgid)
 			return
 		}
-		err := syscall.Kill(-pgid, syscall.SIGKILL)
+		actual, err := syscall.Getpgid(pgid)
 		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if err != nil {
+			j.closeErr = fmt.Errorf("read process group %d: %w", pgid, err)
+			return
+		}
+		// The process may have already exited and its PID may have been reused.
+		// Do not signal an unrelated process group in that case.
+		if actual != pgid {
+			return
+		}
+		err = syscall.Kill(-pgid, syscall.SIGKILL)
+		if err == nil || errors.Is(err, syscall.ESRCH) {
 			return
 		}
 		j.closeErr = fmt.Errorf("kill process group %d: %w", pgid, err)

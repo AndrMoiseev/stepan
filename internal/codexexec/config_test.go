@@ -46,7 +46,7 @@ func TestArgsAreSeparateForNewAndResume(t *testing.T) {
 	wantNew := []string{
 		"exec", "--json", "--color", "never", "-c", `default_permissions=":workspace"`,
 		"-c", `approval_policy="never"`, "--output-schema", `C:\schema dir\schema.json`,
-		"--output-last-message", `C:\artifact dir\last-message.json`, "--cd", `C:\work space`,
+		"--output-last-message", filepath.Join(cfg.ArtifactDir, "last-message.json"), "--cd", `C:\work space`,
 		"--ignore-user-config", "--ignore-rules", "-",
 	}
 	if got := cfg.Args(); !reflect.DeepEqual(got, wantNew) {
@@ -56,7 +56,7 @@ func TestArgsAreSeparateForNewAndResume(t *testing.T) {
 	cfg.SessionID = "opaque-session"
 	wantResume := []string{
 		"exec", "resume", "--json", "--output-schema", `C:\schema dir\schema.json`,
-		"--output-last-message", `C:\artifact dir\last-message.json`, "-c", `default_permissions=":workspace"`,
+		"--output-last-message", filepath.Join(cfg.ArtifactDir, "last-message.json"), "-c", `default_permissions=":workspace"`,
 		"-c", `approval_policy="never"`,
 		"--ignore-user-config", "--ignore-rules", "opaque-session", "-",
 	}

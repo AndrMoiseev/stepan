@@ -746,7 +746,11 @@ func initDraftRepository(t *testing.T) string {
 	}
 	draftGit(t, repo, "add", "-A")
 	draftGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "initial")
-	return repo
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func draftGit(t *testing.T, repo string, args ...string) string {

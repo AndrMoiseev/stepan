@@ -191,6 +191,13 @@ func (process *Process) Wait() error {
 		return errors.New("App Server process is not started")
 	}
 	process.waitOnce.Do(func() {
+		var stderrErr error
+		if process.stderrDone != nil {
+			// Cmd.Wait closes the pipes it owns. Wait for the diagnostic reader
+			// first so macOS does not turn a normal process exit into a closed-pipe
+			// error.
+			stderrErr = <-process.stderrDone
+		}
 		process.waitErr = command.Wait()
 		if command.ProcessState != nil {
 			code := command.ProcessState.ExitCode()
@@ -198,10 +205,8 @@ func (process *Process) Wait() error {
 			process.exitCode = &code
 			process.mu.Unlock()
 		}
-		if process.stderrDone != nil {
-			if err := <-process.stderrDone; process.waitErr == nil {
-				process.waitErr = err
-			}
+		if process.waitErr == nil {
+			process.waitErr = stderrErr
 		}
 		close(process.waitDone)
 	})
