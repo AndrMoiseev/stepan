@@ -3,10 +3,10 @@ package claudeapp
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
@@ -20,7 +20,7 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 		&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "WRITTEN"}},
 	}}
 	var options *claudecode.Options
-	runtime, err := startRuntime(config, func(items ...claudecode.Option) client {
+	runtime, err := startRuntime(context.Background(), config, func(_ context.Context, items ...claudecode.Option) client {
 		options = claudecode.NewOptions(items...)
 		return fake
 	})
@@ -62,7 +62,7 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 func TestClaudeRuntimeRejectsForeignThreadAndBadTerminalOutput(t *testing.T) {
 	config := testConfig(t)
 	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{StructuredOutput: nil}}}
-	runtime, err := startRuntime(config, func(...claudecode.Option) client { return fake })
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,9 +79,57 @@ func TestClaudeRuntimeRejectsForeignThreadAndBadTerminalOutput(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeRejectsTerminalResultForAnotherSession(t *testing.T) {
+	config := testConfig(t)
+	fake := &fakeClient{batches: [][]claudecode.Message{{
+		&claudecode.ResultMessage{SessionID: "foreign", StructuredOutput: map[string]any{"status": "READY_TO_WRITE"}},
+	}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	handle, err := runtime.StartThread()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.RunTurn(handle, "turn", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); !errors.Is(err, agentruntime.ErrRuntimeExited) {
+		t.Fatalf("foreign result error = %v", err)
+	}
+}
+
+func TestClaudeRuntimeDoesNotReuseDelayedTerminalResult(t *testing.T) {
+	config := testConfig(t)
+	fake := &fakeClient{messages: []claudecode.Message{
+		&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "READY_TO_WRITE", "spec_id": "one"}},
+		&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "WRITTEN"}},
+	}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	handle, err := runtime.StartThread()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.RunTurn(handle, "first", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); err != nil {
+		t.Fatal(err)
+	}
+	fake.drainReceived()
+	fake.send(&claudecode.ResultMessage{SessionID: fake.session(0), StructuredOutput: map[string]any{"status": "WRITTEN"}})
+	fake.waitReceived()
+	if _, err := runtime.RunTurn(handle, "second", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); !errors.Is(err, agentruntime.ErrRuntimeExited) {
+		t.Fatalf("second turn after duplicate = %v", err)
+	}
+	if got := fake.sessionCount(); got != 1 {
+		t.Fatalf("queries after duplicate = %d", got)
+	}
+}
+
 func TestClaudeRuntimeRejectsWriteRootOutsideWorkspace(t *testing.T) {
 	config := testConfig(t)
-	runtime, err := startRuntime(config, func(...claudecode.Option) client { return &fakeClient{} })
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return &fakeClient{} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +150,7 @@ func TestClaudeRuntimeRejectsWriteRootOutsideWorkspace(t *testing.T) {
 func TestClaudeRuntimeInterruptThenClosesOnce(t *testing.T) {
 	config := testConfig(t)
 	fake := &fakeClient{}
-	runtime, err := startRuntime(config, func(...claudecode.Option) client { return fake })
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,6 +165,34 @@ func TestClaudeRuntimeInterruptThenClosesOnce(t *testing.T) {
 	}
 	if _, err := runtime.StartThread(); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		t.Fatalf("start after interrupt = %v", err)
+	}
+}
+
+func TestStartRuntimeDoesNotCreateClientForCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	created := false
+	if _, err := startRuntime(ctx, testConfig(t), func(context.Context, ...claudecode.Option) client {
+		created = true
+		return &fakeClient{}
+	}); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+		t.Fatalf("start error = %v", err)
+	}
+	if created {
+		t.Fatal("client factory was called for canceled startup")
+	}
+}
+
+func TestStartRuntimeCleansUpPartialConnect(t *testing.T) {
+	connectErr := errors.New("connect failed")
+	cleanupErr := errors.New("cleanup failed")
+	fake := &fakeClient{connectErr: connectErr, disconnectErr: cleanupErr}
+	_, err := startRuntime(context.Background(), testConfig(t), func(context.Context, ...claudecode.Option) client { return fake })
+	if !errors.Is(err, connectErr) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("start error does not retain both causes: %v", err)
+	}
+	if fake.disconnects != 1 {
+		t.Fatalf("disconnects = %d", fake.disconnects)
 	}
 }
 
@@ -271,33 +347,109 @@ func assertLockedOptions(t *testing.T, options *claudecode.Options, config Confi
 }
 
 type fakeClient struct {
-	messages    []claudecode.Message
-	sessions    []string
-	disconnects int
-	interrupts  int
+	mu            sync.Mutex
+	messages      []claudecode.Message
+	sessions      []string
+	disconnects   int
+	interrupts    int
+	connectErr    error
+	disconnectErr error
+	responses     chan claudecode.Message
+	received      chan struct{}
+	batches       [][]claudecode.Message
+	queries       int
 }
 
-func (*fakeClient) Connect(context.Context, ...claudecode.StreamMessage) error { return nil }
-func (client *fakeClient) Disconnect() error                                   { client.disconnects++; return nil }
+func (client *fakeClient) Connect(context.Context, ...claudecode.StreamMessage) error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.responses == nil {
+		client.responses = make(chan claudecode.Message, 32)
+		client.received = make(chan struct{}, 32)
+	}
+	return client.connectErr
+}
+func (client *fakeClient) Disconnect() error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.disconnects++
+	return client.disconnectErr
+}
 func (client *fakeClient) QueryWithSession(_ context.Context, _ string, session string) error {
+	client.mu.Lock()
 	client.sessions = append(client.sessions, session)
+	var messages []claudecode.Message
+	if client.queries < len(client.batches) {
+		messages = client.batches[client.queries]
+	} else if len(client.messages) != 0 {
+		messages = []claudecode.Message{client.messages[0]}
+		client.messages = client.messages[1:]
+	}
+	client.queries++
+	for index, message := range messages {
+		if result, ok := message.(*claudecode.ResultMessage); ok && result.SessionID == "" {
+			copy := *result
+			copy.SessionID = session
+			messages[index] = &copy
+		}
+	}
+	responses := client.responses
+	client.mu.Unlock()
+	for _, message := range messages {
+		responses <- message
+	}
 	return nil
 }
-func (client *fakeClient) ReceiveResponse(context.Context) claudecode.MessageIterator {
-	message := client.messages[0]
-	client.messages = client.messages[1:]
-	return &fakeIterator{messages: []claudecode.Message{message}}
-}
-func (client *fakeClient) Interrupt(context.Context) error { client.interrupts++; return nil }
 
-type fakeIterator struct{ messages []claudecode.Message }
+func (client *fakeClient) send(message claudecode.Message) { client.responses <- message }
 
-func (iterator *fakeIterator) Next(context.Context) (claudecode.Message, error) {
-	if len(iterator.messages) == 0 {
-		return nil, io.EOF
+func (client *fakeClient) drainReceived() {
+	for {
+		select {
+		case <-client.received:
+		default:
+			return
+		}
 	}
-	message := iterator.messages[0]
-	iterator.messages = iterator.messages[1:]
-	return message, nil
+}
+
+func (client *fakeClient) waitReceived() { <-client.received }
+
+func (client *fakeClient) session(index int) string {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return client.sessions[index]
+}
+
+func (client *fakeClient) sessionCount() int {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return len(client.sessions)
+}
+func (client *fakeClient) ReceiveResponse(context.Context) claudecode.MessageIterator {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	return &fakeIterator{responses: client.responses, received: client.received}
+}
+func (client *fakeClient) Interrupt(context.Context) error {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	client.interrupts++
+	return nil
+}
+
+type fakeIterator struct {
+	responses <-chan claudecode.Message
+	received  chan<- struct{}
+}
+
+func (iterator *fakeIterator) Next(ctx context.Context) (claudecode.Message, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case message := <-iterator.responses:
+		iterator.received <- struct{}{}
+		return message, nil
+	}
 }
 func (*fakeIterator) Close() error { return nil }

@@ -15,7 +15,7 @@ import (
 func TestSessionIsLazyAndReusesRuntime(t *testing.T) {
 	starts := 0
 	runtime := &fakeAppRuntime{}
-	session := newSession(func() (appRuntime, error) {
+	session := newSession(func(context.Context) (appRuntime, error) {
 		starts++
 		return runtime, nil
 	})
@@ -38,7 +38,7 @@ func TestSessionRestartsAfterRuntimeError(t *testing.T) {
 	crash := errors.New("crash")
 	runtimes := []*fakeAppRuntime{{turnErr: crash}, {}}
 	starts := 0
-	session := newSession(func() (appRuntime, error) {
+	session := newSession(func(context.Context) (appRuntime, error) {
 		runtime := runtimes[starts]
 		starts++
 		return runtime, nil
@@ -64,7 +64,7 @@ func TestSessionRestartsAfterRuntimeError(t *testing.T) {
 
 func TestSessionInterruptUsesRuntimeInterrupt(t *testing.T) {
 	runtime := &fakeAppRuntime{}
-	session := newSession(func() (appRuntime, error) { return runtime, nil })
+	session := newSession(func(context.Context) (appRuntime, error) { return runtime, nil })
 	if _, err := session.StartThread(); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,27 @@ func TestSessionInterruptUsesRuntimeInterrupt(t *testing.T) {
 	}
 	if _, err := session.StartThread(); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		t.Fatalf("start after interrupt = %v", err)
+	}
+}
+
+func TestSessionInterruptCancelsStartupWithoutHoldingMutex(t *testing.T) {
+	started := make(chan struct{})
+	session := newSession(func(ctx context.Context) (appRuntime, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := session.StartThread()
+		startResult <- err
+	}()
+	<-started
+	if err := session.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startResult; !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+		t.Fatalf("startup result = %v", err)
 	}
 }
 
@@ -102,7 +123,7 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 		}
 	}
 	starts := 0
-	session := newSession(func() (appRuntime, error) { starts++; return runtime, nil })
+	session := newSession(func(context.Context) (appRuntime, error) { starts++; return runtime, nil })
 	controller := NewController(repo, session)
 	ui := &controllerUI{controller: controller, ideas: []string{"one", "two"}}
 	err := RunInteractive(context.Background(), controller, ui, session.Interrupt)
@@ -128,7 +149,7 @@ func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
 	}}
 	runtimes := []*fakeAppRuntime{crashed, replacement}
 	starts := 0
-	session := newSession(func() (appRuntime, error) { runtime := runtimes[starts]; starts++; return runtime, nil })
+	session := newSession(func(context.Context) (appRuntime, error) { runtime := runtimes[starts]; starts++; return runtime, nil })
 	controller := NewController(repo, session)
 	ui := &controllerUI{controller: controller, ideas: []string{"crash", "restart"}, stopAfterInitialQuestion: true}
 	err := RunInteractive(context.Background(), controller, ui, session.Interrupt)

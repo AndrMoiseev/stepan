@@ -57,18 +57,20 @@ func run(ctx context.Context, args []string) int {
 	return 0
 }
 
-func runtimeFactory(config agentConfig, root string) func() (agentruntime.Runtime, error) {
+func runtimeFactory(config agentConfig, root string) func(context.Context) (agentruntime.Runtime, error) {
 	switch config.kind {
 	case agentClaude:
-		return func() (agentruntime.Runtime, error) {
-			return claudeapp.StartRuntime(claudeapp.Config{
+		return func(ctx context.Context) (agentruntime.Runtime, error) {
+			return claudeapp.StartRuntime(ctx, claudeapp.Config{
 				Executable:     config.executable,
 				Workspace:      root,
 				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
 			})
 		}
 	default:
-		return func() (agentruntime.Runtime, error) { return codexapp.StartRuntime(config.executable, root) }
+		return func(context.Context) (agentruntime.Runtime, error) {
+			return codexapp.StartRuntime(config.executable, root)
+		}
 	}
 }
 

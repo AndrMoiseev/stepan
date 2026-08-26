@@ -55,7 +55,7 @@ func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
 		}},
 	}}
 	starts := 0
-	session := newSession(func() (appRuntime, error) { starts++; return runtime, nil })
+	session := newSession(func(context.Context) (appRuntime, error) { starts++; return runtime, nil })
 	controller := NewController(repo, session)
 	ui := &acceptanceUI{t: t, controller: controller, first: first}
 	if err := RunInteractive(context.Background(), controller, ui, session.Interrupt); !errors.Is(err, ErrCanceled) {
@@ -107,7 +107,7 @@ func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 			writeAcceptanceFile(t, filepath.Join(target, "specification.md"), "unfinished")
 		}},
 	}}
-	session := newSession(func() (appRuntime, error) { return runtime, nil })
+	session := newSession(func(context.Context) (appRuntime, error) { return runtime, nil })
 	controller := NewController(repo, session)
 	if _, err := controller.StartIdea("brief"); err != nil {
 		t.Fatal(err)
@@ -125,7 +125,7 @@ func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 	assertMissing(t, filepath.Join(repo, ".stepan"))
 	assertMissing(t, filepath.Join(target, "state.json"))
 
-	fresh := newSession(func() (appRuntime, error) { return &acceptanceRuntime{t: t}, nil })
+	fresh := newSession(func(context.Context) (appRuntime, error) { return &acceptanceRuntime{t: t}, nil })
 	defer fresh.Close()
 	if progress := NewController(repo, fresh).Progress(); progress != (Progress{State: StateIdle}) {
 		t.Fatalf("new process resumed old flow: %#v", progress)
