@@ -241,7 +241,10 @@ func TestPermissionEvaluatorFailsClosed(t *testing.T) {
 }
 
 func TestPermissionEvaluatorResolvesEveryPathFromWorkspace(t *testing.T) {
-	workspace := t.TempDir()
+	workspace, err := canonicalDirectory(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeRoot := filepath.Join(workspace, "docs", "specs", "example")
 	if err := os.MkdirAll(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
