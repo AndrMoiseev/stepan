@@ -30,17 +30,18 @@ func pathWithin(root, candidate string) bool {
 	return !filepath.IsAbs(relative)
 }
 
-// resolvePath rejects lexical and symlink escapes, including a non-existing
-// target whose nearest existing ancestor is a symlink outside root.
-func resolvePath(root, supplied string) (string, error) {
+// resolveWorkspacePath resolves supplied relative paths from the canonical
+// workspace and rejects lexical and link-based escapes. The returned absolute
+// path is consequently the same path the CLI uses with WithCwd(workspace).
+func resolveWorkspacePath(workspace, supplied string) (string, error) {
 	if supplied == "" {
 		return "", fmt.Errorf("path is required")
 	}
 	candidate := filepath.Clean(supplied)
 	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(root, candidate)
+		candidate = filepath.Join(workspace, candidate)
 	}
-	if !pathWithin(root, candidate) {
+	if !pathWithin(workspace, candidate) {
 		return "", fmt.Errorf("path is outside workspace")
 	}
 	existing := candidate
@@ -57,14 +58,21 @@ func resolvePath(root, supplied string) (string, error) {
 		existing = parent
 	}
 	canonicalExisting, err := filepath.EvalSymlinks(existing)
-	if err != nil || !pathWithin(root, canonicalExisting) {
+	if err != nil || canonicalExisting != existing || !pathWithin(workspace, canonicalExisting) {
 		return "", fmt.Errorf("path escapes workspace through a link")
 	}
 	if _, err := os.Lstat(candidate); err == nil {
 		canonicalCandidate, err := filepath.EvalSymlinks(candidate)
-		if err != nil || !pathWithin(root, canonicalCandidate) {
+		if err != nil || canonicalCandidate != candidate || !pathWithin(workspace, canonicalCandidate) {
 			return "", fmt.Errorf("path escapes workspace through a link")
 		}
 	}
 	return candidate, nil
+}
+
+func pathWithinRoot(root, candidate string) error {
+	if !pathWithin(root, candidate) {
+		return fmt.Errorf("path is outside allowed root")
+	}
+	return nil
 }

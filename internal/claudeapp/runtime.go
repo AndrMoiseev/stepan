@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -38,11 +39,16 @@ type Runtime struct {
 
 	turnMu       sync.Mutex
 	stateMu      sync.Mutex
-	activePolicy *agentruntime.TurnPolicy
+	activePolicy *activePolicy
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error
 	nextSession  atomic.Uint64
+}
+
+type activePolicy struct {
+	policy       agentruntime.TurnPolicy
+	writableRoot string
 }
 
 var _ agentruntime.Runtime = (*Runtime)(nil)
@@ -89,7 +95,8 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, optio
 	if _, err := decodeJSONObject(options.OutputSchema); err != nil {
 		return nil, fmt.Errorf("output schema: %w", err)
 	}
-	if err := runtime.validatePolicy(options.Policy); err != nil {
+	policy, err := runtime.validatePolicy(options.Policy)
+	if err != nil {
 		return nil, fmt.Errorf("turn policy: %w", err)
 	}
 	if !runtime.turnMu.TryLock() {
@@ -101,7 +108,6 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, optio
 		runtime.stateMu.Unlock()
 		return nil, agentruntime.ErrRuntimeClosed
 	}
-	policy := options.Policy
 	runtime.activePolicy = &policy
 	runtime.stateMu.Unlock()
 	defer func() { runtime.stateMu.Lock(); runtime.activePolicy = nil; runtime.stateMu.Unlock() }()
@@ -151,13 +157,23 @@ func (runtime *Runtime) runtimeError(action string, err error) error {
 	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
 }
 
-func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy) error {
+func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy) (activePolicy, error) {
 	root, writable := policy.WritableRoot()
 	if !writable {
-		return nil
+		return activePolicy{policy: policy}, nil
 	}
-	_, err := resolvePath(runtime.workspace, root)
-	return err
+	canonicalRoot, err := resolveWorkspacePath(runtime.workspace, root)
+	if err != nil {
+		return activePolicy{}, err
+	}
+	info, err := os.Stat(canonicalRoot)
+	if err != nil {
+		return activePolicy{}, err
+	}
+	if !info.IsDir() {
+		return activePolicy{}, errors.New("writable root is not a directory")
+	}
+	return activePolicy{policy: policy, writableRoot: canonicalRoot}, nil
 }
 
 func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
@@ -173,24 +189,26 @@ func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[str
 	return claudecode.NewPermissionResultAllow(), nil
 }
 
-func permitTool(name string, input map[string]any, policy agentruntime.TurnPolicy, workspace string) error {
+func permitTool(name string, input map[string]any, policy activePolicy, workspace string) error {
 	path, err := toolPath(name, input)
 	if err != nil {
 		return err
 	}
-	root, writable := policy.WritableRoot()
+	candidate, err := resolveWorkspacePath(workspace, path)
+	if err != nil {
+		return err
+	}
 	if name == "Write" || name == "Edit" {
+		_, writable := policy.policy.WritableRoot()
 		if !writable {
 			return errors.New("write denied in read-only turn")
 		}
-		_, err = resolvePath(root, path)
-		return err
+		return pathWithinRoot(policy.writableRoot, candidate)
 	}
 	if name != "Read" && name != "Glob" && name != "Grep" {
 		return fmt.Errorf("tool %q is not allowed", name)
 	}
-	_, err = resolvePath(workspace, path)
-	return err
+	return nil
 }
 
 func toolPath(name string, input map[string]any) (string, error) {
@@ -200,9 +218,13 @@ func toolPath(name string, input map[string]any) (string, error) {
 	field := "file_path"
 	if name == "Glob" || name == "Grep" {
 		field = "path"
-		if input[field] == nil {
-			return ".", nil
-		}
+	}
+	otherField := "path"
+	if field == "path" {
+		otherField = "file_path"
+	}
+	if _, ambiguous := input[otherField]; ambiguous {
+		return "", fmt.Errorf("tool %s has ambiguous path fields", name)
 	}
 	value, ok := input[field].(string)
 	if !ok || value == "" {

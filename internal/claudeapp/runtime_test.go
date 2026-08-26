@@ -138,20 +138,106 @@ func TestPermissionEvaluatorFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := permitTool("Read", map[string]any{"file_path": inside}, agentruntime.ReadOnlyTurnPolicy(), workspace); err != nil {
+	readOnly := activePolicy{policy: agentruntime.ReadOnlyTurnPolicy()}
+	write := activePolicy{policy: writePolicy, writableRoot: writeRoot}
+	if err := permitTool("Read", map[string]any{"file_path": inside}, readOnly, workspace); err != nil {
 		t.Fatalf("read inside: %v", err)
 	}
-	if err := permitTool("Read", map[string]any{"file_path": outside}, agentruntime.ReadOnlyTurnPolicy(), workspace); err == nil {
+	if err := permitTool("Read", map[string]any{"file_path": outside}, readOnly, workspace); err == nil {
 		t.Fatal("read outside was allowed")
 	}
-	if err := permitTool("Write", map[string]any{"file_path": filepath.Join(writeRoot, "new.md")}, agentruntime.ReadOnlyTurnPolicy(), workspace); err == nil {
+	if err := permitTool("Write", map[string]any{"file_path": filepath.Join(writeRoot, "new.md")}, readOnly, workspace); err == nil {
 		t.Fatal("read-only write was allowed")
 	}
-	if err := permitTool("Write", map[string]any{"file_path": filepath.Join(writeRoot, "new.md")}, writePolicy, workspace); err != nil {
+	if err := permitTool("Write", map[string]any{"file_path": filepath.Join(writeRoot, "new.md")}, write, workspace); err != nil {
 		t.Fatalf("write inside root: %v", err)
 	}
-	if err := permitTool("Bash", map[string]any{"command": "whoami"}, writePolicy, workspace); err == nil {
+	if err := permitTool("Bash", map[string]any{"command": "whoami"}, write, workspace); err == nil {
 		t.Fatal("Bash was allowed")
+	}
+}
+
+func TestPermissionEvaluatorResolvesEveryPathFromWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	writeRoot := filepath.Join(workspace, "docs", "specs", "example")
+	if err := os.MkdirAll(writeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(writeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := activePolicy{policy: policy, writableRoot: writeRoot}
+	readOnly := activePolicy{policy: agentruntime.ReadOnlyTurnPolicy()}
+
+	if err := permitTool("Write", map[string]any{"file_path": "specification.md"}, active, workspace); err == nil {
+		t.Fatal("relative write was resolved from writable root")
+	}
+	for _, path := range []string{
+		"docs/specs/example/specification.md",
+		filepath.Join(writeRoot, "specification.md"),
+	} {
+		if err := permitTool("Write", map[string]any{"file_path": path}, active, workspace); err != nil {
+			t.Fatalf("write %q: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		"../outside.md",
+		filepath.Join(t.TempDir(), "outside.md"),
+		filepath.Join(workspace, "other.md"),
+	} {
+		if err := permitTool("Edit", map[string]any{"file_path": path}, active, workspace); err == nil {
+			t.Fatalf("write escape %q was allowed", path)
+		}
+	}
+	for _, tool := range []string{"Read", "Glob", "Grep"} {
+		field := "file_path"
+		if tool != "Read" {
+			field = "path"
+		}
+		if err := permitTool(tool, map[string]any{field: "docs/specs/example/specification.md"}, readOnly, workspace); err != nil {
+			t.Fatalf("%s inside workspace: %v", tool, err)
+		}
+		if err := permitTool(tool, map[string]any{field: "../outside.md"}, readOnly, workspace); err == nil {
+			t.Fatalf("%s outside workspace was allowed", tool)
+		}
+	}
+	if err := permitTool("Edit", map[string]any{"file_path": "docs/specs/example/specification.md"}, readOnly, workspace); err == nil {
+		t.Fatal("read-only edit was allowed")
+	}
+}
+
+func TestPermissionEvaluatorRejectsMalformedToolPaths(t *testing.T) {
+	workspace := t.TempDir()
+	writeRoot := filepath.Join(workspace, "docs")
+	if err := os.Mkdir(writeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(writeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := activePolicy{policy: policy, writableRoot: writeRoot}
+	for _, tool := range []string{"Read", "Write", "Edit", "Glob", "Grep"} {
+		field := "file_path"
+		other := "path"
+		if tool == "Glob" || tool == "Grep" {
+			field, other = other, field
+		}
+		for _, input := range []map[string]any{
+			nil,
+			{},
+			{field: nil},
+			{field: 1},
+			{field: "docs/file.md", other: "docs/other.md"},
+		} {
+			if err := permitTool(tool, input, active, workspace); err == nil {
+				t.Fatalf("%s accepted malformed input %#v", tool, input)
+			}
+		}
+	}
+	if err := permitTool("Bash", map[string]any{"file_path": "docs/file.md"}, active, workspace); err == nil {
+		t.Fatal("unknown tool was allowed")
 	}
 }
 
