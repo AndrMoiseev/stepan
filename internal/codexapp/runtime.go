@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 var (
-	ErrRuntimeClosed   = errors.New("App Server runtime closed")
-	ErrTurnInterrupted = errors.New("turn interrupted by operator")
-	ErrAppServerExited = errors.New("App Server exited unexpectedly")
+	ErrRuntimeClosed   = agentruntime.ErrRuntimeClosed
+	ErrTurnInterrupted = agentruntime.ErrTurnInterrupted
+	ErrAppServerExited = agentruntime.ErrRuntimeExited
 )
 
 const interruptGracePeriod = 3 * time.Second
@@ -59,7 +61,7 @@ func StartRuntime(executable, workspace string) (*Runtime, error) {
 	return runtime, nil
 }
 
-func (runtime *Runtime) StartThread() (*Thread, error) {
+func (runtime *Runtime) StartThread() (agentruntime.Thread, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
@@ -67,13 +69,19 @@ func (runtime *Runtime) StartThread() (*Thread, error) {
 	return thread, runtime.classify(err)
 }
 
-func (runtime *Runtime) RunTurn(thread *Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
+func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
-	output, err := runtime.connection.RunTurn(thread, prompt, options)
+	codexThread, ok := thread.(*Thread)
+	if !ok {
+		return nil, errors.New("invalid Codex thread handle")
+	}
+	output, err := runtime.connection.RunTurn(codexThread, prompt, options)
 	return output, runtime.classify(err)
 }
+
+var _ agentruntime.Runtime = (*Runtime)(nil)
 
 // Interrupt sends turn/interrupt when a turn ID exists, waits only for its
 // terminal path, and always closes the contained process tree.

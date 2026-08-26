@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: Test and build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-amd64
+            goos: windows
+            goarch: amd64
+            binary: stepan.exe
+            archive: dist/stepan-windows-amd64.zip
+          - runner: macos-15
+            target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            binary: stepan
+            archive: dist/stepan-darwin-arm64.tar.gz
+
+    env:
+      CGO_ENABLED: "0"
+      GOFLAGS: -mod=readonly
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Verify runner target
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $actual = "$(go env GOOS)/$(go env GOARCH)"
+          $expected = "${{ matrix.goos }}/${{ matrix.goarch }}"
+          if ($actual -ne $expected) {
+            throw "unexpected Go target: $actual; expected $expected"
+          }
+          go version
+
+      - name: Verify runner target
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(go env GOOS)/$(go env GOARCH)"
+          expected="${{ matrix.goos }}/${{ matrix.goarch }}"
+          if [[ "$actual" != "$expected" ]]; then
+            printf 'unexpected Go target: %s; expected %s\n' "$actual" "$expected" >&2
+            exit 1
+          fi
+          go version
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Build
+        run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.binary }}" ./cmd/stepan
+
+      - name: Package Windows artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $packageRoot = "dist/${{ matrix.target }}"
+          New-Item -ItemType Directory -Force $packageRoot | Out-Null
+          Move-Item -LiteralPath "${{ matrix.binary }}" -Destination "$packageRoot/${{ matrix.binary }}"
+
+          $hash = (Get-FileHash -Algorithm SHA256 "$packageRoot/${{ matrix.binary }}").Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.binary }}" | Set-Content -Encoding ascii "$packageRoot/SHA256SUMS"
+          @(
+            "commit=${{ github.sha }}"
+            "go=$(go version)"
+            "target=${{ matrix.goos }}/${{ matrix.goarch }}"
+          ) | Set-Content -Encoding ascii "$packageRoot/BUILD-INFO.txt"
+
+          Compress-Archive -LiteralPath $packageRoot -DestinationPath "${{ matrix.archive }}"
+
+      - name: Package macOS artifact
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_root="dist/${{ matrix.target }}"
+          mkdir -p "$package_root"
+          mv "${{ matrix.binary }}" "$package_root/${{ matrix.binary }}"
+          chmod 0755 "$package_root/${{ matrix.binary }}"
+          (
+            cd "$package_root"
+            shasum -a 256 "${{ matrix.binary }}" > SHA256SUMS
+            printf 'commit=%s\ngo=%s\ntarget=%s/%s\n' \
+              '${{ github.sha }}' "$(go version)" '${{ matrix.goos }}' '${{ matrix.goarch }}' \
+              > BUILD-INFO.txt
+          )
+          archive="$PWD/${{ matrix.archive }}"
+          tar -C dist -czf "$archive" "${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: stepan-${{ matrix.target }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 30
+          archive: false

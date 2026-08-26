@@ -11,6 +11,9 @@ import (
 var getConsoleMode = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleMode")
 
 func isConsole(file *os.File) bool {
+	if file == nil {
+		return false
+	}
 	var mode uint32
 	ok, _, _ := getConsoleMode.Call(file.Fd(), uintptr(unsafe.Pointer(&mode)))
 	return ok != 0

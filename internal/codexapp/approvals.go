@@ -161,7 +161,10 @@ func normalizePolicy(policy AccessPolicy, workspace string) (normalizedPolicy, e
 		return normalizedPolicy{}, fmt.Errorf("protected paths: %w", err)
 	}
 	for _, pattern := range policy.ProtectedPatterns {
-		pattern = filepath.ToSlash(filepath.Clean(pattern))
+		pattern, err = normalizeProtectedPattern(pattern)
+		if err != nil {
+			return normalizedPolicy{}, fmt.Errorf("protected pattern %q: %w", pattern, err)
+		}
 		if filepath.Separator == '\\' {
 			pattern = strings.ToLower(pattern)
 		}
@@ -196,6 +199,41 @@ func normalizePolicy(policy AccessPolicy, workspace string) (normalizedPolicy, e
 	}
 	sort.Slice(result.OperatorDecisions, func(i, j int) bool { return result.OperatorDecisions[i] < result.OperatorDecisions[j] })
 	return result, nil
+}
+
+// normalizeProtectedPattern resolves the non-glob prefix of an absolute
+// pattern. This keeps matching stable when a platform exposes /var through a
+// symlink such as /private/var.
+func normalizeProtectedPattern(pattern string) (string, error) {
+	pattern = filepath.Clean(pattern)
+	if filepath.IsAbs(pattern) {
+		prefix, suffix := protectedPatternPrefix(pattern)
+		canonical, err := canonicalPath(prefix)
+		if err != nil {
+			return "", err
+		}
+		pattern = filepath.Join(append([]string{canonical}, suffix...)...)
+	}
+	return filepath.ToSlash(pattern), nil
+}
+
+func protectedPatternPrefix(pattern string) (string, []string) {
+	volume := filepath.VolumeName(pattern)
+	remainder := strings.TrimPrefix(pattern, volume)
+	components := strings.FieldsFunc(remainder, func(r rune) bool { return r == filepath.Separator })
+	for index, component := range components {
+		if strings.ContainsAny(component, "*?[") {
+			prefix := volume
+			if filepath.IsAbs(pattern) {
+				prefix += string(filepath.Separator)
+			}
+			for _, static := range components[:index] {
+				prefix = filepath.Join(prefix, static)
+			}
+			return prefix, components[index:]
+		}
+	}
+	return pattern, nil
 }
 
 func normalizePaths(paths []string) ([]string, error) {

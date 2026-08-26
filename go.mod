@@ -2,7 +2,11 @@ module github.com/AndrMoiseev/stepan
 
 go 1.26.5
 
-require charm.land/huh/v2 v2.0.3
+require (
+	charm.land/huh/v2 v2.0.3
+	github.com/charmbracelet/x/term v0.2.2
+	github.com/severity1/claude-agent-sdk-go v0.6.22
+)
 
 require (
 	charm.land/bubbles/v2 v2.0.0 // indirect
@@ -15,7 +19,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/exp/ordered v0.1.0 // indirect
 	github.com/charmbracelet/x/exp/strings v0.0.0-20240722160745-212f7b056ed0 // indirect
-	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect

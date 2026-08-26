@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 func TestInitialClarificationQuestionAnswerReady(t *testing.T) {
@@ -139,7 +139,7 @@ func TestCreateDraftHappyPathPreservesDirtyBaseline(t *testing.T) {
 			if turn.prompt != CreatePrompt(target) || string(turn.option.OutputSchema) != string(CreateSchema()) {
 				return errors.New("wrong create prompt or schema")
 			}
-			wantPolicy, err := codexapp.SingleWriteRootTurnPolicy(target)
+			wantPolicy, err := agentruntime.SingleWriteRootTurnPolicy(target)
 			if err != nil || turn.option.Policy != wantPolicy {
 				return errors.New("write policy does not contain exactly the target")
 			}
@@ -202,7 +202,7 @@ func TestCreateDraftRevalidatesSpecIDBeforeWrite(t *testing.T) {
 	repo := initDraftRepository(t)
 	runner := &fakeInitialRunner{}
 	controller := NewController(repo, runner)
-	controller.state, controller.specID, controller.thread = StateReadyToWrite, "CON", &codexapp.Thread{ID: "thread"}
+	controller.state, controller.specID, controller.thread = StateReadyToWrite, "CON", &testThread{ID: "thread"}
 	if _, err := controller.CreateDraft(context.Background()); err == nil || !strings.Contains(err.Error(), "reserved Windows device name") {
 		t.Fatalf("invalid spec-id error = %v", err)
 	}
@@ -310,7 +310,7 @@ func TestDraftQuestionRereadsManualEditAndReturnsToDraft(t *testing.T) {
 			if turn.prompt != QuestionPrompt("Which version?") || !strings.Contains(turn.prompt, "Сначала заново прочитай текущие файлы спецификации с\nдиска") {
 				return errors.New("question prompt does not require rereading disk")
 			}
-			if string(turn.option.OutputSchema) != string(QuestionSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+			if string(turn.option.OutputSchema) != string(QuestionSchema()) || turn.option.Policy != agentruntime.ReadOnlyTurnPolicy() {
 				return errors.New("question turn is not strict read-only")
 			}
 			return nil
@@ -481,7 +481,7 @@ func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
 			if err != nil || string(data) != "manual edit before analysis" {
 				return fmt.Errorf("analysis did not read current specification: %q, %v", data, err)
 			}
-			if turn.prompt != ChangePrompt("Apply direct change") || string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+			if turn.prompt != ChangePrompt("Apply direct change") || string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != agentruntime.ReadOnlyTurnPolicy() {
 				return errors.New("first change analysis is not strict read-only")
 			}
 			// Simulate an unrelated user edit while analysis is running. The update
@@ -492,7 +492,7 @@ func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
 			if turn.prompt != UpdatePrompt(target) || string(turn.option.OutputSchema) != string(UpdateSchema()) {
 				return errors.New("wrong update prompt or schema")
 			}
-			policy, err := codexapp.SingleWriteRootTurnPolicy(target)
+			policy, err := agentruntime.SingleWriteRootTurnPolicy(target)
 			if err != nil || turn.option.Policy != policy {
 				return errors.New("update did not receive exactly one write root")
 			}
@@ -663,7 +663,7 @@ func assertChangeAnalysis(entrypoint, content, suffix string) func(fakeInitialTu
 		if !strings.HasSuffix(turn.prompt, suffix) || !strings.Contains(turn.prompt, "заново прочитай текущие файлы спецификации") {
 			return errors.New("analysis prompt does not reread current specification")
 		}
-		if string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+		if string(turn.option.OutputSchema) != string(ChangeSchema()) || turn.option.Policy != agentruntime.ReadOnlyTurnPolicy() {
 			return errors.New("change analysis is not strict read-only")
 		}
 		return nil
@@ -677,9 +677,9 @@ type fakeInitialStep struct {
 }
 
 type fakeInitialTurn struct {
-	thread *codexapp.Thread
+	thread *testThread
 	prompt string
-	option codexapp.TurnOptions
+	option agentruntime.TurnOptions
 }
 
 type fakeInitialRunner struct {
@@ -689,17 +689,21 @@ type fakeInitialRunner struct {
 	startErr error
 }
 
-func (runner *fakeInitialRunner) StartThread() (*codexapp.Thread, error) {
+func (runner *fakeInitialRunner) StartThread() (agentruntime.Thread, error) {
 	id := "thread-" + string(rune('1'+len(runner.starts)))
 	runner.starts = append(runner.starts, id)
 	if runner.startErr != nil {
 		return nil, runner.startErr
 	}
-	return &codexapp.Thread{ID: id}, nil
+	return &testThread{ID: id}, nil
 }
 
-func (runner *fakeInitialRunner) RunTurn(thread *codexapp.Thread, prompt string, option codexapp.TurnOptions) (json.RawMessage, error) {
-	turn := fakeInitialTurn{thread: thread, prompt: prompt, option: option}
+func (runner *fakeInitialRunner) RunTurn(thread agentruntime.Thread, prompt string, option agentruntime.TurnOptions) (json.RawMessage, error) {
+	codexThread, ok := thread.(*testThread)
+	if !ok {
+		return nil, fmt.Errorf("unexpected thread type %T", thread)
+	}
+	turn := fakeInitialTurn{thread: codexThread, prompt: prompt, option: option}
 	runner.turns = append(runner.turns, turn)
 	if len(runner.turns) > len(runner.steps) {
 		return nil, errors.New("unexpected turn")
@@ -719,7 +723,7 @@ func assertReadOnlyInitialTurns(t *testing.T, turns []fakeInitialTurn) {
 		if string(turn.option.OutputSchema) != string(InitialSchema()) {
 			t.Errorf("turn %d used another schema", index)
 		}
-		if turn.option.Policy != codexapp.ReadOnlyTurnPolicy() {
+		if turn.option.Policy != agentruntime.ReadOnlyTurnPolicy() {
 			t.Errorf("turn %d was not read-only", index)
 		}
 	}
@@ -742,7 +746,11 @@ func initDraftRepository(t *testing.T) string {
 	}
 	draftGit(t, repo, "add", "-A")
 	draftGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "initial")
-	return repo
+	canonical, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
 }
 
 func draftGit(t *testing.T, repo string, args ...string) string {

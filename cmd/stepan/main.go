@@ -8,16 +8,26 @@ import (
 	"os/signal"
 	"runtime"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/claudeapp"
+	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	os.Exit(run(ctx))
+	os.Exit(run(ctx, os.Args[1:]))
 }
 
-func run(ctx context.Context) int {
+func run(ctx context.Context, args []string) int {
+	config, err := parseAgentConfig(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start Stepan:", err)
+		fmt.Fprintln(os.Stderr, usageText)
+		return 2
+	}
 	if err := preflight(runtime.GOOS, runtime.GOARCH, os.Stdin, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "start Stepan:", err)
 		return 2
@@ -33,7 +43,7 @@ func run(ctx context.Context) int {
 		return 2
 	}
 
-	session := specflow.NewSession("codex", root)
+	session := specflow.NewSession(runtimeFactory(config, root))
 	defer session.Close()
 	controller := specflow.NewController(root, session)
 	err = specflow.RunInteractive(ctx, controller, specflow.NewUI(controller), session.Interrupt)
@@ -47,15 +57,38 @@ func run(ctx context.Context) int {
 	return 0
 }
 
+func runtimeFactory(config agentConfig, root string) func(context.Context) (agentruntime.Runtime, error) {
+	switch config.kind {
+	case agentClaude:
+		return func(ctx context.Context) (agentruntime.Runtime, error) {
+			return claudeapp.StartRuntime(ctx, claudeapp.Config{
+				Executable:     config.executable,
+				Workspace:      root,
+				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
+			})
+		}
+	default:
+		return func(context.Context) (agentruntime.Runtime, error) {
+			return codexapp.StartRuntime(config.executable, root)
+		}
+	}
+}
+
 func preflight(goos, goarch string, stdin, stdout *os.File) error {
-	if goos != "windows" || goarch != "amd64" {
-		return fmt.Errorf("unsupported platform %s/%s: require windows/amd64", goos, goarch)
+	if err := platformsupport.Validate(goos, goarch); err != nil {
+		return err
 	}
 	if !isConsole(stdin) {
-		return errors.New("stdin must be a Windows console terminal")
+		if goos == "windows" {
+			return errors.New("stdin must be a Windows console terminal")
+		}
+		return errors.New("stdin must be a terminal")
 	}
 	if !isConsole(stdout) {
-		return errors.New("stdout must be a Windows console terminal")
+		if goos == "windows" {
+			return errors.New("stdout must be a Windows console terminal")
+		}
+		return errors.New("stdout must be a terminal")
 	}
 	return nil
 }

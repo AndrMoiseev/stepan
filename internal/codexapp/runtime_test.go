@@ -108,8 +108,10 @@ func TestRuntimeCrashRequiresNewRuntimeAndThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if oldPID == fresh.process.command.Process.Pid || oldThread.ID == newThread.ID || newThread.ID != "thread-new" {
-		t.Fatalf("old/new thread IDs = %q/%q", oldThread.ID, newThread.ID)
+	oldCodexThread := oldThread.(*Thread)
+	newCodexThread := newThread.(*Thread)
+	if oldPID == fresh.process.command.Process.Pid || oldCodexThread.ID == newCodexThread.ID || newCodexThread.ID != "thread-new" {
+		t.Fatalf("old/new thread IDs = %q/%q", oldCodexThread.ID, newCodexThread.ID)
 	}
 }
 
@@ -141,5 +143,5 @@ func startRuntimeTurn(t *testing.T, scenario string) (*Runtime, *Thread, <-chan 
 		}
 		time.Sleep(time.Millisecond)
 	}
-	return runtime, thread, turnErr
+	return runtime, thread.(*Thread), turnErr
 }

@@ -4,6 +4,10 @@
 
 Дата: 2026-08-13
 
+Обновлено: 2026-08-24 после принятия ADR 0003
+
+Разделы о provider boundary и Claude дополняет [ADR 0004](0004-claude-cli-runtime.md).
+
 ## Контекст
 
 Перед выбором целевой архитектуры нужно зафиксировать уже реализованную систему.
@@ -15,7 +19,7 @@
 
 Текущая архитектура Stepan — локальный **модульный монолит** с одной основной
 CLI-программой, синхронной машиной состояний workflow и инфраструктурными
-адаптерами к Codex, Git и Windows API.
+адаптерами к Codex, Git и платформенным API управления процессами.
 
 ### Стек
 
@@ -23,16 +27,16 @@ CLI-программой, синхронной машиной состояний
 |---|---|
 | Язык и toolchain | Go `1.26.5` |
 | Пользовательский интерфейс | Интерактивный terminal UI на `charm.land/huh/v2 v2.0.3` |
-| Агентский runtime | Внешний `codex-cli 0.147.0`, `codex app-server --stdio` |
+| Агентский runtime | Codex App Server; Claude Code-совместимый CLI через SDK v0.6.22 |
 | IPC | JSON-RPC поверх UTF-8 JSONL в `stdin`/`stdout` |
 | Контракты ответов | JSON Schema 2020-12 и строгая декодировка в Go |
 | Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/specs/` |
-| Изоляция процессов | Windows Job Object; поддерживаемая платформа — Windows/amd64 |
+| Изоляция процессов | Windows Job Object или Darwin process group; Windows/amd64 и macOS/arm64 |
 | Тесты | `go test`, стандартный пакет `testing`, fake/replay App Server |
 
-Единственная прямая runtime-зависимость приложения — `huh`; остальные
-UI-библиотеки приходят транзитивно. Базы данных, серверного API, контейнерной
-инфраструктуры и собственного model runtime нет.
+Прямые UI/runtime-зависимости приложения — `huh` и TTY detector `x/term`;
+остальные UI-библиотеки приходят транзитивно. Базы данных, серверного API,
+контейнерной инфраструктуры и собственного model runtime нет.
 
 ### Компоненты и зависимости
 
@@ -40,13 +44,18 @@ UI-библиотеки приходят транзитивно. Базы дан
 flowchart LR
     User[Пользователь] --> CLI[cmd/stepan]
     CLI --> Flow[internal/specflow]
-    Flow --> App[internal/codexapp]
+    Flow --> Contract[internal/agentruntime]
+    Contract --> App[internal/codexapp]
+    Contract --> Claude[internal/claudeapp]
     Flow --> Git[internal/gitsnapshot]
     App --> Job[internal/processjob]
+    CLI --> Platform[internal/platformsupport]
     App --> Legacy[internal/codexexec\nversion check]
     App <-->|JSON-RPC / JSONL over stdio| Codex[codex app-server]
+    Claude <-->|SDK standard subprocess transport| ClaudeCLI[Claude-compatible CLI]
     Git --> GitCLI[git CLI]
     Job --> Win[Windows Job Object]
+    Job --> Mac[Darwin process group]
 
     Probe1[cmd/codex-appserver-probe] --> App
     Probe2[cmd/codex-probe] --> Legacy
@@ -56,15 +65,20 @@ flowchart LR
 `cmd/stepan → specflow → infrastructure`. Обратных импортов из инфраструктурных
 пакетов в `specflow` нет.
 
-- `cmd/stepan` — composition root, platform/terminal preflight и обработка
-  завершения процесса.
+- `cmd/stepan` — composition root, provider/CLI preflight, platform/terminal
+  preflight и обработка завершения процесса.
 - `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
   prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
 - `internal/codexapp` — lifecycle App Server, JSON-RPC transport, thread/turn,
   correlation, structured output и fail-closed approval policy.
+- `internal/agentruntime` — provider-neutral contract session/thread, turn,
+  policy и lifecycle.
+- `internal/claudeapp` — Claude SDK adapter с exact tool allowlist и
+  turn-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
   сравнение до/после turn и проверка write boundary.
 - `internal/processjob` — завершение всего дерева дочерних процессов.
+- `internal/platformsupport` — единая матрица поддерживаемых OS/architecture.
 - `internal/codexexec` — legacy spike/evidence для `codex exec`; основной путь
   переиспользует из него только проверку версии Codex.
 - `cmd/codex-probe` и `cmd/codex-appserver-probe` — диагностические программы,
@@ -114,7 +128,9 @@ in-memory approvals.
   `specification.md` и Git write boundary.
 - Ошибка протокола, approval или containment закрывает текущий flow без
   автоматического retry.
-- Закрытие runtime завершает всё дерево App Server через Job Object.
+- Закрытие Codex runtime завершает контролируемое дерево App Server через
+  платформенный supervisor: Job Object на Windows или process group на macOS.
+  Claude runtime ограничен SDK `Disconnect`; принятый риск описан ADR 0004.
 
 ## Последствия
 
@@ -127,8 +143,9 @@ in-memory approvals.
   доверии к тексту агента.
 - Текущий runtime нельзя считать восстанавливаемым или воспроизводимым:
   состояние эфемерно, а используется пользовательский профиль Codex.
-- Несмотря на `job_other.go`, пользовательский executable намеренно допускает
-  только Windows/amd64.
+- Пользовательский executable допускает Windows/amd64 и macOS/arm64. На macOS
+  process group не удерживает потомков, которые намеренно вызвали `setsid` или
+  сменили группу; это ограничение принято ADR 0003.
 
 ## Отложено до выбора целевой архитектуры
 
@@ -136,7 +153,7 @@ in-memory approvals.
 - граница поддержки других agent CLI;
 - durable state, event log, resume и recovery;
 - изоляция Codex profile и source-blind roles;
-- Linux/macOS;
+- Linux и Intel Mac;
 - параллельное выполнение и workspaces;
 - необходимость service mode, БД или сетевого API.
 
@@ -159,4 +176,6 @@ baseline.
 - [`internal/gitsnapshot`](../../internal/gitsnapshot/)
 - [`internal/processjob`](../../internal/processjob/)
 - [ADR 0001](0001-codex-app-server-containment.md)
+- [ADR 0003](0003-macos-process-containment.md)
+- [ADR 0004](0004-claude-cli-runtime.md)
 - [Спецификация итерации 1](../specs/iteration-1/specification.md)

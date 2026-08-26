@@ -1,0 +1,410 @@
+package claudeapp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	claudecode "github.com/severity1/claude-agent-sdk-go"
+)
+
+type client interface {
+	Connect(context.Context, ...claudecode.StreamMessage) error
+	Disconnect() error
+	QueryWithSession(context.Context, string, string) error
+	ReceiveResponse(context.Context) claudecode.MessageIterator
+	Interrupt(context.Context) error
+}
+
+type clientFactory func(context.Context, ...claudecode.Option) client
+
+type thread struct {
+	runtime   *Runtime
+	sessionID string
+}
+
+// Runtime has no process-tree containment in v1. It deliberately uses the
+// SDK's standard subprocess transport; direct CLI close is manually tested.
+type Runtime struct {
+	client        client
+	workspace     string
+	ctx           context.Context
+	cancel        context.CancelFunc
+	responses     claudecode.MessageIterator
+	receiverDone  chan struct{}
+	receiverClose sync.Once
+
+	turnMu       sync.Mutex
+	stateMu      sync.Mutex
+	activePolicy *activePolicy
+	activeQuery  *responseQuery
+	unhealthy    bool
+	closed       bool
+	closeOnce    sync.Once
+	closeErr     error
+	nextSession  atomic.Uint64
+}
+
+type responseQuery struct {
+	sessionID string
+	done      chan struct{}
+	output    json.RawMessage
+	err       error
+	terminal  bool
+}
+
+type activePolicy struct {
+	policy       agentruntime.TurnPolicy
+	writableRoot string
+}
+
+var _ agentruntime.Runtime = (*Runtime)(nil)
+
+func StartRuntime(ctx context.Context, config Config) (*Runtime, error) {
+	return startRuntime(ctx, config, func(_ context.Context, options ...claudecode.Option) client { return claudecode.NewClient(options...) })
+}
+
+func startRuntime(ctx context.Context, config Config, factory clientFactory) (*Runtime, error) {
+	validated, schema, err := validateConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, agentruntime.ErrRuntimeClosed
+	}
+	lifecycle, cancel := context.WithCancel(ctx)
+	runtime := &Runtime{workspace: validated.Workspace, ctx: lifecycle, cancel: cancel}
+	runtime.client = factory(lifecycle, claudeOptions(validated, schema, runtime.canUseTool)...)
+	if runtime.client == nil {
+		cancel()
+		return nil, errors.New("Claude client factory returned nil")
+	}
+	if err := runtime.client.Connect(lifecycle); err != nil {
+		cancel()
+		cleanupErr := runtime.client.Disconnect()
+		return nil, fmt.Errorf("connect Claude CLI %q: %w", validated.Executable, errors.Join(err, cleanupErr))
+	}
+	if err := lifecycle.Err(); err != nil {
+		_ = runtime.client.Disconnect()
+		return nil, agentruntime.ErrRuntimeClosed
+	}
+	runtime.responses = runtime.client.ReceiveResponse(lifecycle)
+	if runtime.responses == nil {
+		cancel()
+		_ = runtime.client.Disconnect()
+		return nil, errors.New("Claude response iterator is nil")
+	}
+	runtime.receiverDone = make(chan struct{})
+	go runtime.receiveResponses()
+	return runtime, nil
+}
+
+func (runtime *Runtime) StartThread() (agentruntime.Thread, error) {
+	runtime.stateMu.Lock()
+	defer runtime.stateMu.Unlock()
+	if runtime.closed {
+		return nil, agentruntime.ErrRuntimeClosed
+	}
+	id := runtime.nextSession.Add(1)
+	return &thread{runtime: runtime, sessionID: fmt.Sprintf("stepan-%d", id)}, nil
+}
+
+func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
+	options = options.Clone()
+	item, ok := handle.(*thread)
+	if !ok || item == nil || item.runtime != runtime || item.sessionID == "" {
+		return nil, errors.New("invalid Claude thread handle")
+	}
+	if prompt == "" {
+		return nil, errors.New("turn prompt is required")
+	}
+	if _, err := decodeJSONObject(options.OutputSchema); err != nil {
+		return nil, fmt.Errorf("output schema: %w", err)
+	}
+	policy, err := runtime.validatePolicy(options.Policy)
+	if err != nil {
+		return nil, fmt.Errorf("turn policy: %w", err)
+	}
+	if !runtime.turnMu.TryLock() {
+		return nil, agentruntime.ErrTurnInProgress
+	}
+	defer runtime.turnMu.Unlock()
+	runtime.stateMu.Lock()
+	if runtime.closed {
+		runtime.stateMu.Unlock()
+		return nil, agentruntime.ErrRuntimeClosed
+	}
+	if runtime.unhealthy {
+		runtime.stateMu.Unlock()
+		return nil, agentruntime.ErrRuntimeExited
+	}
+	runtime.activePolicy = &policy
+	query := &responseQuery{sessionID: item.sessionID, done: make(chan struct{})}
+	runtime.activeQuery = query
+	runtime.stateMu.Unlock()
+	defer func() {
+		runtime.stateMu.Lock()
+		if runtime.activeQuery == query {
+			runtime.activeQuery = nil
+		}
+		runtime.activePolicy = nil
+		runtime.stateMu.Unlock()
+	}()
+
+	ctx := runtime.ctx
+	if err := runtime.client.QueryWithSession(ctx, prompt, item.sessionID); err != nil {
+		return nil, runtime.runtimeError("send turn", err)
+	}
+	select {
+	case <-query.done:
+	case <-ctx.Done():
+		return nil, runtime.runtimeError("receive turn", ctx.Err())
+	}
+	runtime.stateMu.Lock()
+	output, err := append(json.RawMessage(nil), query.output...), query.err
+	if runtime.unhealthy && err == nil {
+		err = agentruntime.ErrRuntimeExited
+	}
+	runtime.stateMu.Unlock()
+	if err != nil {
+		return nil, runtime.runtimeError("receive turn", err)
+	}
+	return output, nil
+}
+
+func (runtime *Runtime) Interrupt() error {
+	runtime.stateMu.Lock()
+	closed := runtime.closed
+	runtime.stateMu.Unlock()
+	if closed {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	err := runtime.client.Interrupt(ctx)
+	cancel()
+	closeErr := runtime.Close()
+	if err != nil {
+		return fmt.Errorf("interrupt Claude turn: %w", err)
+	}
+	return closeErr
+}
+
+func (runtime *Runtime) Close() error {
+	runtime.closeOnce.Do(func() {
+		runtime.stateMu.Lock()
+		runtime.closed = true
+		runtime.stateMu.Unlock()
+		runtime.cancel()
+		runtime.closeResponseIterator()
+		if runtime.receiverDone != nil {
+			<-runtime.receiverDone
+		}
+		runtime.closeErr = runtime.client.Disconnect()
+	})
+	return runtime.closeErr
+}
+
+func (runtime *Runtime) closeResponseIterator() {
+	runtime.receiverClose.Do(func() { _ = runtime.responses.Close() })
+}
+
+func (runtime *Runtime) receiveResponses() {
+	defer close(runtime.receiverDone)
+	defer runtime.closeResponseIterator()
+	for {
+		message, err := runtime.responses.Next(runtime.ctx)
+		if err != nil {
+			runtime.failResponse(err)
+			return
+		}
+		if message == nil {
+			runtime.failResponse(errors.New("Claude response stream returned nil message"))
+			return
+		}
+		result, ok := message.(*claudecode.ResultMessage)
+		if !ok {
+			continue
+		}
+		runtime.receiveResult(result)
+	}
+}
+
+func (runtime *Runtime) receiveResult(result *claudecode.ResultMessage) {
+	runtime.stateMu.Lock()
+	defer runtime.stateMu.Unlock()
+	query := runtime.activeQuery
+	if query == nil || query.terminal || result.SessionID == "" || result.SessionID != query.sessionID {
+		runtime.unhealthy = true
+		if query != nil && !query.terminal {
+			query.err = errors.New("Claude terminal result has an unexpected session")
+			close(query.done)
+		}
+		return
+	}
+	if result.IsError {
+		query.err = errors.New("Claude terminal result reports an error")
+	} else if result.StructuredOutput == nil {
+		query.err = errors.New("Claude terminal result has no structured output")
+	} else {
+		data, err := json.Marshal(result.StructuredOutput)
+		if err != nil {
+			query.err = fmt.Errorf("marshal Claude structured output: %w", err)
+		} else {
+			query.output, query.err = decodeJSONObject(data)
+		}
+	}
+	query.terminal = true
+	close(query.done)
+}
+
+func (runtime *Runtime) failResponse(err error) {
+	runtime.stateMu.Lock()
+	defer runtime.stateMu.Unlock()
+	if runtime.closed || errors.Is(err, context.Canceled) {
+		if query := runtime.activeQuery; query != nil && !query.terminal {
+			query.err = agentruntime.ErrRuntimeClosed
+			close(query.done)
+		}
+		return
+	}
+	runtime.unhealthy = true
+	if query := runtime.activeQuery; query != nil && !query.terminal {
+		query.err = err
+		close(query.done)
+	}
+}
+
+func (runtime *Runtime) runtimeError(action string, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%s: %w", action, agentruntime.ErrTurnInterrupted)
+	}
+	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
+}
+
+func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy) (activePolicy, error) {
+	root, writable := policy.WritableRoot()
+	if !writable {
+		return activePolicy{policy: policy}, nil
+	}
+	canonicalRoot, err := resolveWorkspacePath(runtime.workspace, root)
+	if err != nil {
+		return activePolicy{}, err
+	}
+	info, err := os.Stat(canonicalRoot)
+	if err != nil {
+		return activePolicy{}, err
+	}
+	if !info.IsDir() {
+		return activePolicy{}, errors.New("writable root is not a directory")
+	}
+	return activePolicy{policy: policy, writableRoot: canonicalRoot}, nil
+}
+
+func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
+	runtime.stateMu.Lock()
+	policy := runtime.activePolicy
+	runtime.stateMu.Unlock()
+	if policy == nil {
+		return claudecode.NewPermissionResultDeny("no active Stepan turn"), nil
+	}
+	if err := permitTool(name, input, *policy, runtime.workspace); err != nil {
+		return claudecode.NewPermissionResultDeny("Stepan policy denied tool request"), nil
+	}
+	return claudecode.NewPermissionResultAllow(), nil
+}
+
+func permitTool(name string, input map[string]any, policy activePolicy, workspace string) error {
+	path, err := toolPath(name, input)
+	if err != nil {
+		return err
+	}
+	candidate, err := resolveWorkspacePath(workspace, path)
+	if err != nil {
+		return err
+	}
+	if name == "Write" || name == "Edit" {
+		_, writable := policy.policy.WritableRoot()
+		if !writable {
+			return errors.New("write denied in read-only turn")
+		}
+		return pathWithinRoot(policy.writableRoot, candidate)
+	}
+	if name != "Read" && name != "Glob" && name != "Grep" {
+		return fmt.Errorf("tool %q is not allowed", name)
+	}
+	return nil
+}
+
+func toolPath(name string, input map[string]any) (string, error) {
+	if input == nil {
+		return "", errors.New("tool input is required")
+	}
+	field := "file_path"
+	if name == "Glob" || name == "Grep" {
+		field = "path"
+	}
+	otherField := "path"
+	if field == "path" {
+		otherField = "file_path"
+	}
+	if _, ambiguous := input[otherField]; ambiguous {
+		return "", fmt.Errorf("tool %s has ambiguous path fields", name)
+	}
+	value, ok := input[field].(string)
+	if !ok || value == "" {
+		return "", fmt.Errorf("tool %s requires string %s", name, field)
+	}
+	return value, nil
+}
+
+func collectStructuredOutput(ctx context.Context, iterator claudecode.MessageIterator) (json.RawMessage, error) {
+	if iterator == nil {
+		return nil, errors.New("Claude response iterator is nil")
+	}
+	defer iterator.Close()
+	for {
+		message, err := iterator.Next(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result, ok := message.(*claudecode.ResultMessage)
+		if !ok {
+			continue
+		}
+		if result.IsError {
+			return nil, errors.New("Claude terminal result reports an error")
+		}
+		if result.StructuredOutput == nil {
+			return nil, errors.New("Claude terminal result has no structured output")
+		}
+		data, err := json.Marshal(result.StructuredOutput)
+		if err != nil {
+			return nil, fmt.Errorf("marshal Claude structured output: %w", err)
+		}
+		return decodeJSONObject(data)
+	}
+}
+
+func decodeJSONObject(data []byte) (json.RawMessage, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || data[0] != '{' {
+		return nil, errors.New("structured output must be a JSON object")
+	}
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&object); err != nil || object == nil {
+		return nil, errors.New("structured output must be a JSON object")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("structured output has trailing JSON")
+	}
+	return append(json.RawMessage(nil), data...), nil
+}

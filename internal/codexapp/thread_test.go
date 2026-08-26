@@ -14,7 +14,7 @@ import (
 var testSchema = json.RawMessage(`{"type":"object"}`)
 
 func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	connection, server, serverErr := threadTestConnection(t)
 	go func() {
 		for threadIndex, turns := range []int{2, 1} {
@@ -94,7 +94,7 @@ func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
 }
 
 func TestRunTurnRejectsConcurrentTurn(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	connection, server, serverErr := threadTestConnection(t)
 	received := make(chan struct{})
 	release := make(chan struct{})
@@ -251,7 +251,7 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 func phasePtr(value string) *string { return &value }
 
 func TestStartThreadCanonicalizesCWD(t *testing.T) {
-	root := t.TempDir()
+	root := canonicalTempDir(t)
 	nested := filepath.Join(root, "nested")
 	if err := os.Mkdir(nested, 0o700); err != nil {
 		t.Fatal(err)
@@ -273,4 +273,13 @@ func TestStartThreadCanonicalizesCWD(t *testing.T) {
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }

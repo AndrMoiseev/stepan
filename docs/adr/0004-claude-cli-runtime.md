@@ -1,0 +1,74 @@
+# ADR 0004: Claude Code-совместимый runtime через Go SDK
+
+Статус: **принято**  
+Дата: 2026-08-25
+
+## Контекст
+
+Stepan должен поддерживать второй agent CLI, в том числе корпоративный fork
+Claude Code с другим basename и branding. Прикладной `/idea` flow не должен
+зависеть от SDK или от имени provider. На машине разработки нет доступа к
+корпоративному CLI, поэтому автоматические проверки не могут подтверждать его
+совместимость.
+
+## Решение
+
+`cmd/stepan` выбирает provider только явными flags:
+
+```text
+--agent codex|claude
+--agent-cli <absolute-path>
+```
+
+Без flags сохраняется Codex из `PATH`. Claude требует существующий абсолютный
+regular-file path; Stepan передаёт этот exact path в SDK и не вызывает
+`--version` как vendor gate.
+
+Введён минимальный внутренний контракт `internal/agentruntime`:
+
+```text
+cmd/stepan → specflow → agentruntime ← codexapp
+                                      ← claudeapp
+```
+
+`specflow` хранит только opaque thread handle, schema и turn policy. Codex
+сохраняет App Server protocol и process containment через Job Object/process
+group. Claude использует `github.com/severity1/claude-agent-sdk-go v0.6.22` и
+его штатный subprocess transport без fork, launcher shim или custom transport.
+
+Claude SDK получает ровно `Read`, `Write`, `Edit`, `Glob`, `Grep`, default
+permission mode, пустые setting sources и выключенные skills. MCP, Bash, hooks,
+plugins, agents, additional directories и sandbox auto-allow не настраиваются.
+Thread-safe callback дополнительно проверяет workspace и turn-scoped write root.
+Внешние инструменты в эту версию не входят.
+
+SDK output schema задаётся при создании Client, поэтому ему передаётся закрытый
+union всех `/idea` terminal envelopes. `specflow` всё равно валидирует более
+узкую schema текущего этапа и не меняет state от свободного текста.
+
+## Принятый риск
+
+Для Claude v1 Stepan не контролирует дерево процессов. `Disconnect` и
+best-effort bounded `Interrupt` должны закрыть прямой CLI process. Риск принят,
+поскольку Claude не получает shell, MCP, hooks, plugins, background tasks или
+предусмотренный протокол внешних инструментов. Ручной сценарий `CLAUDE-M03`
+обязан подтвердить, что конкретный corporate build не оставляет процессы и не
+продолжает записывать workspace; до этого поддержка такого build имеет статус
+`BLOCKED`.
+
+## Последствия
+
+- Codex остаётся default и сохраняет containment.
+- Совместимость corporate fork устанавливается protocol/tool conformance, а не
+  строкой версии.
+- SDK upgrade или новый corporate build требует повторения fake regression suite
+  и всех `CLAUDE-M01`–`CLAUDE-M03` на заявленной платформе.
+- Возврат к process-tree containment Claude потребует отдельного ADR, а не
+  скрытого изменения transport.
+
+## Связанные материалы
+
+- [Спецификация Claude CLI](../specs/claude-cli-support/specification.md)
+- [План ручной приёмки](../specs/claude-cli-support/manual-test-plan.md)
+- [ADR 0001](0001-codex-app-server-containment.md)
+- [ADR 0002](0002-current-stack-and-architecture.md)

@@ -1,37 +1,45 @@
 package specflow
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-type appRuntime interface {
-	StartThread() (*codexapp.Thread, error)
-	RunTurn(*codexapp.Thread, string, codexapp.TurnOptions) (json.RawMessage, error)
-	Interrupt() error
-	Close() error
+type runtimeSlot struct{ runtime agentruntime.Runtime }
+
+type runtimeAttempt struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
 }
 
-type runtimeSlot struct{ runtime appRuntime }
+// appRuntime is kept as a local test-facing name while the implementation
+// depends on the provider-neutral runtime contract.
+type appRuntime = agentruntime.Runtime
 
 // Session lazily owns the single App Server used by one interactive process.
 type Session struct {
-	start func() (appRuntime, error)
+	start func(context.Context) (agentruntime.Runtime, error)
 
-	mu      sync.Mutex
-	runtime *runtimeSlot
-	stopped bool
+	mu       sync.Mutex
+	runtime  *runtimeSlot
+	starting *runtimeAttempt
+	stopped  bool
 }
 
-func NewSession(executable, workspace string) *Session {
-	return newSession(func() (appRuntime, error) { return codexapp.StartRuntime(executable, workspace) })
+func NewSession(start func(context.Context) (agentruntime.Runtime, error)) *Session {
+	return newSession(start)
 }
 
-func newSession(start func() (appRuntime, error)) *Session { return &Session{start: start} }
+func newSession(start func(context.Context) (agentruntime.Runtime, error)) *Session {
+	return &Session{start: start}
+}
 
-func (session *Session) StartThread() (*codexapp.Thread, error) {
+func (session *Session) StartThread() (agentruntime.Thread, error) {
 	slot, err := session.current()
 	if err != nil {
 		return nil, err
@@ -43,12 +51,12 @@ func (session *Session) StartThread() (*codexapp.Thread, error) {
 	return thread, err
 }
 
-func (session *Session) RunTurn(thread *codexapp.Thread, prompt string, options codexapp.TurnOptions) (json.RawMessage, error) {
+func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
 	session.mu.Lock()
 	slot := session.runtime
 	session.mu.Unlock()
 	if slot == nil {
-		return nil, codexapp.ErrRuntimeClosed
+		return nil, agentruntime.ErrRuntimeClosed
 	}
 	output, err := slot.runtime.RunTurn(thread, prompt, options)
 	if err != nil {
@@ -63,18 +71,61 @@ func (session *Session) Close() error { return session.stop(false) }
 
 func (session *Session) current() (*runtimeSlot, error) {
 	session.mu.Lock()
-	defer session.mu.Unlock()
 	if session.stopped {
-		return nil, codexapp.ErrRuntimeClosed
+		session.mu.Unlock()
+		return nil, agentruntime.ErrRuntimeClosed
 	}
-	if session.runtime == nil {
-		runtime, err := session.start()
-		if err != nil {
-			return nil, err
+	if session.runtime != nil {
+		runtime := session.runtime
+		session.mu.Unlock()
+		return runtime, nil
+	}
+	if attempt := session.starting; attempt != nil {
+		session.mu.Unlock()
+		<-attempt.done
+		session.mu.Lock()
+		runtime, err := session.runtime, attempt.err
+		stopped := session.stopped
+		session.mu.Unlock()
+		if stopped {
+			return nil, agentruntime.ErrRuntimeClosed
 		}
-		session.runtime = &runtimeSlot{runtime: runtime}
+		return runtime, err
 	}
-	return session.runtime, nil
+	ctx, cancel := context.WithCancel(context.Background())
+	attempt := &runtimeAttempt{cancel: cancel, done: make(chan struct{})}
+	session.starting = attempt
+	session.mu.Unlock()
+
+	var runtime agentruntime.Runtime
+	var err error
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	} else {
+		runtime, err = session.start(ctx)
+	}
+	if err == nil && runtime == nil {
+		err = errors.New("runtime factory returned nil")
+	}
+
+	session.mu.Lock()
+	stopped := session.stopped
+	var slot *runtimeSlot
+	if err == nil && !stopped {
+		slot = &runtimeSlot{runtime: runtime}
+		session.runtime = slot
+	}
+	if stopped && (err == nil || errors.Is(err, context.Canceled)) {
+		err = agentruntime.ErrRuntimeClosed
+	}
+	attempt.err = err
+	session.starting = nil
+	close(attempt.done)
+	session.mu.Unlock()
+	if err != nil && runtime != nil {
+		_ = runtime.Close()
+	}
+	return slot, err
 }
 
 func (session *Session) discard(slot *runtimeSlot) {
@@ -90,8 +141,13 @@ func (session *Session) stop(interrupt bool) error {
 	session.mu.Lock()
 	session.stopped = true
 	slot := session.runtime
+	attempt := session.starting
 	session.runtime = nil
 	session.mu.Unlock()
+	if attempt != nil {
+		attempt.cancel()
+		<-attempt.done
+	}
 	if slot == nil {
 		return nil
 	}

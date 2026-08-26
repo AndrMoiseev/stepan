@@ -192,6 +192,15 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	cmd.Stdout = observedWriter{"stdout", stdout, journal}
 	cmd.Stderr = observedWriter{"stderr", stderr, journal}
 	cmd.WaitDelay = cfg.IOGrace
+	if err := job.Prepare(cmd); err != nil {
+		controller.Close()
+		result.TerminationReason = SpawnFailed
+		result.FailureClass = "job_preparation_failed"
+		result.Detail = err.Error()
+		stdout.Close()
+		stderr.Close()
+		return finish()
+	}
 	if err := cmd.Start(); err != nil {
 		controller.Close()
 		result.TerminationReason = SpawnFailed
@@ -202,8 +211,8 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		return finish()
 	}
 	if err := job.Assign(cmd.Process); err != nil {
-		_ = cmd.Process.Kill()
 		controller.Cancel(SpawnFailed)
+		_ = cmd.Process.Kill()
 		waitErr := cmd.Wait()
 		if cmd.ProcessState != nil {
 			code := cmd.ProcessState.ExitCode()

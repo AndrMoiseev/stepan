@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/codexexec"
+	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
 
@@ -105,6 +106,11 @@ func (process *Process) Start() error {
 	}
 
 	process.command, process.stdin, process.stdout, process.stderr, process.job = command, stdin, stdout, stderr, job
+	if err := job.Prepare(command); err != nil {
+		process.startErr = fmt.Errorf("prepare App Server containment: %w", err)
+		process.closePartial()
+		return process.startErr
+	}
 	if err := command.Start(); err != nil {
 		process.startErr = fmt.Errorf("start App Server: %w", err)
 		process.closePartial()
@@ -129,8 +135,8 @@ func (process *Process) Start() error {
 }
 
 func preflight(executable, workspace string) (string, error) {
-	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
-		return "", fmt.Errorf("unsupported platform %s/%s: require windows/amd64", runtime.GOOS, runtime.GOARCH)
+	if err := platformsupport.Validate(runtime.GOOS, runtime.GOARCH); err != nil {
+		return "", err
 	}
 	executable, err := resolveExecutable(executable)
 	if err != nil {
@@ -185,6 +191,13 @@ func (process *Process) Wait() error {
 		return errors.New("App Server process is not started")
 	}
 	process.waitOnce.Do(func() {
+		var stderrErr error
+		if process.stderrDone != nil {
+			// Cmd.Wait closes the pipes it owns. Wait for the diagnostic reader
+			// first so macOS does not turn a normal process exit into a closed-pipe
+			// error.
+			stderrErr = <-process.stderrDone
+		}
 		process.waitErr = command.Wait()
 		if command.ProcessState != nil {
 			code := command.ProcessState.ExitCode()
@@ -192,10 +205,8 @@ func (process *Process) Wait() error {
 			process.exitCode = &code
 			process.mu.Unlock()
 		}
-		if process.stderrDone != nil {
-			if err := <-process.stderrDone; process.waitErr == nil {
-				process.waitErr = err
-			}
+		if process.waitErr == nil {
+			process.waitErr = stderrErr
 		}
 		close(process.waitDone)
 	})
