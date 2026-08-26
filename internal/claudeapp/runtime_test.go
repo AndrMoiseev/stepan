@@ -21,10 +21,7 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	}}
 	var options *claudecode.Options
 	runtime, err := startRuntime(config, func(items ...claudecode.Option) client {
-		options = &claudecode.Options{}
-		for _, item := range items {
-			item(options)
-		}
+		options = claudecode.NewOptions(items...)
 		return fake
 	})
 	if err != nil {
@@ -179,7 +176,7 @@ func assertLockedOptions(t *testing.T, options *claudecode.Options, config Confi
 	if !reflect.DeepEqual(options.Tools, []string{"Read", "Write", "Edit", "Glob", "Grep"}) || options.PermissionMode == nil || *options.PermissionMode != claudecode.PermissionModeDefault {
 		t.Fatalf("tools or permission mode = %#v", options)
 	}
-	if len(options.SettingSources) != 0 || !reflect.DeepEqual(options.Skills, []string{}) || len(options.AddDirs) != 0 || len(options.McpServers) != 0 || len(options.Plugins) != 0 || len(options.Agents) != 0 {
+	if options.SettingSources == nil || len(options.SettingSources) != 0 || !reflect.DeepEqual(options.Skills, []string{}) || len(options.AddDirs) != 0 || len(options.McpServers) != 0 || len(options.Plugins) != 0 || len(options.Agents) != 0 {
 		t.Fatalf("unsafe SDK options = %#v", options)
 	}
 	if options.ExtraEnv[backgroundTasksEnv] != "1" || options.ExtraEnv[agentViewEnv] != "1" || options.OutputFormat == nil || options.CanUseTool == nil {
