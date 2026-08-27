@@ -25,7 +25,7 @@ func TestParseAgentConfig(t *testing.T) {
 		{name: "unknown provider", args: []string{"--agent", "other"}, err: "unknown agent"},
 		{name: "relative path", args: []string{"--agent-cli", "cli"}, err: "absolute"},
 		{name: "directory", args: []string{"--agent-cli", t.TempDir()}, err: "regular file"},
-		{name: "extra argument", args: []string{"idea"}, err: "positional"},
+		{name: "extra argument", args: []string{"feature"}, err: "positional"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

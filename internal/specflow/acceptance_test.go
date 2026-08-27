@@ -25,8 +25,8 @@ func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first := filepath.Join(repo, "docs", "specs", "acceptance-flow")
-	second := filepath.Join(repo, "docs", "specs", "second-flow")
+	first := filepath.Join(repo, "docs", "changes", "features", "acceptance-flow")
+	second := filepath.Join(repo, "docs", "changes", "features", "second-flow")
 	runtime := &acceptanceRuntime{t: t, steps: []acceptanceStep{
 		{InitialSchema(), InitialPrompt(`literal "brief"`), agentruntime.ReadOnlyTurnPolicy(), `{"status":"NEEDS_INPUT","message":"One question?"}`, func() {
 			assertMissing(t, first)
@@ -49,7 +49,7 @@ func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
 		{UpdateSchema(), UpdatePrompt(first), mustWritePolicy(t, first), `{"status":"UPDATED"}`, func() {
 			writeAcceptanceFile(t, filepath.Join(first, "specification.md"), "blue")
 		}},
-		{InitialSchema(), InitialPrompt("second idea"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"second-flow"}`, nil},
+		{InitialSchema(), InitialPrompt("second feature"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"second-flow"}`, nil},
 		{CreateSchema(), CreatePrompt(second), mustWritePolicy(t, second), `{"status":"WRITTEN"}`, func() {
 			writeAcceptanceFile(t, filepath.Join(second, "specification.md"), "second")
 		}},
@@ -100,7 +100,7 @@ func TestIterationOneHappyPathAndSecondIdea(t *testing.T) {
 
 func TestInterruptKeepsPartialDraftWithoutResumeState(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "interrupted-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "interrupted-flow")
 	runtime := &acceptanceRuntime{t: t, steps: []acceptanceStep{
 		{InitialSchema(), InitialPrompt("brief"), agentruntime.ReadOnlyTurnPolicy(), `{"status":"READY_TO_WRITE","spec_id":"interrupted-flow"}`, nil},
 		{CreateSchema(), CreatePrompt(target), mustWritePolicy(t, target), `{"status":"WRITTEN"}`, func() {
@@ -207,7 +207,7 @@ func (ui *acceptanceUI) Main() (Progress, error) {
 	case 1:
 		return ui.controller.StartIdea(`literal "brief"`)
 	case 2:
-		return ui.controller.StartIdea("second idea")
+		return ui.controller.StartFeature("second feature")
 	default:
 		return Progress{}, ErrCanceled
 	}
@@ -225,7 +225,7 @@ func (ui *acceptanceUI) Draft(ctx context.Context, progress Progress) (Progress,
 	ui.draft++
 	switch ui.draft {
 	case 1:
-		if progress.Path != "docs/specs/acceptance-flow/specification.md" {
+		if progress.Path != "docs/changes/features/acceptance-flow/specification.md" {
 			ui.t.Fatalf("displayed path = %q", progress.Path)
 		}
 		writeAcceptanceFile(ui.t, filepath.Join(ui.first, "specification.md"), "manual before question")
@@ -240,7 +240,7 @@ func (ui *acceptanceUI) Draft(ctx context.Context, progress Progress) (Progress,
 		assertFile(ui.t, filepath.Join(ui.first, "specification.md"), "blue")
 		return ui.controller.Approve()
 	case 4:
-		if progress.Path != "docs/specs/second-flow/specification.md" {
+		if progress.Path != "docs/changes/features/second-flow/specification.md" {
 			ui.t.Fatalf("second displayed path = %q", progress.Path)
 		}
 		return ui.controller.Approve()

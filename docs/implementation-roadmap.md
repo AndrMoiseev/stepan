@@ -25,9 +25,9 @@ MVP строится как один жёстко заданный послед�
 
 Статус: **завершена, spike passed with caveats**. Решение и обязательные
 workarounds: [ADR 0001](adr/0001-codex-app-server-containment.md). Фактические
-результаты: [отчёт итерации 0](specs/iteration-0/report.md).
+результаты: [отчёт итерации 0](changes/features/iteration-0/report.md).
 
-Детальный объём, сценарии и критерии готовности зафиксированы в [спецификации итерации 0](specs/iteration-0/specification.md).
+Детальный объём, сценарии и критерии готовности зафиксированы в [спецификации итерации 0](changes/features/iteration-0/specification.md).
 
 ### Цель
 
@@ -340,10 +340,10 @@ MVP готов, когда одновременно выполняются сл�
 - Создать conformance suite для structured output, отмены, таймаута, resume, sandbox и событий.
 
 Авторитетные границы зафиксированы в
-[спецификации](specs/claude-cli-support/specification.md), порядок работ — в
-[детальном плане](specs/claude-cli-support/implementation-plan.md), а ручная
+[спецификации](changes/features/claude-cli-support/specification.md), порядок работ — в
+[детальном плане](changes/features/claude-cli-support/implementation-plan.md), а ручная
 приёмка на машине с доступом к совместимому CLI — в
-[отдельном плане](specs/claude-cli-support/manual-test-plan.md).
+[отдельном плане](changes/features/claude-cli-support/manual-test-plan.md).
 
 Абстракция проектируется по двум реальным реализациям, а не заранее.
 

@@ -13,12 +13,13 @@ func TestParseMainCommand(t *testing.T) {
 		want  MainCommand
 		valid bool
 	}{
-		{"idea", "/idea", MainCommand{Action: MainActionIdea, NeedBrief: true}, true},
-		{"empty remainder", "/idea   ", MainCommand{Action: MainActionIdea, Brief: "  ", NeedBrief: true}, true},
-		{"literal", `/idea "quoted" \\ path`, MainCommand{Action: MainActionIdea, Brief: `"quoted" \\ path`}, true},
+		{"feature", "/feature", MainCommand{Action: MainActionFeature, NeedBrief: true}, true},
+		{"empty remainder", "/feature   ", MainCommand{Action: MainActionFeature, Brief: "  ", NeedBrief: true}, true},
+		{"literal", `/feature "quoted" \\ path`, MainCommand{Action: MainActionFeature, Brief: `"quoted" \\ path`}, true},
+		{"renamed command", "/idea", MainCommand{}, false},
 		{"unknown", "/other", MainCommand{}, false},
-		{"not an alias", "idea text", MainCommand{}, false},
-		{"not a prefix", "/idea-more", MainCommand{}, false},
+		{"not an alias", "feature text", MainCommand{}, false},
+		{"not a prefix", "/feature-more", MainCommand{}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -55,7 +56,7 @@ func TestDraftActionModel(t *testing.T) {
 }
 
 func TestDraftTitleAlwaysDisplaysEntrypoint(t *testing.T) {
-	progress := Progress{Path: "docs/specs/example/specification.md", Answer: "answer"}
+	progress := Progress{Path: "docs/changes/features/example/specification.md", Answer: "answer"}
 	if title := draftTitle(progress); !strings.Contains(title, progress.Path) {
 		t.Fatalf("draft title %q does not display %q", title, progress.Path)
 	}

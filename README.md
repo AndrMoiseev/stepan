@@ -2,7 +2,7 @@
 Vendor agnostic AI SDLC Orchestrator
 
 Текущий пользовательский сценарий подготовки спецификации описан в
-[протоколе flow `/idea`](docs/idea-flow.md).
+[протоколе flow `/feature`](docs/feature-flow.md).
 
 ## Agent CLI
 
@@ -15,7 +15,7 @@ stepan --agent claude --agent-cli <absolute-path-to-corporate-cli>
 
 Путь может указывать на корпоративный fork и не обязан называться `claude`.
 Совместимость конкретного build пока требует ручной приёмки по
-[плану Claude CLI](docs/specs/claude-cli-support/manual-test-plan.md); на
+[плану Claude CLI](docs/changes/features/claude-cli-support/manual-test-plan.md); на
 текущей машине она имеет статус `BLOCKED`.
 
 ## CI artifacts

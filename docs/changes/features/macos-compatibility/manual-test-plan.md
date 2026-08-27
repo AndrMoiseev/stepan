@@ -140,7 +140,7 @@ cd "$STEPAN_REPO"
 "$STEPAN_BIN"; printf 'stepan-exit=%s\n' "$?"
 ```
 
-Не вводя `/idea`, в терминале B найдите именно этот экземпляр Stepan:
+Не вводя `/feature`, в терминале B найдите именно этот экземпляр Stepan:
 
 ```sh
 STEPAN_PID="$(pgrep -n -x stepan)"
@@ -152,12 +152,12 @@ ps -axo pid=,ppid=,pgid=,command= | awk -v p="$STEPAN_PID" '$2 == p'
 Введите `/unknown`: Stepan должен показать короткую ошибку и снова показать
 `Command`, не запуская Codex.
 
-### MAC-M05. Полный `/idea`, read-only вопрос и изменение
+### MAC-M05. Полный `/feature`, read-only вопрос и изменение
 
 В том же терминале A введите:
 
 ```text
-/idea Создай короткую спецификацию команды hello для CLI. Команда печатает hello и завершается кодом 0. Используй spec-id macos-manual-smoke.
+/feature Создай короткую спецификацию команды hello для CLI. Команда печатает hello и завершается кодом 0. Используй feature-id macos-manual-smoke.
 ```
 
 Если Codex задаёт уточняющий вопрос, ответьте конкретно и продолжайте, пока не
@@ -180,7 +180,7 @@ ps -axo pid=,ppid=,pgid=,command= | awk -v pg="$APP_PGID" '$3 == pg'
 Путь спецификации берите из заголовка UI. Если Codex выбрал ожидаемый ID:
 
 ```sh
-export STEPAN_SPEC="$STEPAN_REPO/docs/specs/macos-manual-smoke/specification.md"
+export STEPAN_SPEC="$STEPAN_REPO/docs/changes/features/macos-manual-smoke/specification.md"
 test -s "$STEPAN_SPEC"
 git -C "$STEPAN_REPO" status --short
 shasum -a 256 "$STEPAN_SPEC"
@@ -215,7 +215,7 @@ prompt `Command` без перезапуска приложения.
 Запомните `APP_PID` из `MAC-M05`. В том же Stepan запустите второй flow:
 
 ```text
-/idea Создай минимальную спецификацию команды version. Используй spec-id macos-manual-second.
+/feature Создай минимальную спецификацию команды version. Используй feature-id macos-manual-second.
 ```
 
 Доведите flow до черновика и выберите `/approve`. В терминале B снова получите
@@ -249,7 +249,7 @@ cd "$STEPAN_REPO"
 ```
 
 ```text
-/idea Проанализируй репозиторий и подготовь подробную спецификацию третьей команды. Используй spec-id macos-interrupt-smoke.
+/feature Проанализируй репозиторий и подготовь подробную спецификацию третьей команды. Используй feature-id macos-interrupt-smoke.
 ```
 
 Пока turn выполняется, в терминале B заново получите `STEPAN_PID`, `APP_PID` и
@@ -262,11 +262,11 @@ cd "$STEPAN_REPO"
   секунд;
 - проверка `ps ... | awk -v pg="$APP_PGID" '$3 == pg'` не выводит процессов;
 - частично созданная спецификация не выходит за
-  `docs/specs/macos-interrupt-smoke/`.
+  `docs/changes/features/macos-interrupt-smoke/`.
 
 ### MAC-M08. Сбой App Server и повторный запуск
 
-Снова запустите Stepan и `/idea`, дождитесь появления App Server. В терминале B
+Снова запустите Stepan и `/feature`, дождитесь появления App Server. В терминале B
 получите новый `APP_PID` и сначала убедитесь, что убиваете нужный процесс:
 
 ```sh
@@ -282,7 +282,7 @@ kill -KILL "$OLD_APP_PID"
 ```
 
 Ожидается понятная ошибка flow и возврат к `Command`, а не завершение Stepan.
-Старая process group должна исчезнуть. Запустите ещё один `/idea`: должен
+Старая process group должна исчезнуть. Запустите ещё один `/feature`: должен
 появиться новый App Server с PID, отличным от `OLD_APP_PID`. Завершите Stepan по
 `Ctrl+C` и ещё раз проверьте отсутствие новой группы.
 
@@ -308,7 +308,7 @@ cd "$STEPAN_ESCAPE_REPO"
 Запустите:
 
 ```text
-/idea Создай минимальную спецификацию. Используй spec-id macos-symlink-escape.
+/feature Создай минимальную спецификацию. Используй feature-id macos-symlink-escape.
 ```
 
 Ожидается отказ до write-turn с сообщением, что target выходит из Git root.
@@ -332,7 +332,7 @@ cd "$STEPAN_REPO"
 PATH="$STEPAN_TEST_ROOT/fake-bin:$PATH" "$STEPAN_BIN"; printf 'stepan-exit=%s\n' "$?"
 ```
 
-В UI запустите любой `/idea`. Ожидается ошибка с фактической версией `0.0.0` и
+В UI запустите любой `/feature`. Ожидается ошибка с фактической версией `0.0.0` и
 требованием `0.147.0` до создания thread. Stepan возвращается к `Command`;
 завершите его по `Ctrl+C`.
 
@@ -359,7 +359,7 @@ Set-Location $StepanRepo
 & $StepanBin
 ```
 
-Выполните один короткий `/idea`, утвердите спецификацию, затем нажмите `Ctrl+C`.
+Выполните один короткий `/feature`, утвердите спецификацию, затем нажмите `Ctrl+C`.
 Ожидается прежний Windows UX, код 130 и отсутствие `codex app-server`/его
 потомков, запущенных этим экземпляром. Другие работающие сессии Codex завершать
 нельзя.

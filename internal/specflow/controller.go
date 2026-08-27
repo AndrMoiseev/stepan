@@ -52,14 +52,14 @@ func NewController(root string, runner initialTurnRunner) *Controller {
 	return &Controller{root: root, runner: runner}
 }
 
-func (controller *Controller) StartIdea(brief string) (Progress, error) {
+func (controller *Controller) StartFeature(brief string) (Progress, error) {
 	controller.reset()
 	if controller.runner == nil {
-		return controller.Progress(), fmt.Errorf("start idea: turn runner is required")
+		return controller.Progress(), fmt.Errorf("start feature: turn runner is required")
 	}
 	thread, err := controller.runner.StartThread()
 	if err != nil {
-		return controller.Progress(), fmt.Errorf("start idea thread: %w", err)
+		return controller.Progress(), fmt.Errorf("start feature thread: %w", err)
 	}
 	controller.thread = thread
 	controller.brief = brief
@@ -68,6 +68,12 @@ func (controller *Controller) StartIdea(brief string) (Progress, error) {
 		return controller.Progress(), nil
 	}
 	return controller.run(InitialPrompt(brief))
+}
+
+// StartIdea is retained for package-level compatibility. Interactive users must
+// invoke /feature; new callers should use StartFeature.
+func (controller *Controller) StartIdea(brief string) (Progress, error) {
+	return controller.StartFeature(brief)
 }
 
 func (controller *Controller) Submit(text string) (Progress, error) {
@@ -310,10 +316,10 @@ func initialAnswerPrompt(answer string) string {
 Уточняй только материальные решения, влияющие на поведение, границы или критерии
 приёмки. Задавай не более одного вопроса за turn.
 
-Когда информации достаточно, верни READY_TO_WRITE и предложи краткий spec_id
+Когда информации достаточно, верни READY_TO_WRITE и предложи краткий feature_id
 в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
-Для READY_TO_WRITE обязательно верни spec_id и заполни message пустой строкой.
-Для NEEDS_INPUT обязательно задай вопрос в message и верни spec_id пустой строкой.
+Для READY_TO_WRITE обязательно верни feature_id и заполни message пустой строкой.
+Для NEEDS_INPUT обязательно задай вопрос в message и верни feature_id пустой строкой.
 
 USER ANSWER:
 ` + answer

@@ -123,7 +123,7 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 			id := fmt.Sprintf("flow-%d", runtime.threads)
 			return json.RawMessage(fmt.Sprintf(`{"status":"READY_TO_WRITE","spec_id":%q}`, id)), nil
 		case string(CreateSchema()):
-			directory := filepath.Join(repo, "docs", "specs", fmt.Sprintf("flow-%d", runtime.threads))
+			directory := filepath.Join(repo, "docs", "changes", "features", fmt.Sprintf("flow-%d", runtime.threads))
 			if err := os.MkdirAll(directory, 0o700); err != nil {
 				return nil, err
 			}

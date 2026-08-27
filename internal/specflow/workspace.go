@@ -57,7 +57,7 @@ func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
 	if err != nil {
 		return SpecTarget{}, fmt.Errorf("canonicalize Git root: %w", err)
 	}
-	directory := filepath.Join(root, "docs", "specs", specID)
+	directory := filepath.Join(root, "docs", "changes", "features", specID)
 	if _, err := os.Lstat(directory); err == nil {
 		return SpecTarget{}, fmt.Errorf("specification directory %q already exists", directory)
 	} else if !os.IsNotExist(err) {
@@ -69,7 +69,7 @@ func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
 	return SpecTarget{
 		Directory:   directory,
 		Entrypoint:  filepath.Join(directory, "specification.md"),
-		DisplayPath: path.Join("docs", "specs", specID, "specification.md"),
+		DisplayPath: path.Join("docs", "changes", "features", specID, "specification.md"),
 	}, nil
 }
 

@@ -71,10 +71,10 @@ func TestPrepareSpecTargetDoesNotCreateOrChangeAnything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Directory != filepath.Join(repo, "docs", "specs", "new-spec") || target.Entrypoint != filepath.Join(target.Directory, "specification.md") {
+	if target.Directory != filepath.Join(repo, "docs", "changes", "features", "new-spec") || target.Entrypoint != filepath.Join(target.Directory, "specification.md") {
 		t.Fatalf("unexpected target: %#v", target)
 	}
-	if target.DisplayPath != "docs/specs/new-spec/specification.md" {
+	if target.DisplayPath != "docs/changes/features/new-spec/specification.md" {
 		t.Fatalf("DisplayPath = %q", target.DisplayPath)
 	}
 	if _, err := os.Lstat(target.Directory); !os.IsNotExist(err) {
@@ -93,7 +93,7 @@ func TestPrepareSpecTargetDoesNotCreateOrChangeAnything(t *testing.T) {
 
 func TestPrepareSpecTargetRejectsExistingTargetWithoutChangingIt(t *testing.T) {
 	repo := initRepository(t)
-	directory := filepath.Join(repo, "docs", "specs", "existing")
+	directory := filepath.Join(repo, "docs", "changes", "features", "existing")
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,10 @@ func TestPrepareSpecTargetRejectsWindowsReparseEscape(t *testing.T) {
 	if err := os.MkdirAll(docs, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	junction := filepath.Join(docs, "specs")
+	if err := os.MkdirAll(filepath.Join(docs, "changes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(docs, "changes", "features")
 	if output, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
 		t.Fatalf("create junction: %v: %s", err, output)
 	}

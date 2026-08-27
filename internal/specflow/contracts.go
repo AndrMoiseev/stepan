@@ -36,15 +36,15 @@ func InitialPrompt(brief string) string {
 приёмки. Задавай не более одного вопроса за turn. Обратимые детали выбирай по
 соглашениям репозитория — пользователь сможет изменить их после первого черновика.
 
-Когда информации достаточно, верни READY_TO_WRITE и предложи краткий spec_id
+Когда информации достаточно, верни READY_TO_WRITE и предложи краткий feature_id
 в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
-Для READY_TO_WRITE обязательно верни spec_id и заполни message пустой строкой.
-Для NEEDS_INPUT обязательно задай вопрос в message и верни spec_id пустой строкой.
+Для READY_TO_WRITE обязательно верни feature_id и заполни message пустой строкой.
+Для NEEDS_INPUT обязательно задай вопрос в message и верни feature_id пустой строкой.
 
-Веди диалог и будущую спецификацию на языке idea brief, если пользователь явно
+Веди диалог и будущую спецификацию на языке feature brief, если пользователь явно
 не попросил иначе.
 
-IDEA BRIEF:
+FEATURE BRIEF:
 ` + brief
 }
 
@@ -112,12 +112,12 @@ func QuestionSchema() json.RawMessage { return json.RawMessage(questionSchema) }
 // client. Individual stages keep using their narrower schemas and decoders.
 func FlowEnvelopeSchema() json.RawMessage { return append(json.RawMessage(nil), flowEnvelopeSchema...) }
 
-const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_WRITE"]},"message":{"type":"string"},"spec_id":{"type":"string","maxLength":64,"pattern":"^[a-z0-9-]*$"}},"required":["status","message","spec_id"],"additionalProperties":false}`
+const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_WRITE"]},"message":{"type":"string"},"feature_id":{"type":"string","maxLength":64,"pattern":"^[a-z0-9-]*$"}},"required":["status","message","feature_id"],"additionalProperties":false}`
 const createSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["WRITTEN"]}},"required":["status"],"additionalProperties":false}`
 const changeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_UPDATE"]},"message":{"type":"string"}},"required":["status","message"],"additionalProperties":false}`
 const updateSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["UPDATED"]}},"required":["status"],"additionalProperties":false}`
 const questionSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["ANSWERED"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false}`
-const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_WRITE"},"spec_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","spec_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"WRITTEN"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
+const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_WRITE"},"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","feature_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"WRITTEN"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
 
 func DecodeInitialResult(data []byte) (Result, error) {
 	return decodeResult(data, StatusNeedsInput, StatusReadyToWrite)
@@ -145,9 +145,10 @@ func DecodeFlowEnvelope(data []byte) (Result, error) {
 
 func decodeResult(data []byte, allowed ...Status) (Result, error) {
 	var envelope struct {
-		Status  Status          `json:"status"`
-		Message json.RawMessage `json:"message"`
-		SpecID  json.RawMessage `json:"spec_id"`
+		Status    Status          `json:"status"`
+		Message   json.RawMessage `json:"message"`
+		FeatureID json.RawMessage `json:"feature_id"`
+		SpecID    json.RawMessage `json:"spec_id"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -170,18 +171,29 @@ func decodeResult(data []byte, allowed ...Status) (Result, error) {
 		if err := json.Unmarshal(envelope.Message, &result.Message); err != nil || strings.TrimSpace(result.Message) == "" {
 			return Result{}, fmt.Errorf("status %s requires a non-empty message", result.Status)
 		}
-		if len(envelope.SpecID) != 0 {
+		if len(envelope.FeatureID) != 0 || len(envelope.SpecID) != 0 {
 			var unused string
-			if err := json.Unmarshal(envelope.SpecID, &unused); err != nil || unused != "" {
-				return Result{}, fmt.Errorf("status %s requires an empty spec_id", result.Status)
+			identifier := envelope.FeatureID
+			if len(identifier) == 0 {
+				identifier = envelope.SpecID
+			}
+			if err := json.Unmarshal(identifier, &unused); err != nil || unused != "" {
+				return Result{}, fmt.Errorf("status %s requires an empty feature_id", result.Status)
 			}
 		}
 	case StatusReadyToWrite:
-		if len(envelope.SpecID) == 0 {
-			return Result{}, fmt.Errorf("status %s requires spec_id", result.Status)
+		if len(envelope.FeatureID) != 0 && len(envelope.SpecID) != 0 {
+			return Result{}, fmt.Errorf("status %s accepts only one feature_id", result.Status)
 		}
-		if err := json.Unmarshal(envelope.SpecID, &result.SpecID); err != nil {
-			return Result{}, fmt.Errorf("status %s requires a string spec_id", result.Status)
+		identifier := envelope.FeatureID
+		if len(identifier) == 0 {
+			identifier = envelope.SpecID
+		}
+		if len(identifier) == 0 {
+			return Result{}, fmt.Errorf("status %s requires feature_id", result.Status)
+		}
+		if err := json.Unmarshal(identifier, &result.SpecID); err != nil {
+			return Result{}, fmt.Errorf("status %s requires a string feature_id", result.Status)
 		}
 		if err := ValidateSpecID(result.SpecID); err != nil {
 			return Result{}, fmt.Errorf("status %s: %w", result.Status, err)
@@ -189,12 +201,12 @@ func decodeResult(data []byte, allowed ...Status) (Result, error) {
 		if len(envelope.Message) != 0 {
 			var unused string
 			if err := json.Unmarshal(envelope.Message, &unused); err != nil || unused != "" {
-			return Result{}, fmt.Errorf("status %s requires an empty message", result.Status)
+				return Result{}, fmt.Errorf("status %s requires an empty message", result.Status)
 			}
 		}
 	case StatusReadyToUpdate:
-		if len(envelope.SpecID) != 0 {
-			return Result{}, fmt.Errorf("status %s forbids spec_id", result.Status)
+		if len(envelope.FeatureID) != 0 || len(envelope.SpecID) != 0 {
+			return Result{}, fmt.Errorf("status %s forbids feature_id", result.Status)
 		}
 		if len(envelope.Message) != 0 {
 			var unused string
@@ -203,8 +215,8 @@ func decodeResult(data []byte, allowed ...Status) (Result, error) {
 			}
 		}
 	default:
-		if len(envelope.Message) != 0 || len(envelope.SpecID) != 0 {
-			return Result{}, fmt.Errorf("status %s forbids message and spec_id", result.Status)
+		if len(envelope.Message) != 0 || len(envelope.FeatureID) != 0 || len(envelope.SpecID) != 0 {
+			return Result{}, fmt.Errorf("status %s forbids message and feature_id", result.Status)
 		}
 	}
 	return result, nil

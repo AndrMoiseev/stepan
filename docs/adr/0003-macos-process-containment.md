@@ -115,5 +115,5 @@ ADR пересматривается, если:
 
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0002](0002-current-stack-and-architecture.md)
-- [План совместимости с macOS](../specs/macos-compatibility/implementation-plan.md)
-- [План ручной приёмки](../specs/macos-compatibility/manual-test-plan.md)
+- [План совместимости с macOS](../changes/features/macos-compatibility/implementation-plan.md)
+- [План ручной приёмки](../changes/features/macos-compatibility/manual-test-plan.md)

@@ -35,6 +35,7 @@ func TestResultDecoders(t *testing.T) {
 	}{
 		{"initial question", DecodeInitialResult, `{"status":"NEEDS_INPUT","message":"Which behavior?"}`, Result{Status: StatusNeedsInput, Message: "Which behavior?"}, true},
 		{"initial ready", DecodeInitialResult, `{"status":"READY_TO_WRITE","spec_id":"new-flow"}`, Result{Status: StatusReadyToWrite, SpecID: "new-flow"}, true},
+		{"initial ready with feature id", DecodeInitialResult, `{"status":"READY_TO_WRITE","feature_id":"new-feature"}`, Result{Status: StatusReadyToWrite, SpecID: "new-feature"}, true},
 		{"create", DecodeCreateResult, `{"status":"WRITTEN"}`, Result{Status: StatusWritten}, true},
 		{"question", DecodeQuestionResult, `{"status":"ANSWERED","message":"The answer"}`, Result{Status: StatusAnswered, Message: "The answer"}, true},
 		{"change question", DecodeChangeResult, `{"status":"NEEDS_INPUT","message":"Which variant?"}`, Result{Status: StatusNeedsInput, Message: "Which variant?"}, true},
@@ -78,7 +79,7 @@ func TestSchemasExposeOnlyAllowedStatusAndFields(t *testing.T) {
 		data json.RawMessage
 		want map[string][]string
 	}{
-		{"initial", InitialSchema(), map[string][]string{"NEEDS_INPUT": {"message", "spec_id", "status"}, "READY_TO_WRITE": {"message", "spec_id", "status"}}},
+		{"initial", InitialSchema(), map[string][]string{"NEEDS_INPUT": {"feature_id", "message", "status"}, "READY_TO_WRITE": {"feature_id", "message", "status"}}},
 		{"create", CreateSchema(), map[string][]string{"WRITTEN": {"status"}}},
 		{"question", QuestionSchema(), map[string][]string{"ANSWERED": {"message", "status"}}},
 		{"change", ChangeSchema(), map[string][]string{"NEEDS_INPUT": {"message", "status"}, "READY_TO_UPDATE": {"message", "status"}}},
@@ -101,14 +102,14 @@ func TestPromptContracts(t *testing.T) {
 		"Не создавай и не изменяй файлы на этапе уточнения.",
 		"Задавай не более одного вопроса за turn.",
 		"message пустой строкой",
-		"IDEA BRIEF:\n" + brief,
+		"FEATURE BRIEF:\n" + brief,
 	} {
 		if !strings.Contains(initial, fragment) {
 			t.Errorf("initial prompt misses %q", fragment)
 		}
 	}
 
-	directory := `C:\repo\docs\specs\new-flow`
+	directory := `C:\repo\docs\changes\features\new-flow`
 	for name, prompt := range map[string]string{"create": CreatePrompt(directory), "update": UpdatePrompt(directory)} {
 		if !strings.Contains(prompt, "Разрешённый каталог:\n"+directory+"\n") || !strings.Contains(prompt, "вне разрешённого каталога") {
 			t.Errorf("%s prompt does not isolate the allowed path or write boundary", name)

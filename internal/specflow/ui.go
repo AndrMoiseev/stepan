@@ -36,13 +36,13 @@ func (ui *UI) Main() (Progress, error) {
 		ui.lastDraftAnswer = ""
 		ui.thinking()
 		if !command.NeedBrief {
-			return ui.controller.StartIdea(command.Brief)
+			return ui.controller.StartFeature(command.Brief)
 		}
-		progress, err := ui.controller.StartIdea("")
+		progress, err := ui.controller.StartFeature("")
 		if err != nil {
 			return progress, err
 		}
-		ui.say("Опишите идею.")
+		ui.say("Опишите функциональность.")
 		brief, err := ui.text()
 		if err != nil {
 			return progress, err

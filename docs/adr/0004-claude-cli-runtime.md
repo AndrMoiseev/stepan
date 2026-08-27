@@ -6,7 +6,7 @@
 ## Контекст
 
 Stepan должен поддерживать второй agent CLI, в том числе корпоративный fork
-Claude Code с другим basename и branding. Прикладной `/idea` flow не должен
+Claude Code с другим basename и branding. Прикладной `/feature` flow не должен
 зависеть от SDK или от имени provider. На машине разработки нет доступа к
 корпоративному CLI, поэтому автоматические проверки не могут подтверждать его
 совместимость.
@@ -43,7 +43,7 @@ Thread-safe callback дополнительно проверяет workspace и 
 Внешние инструменты в эту версию не входят.
 
 SDK output schema задаётся при создании Client, поэтому ему передаётся закрытый
-union всех `/idea` terminal envelopes. `specflow` всё равно валидирует более
+union всех `/feature` terminal envelopes. `specflow` всё равно валидирует более
 узкую schema текущего этапа и не меняет state от свободного текста.
 
 ## Принятый риск
@@ -68,7 +68,7 @@ best-effort bounded `Interrupt` должны закрыть прямой CLI pro
 
 ## Связанные материалы
 
-- [Спецификация Claude CLI](../specs/claude-cli-support/specification.md)
-- [План ручной приёмки](../specs/claude-cli-support/manual-test-plan.md)
+- [Спецификация Claude CLI](../changes/features/claude-cli-support/specification.md)
+- [План ручной приёмки](../changes/features/claude-cli-support/manual-test-plan.md)
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0002](0002-current-stack-and-architecture.md)

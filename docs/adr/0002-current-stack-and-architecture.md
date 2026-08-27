@@ -30,7 +30,7 @@ CLI-программой, синхронной машиной состояний
 | Агентский runtime | Codex App Server; Claude Code-совместимый CLI через SDK v0.6.22 |
 | IPC | JSON-RPC поверх UTF-8 JSONL в `stdin`/`stdout` |
 | Контракты ответов | JSON Schema 2020-12 и строгая декодировка в Go |
-| Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/specs/` |
+| Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/changes/features/` |
 | Изоляция процессов | Windows Job Object или Darwin process group; Windows/amd64 и macOS/arm64 |
 | Тесты | `go test`, `testing`, Arch-Go для графа импортов, fake/replay App Server |
 
@@ -67,7 +67,7 @@ flowchart LR
 
 - `cmd/stepan` — composition root, provider/CLI preflight, platform/terminal
   preflight и обработка завершения процесса.
-- `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
+- `internal/specflow` — прикладное ядро текущего `/feature` flow: машина состояний,
   prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
 - `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
   JSON-RPC transport, thread/turn, correlation, structured output и общий
@@ -97,7 +97,7 @@ thread, turns выполняются последовательно.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Clarification: /idea
+    Idle --> Clarification: /feature
     Clarification --> Clarification: NEEDS_INPUT
     Clarification --> ReadyToWrite: READY_TO_WRITE
     ReadyToWrite --> Draft: WRITTEN + postconditions
@@ -108,7 +108,7 @@ stateDiagram-v2
 Текущий источник истины разделён так:
 
 - состояние диалога, thread/turn IDs и approvals живут только в памяти процесса;
-- созданная спецификация сохраняется в `docs/specs/<spec-id>/`;
+- созданная спецификация сохраняется в `docs/changes/features/<feature-id>/`;
 - фактические изменения и границы записи проверяются по Git, а не по сообщению
   агента;
 - `.stepan/`, durable event log и resume в пользовательском пути пока не
@@ -180,4 +180,4 @@ baseline.
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0003](0003-macos-process-containment.md)
 - [ADR 0004](0004-claude-cli-runtime.md)
-- [Спецификация итерации 1](../specs/iteration-1/specification.md)
+- [Спецификация итерации 1](../changes/features/iteration-1/specification.md)

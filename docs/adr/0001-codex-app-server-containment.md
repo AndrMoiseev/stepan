@@ -115,6 +115,6 @@ live-сценариев до обновления integration contract.
 
 ## Основания
 
-- [Отчёт итерации 0](../specs/iteration-0/report.md)
-- [Контракт Codex App Server 0.147.0](../specs/iteration-0/codex-integration-contract.md)
-- [Результаты A01–A16](../specs/iteration-0/results/)
+- [Отчёт итерации 0](../changes/features/iteration-0/report.md)
+- [Контракт Codex App Server 0.147.0](../changes/features/iteration-0/codex-integration-contract.md)
+- [Результаты A01–A16](../changes/features/iteration-0/results/)

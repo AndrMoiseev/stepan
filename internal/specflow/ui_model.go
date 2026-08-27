@@ -12,7 +12,7 @@ type MainAction uint8
 
 const (
 	MainActionNone MainAction = iota
-	MainActionIdea
+	MainActionFeature
 )
 
 type MainCommand struct {
@@ -22,12 +22,12 @@ type MainCommand struct {
 }
 
 func ParseMainCommand(input string) (MainCommand, error) {
-	if input == "/idea" {
-		return MainCommand{Action: MainActionIdea, NeedBrief: true}, nil
+	if input == "/feature" {
+		return MainCommand{Action: MainActionFeature, NeedBrief: true}, nil
 	}
-	if strings.HasPrefix(input, "/idea ") {
-		brief := strings.TrimPrefix(input, "/idea ")
-		return MainCommand{Action: MainActionIdea, Brief: brief, NeedBrief: strings.TrimSpace(brief) == ""}, nil
+	if strings.HasPrefix(input, "/feature ") {
+		brief := strings.TrimPrefix(input, "/feature ")
+		return MainCommand{Action: MainActionFeature, Brief: brief, NeedBrief: strings.TrimSpace(brief) == ""}, nil
 	}
 	return MainCommand{}, fmt.Errorf("unknown command %q", input)
 }

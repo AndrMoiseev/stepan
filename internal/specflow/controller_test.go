@@ -59,7 +59,7 @@ func TestIdeaWithoutBriefUsesExactlyNextMessage(t *testing.T) {
 
 	progress, err := controller.StartIdea("")
 	if err != nil || progress.State != StateAwaitingBrief || len(runner.starts) != 1 || len(runner.turns) != 0 {
-		t.Fatalf("empty idea progress = %#v, starts=%d turns=%d err=%v", progress, len(runner.starts), len(runner.turns), err)
+		t.Fatalf("empty feature progress = %#v, starts=%d turns=%d err=%v", progress, len(runner.starts), len(runner.turns), err)
 	}
 	progress, err = controller.Submit("literal next message")
 	if err != nil || progress != (Progress{State: StateReadyToWrite, SpecID: "from-next-message"}) {
@@ -129,7 +129,7 @@ func TestCreateDraftHappyPathPreservesDirtyBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(repo, "docs", "specs", "new-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "new-flow")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"new-flow"}`},
 		{output: `{"status":"WRITTEN"}`, action: func(turn fakeInitialTurn) error {
@@ -157,7 +157,7 @@ func TestCreateDraftHappyPathPreservesDirtyBaseline(t *testing.T) {
 		t.Fatalf("ready progress = %#v, %v", progress, err)
 	}
 	progress, err := controller.CreateDraft(context.Background())
-	if err != nil || progress != (Progress{State: StateDraft, SpecID: "new-flow", Path: "docs/specs/new-flow/specification.md"}) {
+	if err != nil || progress != (Progress{State: StateDraft, SpecID: "new-flow", Path: "docs/changes/features/new-flow/specification.md"}) {
 		t.Fatalf("draft progress = %#v, %v", progress, err)
 	}
 	if data, err := os.ReadFile(dirty); err != nil || string(data) != "dirty before write\n" {
@@ -179,7 +179,7 @@ func TestCreateDraftRejectsExistingTargetBeforeWrite(t *testing.T) {
 	if _, err := controller.StartIdea("brief"); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(repo, "docs", "specs", "existing")
+	target := filepath.Join(repo, "docs", "changes", "features", "existing")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestCreateDraftFailureKeepsPartialFiles(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := initDraftRepository(t)
-			target := filepath.Join(repo, "docs", "specs", "broken")
+			target := filepath.Join(repo, "docs", "changes", "features", "broken")
 			runner := &fakeInitialRunner{steps: []fakeInitialStep{
 				{output: `{"status":"READY_TO_WRITE","spec_id":"broken"}`},
 				{output: test.output, err: test.turnErr, action: func(fakeInitialTurn) error { return test.write(repo, target) }},
@@ -257,7 +257,7 @@ func TestCreateDraftFailureKeepsPartialFiles(t *testing.T) {
 
 func TestCreateDraftRepeatsContainmentAfterWrite(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "escaped")
+	target := filepath.Join(repo, "docs", "changes", "features", "escaped")
 	outside := t.TempDir()
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"escaped"}`},
@@ -292,7 +292,7 @@ func TestCreateDraftRepeatsContainmentAfterWrite(t *testing.T) {
 
 func TestDraftQuestionRereadsManualEditAndReturnsToDraft(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "question-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "question-flow")
 	entrypoint := filepath.Join(target, "specification.md")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"question-flow"}`},
@@ -327,7 +327,7 @@ func TestDraftQuestionRereadsManualEditAndReturnsToDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress, err := controller.AskQuestion("Which version?")
-	want := Progress{State: StateDraft, Answer: "It uses the manual version.", SpecID: "question-flow", Path: "docs/specs/question-flow/specification.md"}
+	want := Progress{State: StateDraft, Answer: "It uses the manual version.", SpecID: "question-flow", Path: "docs/changes/features/question-flow/specification.md"}
 	if err != nil || progress != want {
 		t.Fatalf("question progress = %#v, %v, want %#v", progress, err, want)
 	}
@@ -344,7 +344,7 @@ func TestDraftQuestionRereadsManualEditAndReturnsToDraft(t *testing.T) {
 
 func TestApproveAcceptsCurrentEntrypointAndOnlyResetsMemory(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "approve-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "approve-flow")
 	entrypoint := filepath.Join(target, "specification.md")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"approve-flow"}`},
@@ -410,7 +410,7 @@ func TestApproveRequiresCurrentRegularEntrypoint(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := initDraftRepository(t)
-			target := filepath.Join(repo, "docs", "specs", "approve-flow")
+			target := filepath.Join(repo, "docs", "changes", "features", "approve-flow")
 			entrypoint := filepath.Join(target, "specification.md")
 			runner := &fakeInitialRunner{steps: []fakeInitialStep{
 				{output: `{"status":"READY_TO_WRITE","spec_id":"approve-flow"}`},
@@ -445,7 +445,7 @@ func TestApproveRequiresCurrentRegularEntrypoint(t *testing.T) {
 
 func TestQuestionInvalidResultEndsFlowWithoutRetry(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "question-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "question-flow")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"question-flow"}`},
 		{output: `{"status":"WRITTEN"}`, action: func(fakeInitialTurn) error {
@@ -470,7 +470,7 @@ func TestQuestionInvalidResultEndsFlowWithoutRetry(t *testing.T) {
 
 func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "change-flow")
+	target := filepath.Join(repo, "docs", "changes", "features", "change-flow")
 	entrypoint := filepath.Join(target, "specification.md")
 	manualOutside := filepath.Join(repo, "manual-before-update.txt")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
@@ -510,7 +510,7 @@ func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress, err := controller.ProposeChange(context.Background(), "Apply direct change")
-	want := Progress{State: StateDraft, SpecID: "change-flow", Path: "docs/specs/change-flow/specification.md"}
+	want := Progress{State: StateDraft, SpecID: "change-flow", Path: "docs/changes/features/change-flow/specification.md"}
 	if err != nil || progress != want {
 		t.Fatalf("direct update = %#v, %v, want %#v", progress, err, want)
 	}
@@ -527,7 +527,7 @@ func TestDirectChangeUsesFreshBaselineAndReturnsToDraft(t *testing.T) {
 
 func TestChangeClarificationUsesReadOnlyTurnsThenUpdates(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "clarified-change")
+	target := filepath.Join(repo, "docs", "changes", "features", "clarified-change")
 	entrypoint := filepath.Join(target, "specification.md")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"clarified-change"}`},
@@ -547,7 +547,7 @@ func TestChangeClarificationUsesReadOnlyTurnsThenUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress, err := controller.ProposeChange(context.Background(), "Change the color")
-	wantQuestion := Progress{State: StateAwaitingChangeAnswer, Question: "Which color?", SpecID: "clarified-change", Path: "docs/specs/clarified-change/specification.md"}
+	wantQuestion := Progress{State: StateAwaitingChangeAnswer, Question: "Which color?", SpecID: "clarified-change", Path: "docs/changes/features/clarified-change/specification.md"}
 	if err != nil || progress != wantQuestion {
 		t.Fatalf("change question = %#v, %v, want %#v", progress, err, wantQuestion)
 	}
@@ -558,7 +558,7 @@ func TestChangeClarificationUsesReadOnlyTurnsThenUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress, err = controller.SubmitChangeAnswer(context.Background(), "Blue")
-	wantDraft := Progress{State: StateDraft, SpecID: "clarified-change", Path: "docs/specs/clarified-change/specification.md"}
+	wantDraft := Progress{State: StateDraft, SpecID: "clarified-change", Path: "docs/changes/features/clarified-change/specification.md"}
 	if err != nil || progress != wantDraft {
 		t.Fatalf("clarified update = %#v, %v, want %#v", progress, err, wantDraft)
 	}
@@ -590,7 +590,7 @@ func TestUpdateFailureKeepsPartialFilesAndEndsFlow(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repo := initDraftRepository(t)
-			target := filepath.Join(repo, "docs", "specs", "failed-update")
+			target := filepath.Join(repo, "docs", "changes", "features", "failed-update")
 			entrypoint := filepath.Join(target, "specification.md")
 			runner := &fakeInitialRunner{steps: []fakeInitialStep{
 				{output: `{"status":"READY_TO_WRITE","spec_id":"failed-update"}`},
@@ -622,7 +622,7 @@ func TestUpdateFailureKeepsPartialFilesAndEndsFlow(t *testing.T) {
 
 func TestInvalidChangeAnalysisEndsFlowWithoutUpdate(t *testing.T) {
 	repo := initDraftRepository(t)
-	target := filepath.Join(repo, "docs", "specs", "invalid-analysis")
+	target := filepath.Join(repo, "docs", "changes", "features", "invalid-analysis")
 	entrypoint := filepath.Join(target, "specification.md")
 	runner := &fakeInitialRunner{steps: []fakeInitialStep{
 		{output: `{"status":"READY_TO_WRITE","spec_id":"invalid-analysis"}`},
@@ -731,7 +731,7 @@ func assertReadOnlyInitialTurns(t *testing.T, turns []fakeInitialTurn) {
 
 func assertNoSpecTarget(t *testing.T, root, specID string) {
 	t.Helper()
-	_, err := os.Lstat(filepath.Join(root, "docs", "specs", specID))
+	_, err := os.Lstat(filepath.Join(root, "docs", "changes", "features", specID))
 	if !os.IsNotExist(err) {
 		t.Fatalf("read-only clarification created a target: %v", err)
 	}
