@@ -176,7 +176,8 @@ probe, воспроизводимые fixtures и зафиксированный
 ```text
 cmd/codex-appserver-probe/
 internal/agentruntime/codexapp/
-internal/agentruntime/codexapp/testdata/
+internal/codexprobe/
+internal/codexprobe/testdata/
 docs/specs/iteration-0/codex-integration-contract.md
 docs/specs/iteration-0/report.md
 ```

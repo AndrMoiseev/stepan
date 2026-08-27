@@ -24,6 +24,41 @@ const (
 
 var appServerArgs = []string{"app-server", "--stdio", "--strict-config", "-c", `approvals_reviewer="user"`}
 
+// AppServerArgs returns the pinned App Server invocation shared by the runtime
+// and diagnostic probe.
+func AppServerArgs() []string { return append([]string(nil), appServerArgs...) }
+
+func ResolveExecutable(name string) (string, error) {
+	if name == "" {
+		return "", errors.New("executable is required")
+	}
+	if filepath.IsAbs(name) {
+		if info, err := os.Stat(name); err != nil || !info.Mode().IsRegular() {
+			return "", errors.New("executable must be an existing regular file")
+		}
+		return filepath.Clean(name), nil
+	}
+	if filepath.Base(name) != name {
+		return "", errors.New("executable must be an absolute path or a PATH name")
+	}
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if filepath.Clean(filepath.Dir(path)) == filepath.Clean(cwd) {
+		return "", errors.New("refusing executable resolved from the current directory")
+	}
+	return path, nil
+}
+
 // Process owns one contained Codex App Server and its stdio pipes.
 type Process struct {
 	executable string
@@ -52,6 +87,12 @@ type Process struct {
 
 func NewProcess(executable, workspace string) *Process {
 	return newProcess(executable, workspace, nil)
+}
+
+// NewProcessWithStderrCopy additionally records raw stderr while preserving the
+// bounded diagnostic buffer and process-tree containment.
+func NewProcessWithStderrCopy(executable, workspace string, stderrCopy io.Writer) *Process {
+	return newProcess(executable, workspace, stderrCopy)
 }
 
 func newProcess(executable, workspace string, stderrCopy io.Writer) *Process {
@@ -138,7 +179,7 @@ func preflight(executable, workspace string) (string, error) {
 	if err := platformsupport.Validate(runtime.GOOS, runtime.GOARCH); err != nil {
 		return "", err
 	}
-	executable, err := resolveExecutable(executable)
+	executable, err := ResolveExecutable(executable)
 	if err != nil {
 		return "", err
 	}

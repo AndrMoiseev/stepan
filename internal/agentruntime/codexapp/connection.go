@@ -17,6 +17,13 @@ type Handler struct {
 	Requests     map[string]func(*Connection, Message) error
 }
 
+type Platform struct {
+	CodexHome      string `json:"codex_home"`
+	PlatformFamily string `json:"platform_family"`
+	PlatformOS     string `json:"platform_os"`
+	UserAgent      string `json:"user_agent"`
+}
+
 type callResult struct {
 	message Message
 }
@@ -185,7 +192,7 @@ func (connection *Connection) read() {
 					return
 				}
 			}
-			if isApprovalMethod(message.Method) {
+			if IsApprovalMethod(message.Method) {
 				handle, err := connection.registerTurnApproval(message)
 				if err != nil {
 					connection.fail(err)

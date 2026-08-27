@@ -7,7 +7,7 @@ dependenciesRules:
   - package: '^github\.com/AndrMoiseev/stepan/cmd/codex-appserver-probe$'
     shouldOnlyDependsOn:
       internal:
-        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
+        - '^github\.com/AndrMoiseev/stepan/internal/codexprobe$'
   - package: '^github\.com/AndrMoiseev/stepan/cmd/stepan$'
     shouldOnlyDependsOn:
       internal:
@@ -28,9 +28,13 @@ dependenciesRules:
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/codexprobe$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
+        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/specflow$'
     shouldOnlyDependsOn:
       internal:

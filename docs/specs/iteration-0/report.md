@@ -120,7 +120,8 @@ config isolation. Пользователь принял их как управл
 - Отклонено: correlation по порядку, command text или производным IDs.
 - Последствия: неизвестный/противоречивый lifecycle становится protocol failure.
 - Evidence: `results/A03.json`–`A06.json`,
-  `internal/agentruntime/codexapp/transport_test.go`, `internal/agentruntime/codexapp/approvals_test.go`.
+  `internal/agentruntime/codexapp/transport_test.go`, `internal/agentruntime/codexapp/approvals_test.go`,
+  `internal/codexprobe/approvals_test.go`.
 
 ### 7. Policy accept/decline и делегирование оператору
 
@@ -202,7 +203,7 @@ config isolation. Пользователь принял их как управл
   request пережил restart.
 - Последствия: нет silent replay side effects, но нет прозрачного mid-turn resume.
 - Evidence: `results/A06.json`, `results/A12.json`,
-  `internal/agentruntime/codexapp/approvals_test.go`.
+  `internal/codexprobe/approvals_test.go`.
 
 ### 13. Candidate snapshot
 
@@ -320,15 +321,15 @@ spike завершён с замечаниями и переход к итера
 
 Оставлены ровно четыре App Server replay fixtures:
 
-- `internal/agentruntime/codexapp/testdata/success.jsonl`;
-- `internal/agentruntime/codexapp/testdata/approval.jsonl`;
-- `internal/agentruntime/codexapp/testdata/process-failure.jsonl`;
-- `internal/agentruntime/codexapp/testdata/protocol-failure.jsonl`.
+- `internal/codexprobe/testdata/success.jsonl`;
+- `internal/codexprobe/testdata/approval.jsonl`;
+- `internal/codexprobe/testdata/process-failure.jsonl`;
+- `internal/codexprobe/testdata/protocol-failure.jsonl`.
 
 Они содержат только synthetic IDs/nonce и placeholders. Один тест проверяет их
 фиксированные SHA-256 канонического LF-текста, отсутствие canary/credential markers, локальных Windows,
 UNC, `/Users` и `/home` paths, затем проигрывает каждый файл через production
-`Transport`, `runProtocol`, approval manager и production failure classifier.
+`Transport`, probe `runProtocol`, approval manager и probe failure classifier.
 Старый отдельный approval-only fixture удалён как дубликат класса.
 
 ## Принятое решение и follow-up

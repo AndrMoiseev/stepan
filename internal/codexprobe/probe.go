@@ -1,4 +1,4 @@
-package codexapp
+package codexprobe
 
 import (
 	"bytes"
@@ -9,15 +9,33 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 )
 
 type Outcome string
+
+type Message = codexapp.Message
+type MessageKind = codexapp.MessageKind
+type Transport = codexapp.Transport
+type ID = codexapp.ID
+type Platform = codexapp.Platform
+
+const (
+	Request      = codexapp.Request
+	Response     = codexapp.Response
+	Notification = codexapp.Notification
+)
+
+var NewTransport = codexapp.NewTransport
+var IntID = codexapp.IntID
+var StringID = codexapp.StringID
+var ErrDuplicateResponse = codexapp.ErrDuplicateResponse
 
 const (
 	Pass Outcome = "PASS"
@@ -26,7 +44,7 @@ const (
 
 var DefaultOutputSchema = json.RawMessage(`{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"result":{"type":"string","enum":["ok"]},"nonce":{"type":"string","minLength":1}},"required":["result","nonce"],"additionalProperties":false}`)
 
-type ProbeConfig struct {
+type Config struct {
 	Executable   string
 	Workspace    string
 	Prompt       string
@@ -38,51 +56,44 @@ type ProbeConfig struct {
 	Operator     OperatorFunc
 }
 
-func (config ProbeConfig) Args() []string {
-	return append([]string(nil), appServerArgs...)
+func (config Config) Args() []string {
+	return codexapp.AppServerArgs()
 }
 
-func (config ProbeConfig) validate() (ProbeConfig, error) {
+func (config Config) validate() (Config, error) {
 	var err error
-	config.Executable, err = resolveExecutable(config.Executable)
+	config.Executable, err = codexapp.ResolveExecutable(config.Executable)
 	if err != nil {
-		return ProbeConfig{}, err
+		return Config{}, err
 	}
 	if !filepath.IsAbs(config.Workspace) {
-		return ProbeConfig{}, errors.New("workspace must be absolute")
+		return Config{}, errors.New("workspace must be absolute")
 	}
 	if info, err := os.Stat(config.Workspace); err != nil || !info.IsDir() {
-		return ProbeConfig{}, errors.New("workspace must be an existing directory")
+		return Config{}, errors.New("workspace must be an existing directory")
 	}
-	config.Workspace, err = canonicalPath(config.Workspace)
+	config.Workspace, err = filepath.EvalSymlinks(filepath.Clean(config.Workspace))
 	if err != nil {
-		return ProbeConfig{}, fmt.Errorf("normalize workspace: %w", err)
+		return Config{}, fmt.Errorf("normalize workspace: %w", err)
 	}
 	if !filepath.IsAbs(config.ArtifactDir) {
-		return ProbeConfig{}, errors.New("artifact directory must be absolute")
+		return Config{}, errors.New("artifact directory must be absolute")
 	}
 	if config.Prompt == "" || strings.TrimSpace(config.Nonce) == "" {
-		return ProbeConfig{}, errors.New("prompt and nonce are required")
+		return Config{}, errors.New("prompt and nonce are required")
 	}
 	if len(config.OutputSchema) == 0 {
 		config.OutputSchema = append(json.RawMessage(nil), DefaultOutputSchema...)
 	}
 	var schema, supportedSchema map[string]any
 	if err := json.Unmarshal(config.OutputSchema, &schema); err != nil || schema == nil {
-		return ProbeConfig{}, errors.New("output schema must be a JSON object")
+		return Config{}, errors.New("output schema must be a JSON object")
 	}
 	_ = json.Unmarshal(DefaultOutputSchema, &supportedSchema)
 	if !reflect.DeepEqual(schema, supportedSchema) {
-		return ProbeConfig{}, errors.New("only the iteration-0 structured output schema is supported")
+		return Config{}, errors.New("only the iteration-0 structured output schema is supported")
 	}
 	return config, nil
-}
-
-type Platform struct {
-	CodexHome      string `json:"codex_home"`
-	PlatformFamily string `json:"platform_family"`
-	PlatformOS     string `json:"platform_os"`
-	UserAgent      string `json:"user_agent"`
 }
 
 type FinalOutput struct {
@@ -90,7 +101,7 @@ type FinalOutput struct {
 	Nonce  string `json:"nonce"`
 }
 
-type ProbeResult struct {
+type Result struct {
 	Outcome           Outcome      `json:"outcome"`
 	FailureClass      string       `json:"failure_class,omitempty"`
 	Detail            string       `json:"detail,omitempty"`
@@ -127,14 +138,14 @@ type protocolEvent struct {
 	Raw       json.RawMessage `json:"raw"`
 }
 
-// RunProbe executes the version-pinned stdio vertical path.
-func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
+// Run executes the version-pinned stdio vertical path.
+func Run(config Config) (result Result, runErr error) {
 	config, err := config.validate()
 	if err != nil {
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	if err := os.Mkdir(config.ArtifactDir, 0o700); err != nil {
-		return ProbeResult{}, fmt.Errorf("create artifact directory: %w", err)
+		return Result{}, fmt.Errorf("create artifact directory: %w", err)
 	}
 	result.Outcome = Fail
 	promptHash := sha256.Sum256([]byte(config.Prompt))
@@ -145,29 +156,29 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		PromptSHA256: hex.EncodeToString(promptHash[:]), SchemaSHA256: hex.EncodeToString(schemaHash[:]),
 	}
 	if err := writeJSONExclusive(filepath.Join(config.ArtifactDir, "manifest.json"), manifest); err != nil {
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	stdoutFile, err := createArtifact(config.ArtifactDir, "stdout.jsonl")
 	if err != nil {
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	stderrFile, err := createArtifact(config.ArtifactDir, "stderr.log")
 	if err != nil {
 		stdoutFile.Close()
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	eventsFile, err := createArtifact(config.ArtifactDir, "normalized-events.jsonl")
 	if err != nil {
 		stdoutFile.Close()
 		stderrFile.Close()
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	approvalsFile, err := createArtifact(config.ArtifactDir, "approvals.jsonl")
 	if err != nil {
 		stdoutFile.Close()
 		stderrFile.Close()
 		eventsFile.Close()
-		return ProbeResult{}, err
+		return Result{}, err
 	}
 	approvals, err := newApprovalManager(filepath.Join(config.ArtifactDir, "state.json"), approvalsFile, config.Workspace, config.AccessPolicy, config.Operator)
 	if err != nil {
@@ -175,10 +186,10 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		stderrFile.Close()
 		eventsFile.Close()
 		approvalsFile.Close()
-		return ProbeResult{}, fmt.Errorf("initialize approval policy: %w", err)
+		return Result{}, fmt.Errorf("initialize approval policy: %w", err)
 	}
 
-	finish := func() (ProbeResult, error) {
+	finish := func() (Result, error) {
 		status := StatusFailed
 		if result.Outcome == Pass {
 			status = StatusCompleted
@@ -193,7 +204,7 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 		return result, errors.Join(runErr, stateErr, closeErr)
 	}
 
-	process := newProcess(config.Executable, config.Workspace, stderrFile)
+	process := codexapp.NewProcessWithStderrCopy(config.Executable, config.Workspace, stderrFile)
 	if err := process.Start(); err != nil {
 		result.FailureClass, result.Detail = "spawn_failure", err.Error()
 		return finish()
@@ -217,7 +228,7 @@ func RunProbe(config ProbeConfig) (result ProbeResult, runErr error) {
 	return finish()
 }
 
-func classifyProbeResult(result *ProbeResult, waitErr, protocolErr error) {
+func classifyProbeResult(result *Result, waitErr, protocolErr error) {
 	if result.ProcessExitCode == nil || *result.ProcessExitCode != 0 {
 		result.Outcome = Fail
 		result.FailureClass = "process_failure"
@@ -231,7 +242,7 @@ func classifyProbeResult(result *ProbeResult, waitErr, protocolErr error) {
 	}
 }
 
-func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config ProbeConfig, result *ProbeResult, approvals *approvalManager) error {
+func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config Config, result *Result, approvals *approvalManager) error {
 	if err := transport.SendRequest(IntID(1), "initialize", map[string]any{
 		"clientInfo": map[string]string{"name": "stepan", "version": "0"},
 	}); err != nil {
@@ -286,11 +297,11 @@ func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config
 		}
 		switch message.Kind {
 		case Request:
-			_, ids, _, err := decodeApproval(message)
+			decoded, err := approvals.evaluator.Decode(message)
 			if err != nil {
 				return err
 			}
-			if stage != 5 || ids.ThreadID != result.ThreadID || ids.TurnID != result.TurnID {
+			if stage != 5 || decoded.ThreadID != result.ThreadID || decoded.TurnID != result.TurnID {
 				return errors.New("approval correlation IDs do not match the running turn")
 			}
 			request, decision, err := approvals.register(message)
@@ -344,7 +355,7 @@ func runProtocol(transport *Transport, stdin io.Closer, events io.Writer, config
 	}
 }
 
-func advanceProtocol(transport *Transport, message Message, stage *int, config ProbeConfig, result *ProbeResult) error {
+func advanceProtocol(transport *Transport, message Message, stage *int, config Config, result *Result) error {
 	if message.ID.Key() != IntID(int64(*stage)).Key() {
 		return fmt.Errorf("unexpected response ID %s at stage %d", message.ID.Key(), *stage)
 	}
@@ -457,7 +468,7 @@ func validateRequirements(raw json.RawMessage) error {
 	return nil
 }
 
-func decodeTerminal(raw json.RawMessage, nonce string, result *ProbeResult) error {
+func decodeTerminal(raw json.RawMessage, nonce string, result *Result) error {
 	var notification struct {
 		ThreadID string `json:"threadId"`
 		Turn     struct {
@@ -526,6 +537,67 @@ func decodeTerminal(raw json.RawMessage, nonce string, result *ProbeResult) erro
 	return nil
 }
 
+type fileChangeEvidence struct {
+	ThreadID string   `json:"threadId"`
+	TurnID   string   `json:"turnId"`
+	ItemID   string   `json:"itemId"`
+	Paths    []string `json:"paths"`
+}
+
+func decodeFileChangeEvidence(message Message) (fileChangeEvidence, bool, error) {
+	type change struct {
+		Path string `json:"path"`
+	}
+	var threadID, turnID, itemID string
+	var changes []change
+	switch message.Method {
+	case "item/started":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Item     struct {
+				ID      string   `json:"id"`
+				Type    string   `json:"type"`
+				Changes []change `json:"changes"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			return fileChangeEvidence{}, true, err
+		}
+		if params.Item.Type != "fileChange" {
+			return fileChangeEvidence{}, false, nil
+		}
+		threadID, turnID, itemID, changes = params.ThreadID, params.TurnID, params.Item.ID, params.Item.Changes
+	case "item/fileChange/patchUpdated":
+		var params struct {
+			ThreadID string   `json:"threadId"`
+			TurnID   string   `json:"turnId"`
+			ItemID   string   `json:"itemId"`
+			Changes  []change `json:"changes"`
+		}
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			return fileChangeEvidence{}, true, err
+		}
+		threadID, turnID, itemID, changes = params.ThreadID, params.TurnID, params.ItemID, params.Changes
+	default:
+		return fileChangeEvidence{}, false, nil
+	}
+	evidence := fileChangeEvidence{ThreadID: threadID, TurnID: turnID, ItemID: itemID}
+	for _, change := range changes {
+		if change.Path == "" {
+			return fileChangeEvidence{}, true, errors.New("file change notification has empty path")
+		}
+		evidence.Paths = append(evidence.Paths, change.Path)
+	}
+	return evidence, true, nil
+}
+
+type approvalCorrelation struct {
+	ThreadID string `json:"threadId"`
+	TurnID   string `json:"turnId"`
+	ItemID   string `json:"itemId"`
+}
+
 func appendProtocolEvent(writer io.Writer, seq uint64, message Message) error {
 	raw := message.Raw
 	if message.Kind == Notification {
@@ -541,26 +613,23 @@ func appendProtocolEvent(writer io.Writer, seq uint64, message Message) error {
 			}
 		}
 	}
-	if message.Kind == Request && isApprovalMethod(message.Method) {
-		_, ids, _, err := decodeApproval(message)
+	if message.Kind == Request && codexapp.IsApprovalMethod(message.Method) {
+		var ids approvalCorrelation
+		if err := json.Unmarshal(message.Params, &ids); err != nil || ids.ThreadID == "" || ids.TurnID == "" || ids.ItemID == "" {
+			return errors.New("invalid approval correlation fields")
+		}
+		encoded, err := json.Marshal(struct {
+			Method string              `json:"method"`
+			ID     ID                  `json:"id"`
+			Params approvalCorrelation `json:"params"`
+		}{message.Method, message.ID, ids})
 		if err != nil {
 			return err
 		}
-		raw, err = json.Marshal(struct {
-			Method string      `json:"method"`
-			ID     ID          `json:"id"`
-			Params approvalIDs `json:"params"`
-		}{message.Method, message.ID, approvalIDs{ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID}})
-		if err != nil {
-			return err
-		}
+		raw = encoded
 	}
 	event := protocolEvent{Seq: seq, Timestamp: time.Now().UTC(), Kind: message.Kind, Method: message.Method, ID: message.ID.Key(), Raw: raw}
 	return json.NewEncoder(writer).Encode(event)
-}
-
-func isApprovalMethod(method string) bool {
-	return method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" || method == "item/permissions/requestApproval"
 }
 
 func requestName(stage int) string {
@@ -575,37 +644,6 @@ func errorDetail(waitErr, protocolErr error) string {
 		return protocolErr.Error()
 	}
 	return "process did not exit successfully"
-}
-
-func resolveExecutable(name string) (string, error) {
-	if name == "" {
-		return "", errors.New("executable is required")
-	}
-	if filepath.IsAbs(name) {
-		if info, err := os.Stat(name); err != nil || !info.Mode().IsRegular() {
-			return "", errors.New("executable must be an existing regular file")
-		}
-		return filepath.Clean(name), nil
-	}
-	if filepath.Base(name) != name {
-		return "", errors.New("executable must be an absolute path or a PATH name")
-	}
-	path, err := exec.LookPath(name)
-	if err != nil {
-		return "", fmt.Errorf("resolve executable: %w", err)
-	}
-	path, err = filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	if filepath.Clean(filepath.Dir(path)) == filepath.Clean(cwd) {
-		return "", errors.New("refusing executable resolved from the current directory")
-	}
-	return path, nil
 }
 
 func createArtifact(dir, name string) (*os.File, error) {

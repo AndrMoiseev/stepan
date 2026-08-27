@@ -14,7 +14,7 @@ Transport: `codex app-server --stdio`
 
 1. live-наблюдения `A01`–`A06` и `A16`;
 2. generated JSON Schema установленного `codex-cli 0.147.0`;
-3. поведение, которое реально реализует probe в `internal/agentruntime/codexapp`.
+3. поведение, которое реально реализует probe в `internal/codexprobe`.
 
 Generated bundle привязан к версии. Его manifest имеет SHA-256
 `eb325d394d19f2f8d133203885b3d1c2f74dbc5a176f22078a4f99aae5926faa`;

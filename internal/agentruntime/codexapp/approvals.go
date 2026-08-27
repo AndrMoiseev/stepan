@@ -1,7 +1,6 @@
 package codexapp
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,22 +12,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
-
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
-)
-
-type RunStatus string
-
-const (
-	StatusStarting                   RunStatus = "starting"
-	StatusReady                      RunStatus = "ready"
-	StatusRunningTurn                RunStatus = "running_turn"
-	StatusAwaitingControllerDecision RunStatus = "awaiting_controller_decision"
-	StatusAwaitingOperator           RunStatus = "awaiting_operator"
-	StatusCompleted                  RunStatus = "completed"
-	StatusInterrupted                RunStatus = "interrupted"
-	StatusFailed                     RunStatus = "failed"
 )
 
 type ApprovalKind string
@@ -48,12 +31,9 @@ const (
 	DecisionAwaitOperator ApprovalDecision = "await_operator"
 )
 
-type DecisionSource string
-
-const (
-	DecisionByPolicy   DecisionSource = "policy"
-	DecisionByOperator DecisionSource = "operator"
-)
+func IsApprovalMethod(method string) bool {
+	return method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" || method == "item/permissions/requestApproval"
+}
 
 type CommandForm struct {
 	Command string `json:"command"`
@@ -72,27 +52,6 @@ type AccessPolicy struct {
 	OperatorDecisions []ApprovalKind `json:"operator_decisions,omitempty"`
 }
 
-// PendingApproval is the complete durable representation. It intentionally
-// excludes command text, reasons, permission payloads, and file contents.
-type PendingApproval struct {
-	SchemaVersion       int              `json:"schema_version"`
-	RequestID           json.RawMessage  `json:"request_id"`
-	ThreadID            string           `json:"thread_id"`
-	TurnID              string           `json:"turn_id"`
-	ItemID              string           `json:"item_id"`
-	Kind                ApprovalKind     `json:"kind"`
-	Status              string           `json:"status"`
-	RequestedAt         time.Time        `json:"requested_at"`
-	PolicySnapshotID    string           `json:"policy_snapshot_id"`
-	CandidateSnapshotID *string          `json:"candidate_snapshot_id"`
-	Decision            ApprovalDecision `json:"decision,omitempty"`
-	DecisionSource      DecisionSource   `json:"decision_source,omitempty"`
-	DecidedAt           *time.Time       `json:"decided_at,omitempty"`
-	SentAt              *time.Time       `json:"sent_at,omitempty"`
-}
-
-type OperatorFunc func(PendingApproval) (ApprovalDecision, error)
-
 type normalizedPolicy struct {
 	ReadableRoots     []string       `json:"readable_roots"`
 	WritableRoots     []string       `json:"writable_roots"`
@@ -103,46 +62,44 @@ type normalizedPolicy struct {
 	OperatorDecisions []ApprovalKind `json:"operator_decisions"`
 }
 
-type approvalRequest struct {
-	message     Message
-	pending     PendingApproval
+// ApprovalRequest is a decoded App Server approval request. Sensitive payloads
+// remain private; callers only receive correlation metadata.
+type ApprovalRequest struct {
+	Kind        ApprovalKind
+	ThreadID    string
+	TurnID      string
+	ItemID      string
 	ids         approvalIDs
 	permissions permissionProfile
 }
 
-type operatorResult struct {
-	key      string
-	decision ApprovalDecision
-	err      error
-}
-
-type approvalManager struct {
+// ApprovalEvaluator owns normalized policy and observed file-change evidence.
+// It is safe for concurrent use by the runtime and diagnostic probe.
+type ApprovalEvaluator struct {
 	mu          sync.Mutex
-	statePath   string
-	journal     *os.File
 	workspace   string
 	policy      normalizedPolicy
-	operator    OperatorFunc
-	status      RunStatus
-	pending     map[string]*approvalRequest
-	closed      []PendingApproval
 	fileChanges map[string][]string
-	operatorOut chan operatorResult
 }
 
-type durableProbeState struct {
-	SchemaVersion int               `json:"schema_version"`
-	Status        RunStatus         `json:"status"`
-	UpdatedAt     time.Time         `json:"updated_at"`
-	Pending       []PendingApproval `json:"pending_approvals,omitempty"`
-	Closed        []PendingApproval `json:"closed_approvals,omitempty"`
+func NewApprovalEvaluator(workspace string, policy AccessPolicy) (*ApprovalEvaluator, error) {
+	normalized, err := normalizePolicy(policy, workspace)
+	if err != nil {
+		return nil, err
+	}
+	return &ApprovalEvaluator{workspace: workspace, policy: normalized, fileChanges: make(map[string][]string)}, nil
 }
 
-type approvalJournalEvent struct {
-	SchemaVersion int             `json:"schema_version"`
-	Timestamp     time.Time       `json:"timestamp"`
-	Type          string          `json:"type"`
-	Approval      PendingApproval `json:"approval"`
+// PolicySnapshotID returns a stable identifier for the normalized policy.
+func (evaluator *ApprovalEvaluator) PolicySnapshotID() (string, error) {
+	evaluator.mu.Lock()
+	defer evaluator.mu.Unlock()
+	data, err := json.Marshal(evaluator.policy)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 func normalizePolicy(policy AccessPolicy, workspace string) (normalizedPolicy, error) {
@@ -314,250 +271,6 @@ func resolveExistingPath(value string) (string, error) {
 	return "", errors.New("too many reparse points")
 }
 
-func newApprovalManager(statePath string, journal *os.File, workspace string, policy AccessPolicy, operator OperatorFunc) (*approvalManager, error) {
-	normalized, err := normalizePolicy(policy, workspace)
-	if err != nil {
-		return nil, err
-	}
-	manager := &approvalManager{
-		statePath: statePath, journal: journal, workspace: workspace, policy: normalized, operator: operator,
-		status: StatusStarting, pending: make(map[string]*approvalRequest), fileChanges: make(map[string][]string), operatorOut: make(chan operatorResult, 16),
-	}
-	if data, err := os.ReadFile(statePath); err == nil {
-		var previous durableProbeState
-		if err := json.Unmarshal(data, &previous); err != nil {
-			return nil, fmt.Errorf("read previous approval state: %w", err)
-		}
-		now := time.Now().UTC()
-		for _, pending := range previous.Pending {
-			if pending.Status == "sent" || pending.Status == "failed_closed" {
-				continue
-			}
-			pending.Status, pending.Decision, pending.DecisionSource, pending.DecidedAt = "failed_closed", DecisionCancel, DecisionByPolicy, &now
-			manager.closed = append(manager.closed, pending)
-			if err := manager.appendJournal("failed_closed_after_restart", pending); err != nil {
-				return nil, err
-			}
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	if err := manager.persistState(); err != nil {
-		return nil, err
-	}
-	return manager, nil
-}
-
-func (manager *approvalManager) setStatus(status RunStatus) error {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	manager.status = status
-	return manager.persistStateLocked()
-}
-
-func (manager *approvalManager) persistState() error {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	return manager.persistStateLocked()
-}
-
-func (manager *approvalManager) persistStateLocked() error {
-	pending := make([]PendingApproval, 0, len(manager.pending))
-	for _, request := range manager.pending {
-		pending = append(pending, request.pending)
-	}
-	sort.Slice(pending, func(i, j int) bool { return string(pending[i].RequestID) < string(pending[j].RequestID) })
-	return writeJSONAtomic(manager.statePath, durableProbeState{1, manager.status, time.Now().UTC(), pending, manager.closed})
-}
-
-func (manager *approvalManager) appendJournal(eventType string, approval PendingApproval) error {
-	if err := json.NewEncoder(manager.journal).Encode(approvalJournalEvent{1, time.Now().UTC(), eventType, approval}); err != nil {
-		return err
-	}
-	return manager.journal.Sync()
-}
-
-func (manager *approvalManager) register(message Message) (*approvalRequest, ApprovalDecision, error) {
-	kind, ids, permissions, err := decodeApproval(message)
-	if err != nil {
-		return nil, "", err
-	}
-	policyID, err := manager.policySnapshotID()
-	if err != nil {
-		return nil, "", err
-	}
-	candidateID, err := candidateSnapshotID(manager.workspace)
-	if err != nil {
-		return nil, "", err
-	}
-	request := &approvalRequest{message: message, ids: ids, permissions: permissions, pending: PendingApproval{
-		SchemaVersion: 1, RequestID: append(json.RawMessage(nil), message.ID.raw...), ThreadID: ids.ThreadID,
-		TurnID: ids.TurnID, ItemID: ids.ItemID, Kind: kind, Status: "pending", RequestedAt: time.Now().UTC(),
-		PolicySnapshotID: policyID, CandidateSnapshotID: candidateID,
-	}}
-	manager.mu.Lock()
-	manager.pending[message.ID.Key()] = request
-	manager.status = StatusAwaitingControllerDecision
-	if err := manager.persistStateLocked(); err != nil {
-		delete(manager.pending, message.ID.Key())
-		manager.mu.Unlock()
-		return nil, "", err
-	}
-	if err := manager.appendJournal("pending", request.pending); err != nil {
-		delete(manager.pending, message.ID.Key())
-		manager.mu.Unlock()
-		return nil, "", err
-	}
-	manager.mu.Unlock()
-
-	decision := manager.evaluate(kind, ids, permissions)
-	if decision == DecisionAwaitOperator {
-		if manager.operator == nil {
-			return request, DecisionDecline, nil
-		}
-		manager.mu.Lock()
-		manager.status = StatusAwaitingOperator
-		err = manager.persistStateLocked()
-		manager.mu.Unlock()
-		if err != nil {
-			return nil, "", err
-		}
-		go func(key string, pending PendingApproval) {
-			decision, err := manager.operator(pending)
-			manager.operatorOut <- operatorResult{key, decision, err}
-		}(message.ID.Key(), request.pending)
-	}
-	return request, decision, nil
-}
-
-func (manager *approvalManager) resolve(transport *Transport, request *approvalRequest, decision ApprovalDecision, source DecisionSource) error {
-	if decision != DecisionAccept && decision != DecisionDecline && decision != DecisionCancel {
-		return fmt.Errorf("invalid final approval decision %q", decision)
-	}
-	manager.mu.Lock()
-	current, ok := manager.pending[request.message.ID.Key()]
-	if !ok || current.pending.Status != "pending" {
-		manager.mu.Unlock()
-		return ErrDuplicateResponse
-	}
-	manager.mu.Unlock()
-
-	policyID, err := manager.policySnapshotID()
-	if err != nil {
-		return err
-	}
-	candidateID, err := candidateSnapshotID(manager.workspace)
-	if err != nil {
-		return err
-	}
-	if policyID != request.pending.PolicySnapshotID || !sameOptionalString(candidateID, request.pending.CandidateSnapshotID) {
-		decision, source = DecisionDecline, DecisionByPolicy
-	}
-	if decision == DecisionAccept && manager.evaluate(request.pending.Kind, request.ids, request.permissions) == DecisionDecline {
-		decision, source = DecisionDecline, DecisionByPolicy
-	}
-
-	now := time.Now().UTC()
-	manager.mu.Lock()
-	current.pending.Status, current.pending.Decision, current.pending.DecisionSource, current.pending.DecidedAt = "decided", decision, source, &now
-	if err := manager.persistStateLocked(); err != nil {
-		manager.mu.Unlock()
-		return err
-	}
-	if err := manager.appendJournal("decided", current.pending); err != nil {
-		manager.mu.Unlock()
-		return err
-	}
-	manager.mu.Unlock()
-
-	if err := transport.SendResult(request.message.ID, approvalResponse(request, decision)); err != nil {
-		return err
-	}
-
-	now = time.Now().UTC()
-	manager.mu.Lock()
-	current.pending.Status, current.pending.SentAt = "sent", &now
-	if err := manager.appendJournal("sent", current.pending); err != nil {
-		manager.mu.Unlock()
-		return err
-	}
-	delete(manager.pending, request.message.ID.Key())
-	if len(manager.pending) == 0 {
-		manager.status = StatusRunningTurn
-	}
-	err = manager.persistStateLocked()
-	manager.mu.Unlock()
-	return err
-}
-
-func (manager *approvalManager) continueOperator(result operatorResult, transport *Transport) error {
-	manager.mu.Lock()
-	request, ok := manager.pending[result.key]
-	manager.mu.Unlock()
-	if !ok {
-		return ErrDuplicateResponse
-	}
-	if result.err != nil {
-		return manager.resolve(transport, request, DecisionDecline, DecisionByPolicy)
-	}
-	return manager.resolve(transport, request, result.decision, DecisionByOperator)
-}
-
-func (manager *approvalManager) failClosed() error {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	now := time.Now().UTC()
-	for key, request := range manager.pending {
-		if request.pending.Status == "sent" || request.pending.Status == "failed_closed" {
-			continue
-		}
-		request.pending.Status = "failed_closed"
-		request.pending.Decision = DecisionCancel
-		request.pending.DecisionSource = DecisionByPolicy
-		request.pending.DecidedAt = &now
-		if err := manager.appendJournal("failed_closed", request.pending); err != nil {
-			return err
-		}
-		manager.closed = append(manager.closed, request.pending)
-		delete(manager.pending, key)
-	}
-	manager.status = StatusFailed
-	return manager.persistStateLocked()
-}
-
-func (manager *approvalManager) hasPending() bool {
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	return len(manager.pending) != 0
-}
-
-func (manager *approvalManager) policySnapshotID() (string, error) {
-	data, err := json.Marshal(manager.policy)
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.Sum256(data)
-	return hex.EncodeToString(hash[:]), nil
-}
-
-func candidateSnapshotID(workspace string) (*string, error) {
-	if _, err := os.Stat(filepath.Join(workspace, ".git")); os.IsNotExist(err) {
-		return nil, nil
-	} else if err != nil {
-		return nil, err
-	}
-	snapshot, err := gitsnapshot.Capture(context.Background(), workspace)
-	if err != nil {
-		return nil, err
-	}
-	value := snapshot.HeadOID + ":" + snapshot.TreeOID
-	return &value, nil
-}
-
-func sameOptionalString(left, right *string) bool {
-	return left == nil && right == nil || left != nil && right != nil && *left == *right
-}
-
 type approvalIDs struct {
 	ThreadID                        string            `json:"threadId"`
 	TurnID                          string            `json:"turnId"`
@@ -604,30 +317,6 @@ type fileChangeEvidence struct {
 	TurnID   string   `json:"turnId"`
 	ItemID   string   `json:"itemId"`
 	Paths    []string `json:"paths"`
-}
-
-func (manager *approvalManager) observeFileChanges(message Message, threadID, turnID string) error {
-	evidence, relevant, err := decodeFileChangeEvidence(message)
-	if err != nil || !relevant {
-		return err
-	}
-	if evidence.ThreadID != threadID || evidence.TurnID != turnID || evidence.ItemID == "" {
-		return errors.New("file change notification correlation IDs do not match the running turn")
-	}
-	paths := make([]string, 0, len(evidence.Paths))
-	for _, value := range evidence.Paths {
-		if !filepath.IsAbs(value) {
-			value = filepath.Join(manager.workspace, value)
-		}
-		normalized, err := canonicalPath(value)
-		if err != nil {
-			return err
-		}
-		paths = append(paths, normalized)
-	}
-	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
-	manager.fileChanges[key] = append(manager.fileChanges[key], paths...)
-	return nil
 }
 
 func decodeFileChangeEvidence(message Message) (fileChangeEvidence, bool, error) {
@@ -678,6 +367,33 @@ func decodeFileChangeEvidence(message Message) (fileChangeEvidence, bool, error)
 	return evidence, true, nil
 }
 
+// Observe records file-change evidence for a single active turn.
+func (evaluator *ApprovalEvaluator) Observe(message Message, threadID, turnID string) error {
+	evidence, relevant, err := decodeFileChangeEvidence(message)
+	if err != nil || !relevant {
+		return err
+	}
+	if evidence.ThreadID != threadID || evidence.TurnID != turnID || evidence.ItemID == "" {
+		return errors.New("file change evidence has invalid correlation fields")
+	}
+	paths := make([]string, 0, len(evidence.Paths))
+	for _, value := range evidence.Paths {
+		if !filepath.IsAbs(value) {
+			value = filepath.Join(evaluator.workspace, value)
+		}
+		value, err = canonicalPath(value)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, value)
+	}
+	evaluator.mu.Lock()
+	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
+	evaluator.fileChanges[key] = append(evaluator.fileChanges[key], paths...)
+	evaluator.mu.Unlock()
+	return nil
+}
+
 func fileChangeKey(threadID, turnID, itemID string) string {
 	return threadID + "\x00" + turnID + "\x00" + itemID
 }
@@ -715,8 +431,24 @@ func decodeApproval(message Message) (ApprovalKind, approvalIDs, permissionProfi
 	return kind, ids, permissions, nil
 }
 
-func (manager *approvalManager) evaluate(kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
-	return evaluateApproval(manager.policy, manager.fileChanges, kind, ids, permissions)
+// Decode validates an App Server approval request without exposing its raw
+// command, permission, or file payloads.
+func (evaluator *ApprovalEvaluator) Decode(message Message) (ApprovalRequest, error) {
+	kind, ids, permissions, err := decodeApproval(message)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	return ApprovalRequest{
+		Kind: kind, ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID,
+		ids: ids, permissions: permissions,
+	}, nil
+}
+
+// Evaluate applies the current policy to a previously decoded request.
+func (evaluator *ApprovalEvaluator) Evaluate(request ApprovalRequest) ApprovalDecision {
+	evaluator.mu.Lock()
+	defer evaluator.mu.Unlock()
+	return evaluateApproval(evaluator.policy, evaluator.fileChanges, request.Kind, request.ids, request.permissions)
 }
 
 func evaluateApproval(policy normalizedPolicy, fileChanges map[string][]string, kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
@@ -802,10 +534,6 @@ func evaluateApproval(policy normalizedPolicy, fileChanges map[string][]string, 
 	}
 }
 
-func (manager *approvalManager) acceptOrAwait(kind ApprovalKind) ApprovalDecision {
-	return acceptOrAwait(manager.policy, kind)
-}
-
 func acceptOrAwait(policy normalizedPolicy, kind ApprovalKind) ApprovalDecision {
 	for _, required := range policy.OperatorDecisions {
 		if required == kind {
@@ -815,17 +543,9 @@ func acceptOrAwait(policy normalizedPolicy, kind ApprovalKind) ApprovalDecision 
 	return DecisionAccept
 }
 
-func (manager *approvalManager) allowedRequestedPath(value string, roots []string) bool {
-	return allowedRequestedPath(manager.policy, value, roots)
-}
-
 func allowedRequestedPath(policy normalizedPolicy, value string, roots []string) bool {
 	normalized, err := canonicalPath(value)
 	return err == nil && allowedPath(policy, normalized, roots)
-}
-
-func (manager *approvalManager) allowedPath(value string, roots []string) bool {
-	return allowedPath(manager.policy, value, roots)
 }
 
 func allowedPath(policy normalizedPolicy, value string, roots []string) bool {
@@ -900,8 +620,10 @@ func samePath(left, right string) bool {
 	return left == right
 }
 
-func approvalResponse(request *approvalRequest, decision ApprovalDecision) any {
-	if request.pending.Kind == PermissionsApproval {
+// Response returns the App Server result for this request and never creates a
+// session-scoped permission grant.
+func (request ApprovalRequest) Response(decision ApprovalDecision) any {
+	if request.Kind == PermissionsApproval {
 		if decision == DecisionAccept {
 			return struct {
 				Permissions permissionProfile `json:"permissions"`

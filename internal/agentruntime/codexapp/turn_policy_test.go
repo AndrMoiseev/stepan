@@ -65,9 +65,8 @@ func TestTurnPolicyAcceptsOnlyObservedPathsInsideSingleRoot(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			decision := run.evaluateApproval(FileChangeApproval, approvalIDs{
-				ThreadID: "thread", TurnID: "turn", ItemID: "item", GrantRoot: test.grantRoot, Scope: test.scope,
-			}, permissionProfile{})
+			ids := approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item", GrantRoot: test.grantRoot, Scope: test.scope}
+			decision := run.evaluateApproval(ApprovalRequest{Kind: FileChangeApproval, ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID, ids: ids})
 			if decision != test.want {
 				t.Fatalf("decision = %q, want %q", decision, test.want)
 			}
@@ -108,7 +107,8 @@ func TestTurnPolicyAccumulatesObservedPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if decision := run.evaluateApproval(FileChangeApproval, approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item"}, permissionProfile{}); decision != DecisionDecline {
+	ids := approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item"}
+	if decision := run.evaluateApproval(ApprovalRequest{Kind: FileChangeApproval, ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID, ids: ids}); decision != DecisionDecline {
 		t.Fatalf("decision after outside path = %q", decision)
 	}
 }
@@ -117,9 +117,9 @@ func TestTurnPolicyDeclinesCommandPermissionsAndNetwork(t *testing.T) {
 	workspace := t.TempDir()
 	run := testTurnRun(t, workspace, ReadOnlyTurnPolicy())
 	for _, kind := range []ApprovalKind{CommandApproval, PermissionsApproval} {
-		if decision := run.evaluateApproval(kind, approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item"}, permissionProfile{
-			Network: &networkPermissions{Enabled: boolPointer(true)},
-		}); decision != DecisionDecline {
+		ids := approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item"}
+		permissions := permissionProfile{Network: &networkPermissions{Enabled: boolPointer(true)}}
+		if decision := run.evaluateApproval(ApprovalRequest{Kind: kind, ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID, ids: ids, permissions: permissions}); decision != DecisionDecline {
 			t.Fatalf("%s decision = %q", kind, decision)
 		}
 	}
@@ -175,22 +175,29 @@ func TestTurnApprovalIsOneShotAndTurnScoped(t *testing.T) {
 
 func testTurnRun(t *testing.T, workspace string, policy TurnPolicy) *turnRun {
 	t.Helper()
-	normalized, err := normalizePolicy(AccessPolicy{WritableRoots: writableRoots(policy)}, workspace)
+	approvals, err := NewApprovalEvaluator(workspace, AccessPolicy{WritableRoots: writableRoots(policy)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &turnRun{
-		threadID: "thread", turnID: "turn", workspace: workspace, policy: normalized,
-		changes: make(map[string][]string), pending: make(map[string]bool), wake: make(chan struct{}, 1),
+		threadID: "thread", turnID: "turn", approvals: approvals,
+		pending: make(map[string]bool), wake: make(chan struct{}, 1),
 	}
 }
 
 func stringPointer(value string) *string { return &value }
 func boolPointer(value bool) *bool       { return &value }
 
+func resultHasDecision(raw json.RawMessage, decision ApprovalDecision) bool {
+	var result struct {
+		Decision ApprovalDecision `json:"decision"`
+	}
+	return json.Unmarshal(raw, &result) == nil && result.Decision == decision
+}
+
 func TestTurnPolicyResponseNeverGrantsSession(t *testing.T) {
-	request := &approvalRequest{pending: PendingApproval{Kind: FileChangeApproval}}
-	data, err := json.Marshal(approvalResponse(request, DecisionAccept))
+	request := ApprovalRequest{Kind: FileChangeApproval}
+	data, err := json.Marshal(request.Response(DecisionAccept))
 	if err != nil {
 		t.Fatal(err)
 	}

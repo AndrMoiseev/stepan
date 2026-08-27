@@ -1,4 +1,4 @@
-package codexapp
+package codexprobe
 
 import (
 	"bytes"
@@ -14,7 +14,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 )
+
+var ParseMessage = codexapp.ParseMessage
 
 type replayConn struct {
 	mu     sync.Mutex
@@ -104,8 +108,8 @@ func TestReplaySanitizedFixtures(t *testing.T) {
 			defer cleanup()
 			connection := newReplayConn(data)
 			var events bytes.Buffer
-			result := ProbeResult{Outcome: Fail}
-			protocolErr := runProtocol(NewTransport(connection, connection), connection, &events, ProbeConfig{
+			result := Result{Outcome: Fail}
+			protocolErr := runProtocol(NewTransport(connection, connection), connection, &events, Config{
 				Workspace: workspace, Prompt: "replay", Nonce: "replay", OutputSchema: DefaultOutputSchema,
 			}, &result, manager)
 			code := 0
@@ -142,7 +146,7 @@ func TestRunProbeVerticalPath(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			config := fakeProbeConfig(t, test.scenario)
 			config.ThreadID = test.threadID
-			result, err := RunProbe(config)
+			result, err := Run(config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,7 +193,7 @@ func TestRunProbeApprovalRequests(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		return DecisionAccept, nil
 	}
-	result, err := RunProbe(config)
+	result, err := Run(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +224,7 @@ func TestRunProbeClassifiesLifecycleFailures(t *testing.T) {
 		{"config-denied", "config_incompatible", 0},
 	} {
 		t.Run(test.scenario, func(t *testing.T) {
-			result, err := RunProbe(fakeProbeConfig(t, test.scenario))
+			result, err := Run(fakeProbeConfig(t, test.scenario))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -234,7 +238,7 @@ func TestRunProbeClassifiesLifecycleFailures(t *testing.T) {
 func TestRunProbeRejectsNonSchemaFinalText(t *testing.T) {
 	for _, scenario := range []string{"structured-extra", "structured-missing", "structured-wrapped"} {
 		t.Run(scenario, func(t *testing.T) {
-			result, err := RunProbe(fakeProbeConfig(t, scenario))
+			result, err := Run(fakeProbeConfig(t, scenario))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -246,7 +250,7 @@ func TestRunProbeRejectsNonSchemaFinalText(t *testing.T) {
 	t.Run("nonce mismatch", func(t *testing.T) {
 		config := fakeProbeConfig(t, "vertical")
 		config.Nonce = "different"
-		result, err := RunProbe(config)
+		result, err := Run(config)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -256,7 +260,7 @@ func TestRunProbeRejectsNonSchemaFinalText(t *testing.T) {
 	})
 }
 
-func fakeProbeConfig(t *testing.T, scenario string) ProbeConfig {
+func fakeProbeConfig(t *testing.T, scenario string) Config {
 	t.Helper()
 	t.Setenv("GO_WANT_CODEXAPP_FAKE", scenario)
 	root := t.TempDir()
@@ -264,7 +268,7 @@ func fakeProbeConfig(t *testing.T, scenario string) ProbeConfig {
 	if err := os.Mkdir(workspace, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return ProbeConfig{
+	return Config{
 		Executable: os.Args[0], Workspace: workspace, Prompt: "return the nonce", Nonce: "nonce",
 		ArtifactDir: filepath.Join(root, "artifacts"), OutputSchema: append(json.RawMessage(nil), DefaultOutputSchema...),
 	}

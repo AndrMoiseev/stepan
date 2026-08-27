@@ -4,7 +4,7 @@
 
 Дата: 2026-08-13
 
-Обновлено: 2026-08-24 после принятия ADR 0003
+Обновлено: 2026-08-27 после выделения `internal/codexprobe`
 
 Разделы о provider boundary и Claude дополняет [ADR 0004](0004-claude-cli-runtime.md).
 
@@ -49,6 +49,8 @@ flowchart LR
     Contract --> Claude[internal/agentruntime/claudeapp]
     Flow --> Git[internal/gitsnapshot]
     App --> Job[internal/processjob]
+    Probe[internal/codexprobe] --> App
+    Probe --> Git
     CLI --> Platform[internal/platformsupport]
     App <-->|JSON-RPC / JSONL over stdio| Codex[codex app-server]
     Claude <-->|SDK standard subprocess transport| ClaudeCLI[Claude-compatible CLI]
@@ -56,7 +58,7 @@ flowchart LR
     Job --> Win[Windows Job Object]
     Job --> Mac[Darwin process group]
 
-    Probe1[cmd/codex-appserver-probe] --> App
+    Probe1[cmd/codex-appserver-probe] --> Probe
 ```
 
 Основной production-путь соблюдает направление зависимостей
@@ -68,13 +70,16 @@ flowchart LR
 - `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
   prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
 - `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
-  JSON-RPC transport, thread/turn, correlation, structured output и fail-closed approval policy.
+  JSON-RPC transport, thread/turn, correlation, structured output и общий
+  fail-closed approval evaluator.
 - `internal/agentruntime` — provider-neutral contract session/thread, turn,
   policy и lifecycle.
 - `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
   turn-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
   сравнение до/после turn и проверка write boundary.
+- `internal/codexprobe` — диагностический App Server flow, replay artifacts и
+  durable approval manager с Git candidate snapshot.
 - `internal/processjob` — завершение всего дерева дочерних процессов.
 - `internal/platformsupport` — единая матрица поддерживаемых OS/architecture.
 - `cmd/codex-appserver-probe` — диагностическая программа, не входящая в
@@ -109,7 +114,7 @@ stateDiagram-v2
 - `.stepan/`, durable event log и resume в пользовательском пути пока не
   используются.
 
-Durable approval manager существует в probe-коде `codexapp`, но текущий путь
+Durable approval manager существует в `codexprobe`, но текущий путь
 `cmd/stepan → specflow.Session → codexapp.Runtime` использует turn-scoped
 in-memory approvals.
 
@@ -169,6 +174,7 @@ baseline.
 - [`cmd/stepan`](../../cmd/stepan/)
 - [`internal/specflow`](../../internal/specflow/)
 - [`internal/agentruntime/codexapp`](../../internal/agentruntime/codexapp/)
+- [`internal/codexprobe`](../../internal/codexprobe/)
 - [`internal/gitsnapshot`](../../internal/gitsnapshot/)
 - [`internal/processjob`](../../internal/processjob/)
 - [ADR 0001](0001-codex-app-server-containment.md)

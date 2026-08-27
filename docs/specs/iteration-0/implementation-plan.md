@@ -53,7 +53,8 @@ Timebox: 2–3 рабочих дня одного разработчика
 ```text
 cmd/codex-appserver-probe/
 internal/agentruntime/codexapp/
-internal/agentruntime/codexapp/testdata/
+internal/codexprobe/
+internal/codexprobe/testdata/
 internal/gitsnapshot/
 docs/specs/iteration-0/
   implementation-plan.md
@@ -61,11 +62,10 @@ docs/specs/iteration-0/
   report.md
 ```
 
-В `internal/agentruntime/codexapp` должны появиться только необходимые ответственности:
-запуск процесса, JSONL/JSON-RPC framing, correlation, thread/turn lifecycle,
-approval policy, durable state и artifacts. Разбиение по файлам выполняется по
-мере роста кода, а не заранее по одному типу на файл.
-
+В `internal/agentruntime/codexapp` должны появиться только общие и production-ответственности:
+запуск процесса, JSONL/JSON-RPC framing, correlation, thread/turn lifecycle и
+approval evaluator. Probe orchestration, artifacts и durable approval state
+размещаются в `internal/codexprobe`.
 Generated protocol schema сначала хранится в `.stepan/spike/`. В репозиторий
 добавляется её hash и команда воспроизведения; сам bundle коммитится только если
 после ручной проверки он нужен для воспроизводимости и не содержит локальных
@@ -117,8 +117,8 @@ live stream.
 - [ ] Покрыть handshake error, approvals, concurrent requests, malformed и
   oversized lines, stderr flood, зависание и unresolved approval.
 
-Проверка: `go test ./internal/agentruntime/codexapp` проходит без установленного Codex и без
-сети.
+Проверка: `go test ./internal/agentruntime/codexapp ./internal/codexprobe`
+проходит без установленного Codex и без сети.
 
 Контрольная точка: replay и fake subprocess используют тот же parser, writer и
 state machine, что будет использовать live probe.

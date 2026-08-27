@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -41,9 +40,7 @@ type turnRun struct {
 	events    []Message
 	wake      chan struct{}
 	terminal  bool
-	workspace string
-	policy    normalizedPolicy
-	changes   map[string][]string
+	approvals *ApprovalEvaluator
 	pending   map[string]bool
 	done      chan struct{}
 }
@@ -93,13 +90,13 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 	}
 	defer connection.turnMu.Unlock()
 
-	policy, err := normalizePolicy(AccessPolicy{WritableRoots: writableRoots(options.Policy)}, thread.cwd)
+	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{WritableRoots: writableRoots(options.Policy)})
 	if err != nil {
 		return nil, err
 	}
 	run := &turnRun{
-		threadID: thread.ID, workspace: thread.cwd, policy: policy,
-		changes: make(map[string][]string), pending: make(map[string]bool), wake: make(chan struct{}, 1), done: make(chan struct{}),
+		threadID: thread.ID, approvals: approvals,
+		pending: make(map[string]bool), wake: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	connection.mu.Lock()
 	if connection.err != nil {
@@ -223,7 +220,7 @@ func (connection *Connection) registerTurnApproval(message Message) (func() erro
 	if run == nil {
 		return nil, errors.New("approval arrived without an active turn")
 	}
-	kind, ids, permissions, err := decodeApproval(message)
+	request, err := run.approvals.Decode(message)
 	if err != nil {
 		return nil, err
 	}
@@ -231,22 +228,19 @@ func (connection *Connection) registerTurnApproval(message Message) (func() erro
 		return nil, err
 	}
 	return func() error {
-		decision := run.evaluateApproval(kind, ids, permissions)
-		request := &approvalRequest{message: message, ids: ids, permissions: permissions, pending: PendingApproval{Kind: kind}}
-		if err := connection.Respond(message.ID, approvalResponse(request, decision)); err != nil {
+		decision := run.evaluateApproval(request)
+		if err := connection.Respond(message.ID, request.Response(decision)); err != nil {
 			return err
 		}
 		return run.resolvePending(message.ID.Key())
 	}, nil
 }
 
-func (run *turnRun) evaluateApproval(kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
-	if kind != FileChangeApproval {
+func (run *turnRun) evaluateApproval(request ApprovalRequest) ApprovalDecision {
+	if request.Kind != FileChangeApproval {
 		return DecisionDecline
 	}
-	run.mu.Lock()
-	defer run.mu.Unlock()
-	return evaluateApproval(run.policy, run.changes, kind, ids, permissions)
+	return run.approvals.Evaluate(request)
 }
 
 func writableRoots(policy TurnPolicy) []string {
@@ -258,26 +252,7 @@ func writableRoots(policy TurnPolicy) []string {
 }
 
 func (run *turnRun) observeFileChanges(message Message) error {
-	evidence, relevant, err := decodeFileChangeEvidence(message)
-	if err != nil || !relevant {
-		return err
-	}
-	paths := make([]string, 0, len(evidence.Paths))
-	for _, value := range evidence.Paths {
-		if !filepath.IsAbs(value) {
-			value = filepath.Join(run.workspace, value)
-		}
-		value, err = canonicalPath(value)
-		if err != nil {
-			return err
-		}
-		paths = append(paths, value)
-	}
-	run.mu.Lock()
-	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
-	run.changes[key] = append(run.changes[key], paths...)
-	run.mu.Unlock()
-	return nil
+	return run.approvals.Observe(message, run.threadID, run.turnID)
 }
 
 func (run *turnRun) addPending(key string) error {
