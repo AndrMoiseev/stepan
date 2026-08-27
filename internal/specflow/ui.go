@@ -1,40 +1,40 @@
 package specflow
 
 import (
+	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
-
-	"charm.land/huh/v2"
+	"strings"
 )
 
 type UI struct {
-	controller *Controller
-	accessible bool
-	input      io.Reader
-	output     io.Writer
+	controller      *Controller
+	input           *bufio.Reader
+	output          io.Writer
+	lastDraftAnswer string
 }
 
 func NewUI(controller *Controller) *UI {
-	_, accessible := os.LookupEnv("ACCESSIBLE")
-	return &UI{controller: controller, accessible: accessible, input: os.Stdin, output: os.Stdout}
+	return &UI{controller: controller, input: bufio.NewReader(os.Stdin), output: os.Stdout}
 }
 
-func (ui *UI) ReportError(err error) { _, _ = fmt.Fprintln(ui.output, err) }
+func (ui *UI) ReportError(err error) { ui.say("Ошибка: " + err.Error()) }
 
 func (ui *UI) Main() (Progress, error) {
 	for {
-		var input string
-		if err := ui.run(huh.NewInput().Title("Command").Value(&input)); err != nil {
+		input, err := ui.readLine("Вы > ")
+		if err != nil {
 			return Progress{}, err
 		}
 		command, err := ParseMainCommand(input)
 		if err != nil {
-			_, _ = fmt.Fprintln(ui.output, err)
+			ui.say(err.Error())
 			continue
 		}
+		ui.lastDraftAnswer = ""
+		ui.thinking()
 		if !command.NeedBrief {
 			return ui.controller.StartIdea(command.Brief)
 		}
@@ -42,34 +42,49 @@ func (ui *UI) Main() (Progress, error) {
 		if err != nil {
 			return progress, err
 		}
-		brief, err := ui.text("Idea brief")
+		ui.say("Опишите идею.")
+		brief, err := ui.text()
 		if err != nil {
 			return progress, err
 		}
+		ui.thinking()
 		return ui.controller.Submit(brief)
 	}
 }
 
 func (ui *UI) InitialAnswer(question string) (Progress, error) {
-	answer, err := ui.text(question)
+	ui.say(question)
+	answer, err := ui.text()
 	if err != nil {
 		return ui.controller.Progress(), err
 	}
+	ui.thinking()
 	return ui.controller.Submit(answer)
 }
 
 func (ui *UI) Draft(ctx context.Context, progress Progress) (Progress, error) {
-	action, err := ui.draftMenu(progress)
+	if progress.Answer != "" && progress.Answer != ui.lastDraftAnswer {
+		ui.say(progress.Answer)
+		ui.lastDraftAnswer = progress.Answer
+	}
+	ui.say(draftTitle(progress))
+	action, err := ui.draftAction()
 	if err != nil {
 		return ui.controller.Progress(), err
 	}
 	if action == DraftApprove {
 		return ui.controller.Approve()
 	}
-	value, err := ui.text(map[DraftAction]string{DraftQuestion: "Question", DraftChange: "Change request"}[action])
+	if action == DraftQuestion {
+		ui.say("Введите вопрос к спецификации.")
+	} else {
+		ui.say("Опишите изменение.")
+	}
+	value, err := ui.text()
 	if err != nil {
 		return ui.controller.Progress(), err
 	}
+	ui.thinking()
 	if action == DraftQuestion {
 		return ui.controller.AskQuestion(value)
 	}
@@ -77,49 +92,44 @@ func (ui *UI) Draft(ctx context.Context, progress Progress) (Progress, error) {
 }
 
 func (ui *UI) ChangeAnswer(ctx context.Context, question string) (Progress, error) {
-	answer, err := ui.text(question)
+	ui.say(question)
+	answer, err := ui.text()
 	if err != nil {
 		return ui.controller.Progress(), err
 	}
+	ui.thinking()
 	return ui.controller.SubmitChangeAnswer(ctx, answer)
 }
 
-func (ui *UI) draftMenu(progress Progress) (DraftAction, error) {
-	action := DraftApprove
-	field := huh.NewSelect[DraftAction]().
-		Title(draftTitle(progress)).
-		Description(progress.Answer).
-		Options(
-			huh.NewOption("/approve", DraftApprove),
-			huh.NewOption("Ask a question", DraftQuestion),
-			huh.NewOption("Propose a change", DraftChange),
-		).
-		Value(&action)
-	return action, ui.run(field)
+func (ui *UI) draftAction() (DraftAction, error) {
+	input, err := ui.readLine("Вы > [/approve | /question | /change] ")
+	if err != nil {
+		return DraftApprove, err
+	}
+	return ParseDraftAction(input)
 }
 
-func (ui *UI) text(title string) (string, error) {
-	var value string
-	err := ui.run(huh.NewText().Title(title).Lines(5).ExternalEditor(false).Value(&value))
-	return value, err
+func (ui *UI) text() (string, error) { return ui.readLine("Вы > ") }
+
+func (ui *UI) readLine(prompt string) (string, error) {
+	_, _ = fmt.Fprint(ui.output, prompt)
+	value, err := ui.input.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return "", err
+	}
+	value = strings.TrimSuffix(strings.TrimSuffix(value, "\n"), "\r")
+	if err == io.EOF && value == "" {
+		return "", ErrCanceled
+	}
+	return value, nil
 }
 
-func (ui *UI) run(fields ...huh.Field) error {
-	err := huh.NewForm(huh.NewGroup(fields...)).
-		WithAccessible(ui.accessible).
-		WithInput(ui.input).
-		WithOutput(ui.output).
-		Run()
-	return normalizeFormError(err)
+func (ui *UI) say(message string) {
+	_, _ = fmt.Fprintf(ui.output, "\nStepan > %s\n\n", message)
 }
+
+func (ui *UI) thinking() { _, _ = fmt.Fprint(ui.output, "\nStepan думает…\n\n") }
 
 func draftTitle(progress Progress) string {
-	return "Specification: " + progress.Path
-}
-
-func normalizeFormError(err error) error {
-	if errors.Is(err, huh.ErrUserAborted) {
-		return ErrCanceled
-	}
-	return err
+	return "Черновик спецификации: " + progress.Path
 }

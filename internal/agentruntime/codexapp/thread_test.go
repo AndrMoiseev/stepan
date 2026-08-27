@@ -143,6 +143,47 @@ func TestRunTurnRejectsConcurrentTurn(t *testing.T) {
 	}
 }
 
+func TestRunTurnReturnsFailedTurnMessageWithoutClosingConnection(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		request, err := server.Read()
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+		}
+		if err == nil {
+			request, err = server.Read()
+		}
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": "turn"}})
+		}
+		if err == nil {
+			err = server.SendNotification("turn/completed", map[string]any{
+				"threadId": "thread",
+				"turn": map[string]any{
+					"id": "turn", "status": "failed", "items": []any{},
+					"error": map[string]string{"message": "quota exhausted"},
+				},
+			})
+		}
+		serverErr <- err
+	}()
+
+	thread, err := connection.StartThread(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.RunTurn(thread, "prompt", TurnOptions{OutputSchema: testSchema}); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+		t.Fatalf("failed turn error = %v", err)
+	}
+	if err := connection.Err(); err != nil {
+		t.Fatalf("connection closed after failed turn: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCompletedTurnValidation(t *testing.T) {
 	final := terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{"ok":true}`}
 	completed := map[string]terminalItem{"final": final}
@@ -157,7 +198,6 @@ func TestCompletedTurnValidation(t *testing.T) {
 		{"invalid notification", json.RawMessage(`{`), completed},
 		{"failed status", terminal("failed", final), completed},
 		{"missing final", terminal("completed", terminalItem{ID: "tool", Type: "commandExecution"}), map[string]terminalItem{"tool": {ID: "tool", Type: "commandExecution"}}},
-		{"missing item event", terminal("completed", final), nil},
 		{"duplicate finals", terminal("completed", final, terminalItem{ID: "other", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{}`}), map[string]terminalItem{"final": final, "other": {ID: "other", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{}`}}},
 		{"contradictory final", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{"ok":false}`}), completed},
 		{"non-object output", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `[]`}), map[string]terminalItem{"final": {ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `[]`}}},
@@ -174,6 +214,12 @@ func TestCompletedTurnValidation(t *testing.T) {
 		item := terminalItem{ID: "final", Type: "agentMessage", Text: `{"ok":true}`}
 		output, err := decodeCompletedTurn(terminal("completed", item), map[string]terminalItem{"final": item})
 		if err != nil || string(output) != item.Text {
+			t.Fatalf("output = %s, %v", output, err)
+		}
+	})
+	t.Run("terminal item without completed event", func(t *testing.T) {
+		output, err := decodeCompletedTurn(terminal("completed", final), nil)
+		if err != nil || string(output) != final.Text {
 			t.Fatalf("output = %s, %v", output, err)
 		}
 	})

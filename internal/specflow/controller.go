@@ -312,6 +312,8 @@ func initialAnswerPrompt(answer string) string {
 
 Когда информации достаточно, верни READY_TO_WRITE и предложи краткий spec_id
 в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
+Для READY_TO_WRITE обязательно верни spec_id и заполни message пустой строкой.
+Для NEEDS_INPUT обязательно задай вопрос в message и верни spec_id пустой строкой.
 
 USER ANSWER:
 ` + answer

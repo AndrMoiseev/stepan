@@ -52,6 +52,22 @@ type terminalItem struct {
 	Text  string  `json:"text"`
 }
 
+type terminalTurnError struct {
+	status  string
+	message string
+	details string
+}
+
+func (err *terminalTurnError) Error() string {
+	if err.message == "" {
+		return fmt.Sprintf("turn terminal status is %q", err.status)
+	}
+	if err.details == "" {
+		return fmt.Sprintf("turn %s: %s", err.status, err.message)
+	}
+	return fmt.Sprintf("turn %s: %s; details: %s", err.status, err.message, err.details)
+}
+
 func (connection *Connection) StartThread(cwd string) (*Thread, error) {
 	cwd, err := canonicalPath(cwd)
 	if err != nil {
@@ -160,6 +176,10 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 			}
 			output, err := decodeCompletedTurn(message.Params, completed)
 			if err != nil {
+				var terminalErr *terminalTurnError
+				if errors.As(err, &terminalErr) {
+					return nil, err
+				}
 				return nil, connection.failTurn(err)
 			}
 			return output, nil
@@ -391,16 +411,22 @@ func decodeCompletedTurn(raw json.RawMessage, completed map[string]terminalItem)
 		Turn struct {
 			Status string            `json:"status"`
 			Items  []json.RawMessage `json:"items"`
+			Error  *struct {
+				Message           string `json:"message"`
+				AdditionalDetails string `json:"additionalDetails"`
+			} `json:"error"`
 		} `json:"turn"`
 	}
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, errors.New("invalid turn/completed notification")
 	}
 	if params.Turn.Status != "completed" {
-		return nil, fmt.Errorf("turn terminal status is %q", params.Turn.Status)
-	}
-	if len(params.Turn.Items) != len(completed) {
-		return nil, errors.New("turn/completed items do not match item/completed events")
+		terminalErr := &terminalTurnError{status: params.Turn.Status}
+		if params.Turn.Error != nil {
+			terminalErr.message = strings.TrimSpace(params.Turn.Error.Message)
+			terminalErr.details = strings.TrimSpace(params.Turn.Error.AdditionalDetails)
+		}
+		return nil, terminalErr
 	}
 	var finals, unknownPhase []terminalItem
 	for _, rawItem := range params.Turn.Items {
@@ -409,7 +435,7 @@ func decodeCompletedTurn(raw json.RawMessage, completed map[string]terminalItem)
 			return nil, errors.New("invalid item in turn/completed notification")
 		}
 		seen, exists := completed[item.ID]
-		if !exists || seen.Type != item.Type {
+		if exists && seen.Type != item.Type {
 			return nil, fmt.Errorf("terminal item %q does not match item/completed", item.ID)
 		}
 		if item.Type != "agentMessage" {
@@ -427,8 +453,8 @@ func decodeCompletedTurn(raw json.RawMessage, completed map[string]terminalItem)
 	if len(finals) != 1 {
 		return nil, fmt.Errorf("terminal turn has %d final agent messages", len(finals))
 	}
-	seen := completed[finals[0].ID]
-	if seen.Text != finals[0].Text || !samePhase(seen.Phase, finals[0].Phase) {
+	seen, exists := completed[finals[0].ID]
+	if exists && (seen.Text != finals[0].Text || !samePhase(seen.Phase, finals[0].Phase)) {
 		return nil, errors.New("final agent message contradicts item/completed")
 	}
 	return decodeStructuredObject(finals[0].Text)

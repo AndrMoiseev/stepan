@@ -1,6 +1,9 @@
 # stepan
 Vendor agnostic AI SDLC Orchestrator
 
+Текущий пользовательский сценарий подготовки спецификации описан в
+[протоколе flow `/idea`](docs/idea-flow.md).
+
 ## Agent CLI
 
 По умолчанию Stepan запускает `codex` из `PATH`. Claude Code-совместимый CLI

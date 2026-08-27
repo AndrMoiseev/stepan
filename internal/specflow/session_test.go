@@ -62,6 +62,19 @@ func TestSessionRestartsAfterRuntimeError(t *testing.T) {
 	}
 }
 
+func TestSessionReturnsFactoryErrorWhenRuntimeIsTypedNil(t *testing.T) {
+	startErr := errors.New("start failed")
+	session := newSession(func(context.Context) (appRuntime, error) {
+		var runtime *fakeAppRuntime
+		return runtime, startErr
+	})
+	defer session.Close()
+
+	if _, err := session.StartThread(); !errors.Is(err, startErr) {
+		t.Fatalf("start thread error = %v, want %v", err, startErr)
+	}
+}
+
 func TestSessionInterruptUsesRuntimeInterrupt(t *testing.T) {
 	runtime := &fakeAppRuntime{}
 	session := newSession(func(context.Context) (appRuntime, error) { return runtime, nil })

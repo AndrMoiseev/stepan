@@ -69,6 +69,12 @@ func runFake(scenario string) int {
 		fmt.Fprintln(os.Stdout, line)
 		fmt.Fprint(os.Stderr, strings.Repeat("e", maxDiagnosticBytes+1024))
 		return 0
+	case "version-mismatch":
+		if strings.Join(os.Args[1:], "\x00") != strings.Join(appServerArgs, "\x00") {
+			return 32
+		}
+		time.Sleep(30 * time.Second)
+		return 0
 	case "early-exit":
 		time.Sleep(100 * time.Millisecond)
 		fmt.Fprintln(os.Stderr, "early exit")

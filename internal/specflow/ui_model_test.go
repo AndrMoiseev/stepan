@@ -1,12 +1,9 @@
 package specflow
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
-
-	"charm.land/huh/v2"
 )
 
 func TestParseMainCommand(t *testing.T) {
@@ -47,12 +44,13 @@ func TestDraftActionModel(t *testing.T) {
 	if DraftApprove.NeedsText() || !DraftQuestion.NeedsText() || !DraftChange.NeedsText() {
 		t.Fatal("draft text input routing is wrong")
 	}
-}
-
-func TestUIAccessibilityUsesEnvironmentPresence(t *testing.T) {
-	t.Setenv("ACCESSIBLE", "")
-	if ui := NewUI(nil); !ui.accessible {
-		t.Fatal("ACCESSIBLE presence did not enable accessible mode")
+	for input, want := range map[string]DraftAction{"/approve": DraftApprove, "/question": DraftQuestion, "change": DraftChange} {
+		if got, err := ParseDraftAction(input); err != nil || got != want {
+			t.Fatalf("action %q = %q, %v; want %q", input, got, err, want)
+		}
+	}
+	if _, err := ParseDraftAction("/other"); err == nil {
+		t.Fatal("accepted unknown draft action")
 	}
 }
 
@@ -60,13 +58,5 @@ func TestDraftTitleAlwaysDisplaysEntrypoint(t *testing.T) {
 	progress := Progress{Path: "docs/specs/example/specification.md", Answer: "answer"}
 	if title := draftTitle(progress); !strings.Contains(title, progress.Path) {
 		t.Fatalf("draft title %q does not display %q", title, progress.Path)
-	}
-}
-
-func TestHuhCancelMapsToSingleSentinel(t *testing.T) {
-	// Normal mode cancellation is covered by huh; keep our boundary mapping
-	// independently testable without terminal rendering.
-	if err := normalizeFormError(huh.ErrUserAborted); !errors.Is(err, ErrCanceled) {
-		t.Fatalf("cancel error = %v", err)
 	}
 }

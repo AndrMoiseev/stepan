@@ -1,12 +1,29 @@
 package specflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 )
+
+func TestCodexTurnSchemasAvoidOneOf(t *testing.T) {
+	for name, schema := range map[string]json.RawMessage{
+		"initial":  InitialSchema(),
+		"create":   CreateSchema(),
+		"change":   ChangeSchema(),
+		"update":   UpdateSchema(),
+		"question": QuestionSchema(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if bytes.Contains(schema, []byte(`"oneOf"`)) {
+				t.Fatalf("schema uses unsupported oneOf: %s", schema)
+			}
+		})
+	}
+}
 
 func TestResultDecoders(t *testing.T) {
 	tests := []struct {
@@ -30,7 +47,7 @@ func TestResultDecoders(t *testing.T) {
 		{"empty answer", DecodeQuestionResult, `{"status":"ANSWERED","message":""}`, Result{}, false},
 		{"missing message", DecodeChangeResult, `{"status":"NEEDS_INPUT"}`, Result{}, false},
 		{"forbidden spec id with question", DecodeInitialResult, `{"status":"NEEDS_INPUT","message":"Question?","spec_id":"valid"}`, Result{}, false},
-		{"forbidden empty message", DecodeInitialResult, `{"status":"READY_TO_WRITE","spec_id":"valid","message":""}`, Result{}, false},
+		{"unexpected message", DecodeInitialResult, `{"status":"READY_TO_WRITE","spec_id":"valid","message":"unexpected"}`, Result{}, false},
 		{"forbidden null message", DecodeCreateResult, `{"status":"WRITTEN","message":null}`, Result{}, false},
 		{"forbidden empty spec id", DecodeCreateResult, `{"status":"WRITTEN","spec_id":""}`, Result{}, false},
 		{"forbidden message on change ready", DecodeChangeResult, `{"status":"READY_TO_UPDATE","message":"done"}`, Result{}, false},
@@ -61,10 +78,10 @@ func TestSchemasExposeOnlyAllowedStatusAndFields(t *testing.T) {
 		data json.RawMessage
 		want map[string][]string
 	}{
-		{"initial", InitialSchema(), map[string][]string{"NEEDS_INPUT": {"message", "status"}, "READY_TO_WRITE": {"spec_id", "status"}}},
+		{"initial", InitialSchema(), map[string][]string{"NEEDS_INPUT": {"message", "spec_id", "status"}, "READY_TO_WRITE": {"message", "spec_id", "status"}}},
 		{"create", CreateSchema(), map[string][]string{"WRITTEN": {"status"}}},
 		{"question", QuestionSchema(), map[string][]string{"ANSWERED": {"message", "status"}}},
-		{"change", ChangeSchema(), map[string][]string{"NEEDS_INPUT": {"message", "status"}, "READY_TO_UPDATE": {"status"}}},
+		{"change", ChangeSchema(), map[string][]string{"NEEDS_INPUT": {"message", "status"}, "READY_TO_UPDATE": {"message", "status"}}},
 		{"update", UpdateSchema(), map[string][]string{"UPDATED": {"status"}}},
 	}
 	for _, test := range tests {
@@ -83,6 +100,7 @@ func TestPromptContracts(t *testing.T) {
 		"Изучи релевантные файлы текущего Git working tree до первого вопроса.",
 		"Не создавай и не изменяй файлы на этапе уточнения.",
 		"Задавай не более одного вопроса за turn.",
+		"message пустой строкой",
 		"IDEA BRIEF:\n" + brief,
 	} {
 		if !strings.Contains(initial, fragment) {
@@ -115,28 +133,29 @@ func schemaVariants(t *testing.T, data json.RawMessage) map[string][]string {
 	if err := json.Unmarshal(data, &root); err != nil {
 		t.Fatal(err)
 	}
-	variants := []any{root}
-	if oneOf, ok := root["oneOf"].([]any); ok {
-		variants = oneOf
+	if _, exists := root["oneOf"]; exists {
+		t.Fatal("schema uses oneOf")
 	}
-	got := make(map[string][]string, len(variants))
-	for _, raw := range variants {
-		variant := raw.(map[string]any)
-		if variant["additionalProperties"] != false {
-			t.Fatal("schema permits unknown fields")
-		}
-		properties := variant["properties"].(map[string]any)
-		status := properties["status"].(map[string]any)["enum"].([]any)[0].(string)
-		fields := make([]string, 0, len(properties))
-		for field := range properties {
-			fields = append(fields, field)
-		}
-		sort.Strings(fields)
-		required := variant["required"].([]any)
-		if len(required) != len(fields) {
-			t.Fatalf("status %s has optional or undeclared fields", status)
-		}
-		got[status] = fields
+	if !strings.Contains(initialAnswerPrompt("answer"), "message пустой строкой") {
+		t.Fatal("initial answer prompt does not describe the empty READY_TO_WRITE message")
+	}
+	if root["additionalProperties"] != false {
+		t.Fatal("schema permits unknown fields")
+	}
+	properties := root["properties"].(map[string]any)
+	fields := make([]string, 0, len(properties))
+	for field := range properties {
+		fields = append(fields, field)
+	}
+	sort.Strings(fields)
+	required := root["required"].([]any)
+	if len(required) != len(fields) {
+		t.Fatal("schema has optional or undeclared fields")
+	}
+	statuses := properties["status"].(map[string]any)["enum"].([]any)
+	got := make(map[string][]string, len(statuses))
+	for _, raw := range statuses {
+		got[raw.(string)] = append([]string(nil), fields...)
 	}
 	return got
 }

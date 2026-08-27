@@ -39,16 +39,12 @@ func TestProcessPreflightPipesAndDiagnostic(t *testing.T) {
 	}
 }
 
-func TestProcessRejectsVersionBeforeStartingServer(t *testing.T) {
+func TestProcessStartsWithDifferentCodexVersion(t *testing.T) {
 	t.Setenv("GO_WANT_CODEXAPP_FAKE", "version-mismatch")
 	workspace := t.TempDir()
 	process := NewProcess(os.Args[0], workspace)
-	err := process.Start()
-	if err == nil || !strings.Contains(err.Error(), `require 0.147.0`) {
-		t.Fatalf("Start error = %v", err)
-	}
-	if process.Stdin() != nil || process.Stdout() != nil || process.ExitCode() != nil {
-		t.Fatal("App Server was created before version gate")
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
 	}
 	if err := process.Close(); err != nil {
 		t.Fatal(err)

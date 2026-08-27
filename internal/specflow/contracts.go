@@ -38,6 +38,8 @@ func InitialPrompt(brief string) string {
 
 Когда информации достаточно, верни READY_TO_WRITE и предложи краткий spec_id
 в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
+Для READY_TO_WRITE обязательно верни spec_id и заполни message пустой строкой.
+Для NEEDS_INPUT обязательно задай вопрос в message и верни spec_id пустой строкой.
 
 Веди диалог и будущую спецификацию на языке idea brief, если пользователь явно
 не попросил иначе.
@@ -110,9 +112,9 @@ func QuestionSchema() json.RawMessage { return json.RawMessage(questionSchema) }
 // client. Individual stages keep using their narrower schemas and decoders.
 func FlowEnvelopeSchema() json.RawMessage { return append(json.RawMessage(nil), flowEnvelopeSchema...) }
 
-const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"type":"string","enum":["READY_TO_WRITE"]},"spec_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","spec_id"],"additionalProperties":false}]}`
+const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_WRITE"]},"message":{"type":"string"},"spec_id":{"type":"string","maxLength":64,"pattern":"^[a-z0-9-]*$"}},"required":["status","message","spec_id"],"additionalProperties":false}`
 const createSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["WRITTEN"]}},"required":["status"],"additionalProperties":false}`
-const changeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"type":"string","enum":["READY_TO_UPDATE"]}},"required":["status"],"additionalProperties":false}]}`
+const changeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_UPDATE"]},"message":{"type":"string"}},"required":["status","message"],"additionalProperties":false}`
 const updateSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["UPDATED"]}},"required":["status"],"additionalProperties":false}`
 const questionSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["ANSWERED"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false}`
 const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_WRITE"},"spec_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","spec_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"WRITTEN"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
@@ -162,21 +164,43 @@ func decodeResult(data []byte, allowed ...Status) (Result, error) {
 	result := Result{Status: envelope.Status}
 	switch result.Status {
 	case StatusNeedsInput, StatusAnswered:
-		if len(envelope.Message) == 0 || len(envelope.SpecID) != 0 {
-			return Result{}, fmt.Errorf("status %s requires a non-empty message and forbids spec_id", result.Status)
+		if len(envelope.Message) == 0 {
+			return Result{}, fmt.Errorf("status %s requires a non-empty message", result.Status)
 		}
 		if err := json.Unmarshal(envelope.Message, &result.Message); err != nil || strings.TrimSpace(result.Message) == "" {
 			return Result{}, fmt.Errorf("status %s requires a non-empty message", result.Status)
 		}
+		if len(envelope.SpecID) != 0 {
+			var unused string
+			if err := json.Unmarshal(envelope.SpecID, &unused); err != nil || unused != "" {
+				return Result{}, fmt.Errorf("status %s requires an empty spec_id", result.Status)
+			}
+		}
 	case StatusReadyToWrite:
-		if len(envelope.SpecID) == 0 || len(envelope.Message) != 0 {
-			return Result{}, fmt.Errorf("status %s requires spec_id and forbids message", result.Status)
+		if len(envelope.SpecID) == 0 {
+			return Result{}, fmt.Errorf("status %s requires spec_id", result.Status)
 		}
 		if err := json.Unmarshal(envelope.SpecID, &result.SpecID); err != nil {
 			return Result{}, fmt.Errorf("status %s requires a string spec_id", result.Status)
 		}
 		if err := ValidateSpecID(result.SpecID); err != nil {
 			return Result{}, fmt.Errorf("status %s: %w", result.Status, err)
+		}
+		if len(envelope.Message) != 0 {
+			var unused string
+			if err := json.Unmarshal(envelope.Message, &unused); err != nil || unused != "" {
+			return Result{}, fmt.Errorf("status %s requires an empty message", result.Status)
+			}
+		}
+	case StatusReadyToUpdate:
+		if len(envelope.SpecID) != 0 {
+			return Result{}, fmt.Errorf("status %s forbids spec_id", result.Status)
+		}
+		if len(envelope.Message) != 0 {
+			var unused string
+			if err := json.Unmarshal(envelope.Message, &unused); err != nil || unused != "" {
+				return Result{}, fmt.Errorf("status %s requires an empty message", result.Status)
+			}
 		}
 	default:
 		if len(envelope.Message) != 0 || len(envelope.SpecID) != 0 {

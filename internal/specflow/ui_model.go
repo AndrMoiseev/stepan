@@ -44,6 +44,19 @@ func DraftActions() []DraftAction {
 	return []DraftAction{DraftApprove, DraftQuestion, DraftChange}
 }
 
+func ParseDraftAction(input string) (DraftAction, error) {
+	switch strings.TrimSpace(input) {
+	case "/approve":
+		return DraftApprove, nil
+	case "/question", "question":
+		return DraftQuestion, nil
+	case "/change", "change":
+		return DraftChange, nil
+	default:
+		return "", fmt.Errorf("unknown draft action %q; use /approve, /question, or /change", input)
+	}
+}
+
 func (action DraftAction) NeedsText() bool {
 	return action == DraftQuestion || action == DraftChange
 }

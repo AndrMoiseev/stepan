@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
@@ -104,7 +105,7 @@ func (session *Session) current() (*runtimeSlot, error) {
 	} else {
 		runtime, err = session.start(ctx)
 	}
-	if err == nil && runtime == nil {
+	if err == nil && isNilRuntime(runtime) {
 		err = errors.New("runtime factory returned nil")
 	}
 
@@ -122,10 +123,23 @@ func (session *Session) current() (*runtimeSlot, error) {
 	session.starting = nil
 	close(attempt.done)
 	session.mu.Unlock()
-	if err != nil && runtime != nil {
+	if err != nil && !isNilRuntime(runtime) {
 		_ = runtime.Close()
 	}
 	return slot, err
+}
+
+func isNilRuntime(runtime agentruntime.Runtime) bool {
+	if runtime == nil {
+		return true
+	}
+	value := reflect.ValueOf(runtime)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (session *Session) discard(slot *runtimeSlot) {
