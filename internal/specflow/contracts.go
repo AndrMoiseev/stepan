@@ -2,6 +2,7 @@ package specflow
 
 import (
 	"bytes"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,69 +25,57 @@ type Result struct {
 	SpecID  string
 }
 
+// promptFiles keeps the built-in project prompt templates close to the flow.
+// They are Markdown files so a project can copy and customize them without
+// editing Go prompt composition.
+//
+//go:embed prompts/*.md
+var promptFiles embed.FS
+
 func InitialPrompt(brief, absoluteFeaturesDirectory string) string {
-	return `Ты — автор спецификации в интерактивном flow Stepan.
-
-Изучи релевантные файлы текущего Git working tree. Не спрашивай уточнений:
-самостоятельно выбери обратимые детали по соглашениям репозитория. Сразу выбери
-краткий уникальный feature_id в формате [a-z0-9-]+ и создай по нему первый
-черновик спецификации.
-
-Разрешённый каталог для всех новых черновиков:
-` + absoluteFeaturesDirectory + `
-
-Создай каталог <feature_id> внутри разрешённого каталога. Обязательно создай в
-нём specification.md как точку входа. При необходимости можешь создать
-дополнительные файлы в том же каталоге; specification.md должен ссылаться на
-них. Не изменяй никакие файлы вне каталога выбранного feature_id и сохрани все
-уже существовавшие изменения рабочего дерева.
-
-Фиксированного шаблона нет. Отрази решения и необходимые детали, чтобы
-результат можно было использовать для дальнейшего планирования. После записи
-верни WRITTEN и выбранный feature_id. Не добавляй message.
-
-Веди диалог и будущую спецификацию на языке feature brief, если пользователь явно
-не попросил иначе.
-
-FEATURE BRIEF:
-` + brief
+	return renderPrompt(
+		promptPart{"initial-system.md", map[string]string{"features_directory": absoluteFeaturesDirectory}},
+		promptPart{"initial-user.md", map[string]string{"brief": brief}},
+	)
 }
 
 func ChangePrompt(request string) string {
-	return `Проанализируй предложение пользователя относительно текущей спецификации и
-репозитория. Сначала заново прочитай текущие файлы спецификации с диска. Пока не
-изменяй файлы.
-
-Если отсутствует материальное решение, верни NEEDS_INPUT и задай ровно один
-уточняющий вопрос. Если информации достаточно для согласованной правки, верни
-READY_TO_UPDATE.
-
-CHANGE REQUEST:
-` + request
+	return renderPrompt(
+		promptPart{"change-system.md", nil},
+		promptPart{"change-user.md", map[string]string{"change_request": request}},
+	)
 }
 
 func UpdatePrompt(absoluteSpecDirectory string) string {
-	return `Внеси согласованное изменение в текущую спецификацию.
-
-Разрешённый каталог:
-` + absoluteSpecDirectory + `
-
-Сохрани specification.md точкой входа, согласуй связанные файлы между собой и
-не изменяй ничего вне разрешённого каталога. Не перезаписывай несвязанные
-изменения пользователя.
-
-После записи верни UPDATED.`
+	return renderPrompt(promptPart{"update-system.md", map[string]string{"spec_directory": absoluteSpecDirectory}})
 }
 
 func QuestionPrompt(question string) string {
-	return `Ответь на вопрос пользователя по текущей спецификации с учётом релевантного
-контекста репозитория. Сначала заново прочитай текущие файлы спецификации с
-диска. Не изменяй файлы. Если ответ требует предположения, явно обозначь его.
+	return renderPrompt(
+		promptPart{"question-system.md", nil},
+		promptPart{"question-user.md", map[string]string{"question": question}},
+	)
+}
 
-После ответа верни ANSWERED и помести ответ в поле message.
+type promptPart struct {
+	name   string
+	values map[string]string
+}
 
-QUESTION:
-` + question
+func renderPrompt(templates ...promptPart) string {
+	parts := make([]string, 0, len(templates))
+	for _, template := range templates {
+		content, err := promptFiles.ReadFile("prompts/" + template.name)
+		if err != nil {
+			panic("read embedded prompt " + template.name + ": " + err.Error())
+		}
+		text := string(content)
+		for placeholder, value := range template.values {
+			text = strings.ReplaceAll(text, "{{"+placeholder+"}}", value)
+		}
+		parts = append(parts, strings.TrimSpace(text))
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 func InitialSchema() json.RawMessage  { return json.RawMessage(initialSchema) }

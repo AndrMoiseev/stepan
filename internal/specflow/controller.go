@@ -311,14 +311,8 @@ func (controller *Controller) reset() {
 }
 
 func changeAnswerPrompt(answer string) string {
-	return `Продолжи анализ предложения пользователя относительно текущей спецификации и
-репозитория. Сначала заново прочитай текущие файлы спецификации с диска. Пока не
-изменяй файлы.
-
-Если материального решения всё ещё нет, верни NEEDS_INPUT и задай ровно один
-уточняющий вопрос. Если информации достаточно для согласованной правки, верни
-READY_TO_UPDATE.
-
-USER ANSWER:
-` + answer
+	return renderPrompt(
+		promptPart{"change-answer-system.md", nil},
+		promptPart{"change-answer-user.md", map[string]string{"answer": answer}},
+	)
 }

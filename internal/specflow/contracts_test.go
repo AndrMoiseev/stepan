@@ -43,3 +43,21 @@ func TestInitialPromptCreatesDraftInFeaturesDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptTemplatesSeparateSystemRulesFromUserArtifact(t *testing.T) {
+	system, err := promptFiles.ReadFile("prompts/initial-system.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := promptFiles.ReadFile("prompts/initial-user.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(system), "{{brief}}") || !strings.Contains(string(user), "{{brief}}") {
+		t.Fatalf("initial brief is not isolated in the user template: system=%q user=%q", system, user)
+	}
+	prompt := InitialPrompt("{{unexpanded}}", "features")
+	if !strings.Contains(prompt, "{{unexpanded}}") || strings.Contains(prompt, "{{brief}}") {
+		t.Fatalf("user artifact was not rendered literally: %q", prompt)
+	}
+}
