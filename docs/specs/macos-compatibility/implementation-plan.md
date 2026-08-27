@@ -141,14 +141,12 @@ Windows/amd64 и macOS/arm64.
 
 ### MAC-03. Подключение supervisor ко всем запускам Codex
 
-**Результат:** новый pre-start lifecycle используется и долгоживущим App Server,
-и существующим `internal/codexexec`.
+**Результат:** новый pre-start lifecycle используется долгоживущим App Server.
 
 **Изменения:**
 
 - [x] Вызывать подготовку supervisor до `Start` в
   `internal/agentruntime/codexapp/process.go`.
-- [x] Сделать то же в `internal/codexexec/runner.go`.
 - [x] На ошибке назначения сначала закрывать supervisor, затем завершать и
   дожидаться непосредственного процесса.
 - [x] Сохранить текущий порядок закрытия stdio и ожидания процесса, чтобы не

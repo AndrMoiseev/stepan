@@ -181,9 +181,8 @@ docs/specs/iteration-0/codex-integration-contract.md
 docs/specs/iteration-0/report.md
 ```
 
-Существующий `internal/codexexec` и его evidence не переименовываются в рамках
-редактирования спецификации. Решение об удалении или сохранении legacy probe
-принимается после успешного App Server spike.
+Legacy probe удалён после успешного App Server spike и не является частью
+текущей структуры репозитория.
 
 Live-артефакты сохраняются в `.stepan/spike/` и не коммитятся. В репозиторий
 попадают только небольшие санитизированные fixtures и version-specific schema,

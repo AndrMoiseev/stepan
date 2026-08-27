@@ -32,7 +32,7 @@ CLI-программой, синхронной машиной состояний
 | Контракты ответов | JSON Schema 2020-12 и строгая декодировка в Go |
 | Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/specs/` |
 | Изоляция процессов | Windows Job Object или Darwin process group; Windows/amd64 и macOS/arm64 |
-| Тесты | `go test`, стандартный пакет `testing`, fake/replay App Server |
+| Тесты | `go test`, `testing`, Arch-Go для графа импортов, fake/replay App Server |
 
 Прямые UI/runtime-зависимости приложения — `huh` и TTY detector `x/term`;
 остальные UI-библиотеки приходят транзитивно. Базы данных, серверного API,
@@ -50,7 +50,6 @@ flowchart LR
     Flow --> Git[internal/gitsnapshot]
     App --> Job[internal/processjob]
     CLI --> Platform[internal/platformsupport]
-    App --> Legacy[internal/codexexec\nversion check]
     App <-->|JSON-RPC / JSONL over stdio| Codex[codex app-server]
     Claude <-->|SDK standard subprocess transport| ClaudeCLI[Claude-compatible CLI]
     Git --> GitCLI[git CLI]
@@ -58,7 +57,6 @@ flowchart LR
     Job --> Mac[Darwin process group]
 
     Probe1[cmd/codex-appserver-probe] --> App
-    Probe2[cmd/codex-probe] --> Legacy
 ```
 
 Основной production-путь соблюдает направление зависимостей
@@ -69,8 +67,8 @@ flowchart LR
   preflight и обработка завершения процесса.
 - `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
   prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
-- `internal/agentruntime/codexapp` — lifecycle App Server, JSON-RPC transport, thread/turn,
-  correlation, structured output и fail-closed approval policy.
+- `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
+  JSON-RPC transport, thread/turn, correlation, structured output и fail-closed approval policy.
 - `internal/agentruntime` — provider-neutral contract session/thread, turn,
   policy и lifecycle.
 - `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
@@ -79,10 +77,8 @@ flowchart LR
   сравнение до/после turn и проверка write boundary.
 - `internal/processjob` — завершение всего дерева дочерних процессов.
 - `internal/platformsupport` — единая матрица поддерживаемых OS/architecture.
-- `internal/codexexec` — legacy spike/evidence для `codex exec`; основной путь
-  переиспользует из него только проверку версии Codex.
-- `cmd/codex-probe` и `cmd/codex-appserver-probe` — диагностические программы,
-  не входящие в пользовательский workflow.
+- `cmd/codex-appserver-probe` — диагностическая программа, не входящая в
+  пользовательский workflow.
 
 Небольшие интерфейсы объявляются потребляющим пакетом `specflow` и служат швами
 для тестирования. Общего provider API, workflow engine, DSL или registry нет.

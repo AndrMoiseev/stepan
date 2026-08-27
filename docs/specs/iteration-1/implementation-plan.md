@@ -14,8 +14,7 @@
   зависимостей.
 - Изменения ограничиваются указанной границей commit. Расширение границы требует
   повторного разбиения задачи.
-- Существующие `cmd/codex-appserver-probe` и `internal/codexexec` остаются
-  рабочими на каждом шаге.
+- Существующий `cmd/codex-appserver-probe` остаётся рабочим на каждом шаге.
 - Общий workflow engine, provider interface, DSL, persistence, resume, raw
   artifacts и собственный TUI framework не создаются.
 - Реальный Codex используется только в финальной live-проверке, не в
@@ -123,18 +122,18 @@
 
 ### I1-03. Общий минимальный Windows Job Object helper
 
-**Результат:** проверенный Job Object код переиспользуется `codexexec` и будущим
-долгоживущим App Server без двух копий Windows API.
+**Результат:** проверенный Job Object код используется долгоживущим App Server
+без второй реализации Windows API.
 
 **Граница commit:** новый маленький `internal/processjob`, минимальная замена в
-`internal/codexexec`, связанные тесты.
+`internal/agentruntime/codexapp`, связанные тесты.
 
 **Критерии приёмки:**
 
 - Закрытие job завершает назначенный процесс и его потомков.
 - Повторное закрытие безопасно.
 - Ошибка создания или назначения job доступна вызывающему коду и не игнорируется.
-- Поведение и тесты существующего `codexexec` не меняются.
+- Lifecycle покрыт тестами App Server.
 - В helper нет timeout, signal handling или App Server-specific API.
 
 **Чек-лист реализации:**
@@ -144,14 +143,12 @@
 - [ ] Сохранить `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` на Windows.
 - [ ] Сохранить простой process-kill fallback для non-Windows, чтобы пакет
   компилировался при обычных Go checks.
-- [ ] Перевести `internal/codexexec` на новый helper без изменения публичного
-  контракта runner.
 - [ ] Перенести существующий process-tree тест к владельцу helper или добавить
   эквивалентный тест там, не дублируя медленный сценарий.
 - [ ] Убедиться, что job создаётся до запуска управляемой операции и закрывается
   на всех error paths.
 
-**Проверка:** `go test ./internal/processjob ./internal/codexexec` и
+**Проверка:** `go test ./internal/processjob ./internal/agentruntime/codexapp` и
 `go test ./...`.
 
 ### I1-04. Управляемый процесс App Server и pinned preflight

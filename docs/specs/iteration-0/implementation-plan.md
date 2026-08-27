@@ -17,9 +17,8 @@ Timebox: 2–3 рабочих дня одного разработчика
 
 ## 2. Исходное состояние
 
-В репозитории уже есть legacy spike для `codex exec`:
+До перехода на App Server в репозитории был legacy spike для `codex exec`:
 
-- `cmd/codex-probe` и `internal/codexexec`;
 - subprocess lifecycle, Windows Job Object, raw artifacts и replay-тесты;
 - durable state primitives;
 - `internal/gitsnapshot` с Git-native candidate snapshot.
@@ -47,8 +46,7 @@ Timebox: 2–3 рабочих дня одного разработчика
 - Live-запуски используют отдельные временные репозитории без remote,
   credentials и ссылок на исходный checkout.
 - `.stepan/` и несаницированные live artifacts не коммитятся.
-- `internal/codexexec` удаляется или сохраняется только по итоговому решению в
-  отчёте.
+- Legacy probe удалён после принятия App Server lifecycle.
 
 ## 4. Ожидаемое размещение
 

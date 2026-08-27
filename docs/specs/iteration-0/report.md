@@ -235,9 +235,8 @@ config isolation. Пользователь принял их как управл
   запрещена) — PASS; transport/final output были валидны. Legacy lifecycle код
   остаётся полезным как диагностическая реализация, но stress process-tree
   нестабилен и односторонний `codex exec` не даёт нужного approval loop.
-- Выбранный вариант: сохранить `cmd/codex-probe`, `internal/codexexec`, fixtures,
-  script и raw observations как legacy evidence; не использовать как основной
-  transport и не удалять до решения App Server lifecycle gap после review.
+- Legacy probe впоследствии удалён: App Server lifecycle закрыл требовавшийся
+  диагностический сценарий.
 - Отклонено: удалить сейчас либо вернуть `codex exec` основным transport.
 - Последствия: временно остаётся дублирующий probe; удалить его можно отдельным
   change, когда replacement покрывает timeout/cancel/tree и evidence принято.
@@ -338,5 +337,4 @@ UNC, `/Users` и `/home` paths, затем проигрывает каждый �
    пересмотра записаны в [ADR 0001](../../adr/0001-codex-app-server-containment.md).
 2. `docs/product-brief.md` и `docs/implementation-roadmap.md` синхронизированы с
    post-approval решением.
-3. Отдельное решение о физическом удалении legacy `codexexec` принимается только
-   после появления и проверки replacement lifecycle; сейчас evidence сохранён.
+3. Legacy probe удалён после появления и проверки replacement lifecycle.

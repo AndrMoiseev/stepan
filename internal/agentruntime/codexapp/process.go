@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 
-	"github.com/AndrMoiseev/stepan/internal/codexexec"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
@@ -149,7 +149,7 @@ func preflight(executable, workspace string) (string, error) {
 	if err != nil || !info.IsDir() {
 		return "", errors.New("workspace must be an existing directory")
 	}
-	version, err := codexexec.Version(context.Background(), executable)
+	version, err := codexVersion(context.Background(), executable)
 	if err != nil {
 		return "", fmt.Errorf("read Codex version: %w", err)
 	}
@@ -157,6 +157,19 @@ func preflight(executable, workspace string) (string, error) {
 		return "", fmt.Errorf("unsupported codex-cli version %q: require %s", version, SupportedCodexVersion)
 	}
 	return executable, nil
+}
+
+func codexVersion(ctx context.Context, executable string) (string, error) {
+	out, err := exec.CommandContext(ctx, executable, "--version").Output()
+	if err != nil {
+		return "", err
+	}
+	version := strings.TrimSpace(string(out))
+	version = strings.TrimPrefix(version, "codex-cli ")
+	if version == "" {
+		return "", errors.New("empty Codex version")
+	}
+	return version, nil
 }
 
 func (process *Process) Stdin() io.WriteCloser {

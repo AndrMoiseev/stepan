@@ -34,8 +34,8 @@ containment процесса остаются ответственностью �
 2. `Assign(*os.Process)` сразу после успешного `Start` и до protocol operation;
 3. повторно вызываемый `Close()` для принудительного завершения containment.
 
-Оба пути запуска Codex — `internal/agentruntime/codexapp` и `internal/codexexec` — обязаны
-использовать этот lifecycle. Ошибка любой операции является fail-closed.
+`internal/agentruntime/codexapp` использует этот lifecycle. Ошибка любой операции
+является fail-closed.
 
 На Windows `Prepare` не меняет команду, `Assign` помещает процесс в Job Object,
 а `Close` закрывает handle с `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
@@ -52,8 +52,6 @@ containment процесса остаются ответственностью �
 
 Штатное завершение App Server остаётся двухфазным: Stepan сначала best-effort
 отправляет `turn/interrupt` и ждёт до трёх секунд, затем закрывает supervisor.
-Для cancel/timeout legacy `codexexec` supervisor закрывается сразу, как и Job
-Object до этого изменения.
 
 ### Терминал
 
