@@ -48,9 +48,6 @@ func (ui *fakeInteractiveUI) Main() (Progress, error) {
 	ui.mainCalls++
 	return result.progress, result.err
 }
-func (*fakeInteractiveUI) InitialAnswer(string) (Progress, error) {
-	panic("unexpected initial answer")
-}
 func (*fakeInteractiveUI) Draft(context.Context, Progress) (Progress, error) {
 	panic("unexpected draft menu")
 }

@@ -11,10 +11,9 @@ import (
 type Status string
 
 const (
-	StatusNeedsInput    Status = "NEEDS_INPUT"
-	StatusReadyToWrite  Status = "READY_TO_WRITE"
 	StatusWritten       Status = "WRITTEN"
 	StatusAnswered      Status = "ANSWERED"
+	StatusNeedsInput    Status = "NEEDS_INPUT"
 	StatusReadyToUpdate Status = "READY_TO_UPDATE"
 	StatusUpdated       Status = "UPDATED"
 )
@@ -25,44 +24,32 @@ type Result struct {
 	SpecID  string
 }
 
-func InitialPrompt(brief string) string {
+func InitialPrompt(brief, absoluteFeaturesDirectory string) string {
 	return `Ты — автор спецификации в интерактивном flow Stepan.
 
-Изучи релевантные файлы текущего Git working tree до первого вопроса.
-Не спрашивай о фактах, которые можно надёжно установить из кода и документации.
-Не создавай и не изменяй файлы на этапе уточнения.
+Изучи релевантные файлы текущего Git working tree. Не спрашивай уточнений:
+самостоятельно выбери обратимые детали по соглашениям репозитория. Сразу выбери
+краткий уникальный feature_id в формате [a-z0-9-]+ и создай по нему первый
+черновик спецификации.
 
-Уточняй только материальные решения, влияющие на поведение, границы или критерии
-приёмки. Задавай не более одного вопроса за turn. Обратимые детали выбирай по
-соглашениям репозитория — пользователь сможет изменить их после первого черновика.
+Разрешённый каталог для всех новых черновиков:
+` + absoluteFeaturesDirectory + `
 
-Когда информации достаточно, верни READY_TO_WRITE и предложи краткий feature_id
-в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
-Для READY_TO_WRITE обязательно верни feature_id и заполни message пустой строкой.
-Для NEEDS_INPUT обязательно задай вопрос в message и верни feature_id пустой строкой.
+Создай каталог <feature_id> внутри разрешённого каталога. Обязательно создай в
+нём specification.md как точку входа. При необходимости можешь создать
+дополнительные файлы в том же каталоге; specification.md должен ссылаться на
+них. Не изменяй никакие файлы вне каталога выбранного feature_id и сохрани все
+уже существовавшие изменения рабочего дерева.
+
+Фиксированного шаблона нет. Отрази решения и необходимые детали, чтобы
+результат можно было использовать для дальнейшего планирования. После записи
+верни WRITTEN и выбранный feature_id. Не добавляй message.
 
 Веди диалог и будущую спецификацию на языке feature brief, если пользователь явно
 не попросил иначе.
 
 FEATURE BRIEF:
 ` + brief
-}
-
-func CreatePrompt(absoluteSpecDirectory string) string {
-	return `Создай цельную спецификацию по результатам текущего диалога.
-
-Разрешённый каталог:
-` + absoluteSpecDirectory + `
-
-Обязательно создай specification.md как точку входа. При необходимости можешь
-создать дополнительные файлы в этом же каталоге; specification.md должен
-ссылаться на них. Не изменяй никакие файлы вне разрешённого каталога и сохрани
-все уже существовавшие изменения рабочего дерева.
-
-Фиксированного шаблона нет. Отрази согласованные решения и необходимые детали,
-чтобы результат можно было использовать для дальнейшего планирования.
-
-После записи верни WRITTEN.`
 }
 
 func ChangePrompt(request string) string {
@@ -103,7 +90,6 @@ QUESTION:
 }
 
 func InitialSchema() json.RawMessage  { return json.RawMessage(initialSchema) }
-func CreateSchema() json.RawMessage   { return json.RawMessage(createSchema) }
 func ChangeSchema() json.RawMessage   { return json.RawMessage(changeSchema) }
 func UpdateSchema() json.RawMessage   { return json.RawMessage(updateSchema) }
 func QuestionSchema() json.RawMessage { return json.RawMessage(questionSchema) }
@@ -112,18 +98,13 @@ func QuestionSchema() json.RawMessage { return json.RawMessage(questionSchema) }
 // client. Individual stages keep using their narrower schemas and decoders.
 func FlowEnvelopeSchema() json.RawMessage { return append(json.RawMessage(nil), flowEnvelopeSchema...) }
 
-const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_WRITE"]},"message":{"type":"string"},"feature_id":{"type":"string","maxLength":64,"pattern":"^[a-z0-9-]*$"}},"required":["status","message","feature_id"],"additionalProperties":false}`
-const createSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["WRITTEN"]}},"required":["status"],"additionalProperties":false}`
+const initialSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["WRITTEN"]},"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","feature_id"],"additionalProperties":false}`
 const changeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["NEEDS_INPUT","READY_TO_UPDATE"]},"message":{"type":"string"}},"required":["status","message"],"additionalProperties":false}`
 const updateSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["UPDATED"]}},"required":["status"],"additionalProperties":false}`
 const questionSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"status":{"type":"string","enum":["ANSWERED"]},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false}`
-const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_WRITE"},"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","feature_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"WRITTEN"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
+const flowEnvelopeSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","oneOf":[{"type":"object","properties":{"status":{"const":"WRITTEN"},"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9-]+$"}},"required":["status","feature_id"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"ANSWERED"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"NEEDS_INPUT"},"message":{"type":"string","minLength":1}},"required":["status","message"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"READY_TO_UPDATE"}},"required":["status"],"additionalProperties":false},{"type":"object","properties":{"status":{"const":"UPDATED"}},"required":["status"],"additionalProperties":false}]}`
 
 func DecodeInitialResult(data []byte) (Result, error) {
-	return decodeResult(data, StatusNeedsInput, StatusReadyToWrite)
-}
-
-func DecodeCreateResult(data []byte) (Result, error) {
 	return decodeResult(data, StatusWritten)
 }
 
@@ -140,7 +121,7 @@ func DecodeQuestionResult(data []byte) (Result, error) {
 }
 
 func DecodeFlowEnvelope(data []byte) (Result, error) {
-	return decodeResult(data, StatusNeedsInput, StatusReadyToWrite, StatusWritten, StatusAnswered, StatusReadyToUpdate, StatusUpdated)
+	return decodeResult(data, StatusWritten, StatusAnswered, StatusNeedsInput, StatusReadyToUpdate, StatusUpdated)
 }
 
 func decodeResult(data []byte, allowed ...Status) (Result, error) {
@@ -181,28 +162,18 @@ func decodeResult(data []byte, allowed ...Status) (Result, error) {
 				return Result{}, fmt.Errorf("status %s requires an empty feature_id", result.Status)
 			}
 		}
-	case StatusReadyToWrite:
-		if len(envelope.FeatureID) != 0 && len(envelope.SpecID) != 0 {
-			return Result{}, fmt.Errorf("status %s accepts only one feature_id", result.Status)
-		}
-		identifier := envelope.FeatureID
-		if len(identifier) == 0 {
-			identifier = envelope.SpecID
-		}
-		if len(identifier) == 0 {
+	case StatusWritten:
+		if len(envelope.FeatureID) == 0 {
 			return Result{}, fmt.Errorf("status %s requires feature_id", result.Status)
 		}
-		if err := json.Unmarshal(identifier, &result.SpecID); err != nil {
+		if err := json.Unmarshal(envelope.FeatureID, &result.SpecID); err != nil {
 			return Result{}, fmt.Errorf("status %s requires a string feature_id", result.Status)
 		}
 		if err := ValidateSpecID(result.SpecID); err != nil {
 			return Result{}, fmt.Errorf("status %s: %w", result.Status, err)
 		}
-		if len(envelope.Message) != 0 {
-			var unused string
-			if err := json.Unmarshal(envelope.Message, &unused); err != nil || unused != "" {
-				return Result{}, fmt.Errorf("status %s requires an empty message", result.Status)
-			}
+		if len(envelope.Message) != 0 || len(envelope.SpecID) != 0 {
+			return Result{}, fmt.Errorf("status %s forbids message and spec_id", result.Status)
 		}
 	case StatusReadyToUpdate:
 		if len(envelope.FeatureID) != 0 || len(envelope.SpecID) != 0 {

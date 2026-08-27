@@ -16,10 +16,9 @@ func TestFlowEnvelopeSchemaIsDeterministicAndCoversAllTerminalResults(t *testing
 		t.Fatalf("schema = %s, error = %v", first, err)
 	}
 	cases := []string{
-		`{"status":"NEEDS_INPUT","message":"question"}`,
-		`{"status":"READY_TO_WRITE","spec_id":"flow"}`,
-		`{"status":"WRITTEN"}`,
+		`{"status":"WRITTEN","feature_id":"flow"}`,
 		`{"status":"ANSWERED","message":"answer"}`,
+		`{"status":"NEEDS_INPUT","message":"question"}`,
 		`{"status":"READY_TO_UPDATE"}`,
 		`{"status":"UPDATED"}`,
 	}
@@ -33,7 +32,8 @@ func TestFlowEnvelopeSchemaIsDeterministicAndCoversAllTerminalResults(t *testing
 func TestFlowEnvelopeRejectsInvalidShapes(t *testing.T) {
 	for _, value := range []string{
 		`{"status":"UNKNOWN"}`,
-		`{"status":"WRITTEN","message":"extra"}`,
+		`{"status":"WRITTEN","feature_id":"flow","message":"extra"}`,
+		`{"status":"WRITTEN"}`,
 		`{"status":"NEEDS_INPUT"}`,
 		`[]`, `null`, `"text"`, `{"status":"UPDATED"} trailing`,
 	} {

@@ -7,7 +7,6 @@ import (
 
 type InteractiveUI interface {
 	Main() (Progress, error)
-	InitialAnswer(string) (Progress, error)
 	Draft(context.Context, Progress) (Progress, error)
 	ChangeAnswer(context.Context, string) (Progress, error)
 	ReportError(error)
@@ -24,10 +23,6 @@ func RunInteractive(ctx context.Context, controller *Controller, ui InteractiveU
 		progress, err := ui.Main()
 		for err == nil && progress.State != StateIdle {
 			switch progress.State {
-			case StateAwaitingAnswer:
-				progress, err = ui.InitialAnswer(progress.Question)
-			case StateReadyToWrite:
-				progress, err = controller.CreateDraft(ctx)
 			case StateDraft:
 				progress, err = ui.Draft(ctx, progress)
 			case StateAwaitingChangeAnswer:

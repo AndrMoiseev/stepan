@@ -52,16 +52,6 @@ func (ui *UI) Main() (Progress, error) {
 	}
 }
 
-func (ui *UI) InitialAnswer(question string) (Progress, error) {
-	ui.say(question)
-	answer, err := ui.text()
-	if err != nil {
-		return ui.controller.Progress(), err
-	}
-	ui.thinking()
-	return ui.controller.Submit(answer)
-}
-
 func (ui *UI) Draft(ctx context.Context, progress Progress) (Progress, error) {
 	if progress.Answer != "" && progress.Answer != ui.lastDraftAnswer {
 		ui.say(progress.Answer)

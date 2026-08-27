@@ -97,10 +97,7 @@ thread, turns выполняются последовательно.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Clarification: /feature
-    Clarification --> Clarification: NEEDS_INPUT
-    Clarification --> ReadyToWrite: READY_TO_WRITE
-    ReadyToWrite --> Draft: WRITTEN + postconditions
+    Idle --> Draft: WRITTEN + feature_id + postconditions
     Draft --> Draft: ANSWERED / UPDATED
     Draft --> Idle: /approve
 ```
@@ -123,8 +120,9 @@ in-memory approvals.
 - Stepan, а не Codex, выбирает переходы workflow.
 - Свободный текст агента не меняет состояние: переход требует результата,
   валидного относительно схемы конкретного turn.
-- Turn по умолчанию read-only и без сети; write-turn получает один writable
-  root каталога текущей спецификации.
+- Turn по умолчанию read-only и без сети. Первый turn `/feature` получает
+  writable root `docs/changes/features/`, чтобы сам выбрать feature ID; update
+  turn получает один writable root каталога текущей спецификации.
 - После записи отдельно проверяются structured status, наличие
   `specification.md` и Git write boundary.
 - Ошибка протокола, approval или containment закрывает текущий flow без

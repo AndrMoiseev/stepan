@@ -121,8 +121,6 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 		switch string(options.OutputSchema) {
 		case string(InitialSchema()):
 			id := fmt.Sprintf("flow-%d", runtime.threads)
-			return json.RawMessage(fmt.Sprintf(`{"status":"READY_TO_WRITE","spec_id":%q}`, id)), nil
-		case string(CreateSchema()):
 			directory := filepath.Join(repo, "docs", "changes", "features", fmt.Sprintf("flow-%d", runtime.threads))
 			if err := os.MkdirAll(directory, 0o700); err != nil {
 				return nil, err
@@ -130,7 +128,7 @@ func TestInteractiveSessionReusesRuntimeForTwoApprovedFlows(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(directory, "specification.md"), []byte("draft"), 0o600); err != nil {
 				return nil, err
 			}
-			return json.RawMessage(`{"status":"WRITTEN"}`), nil
+			return json.RawMessage(fmt.Sprintf(`{"status":"WRITTEN","feature_id":%q}`, id)), nil
 		default:
 			return nil, errors.New("unexpected schema")
 		}
@@ -158,13 +156,20 @@ func TestInteractiveSessionRestartsAfterCrash(t *testing.T) {
 	repo := initDraftRepository(t)
 	crashed := &fakeAppRuntime{turnErr: agentruntime.ErrRuntimeExited}
 	replacement := &fakeAppRuntime{turn: func(_ string, _ agentruntime.TurnOptions) (json.RawMessage, error) {
-		return json.RawMessage(`{"status":"NEEDS_INPUT","message":"question"}`), nil
+		directory := filepath.Join(repo, "docs", "changes", "features", "restart")
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(directory, "specification.md"), []byte("draft"), 0o600); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(`{"status":"WRITTEN","feature_id":"restart"}`), nil
 	}}
 	runtimes := []*fakeAppRuntime{crashed, replacement}
 	starts := 0
 	session := newSession(func(context.Context) (appRuntime, error) { runtime := runtimes[starts]; starts++; return runtime, nil })
 	controller := NewController(repo, session)
-	ui := &controllerUI{controller: controller, ideas: []string{"crash", "restart"}, stopAfterInitialQuestion: true}
+	ui := &controllerUI{controller: controller, ideas: []string{"crash", "restart"}}
 	err := RunInteractive(context.Background(), controller, ui, session.Interrupt)
 	if !errors.Is(err, ErrCanceled) {
 		t.Fatalf("run error = %v", err)
@@ -201,11 +206,10 @@ func (runtime *fakeAppRuntime) Interrupt() error { runtime.interrupts++; return 
 func (runtime *fakeAppRuntime) Close() error     { runtime.closes++; return nil }
 
 type controllerUI struct {
-	controller               *Controller
-	ideas                    []string
-	mainCalls                int
-	reported                 []error
-	stopAfterInitialQuestion bool
+	controller *Controller
+	ideas      []string
+	mainCalls  int
+	reported   []error
 }
 
 type testThread struct{ ID string }
@@ -217,13 +221,6 @@ func (ui *controllerUI) Main() (Progress, error) {
 	brief := ui.ideas[ui.mainCalls]
 	ui.mainCalls++
 	return ui.controller.StartIdea(brief)
-}
-
-func (ui *controllerUI) InitialAnswer(string) (Progress, error) {
-	if ui.stopAfterInitialQuestion {
-		return Progress{}, ErrCanceled
-	}
-	panic("unexpected initial answer")
 }
 
 func (ui *controllerUI) Draft(_ context.Context, _ Progress) (Progress, error) {

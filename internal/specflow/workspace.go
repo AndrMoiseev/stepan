@@ -19,6 +19,40 @@ type SpecTarget struct {
 	DisplayPath string
 }
 
+const featuresDirectoryPath = "docs/changes/features"
+
+func displayFeaturesDirectory() string { return featuresDirectoryPath }
+
+// PrepareFeaturesDirectory returns the common write root for the first agent
+// turn. It is created up front because some agent runtimes require a writable
+// root to already exist before a turn begins.
+func PrepareFeaturesDirectory(root string) (string, error) {
+	root, err := canonicalExisting(root)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize Git root: %w", err)
+	}
+	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath))
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return "", fmt.Errorf("create feature directory %q: %w", directory, err)
+	}
+	if err := CheckContainment(root, directory); err != nil {
+		return "", err
+	}
+	return directory, nil
+}
+
+func featureEntries(directory string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		result[entry.Name()] = struct{}{}
+	}
+	return result, nil
+}
+
 func FindGitRoot(ctx context.Context, start string) (string, error) {
 	output, err := exec.CommandContext(ctx, "git", "-C", start, "rev-parse", "--show-toplevel").CombinedOutput()
 	if err != nil {
@@ -50,6 +84,20 @@ func ValidateSpecID(specID string) error {
 }
 
 func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
+	target, err := SpecTargetForID(root, specID)
+	if err != nil {
+		return SpecTarget{}, err
+	}
+	directory := target.Directory
+	if _, err := os.Lstat(directory); err == nil {
+		return SpecTarget{}, fmt.Errorf("specification directory %q already exists", directory)
+	} else if !os.IsNotExist(err) {
+		return SpecTarget{}, fmt.Errorf("check specification directory %q: %w", directory, err)
+	}
+	return target, nil
+}
+
+func SpecTargetForID(root, specID string) (SpecTarget, error) {
 	if err := ValidateSpecID(specID); err != nil {
 		return SpecTarget{}, err
 	}
@@ -57,19 +105,14 @@ func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
 	if err != nil {
 		return SpecTarget{}, fmt.Errorf("canonicalize Git root: %w", err)
 	}
-	directory := filepath.Join(root, "docs", "changes", "features", specID)
-	if _, err := os.Lstat(directory); err == nil {
-		return SpecTarget{}, fmt.Errorf("specification directory %q already exists", directory)
-	} else if !os.IsNotExist(err) {
-		return SpecTarget{}, fmt.Errorf("check specification directory %q: %w", directory, err)
-	}
+	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath), specID)
 	if err := CheckContainment(root, directory); err != nil {
 		return SpecTarget{}, err
 	}
 	return SpecTarget{
 		Directory:   directory,
 		Entrypoint:  filepath.Join(directory, "specification.md"),
-		DisplayPath: path.Join("docs", "changes", "features", specID, "specification.md"),
+		DisplayPath: path.Join(featuresDirectoryPath, specID, "specification.md"),
 	}, nil
 }
 

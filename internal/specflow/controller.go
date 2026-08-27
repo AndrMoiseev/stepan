@@ -18,8 +18,6 @@ type State uint8
 const (
 	StateIdle State = iota
 	StateAwaitingBrief
-	StateAwaitingAnswer
-	StateReadyToWrite
 	StateDraft
 	StateAwaitingChangeAnswer
 )
@@ -67,7 +65,7 @@ func (controller *Controller) StartFeature(brief string) (Progress, error) {
 		controller.state = StateAwaitingBrief
 		return controller.Progress(), nil
 	}
-	return controller.run(InitialPrompt(brief))
+	return controller.createInitialDraft(context.Background(), brief)
 }
 
 // StartIdea is retained for package-level compatibility. Interactive users must
@@ -80,11 +78,9 @@ func (controller *Controller) Submit(text string) (Progress, error) {
 	switch controller.state {
 	case StateAwaitingBrief:
 		controller.brief = text
-		return controller.run(InitialPrompt(text))
-	case StateAwaitingAnswer:
-		return controller.run(initialAnswerPrompt(text))
+		return controller.createInitialDraft(context.Background(), text)
 	default:
-		return controller.Progress(), fmt.Errorf("initial clarification is not awaiting input")
+		return controller.Progress(), fmt.Errorf("feature brief is not awaiting input")
 	}
 }
 
@@ -144,15 +140,16 @@ func (controller *Controller) Approve() (Progress, error) {
 	return controller.Progress(), nil
 }
 
-func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error) {
-	if controller.state != StateReadyToWrite {
-		return controller.Progress(), fmt.Errorf("initial clarification is not ready to write")
-	}
-	target, err := PrepareSpecTarget(controller.root, controller.specID)
+func (controller *Controller) createInitialDraft(ctx context.Context, brief string) (Progress, error) {
+	featuresDirectory, err := PrepareFeaturesDirectory(controller.root)
 	if err != nil {
-		return controller.failDraft(fmt.Errorf("prepare specification target: %w", err))
+		return controller.failDraft(fmt.Errorf("prepare feature directory: %w", err))
 	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(target.Directory)
+	entries, err := featureEntries(featuresDirectory)
+	if err != nil {
+		return controller.failDraft(fmt.Errorf("read feature directory: %w", err))
+	}
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(featuresDirectory)
 	if err != nil {
 		return controller.failDraft(fmt.Errorf("prepare write policy: %w", err))
 	}
@@ -161,23 +158,78 @@ func (controller *Controller) CreateDraft(ctx context.Context) (Progress, error)
 		return controller.failDraft(fmt.Errorf("capture pre-write repository: %w", err))
 	}
 
-	output, turnErr := controller.runner.RunTurn(controller.thread, CreatePrompt(target.Directory), agentruntime.TurnOptions{
-		OutputSchema: CreateSchema(),
+	output, turnErr := controller.runner.RunTurn(controller.thread, InitialPrompt(brief, featuresDirectory), agentruntime.TurnOptions{
+		OutputSchema: InitialSchema(),
 		Policy:       policy,
 	})
 	var resultErr error
+	var target SpecTarget
 	if turnErr != nil {
-		resultErr = fmt.Errorf("run create turn: %w", turnErr)
-	} else if _, err := DecodeCreateResult(output); err != nil {
-		resultErr = fmt.Errorf("validate create result: %w", err)
+		resultErr = fmt.Errorf("run initial draft turn: %w", turnErr)
+	} else if result, err := DecodeInitialResult(output); err != nil {
+		resultErr = fmt.Errorf("validate initial draft result: %w", err)
+	} else if _, exists := entries[result.SpecID]; exists {
+		resultErr = fmt.Errorf("specification directory for feature-id %q already exists", result.SpecID)
+	} else if target, err = SpecTargetForID(controller.root, result.SpecID); err != nil {
+		resultErr = fmt.Errorf("prepare specification target: %w", err)
 	}
-	if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
-		return controller.failDraft(err)
+	if resultErr == nil {
+		if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
+			return controller.failDraft(err)
+		}
+	} else {
+		// Still inspect writes after any failed agent turn or malformed result so
+		// callers receive the same boundary and entrypoint diagnostics.
+		target = SpecTarget{Directory: featuresDirectory}
+		if err := controller.validateInitialWrite(ctx, baseline, resultErr); err != nil {
+			return controller.failDraft(err)
+		}
 	}
 
+	result, _ := DecodeInitialResult(output)
 	controller.state = StateDraft
+	controller.specID = result.SpecID
 	controller.path = target.DisplayPath
 	return controller.Progress(), nil
+}
+
+func (controller *Controller) validateInitialWrite(ctx context.Context, baseline gitsnapshot.Snapshot, resultErr error) error {
+	var postErrors []error
+	if resultErr != nil {
+		postErrors = append(postErrors, resultErr)
+	}
+	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
+	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
+	} else if err := gitsnapshot.CheckBoundary(changed, displayFeaturesDirectory()); err != nil {
+		postErrors = append(postErrors, err)
+	}
+	return errors.Join(postErrors...)
+}
+
+func (controller *Controller) validateWrite(ctx context.Context, target SpecTarget, baseline gitsnapshot.Snapshot, resultErr error) error {
+	var postErrors []error
+	if resultErr != nil {
+		postErrors = append(postErrors, resultErr)
+	}
+	if err := CheckContainment(controller.root, target.Directory); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("verify specification target: %w", err))
+	}
+	if info, err := os.Lstat(target.Entrypoint); err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
+		postErrors = append(postErrors, fmt.Errorf("verify specification entrypoint %q: %w", target.Entrypoint, err))
+	}
+	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
+	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
+		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
+	} else if err := gitsnapshot.CheckBoundary(changed, path.Dir(target.DisplayPath)); err != nil {
+		postErrors = append(postErrors, err)
+	}
+	return errors.Join(postErrors...)
 }
 
 func (controller *Controller) analyzeChange(ctx context.Context, prompt string) (Progress, error) {
@@ -234,33 +286,9 @@ func (controller *Controller) updateDraft(ctx context.Context) (Progress, error)
 	return controller.Progress(), nil
 }
 
-func (controller *Controller) validateWrite(ctx context.Context, target SpecTarget, baseline gitsnapshot.Snapshot, resultErr error) error {
-	var postErrors []error
-	if resultErr != nil {
-		postErrors = append(postErrors, resultErr)
-	}
-	if err := CheckContainment(controller.root, target.Directory); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("verify specification target: %w", err))
-	}
-	if info, err := os.Lstat(target.Entrypoint); err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
-		}
-		postErrors = append(postErrors, fmt.Errorf("verify specification entrypoint %q: %w", target.Entrypoint, err))
-	}
-	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
-	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
-	} else if err := gitsnapshot.CheckBoundary(changed, path.Dir(target.DisplayPath)); err != nil {
-		postErrors = append(postErrors, err)
-	}
-	return errors.Join(postErrors...)
-}
-
 func (controller *Controller) failDraft(err error) (Progress, error) {
 	controller.reset()
-	return controller.Progress(), fmt.Errorf("create draft failed; cleanup was not performed: %w", err)
+	return controller.Progress(), fmt.Errorf("initial draft failed; cleanup was not performed: %w", err)
 }
 
 func (controller *Controller) failUpdate(err error) (Progress, error) {
@@ -273,32 +301,6 @@ func (controller *Controller) target() SpecTarget {
 	return SpecTarget{Directory: filepath.Dir(entrypoint), Entrypoint: entrypoint, DisplayPath: controller.path}
 }
 
-func (controller *Controller) run(prompt string) (Progress, error) {
-	output, err := controller.runner.RunTurn(controller.thread, prompt, agentruntime.TurnOptions{
-		OutputSchema: InitialSchema(),
-		Policy:       agentruntime.ReadOnlyTurnPolicy(),
-	})
-	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("run initial clarification: %w", err)
-	}
-	result, err := DecodeInitialResult(output)
-	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("validate initial clarification: %w", err)
-	}
-	controller.question = ""
-	controller.specID = ""
-	if result.Status == StatusNeedsInput {
-		controller.state = StateAwaitingAnswer
-		controller.question = result.Message
-	} else {
-		controller.state = StateReadyToWrite
-		controller.specID = result.SpecID
-	}
-	return controller.Progress(), nil
-}
-
 func (controller *Controller) reset() {
 	controller.state = StateIdle
 	controller.brief = ""
@@ -306,23 +308,6 @@ func (controller *Controller) reset() {
 	controller.question = ""
 	controller.specID = ""
 	controller.path = ""
-}
-
-func initialAnswerPrompt(answer string) string {
-	return `Продолжи первоначальное уточнение идеи с учётом предыдущего диалога.
-Не спрашивай о фактах, которые можно надёжно установить из кода и документации.
-Не создавай и не изменяй файлы на этапе уточнения.
-
-Уточняй только материальные решения, влияющие на поведение, границы или критерии
-приёмки. Задавай не более одного вопроса за turn.
-
-Когда информации достаточно, верни READY_TO_WRITE и предложи краткий feature_id
-в формате [a-z0-9-]+. До отдельного разрешения Stepan ничего не записывай.
-Для READY_TO_WRITE обязательно верни feature_id и заполни message пустой строкой.
-Для NEEDS_INPUT обязательно задай вопрос в message и верни feature_id пустой строкой.
-
-USER ANSWER:
-` + answer
 }
 
 func changeAnswerPrompt(answer string) string {

@@ -31,10 +31,7 @@ stepan --agent claude --agent-cli <абсолютный-путь-к-cli>
 ```mermaid
 stateDiagram-v2
     [*] --> Main: запуск Stepan
-    Main --> Clarification: /feature [brief]
-    Clarification --> Clarification: NEEDS_INPUT → ответ
-    Clarification --> Create: READY_TO_WRITE
-    Create --> Draft: WRITTEN + проверки
+    Main --> Draft: WRITTEN + feature_id + проверки
     Draft --> Draft: /question → ANSWERED
     Draft --> ChangeAnalysis: /change
     ChangeAnalysis --> ChangeAnalysis: NEEDS_INPUT → ответ
@@ -44,14 +41,13 @@ stateDiagram-v2
 ```
 
 1. Stepan открывает отдельный диалог агента для каждой команды `/feature`.
-   Сначала агент читает релевантные файлы репозитория и в режиме без записи
-   задаёт не более одного существенного уточняющего вопроса за turn. Вопросы
-   относятся только к решениям, которые влияют на поведение, границы или
-   критерии приёмки.
-2. Когда данных достаточно, агент возвращает `READY_TO_WRITE` и `feature_id`.
-   Stepan проверяет ID и создаёт первый черновик отдельным turn с доступом на
-   запись. Успехом считается только наличие файла
-   `docs/changes/features/<feature-id>/specification.md` и успешные проверки после записи.
+   В первом turn агент читает релевантные файлы репозитория, самостоятельно
+   выбирает обратимые детали по соглашениям проекта, создаёт черновик и сразу
+   возвращает `WRITTEN` с `feature_id`. Дополнительного этапа уточнений или
+   этапа `Create` нет.
+2. Stepan проверяет ID, наличие файла
+   `docs/changes/features/<feature-id>/specification.md` и все проверки после
+   записи. Только после этого flow переходит к черновику.
 3. Для созданного черновика Stepan показывает путь и ждёт одно из действий:
    `/approve`, `/question` или `/change`.
 4. `/question` принимает текст вопроса и отвечает по текущей спецификации в
@@ -76,9 +72,7 @@ stateDiagram-v2
 
 | Этап | Допустимый `status` | Обязательные поля |
 | --- | --- | --- |
-| Первичное уточнение | `NEEDS_INPUT` | непустой `message`, пустой `feature_id` |
-| Первичное уточнение | `READY_TO_WRITE` | валидный `feature_id`, пустой `message` |
-| Создание черновика | `WRITTEN` | — |
+| Первый черновик | `WRITTEN` | валидный `feature_id` |
 | Вопрос по черновику | `ANSWERED` | непустой `message` |
 | Анализ изменения | `NEEDS_INPUT` | непустой `message` |
 | Анализ изменения | `READY_TO_UPDATE` | — |
@@ -91,12 +85,14 @@ turn завершают текущий flow; автоматического по
 
 ## Границы записи и завершение
 
-До create/update turn агент имеет read-only policy. В write-turn ему разрешено
-изменять только каталог текущей спецификации `docs/changes/features/<feature-id>/`. Stepan
-сравнивает состояние Git working tree до и после записи, проверяет containment
-пути и наличие `specification.md`. Если обнаружена запись вне разрешённого
-каталога или нарушена любая постпроверка, flow завершается с ошибкой; Stepan не
-откатывает и не удаляет частично созданные файлы.
+Первый turn получает доступ на запись только к
+`docs/changes/features/`, поскольку feature ID ещё не известен. После ответа
+Stepan проверяет, что изменения относятся только к каталогу возвращённого
+`docs/changes/features/<feature-id>/`; update turn получает доступ ровно к этому
+каталогу. Stepan сравнивает состояние Git working tree до и после записи,
+проверяет containment пути и наличие `specification.md`. Если обнаружена запись
+вне возвращённого каталога или нарушена любая постпроверка, flow завершается с
+ошибкой; Stepan не откатывает и не удаляет частично созданные файлы.
 
 Runtime агента стартует лениво при первой `/feature` и переиспользуется для
 следующих flow в том же процессе, но каждый flow получает новый thread. Ошибка
