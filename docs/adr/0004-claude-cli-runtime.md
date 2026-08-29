@@ -31,7 +31,8 @@ cmd/stepan → specflow → agentruntime ← codexapp
                                       ← claudeapp
 ```
 
-`specflow` хранит только opaque thread handle, schema и turn policy. Codex
+`specflow` хранит только opaque thread handle и неизменную конфигурацию thread:
+bootstrap, schema, read-only workspace и один внешний writable artifact root. Codex
 сохраняет App Server protocol и process containment через Job Object/process
 group. Claude использует `github.com/severity1/claude-agent-sdk-go v0.6.22` и
 его штатный subprocess transport без fork, launcher shim или custom transport.

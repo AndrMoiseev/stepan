@@ -10,100 +10,74 @@ import (
 )
 
 type UI struct {
-	controller      *Controller
-	input           *bufio.Reader
-	output          io.Writer
-	lastDraftAnswer string
+	controller *Controller
+	input      *bufio.Reader
+	output     io.Writer
 }
 
-func NewUI(controller *Controller) *UI {
-	return &UI{controller: controller, input: bufio.NewReader(os.Stdin), output: os.Stdout}
+func NewUI(c *Controller) *UI {
+	return &UI{controller: c, input: bufio.NewReader(os.Stdin), output: os.Stdout}
 }
-
-func (ui *UI) ReportError(err error) { ui.say("Ошибка: " + err.Error()) }
-
-func (ui *UI) Main() (Progress, error) {
+func (u *UI) ReportError(err error) { u.say("Ошибка: " + err.Error()) }
+func (u *UI) Main() (Progress, error) {
 	for {
-		input, err := ui.readLine("Вы > ")
+		value, err := u.readLine("Вы > ")
 		if err != nil {
 			return Progress{}, err
 		}
-		command, err := ParseMainCommand(input)
+		command, err := ParseMainCommand(value)
 		if err != nil {
-			ui.say(err.Error())
+			u.say(err.Error())
 			continue
 		}
-		ui.lastDraftAnswer = ""
-		ui.thinking()
-		if !command.NeedBrief {
-			return ui.controller.StartFeature(command.Brief)
+		if command.NeedBrief {
+			u.say("Опишите намерение.")
+			brief, err := u.text()
+			if err != nil {
+				return Progress{}, err
+			}
+			u.thinking()
+			return u.controller.StartFeature(brief)
 		}
-		progress, err := ui.controller.StartFeature("")
-		if err != nil {
-			return progress, err
-		}
-		ui.say("Опишите функциональность.")
-		brief, err := ui.text()
-		if err != nil {
-			return progress, err
-		}
-		ui.thinking()
-		return ui.controller.Submit(brief)
+		u.thinking()
+		return u.controller.StartFeature(command.Brief)
 	}
 }
-
-func (ui *UI) Draft(ctx context.Context, progress Progress) (Progress, error) {
-	if progress.Answer != "" && progress.Answer != ui.lastDraftAnswer {
-		ui.say(progress.Answer)
-		ui.lastDraftAnswer = progress.Answer
+func (u *UI) Dialogue(_ context.Context, p Progress) (Progress, error) {
+	if p.Message != "" {
+		u.say(p.Message)
 	}
-	ui.say(draftTitle(progress))
-	action, err := ui.draftAction()
+	if p.State == StateIntentPublished {
+		u.say("Intent опубликован: " + p.Path + ". Продолжайте диалог или введите /approve.")
+	} else if p.State == StateAwaitingBrief {
+		u.say("Опишите намерение.")
+	} else if p.State == StateAwaitingRework {
+		u.say("Опишите доработку draft.")
+	}
+	value, err := u.text()
 	if err != nil {
-		return ui.controller.Progress(), err
+		return p, err
 	}
-	if action == DraftApprove {
-		return ui.controller.Approve()
-	}
-	if action == DraftQuestion {
-		ui.say("Введите вопрос к спецификации.")
-	} else {
-		ui.say("Опишите изменение.")
-	}
-	value, err := ui.text()
-	if err != nil {
-		return ui.controller.Progress(), err
-	}
-	ui.thinking()
-	if action == DraftQuestion {
-		return ui.controller.AskQuestion(value)
-	}
-	return ui.controller.ProposeChange(ctx, value)
+	u.thinking()
+	return u.controller.Submit(value)
 }
-
-func (ui *UI) ChangeAnswer(ctx context.Context, question string) (Progress, error) {
-	ui.say(question)
-	answer, err := ui.text()
+func (u *UI) Review(_ context.Context, p Progress) (Progress, error) {
+	u.say("Новый draft intent:\n" + p.Diff)
+	value, err := u.readLine("Вы > [apply | reject | rework] ")
 	if err != nil {
-		return ui.controller.Progress(), err
+		return p, err
 	}
-	ui.thinking()
-	return ui.controller.SubmitChangeAnswer(ctx, answer)
-}
-
-func (ui *UI) draftAction() (DraftAction, error) {
-	input, err := ui.readLine("Вы > [/approve | /question | /change] ")
+	action, err := ParseReviewAction(value)
 	if err != nil {
-		return DraftApprove, err
+		u.say(err.Error())
+		return p, nil
 	}
-	return ParseDraftAction(input)
+	return u.controller.Review(action)
 }
-
-func (ui *UI) text() (string, error) { return ui.readLine("Вы > ") }
-
-func (ui *UI) readLine(prompt string) (string, error) {
-	_, _ = fmt.Fprint(ui.output, prompt)
-	value, err := ui.input.ReadString('\n')
+func (u *UI) text() (string, error) { return u.readLine("Вы > ") }
+func (u *UI) readLine(prompt string) (string, error) {
+	_, _ = fmt.Fprint(u.output, prompt)
+	value, err := u.input.ReadString('\n')
 	if err != nil && err != io.EOF {
 		return "", err
 	}
@@ -113,13 +87,5 @@ func (ui *UI) readLine(prompt string) (string, error) {
 	}
 	return value, nil
 }
-
-func (ui *UI) say(message string) {
-	_, _ = fmt.Fprintf(ui.output, "\nStepan > %s\n\n", message)
-}
-
-func (ui *UI) thinking() { _, _ = fmt.Fprint(ui.output, "\nStepan думает…\n\n") }
-
-func draftTitle(progress Progress) string {
-	return "Черновик спецификации: " + progress.Path
-}
+func (u *UI) say(message string) { _, _ = fmt.Fprintf(u.output, "\nStepan > %s\n\n", message) }
+func (u *UI) thinking()          { _, _ = fmt.Fprint(u.output, "\nStepan думает…\n\n") }

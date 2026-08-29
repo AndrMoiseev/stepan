@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-var specIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+var specIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
 type SpecTarget struct {
 	Directory   string
@@ -66,6 +66,10 @@ func FindGitRoot(ctx context.Context, start string) (string, error) {
 }
 
 func ValidateSpecID(specID string) error {
+	return ValidateFeatureID(specID)
+}
+
+func ValidateFeatureID(specID string) error {
 	if specID == "" {
 		return fmt.Errorf("spec-id must not be empty")
 	}
@@ -78,9 +82,68 @@ func ValidateSpecID(specID string) error {
 		return fmt.Errorf("spec-id %q is a reserved Windows device name", specID)
 	}
 	if !specIDPattern.MatchString(specID) {
-		return fmt.Errorf("spec-id must match [a-z0-9-]+")
+		return fmt.Errorf("spec-id must start and end with [a-z0-9] and otherwise match [a-z0-9-]+")
 	}
 	return nil
+}
+
+// FeatureTarget names the durable intent artifacts for one intent dialogue.
+type FeatureTarget struct {
+	ID                string
+	Directory         string
+	IntentPath        string
+	JournalPath       string
+	DisplayIntentPath string
+}
+
+func PrepareFeatureTarget(root, date, featureID string) (FeatureTarget, error) {
+	if err := ValidateFeatureID(featureID); err != nil {
+		return FeatureTarget{}, err
+	}
+	root, err := canonicalExisting(root)
+	if err != nil {
+		return FeatureTarget{}, err
+	}
+	base := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath))
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return FeatureTarget{}, err
+	}
+	for suffix := 1; ; suffix++ {
+		id := date + "-" + featureID
+		if suffix > 1 {
+			id += fmt.Sprintf("-%d", suffix)
+		}
+		directory := filepath.Join(base, id)
+		if _, err := os.Lstat(directory); os.IsNotExist(err) {
+			if err := CheckContainment(root, directory); err != nil {
+				return FeatureTarget{}, err
+			}
+			return FeatureTarget{ID: id, Directory: directory, IntentPath: filepath.Join(directory, "intent.md"), JournalPath: filepath.Join(directory, "mem-log.md"), DisplayIntentPath: path.Join(featuresDirectoryPath, id, "intent.md")}, nil
+		} else if err != nil {
+			return FeatureTarget{}, err
+		}
+	}
+}
+
+func CreateArtifactRoot(workspace string) (string, error) {
+	workspace, err := canonicalExisting(workspace)
+	if err != nil {
+		return "", err
+	}
+	root, err := os.MkdirTemp("", "stepan-intent-")
+	if err != nil {
+		return "", err
+	}
+	canonical, err := canonicalExisting(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		return "", err
+	}
+	if relative, err := filepath.Rel(workspace, canonical); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		_ = os.RemoveAll(root)
+		return "", fmt.Errorf("artifact root must be outside Git workspace")
+	}
+	return canonical, nil
 }
 
 func PrepareSpecTarget(root, specID string) (SpecTarget, error) {

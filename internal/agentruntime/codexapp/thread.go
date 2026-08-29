@@ -15,9 +15,11 @@ import (
 var ErrTurnInProgress = agentruntime.ErrTurnInProgress
 
 type Thread struct {
-	ID         string
-	connection *Connection
-	cwd        string
+	ID           string
+	connection   *Connection
+	cwd          string
+	config       agentruntime.ThreadConfig
+	bootstrapped bool
 }
 
 type TurnOptions = agentruntime.TurnOptions
@@ -68,7 +70,7 @@ func (err *terminalTurnError) Error() string {
 	return fmt.Sprintf("turn %s: %s; details: %s", err.status, err.message, err.details)
 }
 
-func (connection *Connection) StartThread(cwd string) (*Thread, error) {
+func (connection *Connection) StartThread(cwd string, configs ...agentruntime.ThreadConfig) (*Thread, error) {
 	cwd, err := canonicalPath(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize Git root: %w", err)
@@ -86,16 +88,39 @@ func (connection *Connection) StartThread(cwd string) (*Thread, error) {
 		connection.fail(err)
 		return nil, connection.Err()
 	}
-	return &Thread{ID: response.Thread.ID, connection: connection, cwd: cwd}, nil
+	config := agentruntime.ThreadConfig{Workspace: cwd}
+	if len(configs) > 1 {
+		return nil, errors.New("thread configuration must be supplied at most once")
+	}
+	if len(configs) == 1 {
+		config = configs[0].Clone()
+	}
+	return &Thread{ID: response.Thread.ID, connection: connection, cwd: cwd, config: config}, nil
 }
 
-func (connection *Connection) RunTurn(thread *Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
-	options = options.Clone()
+func (connection *Connection) RunTurn(thread *Thread, prompt string, legacy ...TurnOptions) (json.RawMessage, error) {
 	if thread == nil || thread.connection != connection || thread.ID == "" {
 		return nil, errors.New("invalid thread handle")
 	}
 	if prompt == "" {
 		return nil, errors.New("turn prompt is required")
+	}
+	if len(legacy) > 1 {
+		return nil, errors.New("turn options must be supplied at most once")
+	}
+	options := TurnOptions{OutputSchema: thread.config.OutputSchema}
+	if len(legacy) == 1 {
+		options = legacy[0].Clone()
+	} else if thread.config.ArtifactRoot != "" {
+		policy, err := agentruntime.SingleWriteRootTurnPolicy(thread.config.ArtifactRoot)
+		if err != nil {
+			return nil, err
+		}
+		options.Policy = policy
+	}
+	if len(legacy) == 0 && !thread.bootstrapped {
+		prompt = thread.config.BootstrapInstructions + "\n\n" + prompt
+		thread.bootstrapped = true
 	}
 	var schema map[string]json.RawMessage
 	if len(options.OutputSchema) == 0 || json.Unmarshal(options.OutputSchema, &schema) != nil || schema == nil {
@@ -106,7 +131,11 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, options Tur
 	}
 	defer connection.turnMu.Unlock()
 
-	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{WritableRoots: writableRoots(options.Policy)})
+	readable := []string{thread.cwd}
+	if thread.config.ArtifactRoot != "" {
+		readable = append(readable, thread.config.ArtifactRoot)
+	}
+	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{ReadableRoots: readable, WritableRoots: writableRoots(options.Policy)})
 	if err != nil {
 		return nil, err
 	}

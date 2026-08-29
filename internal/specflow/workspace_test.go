@@ -11,8 +11,8 @@ import (
 )
 
 func TestValidateSpecID(t *testing.T) {
-	valid := []string{"a", "spec-1", strings.Repeat("a", 64), "-", "com0", "lpt0"}
-	invalid := []string{"", "UPPER", "has_underscore", "has space", "тест", strings.Repeat("a", 65), "CON", "prn", "Aux", "nul"}
+	valid := []string{"a", "spec-1", strings.Repeat("a", 64), "com0", "lpt0"}
+	invalid := []string{"", "-", "-prefix", "suffix-", "UPPER", "has_underscore", "has space", "тест", strings.Repeat("a", 65), "CON", "prn", "Aux", "nul"}
 	for index := 1; index <= 9; index++ {
 		invalid = append(invalid, "com"+string(rune('0'+index)), "lpt"+string(rune('0'+index)))
 	}

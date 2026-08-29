@@ -40,26 +40,26 @@ func newSession(start func(context.Context) (agentruntime.Runtime, error)) *Sess
 	return &Session{start: start}
 }
 
-func (session *Session) StartThread() (agentruntime.Thread, error) {
+func (session *Session) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	slot, err := session.current()
 	if err != nil {
 		return nil, err
 	}
-	thread, err := slot.runtime.StartThread()
+	thread, err := slot.runtime.StartThread(configs...)
 	if err != nil {
 		session.discard(slot)
 	}
 	return thread, err
 }
 
-func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
+func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options ...agentruntime.TurnOptions) (json.RawMessage, error) {
 	session.mu.Lock()
 	slot := session.runtime
 	session.mu.Unlock()
 	if slot == nil {
 		return nil, agentruntime.ErrRuntimeClosed
 	}
-	output, err := slot.runtime.RunTurn(thread, prompt, options)
+	output, err := slot.runtime.RunTurn(thread, prompt, options...)
 	if err != nil {
 		session.discard(slot)
 	}
@@ -170,5 +170,3 @@ func (session *Session) stop(interrupt bool) error {
 	}
 	return slot.runtime.Close()
 }
-
-var _ initialTurnRunner = (*Session)(nil)

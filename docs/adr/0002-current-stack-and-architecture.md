@@ -4,7 +4,8 @@
 
 Дата: 2026-08-13
 
-Обновлено: 2026-08-27 после выделения `internal/codexprobe`
+Обновлено: 2026-08-29: intent dialogue использует thread-scoped configuration
+с read-only workspace и одним внешним writable artifact root.
 
 Разделы о provider boundary и Claude дополняет [ADR 0004](0004-claude-cli-runtime.md).
 
@@ -67,13 +68,13 @@ flowchart LR
 
 - `cmd/stepan` — composition root, provider/CLI preflight, platform/terminal
   preflight и обработка завершения процесса.
-- `internal/specflow` — прикладное ядро текущего `/feature` flow: машина состояний,
-  prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
+- `internal/specflow` — прикладное ядро `/feature`: intent dialogue, строгие
+  `message | draft` contracts, feature storage, append-only journal и review.
 - `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
   JSON-RPC transport, thread/turn, correlation, structured output и общий
   fail-closed approval evaluator.
-- `internal/agentruntime` — provider-neutral contract session/thread, turn,
-  policy и lifecycle.
+- `internal/agentruntime` — provider-neutral thread configuration: bootstrap,
+  schema, read-only workspace, один внешний artifact root и lifecycle.
 - `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
   turn-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,

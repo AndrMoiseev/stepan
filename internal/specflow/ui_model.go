@@ -31,32 +31,15 @@ func ParseMainCommand(input string) (MainCommand, error) {
 	}
 	return MainCommand{}, fmt.Errorf("unknown command %q", input)
 }
-
-type DraftAction string
-
-const (
-	DraftApprove  DraftAction = "/approve"
-	DraftQuestion DraftAction = "question"
-	DraftChange   DraftAction = "change"
-)
-
-func DraftActions() []DraftAction {
-	return []DraftAction{DraftApprove, DraftQuestion, DraftChange}
-}
-
-func ParseDraftAction(input string) (DraftAction, error) {
-	switch strings.TrimSpace(input) {
-	case "/approve":
-		return DraftApprove, nil
-	case "/question", "question":
-		return DraftQuestion, nil
-	case "/change", "change":
-		return DraftChange, nil
+func ParseReviewAction(input string) (ReviewAction, error) {
+	switch strings.TrimSpace(strings.ToLower(input)) {
+	case "apply", "/apply":
+		return ReviewApply, nil
+	case "reject", "/reject":
+		return ReviewReject, nil
+	case "rework", "/rework":
+		return ReviewRework, nil
 	default:
-		return "", fmt.Errorf("unknown draft action %q; use /approve, /question, or /change", input)
+		return "", fmt.Errorf("unknown review action %q; use apply, reject, or rework", input)
 	}
-}
-
-func (action DraftAction) NeedsText() bool {
-	return action == DraftQuestion || action == DraftChange
 }

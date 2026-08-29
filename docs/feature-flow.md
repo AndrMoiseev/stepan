@@ -1,108 +1,45 @@
-# Протокол flow `/feature`
+# Intent flow `/feature`
 
-Этот документ описывает фактическое поведение текущей интерактивной команды
-`/feature`. Она помогает подготовить и согласовать спецификацию, но не реализует
-задачу, не создаёт Git commit и не удаляет неутверждённые файлы.
-
-## Запуск
-
-`stepan` запускается из Git working tree и ждёт команду в терминале. По
-умолчанию он использует `codex` из `PATH`; совместимый Claude CLI выбирается
-явно:
-
-```text
-stepan --agent claude --agent-cli <абсолютный-путь-к-cli>
-```
-
-Поддерживаются только интерактивные stdin и stdout. Команда `/feature` принимает
-весь текст после первого пробела как literal brief: кавычки и обратные слеши не
-интерпретируются. Варианты запуска:
-
-```text
-/feature Добавить экспорт отчёта в CSV
-/feature
-```
-
-Во втором случае Stepan запросит идею отдельной строкой. Неизвестная команда
-показывает ошибку и возвращает к главному приглашению.
-
-## Последовательность работы
+`/feature` ведёт один продолжительный диалог об intent — проблеме, наблюдаемом
+результате, границах scope и существенных ограничениях. Он не создаёт
+техническую спецификацию, дизайн или план реализации и никогда не делает commit.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Main: запуск Stepan
-    Main --> Draft: WRITTEN + feature_id + проверки
-    Draft --> Draft: /question → ANSWERED
-    Draft --> ChangeAnalysis: /change
-    ChangeAnalysis --> ChangeAnalysis: NEEDS_INPUT → ответ
-    ChangeAnalysis --> Update: READY_TO_UPDATE
-    Update --> Draft: UPDATED + проверки
-    Draft --> Main: /approve
+    [*] --> Main
+    Main --> Id: /feature + brief
+    Id --> Dialogue: dated feature directory and mem-log.md
+    Dialogue --> Dialogue: message
+    Dialogue --> Published: first draft is published
+    Published --> Published: message
+    Published --> Review: later draft
+    Review --> Published: apply or reject
+    Review --> Rework: rework
+    Rework --> Review: revised draft
+    Published --> Main: /approve
 ```
 
-1. Stepan открывает отдельный диалог агента для каждой команды `/feature`.
-   В первом turn агент читает релевантные файлы репозитория, самостоятельно
-   выбирает обратимые детали по соглашениям проекта, создаёт черновик и сразу
-   возвращает `WRITTEN` с `feature_id`. Дополнительного этапа уточнений или
-   этапа `Create` нет.
-2. Stepan проверяет ID, наличие файла
-   `docs/changes/features/<feature-id>/specification.md` и все проверки после
-   записи. Только после этого flow переходит к черновику.
-3. Для созданного черновика Stepan показывает путь и ждёт одно из действий:
-   `/approve`, `/question` или `/change`.
-4. `/question` принимает текст вопроса и отвечает по текущей спецификации в
-   режиме без записи. Затем пользователь снова выбирает действие для того же
-   черновика.
-5. `/change` принимает предложение изменения. Агент либо задаёт один
-   дополнительный вопрос, либо подтверждает готовность к обновлению; во втором
-   случае Stepan запускает write-turn и показывает тот же путь к обновлённому
-   черновику.
-6. `/approve` проверяет, что текущий `specification.md` существует и является
-   обычным файлом, завершает flow и возвращает к главному приглашению. Это
-   только явное подтверждение в памяти процесса: файл не меняется, маркер
-   approval и Git commit не создаются.
+Stepan first asks a small read-only request for a semantic `feature_id`, then
+creates `docs/changes/features/YYYY-MM-DD-<feature-id>/`. A collision receives
+the first free suffix (`-2`, `-3`, …). Before the main dialogue starts the
+directory contains `mem-log.md` with the literal brief and ID event.
 
-Диалог и создаваемая спецификация ведутся на языке первоначального brief, если
-пользователь явно не попросил другой язык.
+The main thread has one immutable policy for its whole lifetime: Git workspace
+is read-only; a unique external artifact root is read-write; all other paths,
+network, and commands are denied. The agent writes only
+`<artifact-root>/intent.md`; Stepan is the only writer of project `intent.md`
+and `mem-log.md`.
 
-## Контракт ответов агента
+Agent turns return exactly one of:
 
-Каждый turn обязан вернуть валидный JSON, соответствующий своему этапу. Текст
-ответа сам по себе не меняет состояние flow.
+```json
+{"kind":"message","message":"…","decisions":[]}
+{"kind":"draft","decisions":[]}
+```
 
-Тексты turn'ов хранятся отдельно в
-`internal/specflow/prompts/`: system-шаблон задаёт протокол, статусы и границы
-изменений, а user-шаблон передаёт только исходный артефакт — например, feature
-brief. Это позволяет проекту менять шаблоны и пересобирать Stepan без изменения
-логики flow.
-
-| Этап | Допустимый `status` | Обязательные поля |
-| --- | --- | --- |
-| Первый черновик | `WRITTEN` | валидный `feature_id` |
-| Вопрос по черновику | `ANSWERED` | непустой `message` |
-| Анализ изменения | `NEEDS_INPUT` | непустой `message` |
-| Анализ изменения | `READY_TO_UPDATE` | — |
-| Обновление черновика | `UPDATED` | — |
-
-`feature_id` содержит от 1 до 64 символов `[a-z0-9-]` и не может быть именем
-зарезервированного Windows device. Невалидный structured output либо ошибка
-turn завершают текущий flow; автоматического повторного запуска или
-восстановления диалога нет.
-
-## Границы записи и завершение
-
-Первый turn получает доступ на запись только к
-`docs/changes/features/`, поскольку feature ID ещё не известен. После ответа
-Stepan проверяет, что изменения относятся только к каталогу возвращённого
-`docs/changes/features/<feature-id>/`; update turn получает доступ ровно к этому
-каталогу. Stepan сравнивает состояние Git working tree до и после записи,
-проверяет containment пути и наличие `specification.md`. Если обнаружена запись
-вне возвращённого каталога или нарушена любая постпроверка, flow завершается с
-ошибкой; Stepan не откатывает и не удаляет частично созданные файлы.
-
-Runtime агента стартует лениво при первой `/feature` и переиспользуется для
-следующих flow в том же процессе, но каждый flow получает новый thread. Ошибка
-runtime закрывает его: следующая `/feature` создаст новый runtime и новый thread.
-`Ctrl+C` прерывает активную работу, закрывает runtime и завершает Stepan с
-кодом 130. Незавершённые черновики остаются на диске и после перезапуска не
-возобновляются автоматически.
+The first valid draft is published immediately. Later drafts display a unified
+diff and wait for `apply`, `reject`, or `rework`; a rework comment returns to
+the same thread. `/approve` is available only after publication. It appends the
+approval event, closes the flow, deletes its artifact root, and returns to the
+main prompt. Interrupted and failed flows retain project artifacts but are not
+resumed automatically.

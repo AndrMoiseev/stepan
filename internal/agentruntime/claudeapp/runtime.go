@@ -27,8 +27,10 @@ type client interface {
 type clientFactory func(context.Context, ...claudecode.Option) client
 
 type thread struct {
-	runtime   *Runtime
-	sessionID string
+	runtime      *Runtime
+	sessionID    string
+	config       agentruntime.ThreadConfig
+	bootstrapped bool
 }
 
 // Runtime has no process-tree containment in v1. It deliberately uses the
@@ -64,6 +66,8 @@ type responseQuery struct {
 type activePolicy struct {
 	policy       agentruntime.TurnPolicy
 	writableRoot string
+	workspace    string
+	artifactRoot string
 }
 
 var _ agentruntime.Runtime = (*Runtime)(nil)
@@ -107,18 +111,30 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 	return runtime, nil
 }
 
-func (runtime *Runtime) StartThread() (agentruntime.Thread, error) {
+func (runtime *Runtime) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	runtime.stateMu.Lock()
 	defer runtime.stateMu.Unlock()
 	if runtime.closed {
 		return nil, agentruntime.ErrRuntimeClosed
 	}
+	if len(configs) > 1 {
+		return nil, errors.New("thread configuration must be supplied at most once")
+	}
+	config := agentruntime.ThreadConfig{Workspace: runtime.workspace, OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	if len(configs) == 1 {
+		config = configs[0].Clone()
+		if err := config.Validate(); err != nil {
+			return nil, err
+		}
+		if config.Workspace != runtime.workspace {
+			return nil, errors.New("thread workspace does not match runtime workspace")
+		}
+	}
 	id := runtime.nextSession.Add(1)
-	return &thread{runtime: runtime, sessionID: fmt.Sprintf("stepan-%d", id)}, nil
+	return &thread{runtime: runtime, sessionID: fmt.Sprintf("stepan-%d", id), config: config}, nil
 }
 
-func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
-	options = options.Clone()
+func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, legacy ...agentruntime.TurnOptions) (json.RawMessage, error) {
 	item, ok := handle.(*thread)
 	if !ok || item == nil || item.runtime != runtime || item.sessionID == "" {
 		return nil, errors.New("invalid Claude thread handle")
@@ -126,10 +142,23 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, optio
 	if prompt == "" {
 		return nil, errors.New("turn prompt is required")
 	}
+	if len(legacy) > 1 {
+		return nil, errors.New("turn options must be supplied at most once")
+	}
+	options := agentruntime.TurnOptions{OutputSchema: item.config.OutputSchema}
+	if len(legacy) == 1 {
+		options = legacy[0].Clone()
+	} else if item.config.ArtifactRoot != "" {
+		policy, err := agentruntime.SingleWriteRootTurnPolicy(item.config.ArtifactRoot)
+		if err != nil {
+			return nil, err
+		}
+		options.Policy = policy
+	}
 	if _, err := decodeJSONObject(options.OutputSchema); err != nil {
 		return nil, fmt.Errorf("output schema: %w", err)
 	}
-	policy, err := runtime.validatePolicy(options.Policy)
+	policy, err := runtime.validatePolicy(options.Policy, item.config)
 	if err != nil {
 		return nil, fmt.Errorf("turn policy: %w", err)
 	}
@@ -159,6 +188,10 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, optio
 		runtime.stateMu.Unlock()
 	}()
 
+	if len(legacy) == 0 && !item.bootstrapped {
+		prompt = item.config.BootstrapInstructions + "\n\n" + prompt
+		item.bootstrapped = true
+	}
 	ctx := runtime.ctx
 	if err := runtime.client.QueryWithSession(ctx, prompt, item.sessionID); err != nil {
 		return nil, runtime.runtimeError("send turn", err)
@@ -289,12 +322,12 @@ func (runtime *Runtime) runtimeError(action string, err error) error {
 	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
 }
 
-func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy) (activePolicy, error) {
+func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy, config agentruntime.ThreadConfig) (activePolicy, error) {
 	root, writable := policy.WritableRoot()
 	if !writable {
-		return activePolicy{policy: policy}, nil
+		return activePolicy{policy: policy, workspace: runtime.workspace}, nil
 	}
-	canonicalRoot, err := resolveWorkspacePath(runtime.workspace, root)
+	canonicalRoot, err := canonicalDirectory(root)
 	if err != nil {
 		return activePolicy{}, err
 	}
@@ -305,7 +338,7 @@ func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy) (activePo
 	if !info.IsDir() {
 		return activePolicy{}, errors.New("writable root is not a directory")
 	}
-	return activePolicy{policy: policy, writableRoot: canonicalRoot}, nil
+	return activePolicy{policy: policy, writableRoot: canonicalRoot, workspace: runtime.workspace, artifactRoot: canonicalRoot}, nil
 }
 
 func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
@@ -326,7 +359,7 @@ func permitTool(name string, input map[string]any, policy activePolicy, workspac
 	if err != nil {
 		return err
 	}
-	candidate, err := resolveWorkspacePath(workspace, path)
+	candidate, err := resolveAllowedPath(workspace, policy.artifactRoot, path)
 	if err != nil {
 		return err
 	}
@@ -339,6 +372,9 @@ func permitTool(name string, input map[string]any, policy activePolicy, workspac
 	}
 	if name != "Read" && name != "Glob" && name != "Grep" {
 		return fmt.Errorf("tool %q is not allowed", name)
+	}
+	if !pathWithin(workspace, candidate) && (policy.artifactRoot == "" || !pathWithin(policy.artifactRoot, candidate)) {
+		return errors.New("read outside allowed roots")
 	}
 	return nil
 }

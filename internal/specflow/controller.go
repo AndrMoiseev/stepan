@@ -1,16 +1,16 @@
 package specflow
 
 import (
-	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 )
 
 type State uint8
@@ -18,301 +18,321 @@ type State uint8
 const (
 	StateIdle State = iota
 	StateAwaitingBrief
-	StateDraft
-	StateAwaitingChangeAnswer
+	StateDialoguing
+	StateIntentPublished
+	StateAwaitingReview
+	StateAwaitingRework
 )
 
 type Progress struct {
-	State    State
-	Question string
-	Answer   string
-	SpecID   string
-	Path     string
+	State     State
+	Path      string
+	Message   string
+	Diff      string
+	FeatureID string
 }
+type ReviewAction string
 
-type initialTurnRunner interface {
-	StartThread() (agentruntime.Thread, error)
-	RunTurn(agentruntime.Thread, string, agentruntime.TurnOptions) (json.RawMessage, error)
+const (
+	ReviewApply  ReviewAction = "apply"
+	ReviewReject ReviewAction = "reject"
+	ReviewRework ReviewAction = "rework"
+)
+
+type dialogueRunner interface {
+	StartThread(...agentruntime.ThreadConfig) (agentruntime.Thread, error)
+	RunTurn(agentruntime.Thread, string, ...agentruntime.TurnOptions) (json.RawMessage, error)
 }
-
 type Controller struct {
-	runner   initialTurnRunner
-	root     string
-	state    State
-	brief    string
-	thread   agentruntime.Thread
-	question string
-	specID   string
-	path     string
+	runner    dialogueRunner
+	root      string
+	now       func() time.Time
+	state     State
+	thread    agentruntime.Thread
+	artifact  string
+	target    FeatureTarget
+	journal   *Journal
+	draftHash string
 }
 
-func NewController(root string, runner initialTurnRunner) *Controller {
-	return &Controller{root: root, runner: runner}
+func NewController(root string, runner dialogueRunner) *Controller {
+	return &Controller{root: root, runner: runner, now: time.Now}
 }
-
-func (controller *Controller) StartFeature(brief string) (Progress, error) {
-	controller.reset()
-	if controller.runner == nil {
-		return controller.Progress(), fmt.Errorf("start feature: turn runner is required")
+func (c *Controller) Progress() Progress {
+	return Progress{State: c.state, Path: c.target.DisplayIntentPath, FeatureID: c.target.ID}
+}
+func (c *Controller) StartFeature(brief string) (Progress, error) {
+	c.reset()
+	if c.runner == nil {
+		return c.Progress(), fmt.Errorf("start feature: turn runner is required")
 	}
-	thread, err := controller.runner.StartThread()
-	if err != nil {
-		return controller.Progress(), fmt.Errorf("start feature thread: %w", err)
+	if strings.TrimSpace(brief) == "" {
+		c.state = StateAwaitingBrief
+		return c.Progress(), nil
 	}
-	controller.thread = thread
-	controller.brief = brief
-	if brief == "" {
-		controller.state = StateAwaitingBrief
-		return controller.Progress(), nil
-	}
-	return controller.createInitialDraft(context.Background(), brief)
+	return c.start(brief)
 }
-
-// StartIdea is retained for package-level compatibility. Interactive users must
-// invoke /feature; new callers should use StartFeature.
-func (controller *Controller) StartIdea(brief string) (Progress, error) {
-	return controller.StartFeature(brief)
-}
-
-func (controller *Controller) Submit(text string) (Progress, error) {
-	switch controller.state {
+func (c *Controller) StartIdea(brief string) (Progress, error) { return c.StartFeature(brief) }
+func (c *Controller) Submit(text string) (Progress, error) {
+	switch c.state {
 	case StateAwaitingBrief:
-		controller.brief = text
-		return controller.createInitialDraft(context.Background(), text)
+		if strings.TrimSpace(text) == "" {
+			return c.Progress(), fmt.Errorf("feature brief must not be empty")
+		}
+		return c.start(text)
+	case StateDialoguing, StateIntentPublished:
+		if text == "/approve" {
+			return c.Approve()
+		}
+		return c.turn(text, "message")
+	case StateAwaitingRework:
+		if strings.TrimSpace(text) == "" {
+			return c.Progress(), fmt.Errorf("rework comment must not be empty")
+		}
+		if err := c.journal.Rework(text); err != nil {
+			return c.fail(err)
+		}
+		return c.turn(text, "rework")
 	default:
-		return controller.Progress(), fmt.Errorf("feature brief is not awaiting input")
+		return c.Progress(), fmt.Errorf("intent dialogue is not awaiting input")
 	}
 }
-
-func (controller *Controller) Progress() Progress {
-	return Progress{State: controller.state, Question: controller.question, SpecID: controller.specID, Path: controller.path}
+func (c *Controller) Review(action ReviewAction) (Progress, error) {
+	if c.state != StateAwaitingReview {
+		return c.Progress(), fmt.Errorf("no intent revision is awaiting review")
+	}
+	switch action {
+	case ReviewApply:
+		data, err := c.readDraft(true)
+		if err != nil {
+			return c.fail(err)
+		}
+		if err = c.writeAtomic(c.target.IntentPath, data); err != nil {
+			return c.fail(err)
+		}
+		if err = c.journal.Event("revision applied"); err != nil {
+			return c.fail(err)
+		}
+		c.draftHash = hash(data)
+		c.state = StateIntentPublished
+		return c.Progress(), nil
+	case ReviewReject:
+		if err := c.journal.Event("revision rejected"); err != nil {
+			return c.fail(err)
+		}
+		c.state = StateIntentPublished
+		return c.Progress(), nil
+	case ReviewRework:
+		if err := c.journal.Event("revision rework requested"); err != nil {
+			return c.fail(err)
+		}
+		c.state = StateAwaitingRework
+		return c.Progress(), nil
+	default:
+		return c.Progress(), fmt.Errorf("unknown review action %q", action)
+	}
 }
-
-func (controller *Controller) AskQuestion(question string) (Progress, error) {
-	if controller.state != StateDraft {
-		return controller.Progress(), fmt.Errorf("specification draft is not available")
+func (c *Controller) Approve() (Progress, error) {
+	if c.state != StateIntentPublished {
+		return c.Progress(), fmt.Errorf("/approve is available only after publishing intent.md")
 	}
-	output, err := controller.runner.RunTurn(controller.thread, QuestionPrompt(question), agentruntime.TurnOptions{
-		OutputSchema: QuestionSchema(),
-		Policy:       agentruntime.ReadOnlyTurnPolicy(),
-	})
-	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("ask specification question: %w", err)
-	}
-	result, err := DecodeQuestionResult(output)
-	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("validate specification answer: %w", err)
-	}
-	progress := controller.Progress()
-	progress.Answer = result.Message
-	return progress, nil
-}
-
-func (controller *Controller) ProposeChange(ctx context.Context, request string) (Progress, error) {
-	if controller.state != StateDraft {
-		return controller.Progress(), fmt.Errorf("specification draft is not available")
-	}
-	return controller.analyzeChange(ctx, ChangePrompt(request))
-}
-
-func (controller *Controller) SubmitChangeAnswer(ctx context.Context, answer string) (Progress, error) {
-	if controller.state != StateAwaitingChangeAnswer {
-		return controller.Progress(), fmt.Errorf("specification change is not awaiting input")
-	}
-	return controller.analyzeChange(ctx, changeAnswerPrompt(answer))
-}
-
-func (controller *Controller) Approve() (Progress, error) {
-	if controller.state != StateDraft {
-		return controller.Progress(), fmt.Errorf("specification draft is not available")
-	}
-	entrypoint := filepath.Join(controller.root, filepath.FromSlash(controller.path))
-	info, err := os.Lstat(entrypoint)
+	info, err := os.Lstat(c.target.IntentPath)
 	if err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
+		return c.Progress(), fmt.Errorf("approve intent: %w", err)
+	}
+	if err := c.journal.Event("intent approved"); err != nil {
+		return c.fail(err)
+	}
+	if err := removeArtifact(c.artifact); err != nil {
+		return c.fail(err)
+	}
+	c.reset()
+	return c.Progress(), nil
+}
+
+func (c *Controller) start(brief string) (Progress, error) {
+	idThread, err := c.runner.StartThread(agentruntime.ThreadConfig{Workspace: c.root, OutputSchema: FeatureIDSchema()})
+	if err != nil {
+		return c.Progress(), fmt.Errorf("start feature-id request: %w", err)
+	}
+	raw, err := c.runner.RunTurn(idThread, brief)
+	if err != nil {
+		return c.Progress(), fmt.Errorf("generate feature-id: %w", err)
+	}
+	id, err := DecodeFeatureID(raw)
+	if err != nil {
+		return c.Progress(), fmt.Errorf("validate feature-id: %w", err)
+	}
+	target, err := PrepareFeatureTarget(c.root, c.now().Format("2006-01-02"), id.FeatureID)
+	if err != nil {
+		return c.Progress(), fmt.Errorf("prepare feature target: %w", err)
+	}
+	if err := os.Mkdir(target.Directory, 0o755); err != nil {
+		return c.Progress(), fmt.Errorf("create feature directory: %w", err)
+	}
+	journal, err := NewJournal(target.JournalPath, target.ID, brief)
+	if err != nil {
+		return c.fail(fmt.Errorf("create mem-log: %w", err))
+	}
+	c.target, c.journal = target, journal
+	if err := c.journal.Event("dated feature ID selected: " + target.ID); err != nil {
+		return c.fail(err)
+	}
+	artifact, err := CreateArtifactRoot(c.root)
+	if err != nil {
+		return c.fail(fmt.Errorf("create artifact root: %w", err))
+	}
+	c.artifact = artifact
+	thread, err := c.runner.StartThread(agentruntime.ThreadConfig{BootstrapInstructions: BootstrapPrompt(brief, artifact), OutputSchema: DialogueSchema(), Workspace: c.root, ArtifactRoot: artifact})
+	if err != nil {
+		return c.fail(fmt.Errorf("start intent thread: %w", err))
+	}
+	c.thread = thread
+	c.state = StateDialoguing
+	return c.run(brief)
+}
+func (c *Controller) turn(text, _ string) (Progress, error) {
+	if err := c.journal.User(text); err != nil {
+		return c.fail(err)
+	}
+	return c.run(text)
+}
+func (c *Controller) run(input string) (Progress, error) {
+	before, _ := c.draftFingerprint()
+	raw, err := c.runner.RunTurn(c.thread, input)
+	if err != nil {
+		return c.fail(fmt.Errorf("run intent turn: %w", err))
+	}
+	envelope, err := DecodeEnvelope(raw)
+	if err != nil {
+		return c.fail(fmt.Errorf("validate intent response: %w", err))
+	}
+	if err := c.journal.Decisions(envelope.Decisions); err != nil {
+		return c.fail(err)
+	}
+	if envelope.Kind == KindMessage {
+		if err := c.journal.Agent(envelope.Message); err != nil {
+			return c.fail(err)
 		}
-		return controller.Progress(), fmt.Errorf("approve specification entrypoint %q: %w", entrypoint, err)
+		p := c.Progress()
+		p.Message = envelope.Message
+		return p, nil
 	}
-	controller.reset()
-	return controller.Progress(), nil
-}
-
-func (controller *Controller) createInitialDraft(ctx context.Context, brief string) (Progress, error) {
-	featuresDirectory, err := PrepareFeaturesDirectory(controller.root)
+	data, err := c.readDraftChanged(before)
 	if err != nil {
-		return controller.failDraft(fmt.Errorf("prepare feature directory: %w", err))
+		return c.fail(err)
 	}
-	entries, err := featureEntries(featuresDirectory)
-	if err != nil {
-		return controller.failDraft(fmt.Errorf("read feature directory: %w", err))
-	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(featuresDirectory)
-	if err != nil {
-		return controller.failDraft(fmt.Errorf("prepare write policy: %w", err))
-	}
-	baseline, err := gitsnapshot.Capture(ctx, controller.root)
-	if err != nil {
-		return controller.failDraft(fmt.Errorf("capture pre-write repository: %w", err))
-	}
-
-	output, turnErr := controller.runner.RunTurn(controller.thread, InitialPrompt(brief, featuresDirectory), agentruntime.TurnOptions{
-		OutputSchema: InitialSchema(),
-		Policy:       policy,
-	})
-	var resultErr error
-	var target SpecTarget
-	if turnErr != nil {
-		resultErr = fmt.Errorf("run initial draft turn: %w", turnErr)
-	} else if result, err := DecodeInitialResult(output); err != nil {
-		resultErr = fmt.Errorf("validate initial draft result: %w", err)
-	} else if _, exists := entries[result.SpecID]; exists {
-		resultErr = fmt.Errorf("specification directory for feature-id %q already exists", result.SpecID)
-	} else if target, err = SpecTargetForID(controller.root, result.SpecID); err != nil {
-		resultErr = fmt.Errorf("prepare specification target: %w", err)
-	}
-	if resultErr == nil {
-		if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
-			return controller.failDraft(err)
+	if _, err := os.Stat(c.target.IntentPath); os.IsNotExist(err) {
+		if err := c.writeAtomic(c.target.IntentPath, data); err != nil {
+			return c.fail(err)
 		}
-	} else {
-		// Still inspect writes after any failed agent turn or malformed result so
-		// callers receive the same boundary and entrypoint diagnostics.
-		target = SpecTarget{Directory: featuresDirectory}
-		if err := controller.validateInitialWrite(ctx, baseline, resultErr); err != nil {
-			return controller.failDraft(err)
+		if err := c.journal.Event("first draft published: " + c.target.DisplayIntentPath); err != nil {
+			return c.fail(err)
 		}
+		c.draftHash = hash(data)
+		c.state = StateIntentPublished
+		return c.Progress(), nil
 	}
-
-	result, _ := DecodeInitialResult(output)
-	controller.state = StateDraft
-	controller.specID = result.SpecID
-	controller.path = target.DisplayPath
-	return controller.Progress(), nil
-}
-
-func (controller *Controller) validateInitialWrite(ctx context.Context, baseline gitsnapshot.Snapshot, resultErr error) error {
-	var postErrors []error
-	if resultErr != nil {
-		postErrors = append(postErrors, resultErr)
-	}
-	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
-	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
-	} else if err := gitsnapshot.CheckBoundary(changed, displayFeaturesDirectory()); err != nil {
-		postErrors = append(postErrors, err)
-	}
-	return errors.Join(postErrors...)
-}
-
-func (controller *Controller) validateWrite(ctx context.Context, target SpecTarget, baseline gitsnapshot.Snapshot, resultErr error) error {
-	var postErrors []error
-	if resultErr != nil {
-		postErrors = append(postErrors, resultErr)
-	}
-	if err := CheckContainment(controller.root, target.Directory); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("verify specification target: %w", err))
-	}
-	if info, err := os.Lstat(target.Entrypoint); err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = fmt.Errorf("not a regular file")
-		}
-		postErrors = append(postErrors, fmt.Errorf("verify specification entrypoint %q: %w", target.Entrypoint, err))
-	}
-	if after, err := gitsnapshot.Capture(ctx, controller.root); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("capture post-write repository: %w", err))
-	} else if changed, err := gitsnapshot.Compare(ctx, controller.root, baseline, after); err != nil {
-		postErrors = append(postErrors, fmt.Errorf("compare repository snapshots: %w", err))
-	} else if err := gitsnapshot.CheckBoundary(changed, path.Dir(target.DisplayPath)); err != nil {
-		postErrors = append(postErrors, err)
-	}
-	return errors.Join(postErrors...)
-}
-
-func (controller *Controller) analyzeChange(ctx context.Context, prompt string) (Progress, error) {
-	output, err := controller.runner.RunTurn(controller.thread, prompt, agentruntime.TurnOptions{
-		OutputSchema: ChangeSchema(),
-		Policy:       agentruntime.ReadOnlyTurnPolicy(),
-	})
+	published, err := os.ReadFile(c.target.IntentPath)
 	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("analyze specification change: %w", err)
+		return c.fail(err)
 	}
-	result, err := DecodeChangeResult(output)
+	c.draftHash = hash(data)
+	c.state = StateAwaitingReview
+	p := c.Progress()
+	p.Diff = unifiedDiff(published, data)
+	if err := c.journal.Event("revision reviewed\n\n" + p.Diff); err != nil {
+		return c.fail(err)
+	}
+	return p, nil
+}
+func (c *Controller) draftFingerprint() (string, error) {
+	data, err := c.readDraft(false)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
 	if err != nil {
-		controller.reset()
-		return controller.Progress(), fmt.Errorf("validate specification change analysis: %w", err)
+		return "", err
 	}
-	controller.question = ""
-	if result.Status == StatusNeedsInput {
-		controller.state = StateAwaitingChangeAnswer
-		controller.question = result.Message
-		return controller.Progress(), nil
-	}
-	return controller.updateDraft(ctx)
+	return hash(data), nil
 }
-
-func (controller *Controller) updateDraft(ctx context.Context) (Progress, error) {
-	target := controller.target()
-	if err := CheckContainment(controller.root, target.Directory); err != nil {
-		return controller.failUpdate(fmt.Errorf("verify specification target: %w", err))
-	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(target.Directory)
+func (c *Controller) readDraftChanged(before string) ([]byte, error) {
+	data, err := c.readDraft(true)
 	if err != nil {
-		return controller.failUpdate(fmt.Errorf("prepare write policy: %w", err))
+		return nil, err
 	}
-	baseline, err := gitsnapshot.Capture(ctx, controller.root)
+	if before == hash(data) {
+		return nil, fmt.Errorf("draft intent.md was not created or changed in this turn")
+	}
+	return data, nil
+}
+func (c *Controller) readDraft(_ bool) ([]byte, error) {
+	p := filepath.Join(c.artifact, "intent.md")
+	if c.artifact == "" {
+		return nil, fmt.Errorf("artifact root is unavailable")
+	}
+	if !withinPath(c.artifact, p) {
+		return nil, fmt.Errorf("draft escapes artifact root")
+	}
+	info, err := os.Lstat(p)
 	if err != nil {
-		return controller.failUpdate(fmt.Errorf("capture pre-write repository: %w", err))
+		return nil, err
 	}
-	output, turnErr := controller.runner.RunTurn(controller.thread, UpdatePrompt(target.Directory), agentruntime.TurnOptions{
-		OutputSchema: UpdateSchema(),
-		Policy:       policy,
-	})
-	var resultErr error
-	if turnErr != nil {
-		resultErr = fmt.Errorf("run update turn: %w", turnErr)
-	} else if _, err := DecodeUpdateResult(output); err != nil {
-		resultErr = fmt.Errorf("validate update result: %w", err)
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("draft must be a regular non-link file")
 	}
-	if err := controller.validateWrite(ctx, target, baseline, resultErr); err != nil {
-		return controller.failUpdate(err)
+	return os.ReadFile(p)
+}
+func (c *Controller) writeAtomic(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".intent-")
+	if err != nil {
+		return err
 	}
-	controller.state = StateDraft
-	controller.question = ""
-	return controller.Progress(), nil
+	name := temp.Name()
+	defer os.Remove(name)
+	if _, err = temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, path)
 }
-
-func (controller *Controller) failDraft(err error) (Progress, error) {
-	controller.reset()
-	return controller.Progress(), fmt.Errorf("initial draft failed; cleanup was not performed: %w", err)
+func (c *Controller) fail(err error) (Progress, error) {
+	if c.journal != nil {
+		_ = c.journal.Event("flow error: " + err.Error())
+	}
+	_ = removeArtifact(c.artifact)
+	c.reset()
+	return c.Progress(), err
 }
-
-func (controller *Controller) failUpdate(err error) (Progress, error) {
-	controller.reset()
-	return controller.Progress(), fmt.Errorf("update draft failed; cleanup was not performed: %w", err)
+func (c *Controller) reset() {
+	c.state = StateIdle
+	c.thread = nil
+	c.artifact = ""
+	c.target = FeatureTarget{}
+	c.journal = nil
+	c.draftHash = ""
 }
-
-func (controller *Controller) target() SpecTarget {
-	entrypoint := filepath.Join(controller.root, filepath.FromSlash(controller.path))
-	return SpecTarget{Directory: filepath.Dir(entrypoint), Entrypoint: entrypoint, DisplayPath: controller.path}
+func withinPath(root, value string) bool {
+	r, err := filepath.Rel(root, value)
+	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
 }
-
-func (controller *Controller) reset() {
-	controller.state = StateIdle
-	controller.brief = ""
-	controller.thread = nil
-	controller.question = ""
-	controller.specID = ""
-	controller.path = ""
+func removeArtifact(root string) error {
+	if root == "" {
+		return nil
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(canonical) != filepath.Clean(root) {
+		return fmt.Errorf("refuse cleanup through link")
+	}
+	return os.RemoveAll(root)
 }
-
-func changeAnswerPrompt(answer string) string {
-	return renderPrompt(
-		promptPart{"change-answer-system.md", nil},
-		promptPart{"change-answer-user.md", map[string]string{"answer": answer}},
-	)
+func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+func unifiedDiff(old, new []byte) string {
+	return "--- intent.md\n+++ intent.md\n-" + strings.ReplaceAll(string(old), "\n", "\n-") + "\n+" + strings.ReplaceAll(string(new), "\n", "\n+") + "\n"
 }

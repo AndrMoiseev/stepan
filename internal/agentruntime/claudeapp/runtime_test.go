@@ -131,23 +131,21 @@ func TestClaudeRuntimeDoesNotReuseDelayedTerminalResult(t *testing.T) {
 	}
 }
 
-func TestClaudeRuntimeRejectsWriteRootOutsideWorkspace(t *testing.T) {
+func TestClaudeRuntimeAcceptsExactExternalArtifactRoot(t *testing.T) {
 	config := testConfig(t)
 	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return &fakeClient{} })
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	handle, err := runtime.StartThread()
+	artifact := t.TempDir()
+	policy, err := agentruntime.SingleWriteRootTurnPolicy(artifact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := runtime.RunTurn(handle, "turn", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema, Policy: policy}); err == nil {
-		t.Fatal("outside writable root was accepted")
+	active, err := runtime.validatePolicy(policy, agentruntime.ThreadConfig{Workspace: config.Workspace, ArtifactRoot: artifact})
+	if err != nil || active.writableRoot == "" {
+		t.Fatalf("external artifact root = %#v, %v", active, err)
 	}
 }
 

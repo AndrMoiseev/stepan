@@ -1,21 +1,17 @@
 package specflow
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 type InteractiveUI interface {
 	Main() (Progress, error)
-	Draft(context.Context, Progress) (Progress, error)
-	ChangeAnswer(context.Context, string) (Progress, error)
+	Dialogue(context.Context, Progress) (Progress, error)
+	Review(context.Context, Progress) (Progress, error)
 	ReportError(error)
 }
 
 func RunInteractive(ctx context.Context, controller *Controller, ui InteractiveUI, interrupt func() error) error {
-	stopInterrupt := context.AfterFunc(ctx, func() { _ = interrupt() })
-	defer stopInterrupt()
-
+	stop := context.AfterFunc(ctx, func() { _ = interrupt() })
+	defer stop()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -23,18 +19,18 @@ func RunInteractive(ctx context.Context, controller *Controller, ui InteractiveU
 		progress, err := ui.Main()
 		for err == nil && progress.State != StateIdle {
 			switch progress.State {
-			case StateDraft:
-				progress, err = ui.Draft(ctx, progress)
-			case StateAwaitingChangeAnswer:
-				progress, err = ui.ChangeAnswer(ctx, progress.Question)
+			case StateAwaitingBrief, StateDialoguing, StateIntentPublished, StateAwaitingRework:
+				progress, err = ui.Dialogue(ctx, progress)
+			case StateAwaitingReview:
+				progress, err = ui.Review(ctx, progress)
 			default:
-				err = errors.New("unsupported interactive flow state")
+				err = ErrCanceled
 			}
 		}
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, ErrCanceled) {
+		if err == ErrCanceled {
 			_ = interrupt()
 			return err
 		}

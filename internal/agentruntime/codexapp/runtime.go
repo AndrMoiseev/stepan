@@ -61,15 +61,28 @@ func StartRuntime(executable, workspace string) (*Runtime, error) {
 	return runtime, nil
 }
 
-func (runtime *Runtime) StartThread() (agentruntime.Thread, error) {
+func (runtime *Runtime) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
-	thread, err := runtime.connection.StartThread(runtime.workspace)
+	config := agentruntime.ThreadConfig{Workspace: runtime.workspace}
+	if len(configs) > 1 {
+		return nil, errors.New("thread configuration must be supplied at most once")
+	}
+	if len(configs) == 1 {
+		config = configs[0].Clone()
+		if err := config.Validate(); err != nil {
+			return nil, err
+		}
+		if config.Workspace != runtime.workspace {
+			return nil, errors.New("thread workspace does not match runtime workspace")
+		}
+	}
+	thread, err := runtime.connection.StartThread(runtime.workspace, config)
 	return thread, runtime.classify(err)
 }
 
-func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, options TurnOptions) (json.RawMessage, error) {
+func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, legacy ...TurnOptions) (json.RawMessage, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
@@ -77,7 +90,10 @@ func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, optio
 	if !ok {
 		return nil, errors.New("invalid Codex thread handle")
 	}
-	output, err := runtime.connection.RunTurn(codexThread, prompt, options)
+	if len(legacy) > 1 {
+		return nil, errors.New("turn options must be supplied at most once")
+	}
+	output, err := runtime.connection.RunTurn(codexThread, prompt, legacy...)
 	return output, runtime.classify(err)
 }
 
