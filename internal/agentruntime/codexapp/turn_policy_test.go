@@ -29,29 +29,25 @@ func TestTurnPolicyAcceptsOnlyObservedPathsInsideSingleRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writePolicy, err := SingleWriteRootTurnPolicy(writable)
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, test := range []struct {
-		name      string
-		policy    TurnPolicy
-		paths     []string
-		grantRoot *string
-		scope     string
-		want      ApprovalDecision
+		name         string
+		writableRoot string
+		paths        []string
+		grantRoot    *string
+		scope        string
+		want         ApprovalDecision
 	}{
-		{"read-only", ReadOnlyTurnPolicy(), []string{filepath.Join(writable, "file.md")}, nil, "", DecisionDecline},
-		{"inside", writePolicy, []string{filepath.Join(writable, "file.md")}, nil, "", DecisionAccept},
-		{"sibling prefix", writePolicy, []string{filepath.Join(sibling, "file.md")}, nil, "", DecisionDecline},
-		{"outside", writePolicy, []string{filepath.Join(outside, "file.md")}, nil, "", DecisionDecline},
-		{"reparse escape", writePolicy, []string{filepath.Join(escape, "file.md")}, nil, "", DecisionDecline},
-		{"grant root", writePolicy, []string{filepath.Join(writable, "file.md")}, stringPointer(writable), "", DecisionDecline},
-		{"session grant", writePolicy, []string{filepath.Join(writable, "file.md")}, nil, "session", DecisionDecline},
-		{"not observed", writePolicy, nil, nil, "", DecisionDecline},
+		{"read-only", "", []string{filepath.Join(writable, "file.md")}, nil, "", DecisionDecline},
+		{"inside", writable, []string{filepath.Join(writable, "file.md")}, nil, "", DecisionAccept},
+		{"sibling prefix", writable, []string{filepath.Join(sibling, "file.md")}, nil, "", DecisionDecline},
+		{"outside", writable, []string{filepath.Join(outside, "file.md")}, nil, "", DecisionDecline},
+		{"reparse escape", writable, []string{filepath.Join(escape, "file.md")}, nil, "", DecisionDecline},
+		{"grant root", writable, []string{filepath.Join(writable, "file.md")}, stringPointer(writable), "", DecisionDecline},
+		{"session grant", writable, []string{filepath.Join(writable, "file.md")}, nil, "session", DecisionDecline},
+		{"not observed", writable, nil, nil, "", DecisionDecline},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			run := testTurnRun(t, workspace, test.policy)
+			run := testTurnRun(t, workspace, test.writableRoot)
 			if test.paths != nil {
 				changes := make([]map[string]string, 0, len(test.paths))
 				for _, path := range test.paths {
@@ -90,11 +86,7 @@ func TestTurnPolicyAccumulatesObservedPaths(t *testing.T) {
 	if err := os.Mkdir(writable, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := SingleWriteRootTurnPolicy(writable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := testTurnRun(t, workspace, policy)
+	run := testTurnRun(t, workspace, writable)
 	for method, path := range map[string]string{
 		"item/started":                 filepath.Join(outside, "outside.md"),
 		"item/fileChange/patchUpdated": filepath.Join(writable, "inside.md"),
@@ -115,7 +107,7 @@ func TestTurnPolicyAccumulatesObservedPaths(t *testing.T) {
 
 func TestTurnPolicyDeclinesCommandPermissionsAndNetwork(t *testing.T) {
 	workspace := t.TempDir()
-	run := testTurnRun(t, workspace, ReadOnlyTurnPolicy())
+	run := testTurnRun(t, workspace, "")
 	for _, kind := range []ApprovalKind{CommandApproval, PermissionsApproval} {
 		ids := approvalIDs{ThreadID: "thread", TurnID: "turn", ItemID: "item"}
 		permissions := permissionProfile{Network: &networkPermissions{Enabled: boolPointer(true)}}
@@ -131,15 +123,11 @@ func TestTurnApprovalIsOneShotAndTurnScoped(t *testing.T) {
 	if err := os.Mkdir(writable, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := SingleWriteRootTurnPolicy(writable)
-	if err != nil {
-		t.Fatal(err)
-	}
 	clientSide, serverSide := net.Pipe()
 	defer clientSide.Close()
 	defer serverSide.Close()
 	connection := newConnection(NewTransport(clientSide, clientSide), Handler{})
-	run := testTurnRun(t, workspace, policy)
+	run := testTurnRun(t, workspace, writable)
 	connection.mu.Lock()
 	connection.turn = run
 	connection.mu.Unlock()
@@ -173,9 +161,13 @@ func TestTurnApprovalIsOneShotAndTurnScoped(t *testing.T) {
 	}
 }
 
-func testTurnRun(t *testing.T, workspace string, policy TurnPolicy) *turnRun {
+func testTurnRun(t *testing.T, workspace, writableRoot string) *turnRun {
 	t.Helper()
-	approvals, err := NewApprovalEvaluator(workspace, AccessPolicy{WritableRoots: writableRoots(policy)})
+	writableRoots := []string(nil)
+	if writableRoot != "" {
+		writableRoots = []string{writableRoot}
+	}
+	approvals, err := NewApprovalEvaluator(workspace, AccessPolicy{WritableRoots: writableRoots})
 	if err != nil {
 		t.Fatal(err)
 	}

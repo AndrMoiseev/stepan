@@ -42,20 +42,39 @@ func (j *Journal) Agent(text string) error  { return j.append("Agent", text) }
 func (j *Journal) Rework(text string) error { return j.append("Rework comment", text) }
 func (j *Journal) Event(text string) error  { return j.append("Event", text) }
 func (j *Journal) Decisions(values []Decision) error {
+	if j == nil {
+		return fmt.Errorf("mem-log is unavailable")
+	}
+	next := j.nextDecision
 	for _, value := range values {
 		for _, id := range value.Supersedes {
-			if id <= 0 || id >= j.nextDecision {
+			if id <= 0 || id >= next {
 				return fmt.Errorf("decision supersedes unknown or future decision %d", id)
 			}
 		}
+		next++
+	}
+	next = j.nextDecision
+	var record strings.Builder
+	for _, value := range values {
 		alternatives := "(none)"
 		if len(value.Alternatives) > 0 {
 			alternatives = strings.Join(value.Alternatives, "; ")
 		}
-		if err := j.append(fmt.Sprintf("Decision D-%03d", j.nextDecision), fmt.Sprintf("author: %s\n\ndecision: %s\n\nrationale: %s\n\nalternatives: %s\n\nsupersedes: %v", value.Author, value.Decision, value.Rationale, alternatives, value.Supersedes)); err != nil {
-			return err
-		}
-		j.nextDecision++
+		record.WriteString(fmt.Sprintf("\n## Decision D-%03d\n\nauthor: %s\n\ndecision: %s\n\nrationale: %s\n\nalternatives: %s\n\nsupersedes: %v\n", next, value.Author, value.Decision, value.Rationale, alternatives, value.Supersedes))
+		next++
 	}
+	if len(values) == 0 {
+		return nil
+	}
+	file, err := os.OpenFile(j.path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if _, err = file.WriteString(record.String()); err != nil {
+		return err
+	}
+	j.nextDecision = next
 	return nil
 }

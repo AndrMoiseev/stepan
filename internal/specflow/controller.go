@@ -40,8 +40,9 @@ const (
 )
 
 type dialogueRunner interface {
-	StartThread(...agentruntime.ThreadConfig) (agentruntime.Thread, error)
-	RunTurn(agentruntime.Thread, string, ...agentruntime.TurnOptions) (json.RawMessage, error)
+	StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error)
+	RunTurn(agentruntime.Thread, string) (json.RawMessage, error)
+	CloseThread(agentruntime.Thread) error
 }
 type Controller struct {
 	runner    dialogueRunner
@@ -107,6 +108,9 @@ func (c *Controller) Review(action ReviewAction) (Progress, error) {
 		if err != nil {
 			return c.fail(err)
 		}
+		if hash(data) != c.draftHash {
+			return c.fail(fmt.Errorf("reviewed draft changed before apply"))
+		}
 		if err = c.writeAtomic(c.target.IntentPath, data); err != nil {
 			return c.fail(err)
 		}
@@ -143,6 +147,9 @@ func (c *Controller) Approve() (Progress, error) {
 	if err := c.journal.Event("intent approved"); err != nil {
 		return c.fail(err)
 	}
+	if err := c.closeThread(); err != nil {
+		return c.fail(err)
+	}
 	if err := removeArtifact(c.artifact); err != nil {
 		return c.fail(err)
 	}
@@ -155,9 +162,13 @@ func (c *Controller) start(brief string) (Progress, error) {
 	if err != nil {
 		return c.Progress(), fmt.Errorf("start feature-id request: %w", err)
 	}
-	raw, err := c.runner.RunTurn(idThread, brief)
+	raw, err := c.runner.RunTurn(idThread, FeatureIDPrompt(brief))
+	closeIDErr := c.runner.CloseThread(idThread)
 	if err != nil {
 		return c.Progress(), fmt.Errorf("generate feature-id: %w", err)
+	}
+	if closeIDErr != nil {
+		return c.Progress(), fmt.Errorf("close feature-id thread: %w", closeIDErr)
 	}
 	id, err := DecodeFeatureID(raw)
 	if err != nil {
@@ -303,9 +314,30 @@ func (c *Controller) fail(err error) (Progress, error) {
 	if c.journal != nil {
 		_ = c.journal.Event("flow error: " + err.Error())
 	}
+	_ = c.closeThread()
 	_ = removeArtifact(c.artifact)
 	c.reset()
 	return c.Progress(), err
+}
+
+// Cancel performs the same durable cleanup as an expected user interruption.
+// It deliberately preserves published project artifacts and only removes the
+// external draft root.
+func (c *Controller) Cancel() {
+	if c.journal != nil {
+		_ = c.journal.Event("flow canceled")
+	}
+	_ = c.closeThread()
+	_ = removeArtifact(c.artifact)
+	c.reset()
+}
+func (c *Controller) closeThread() error {
+	if c.thread == nil || c.runner == nil {
+		return nil
+	}
+	err := c.runner.CloseThread(c.thread)
+	c.thread = nil
+	return err
 }
 func (c *Controller) reset() {
 	c.state = StateIdle
@@ -334,5 +366,109 @@ func removeArtifact(root string) error {
 }
 func hash(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 func unifiedDiff(old, new []byte) string {
-	return "--- intent.md\n+++ intent.md\n-" + strings.ReplaceAll(string(old), "\n", "\n-") + "\n+" + strings.ReplaceAll(string(new), "\n", "\n+") + "\n"
+	before, after := diffLines(string(old)), diffLines(string(new))
+	type operation struct {
+		kind byte
+		line string
+	}
+	// A compact LCS implementation is sufficient here: intent files are small,
+	// and it gives users actual hunks with unchanged context rather than a full
+	// delete/add replacement.
+	table := make([][]int, len(before)+1)
+	for i := range table {
+		table[i] = make([]int, len(after)+1)
+	}
+	for i := len(before) - 1; i >= 0; i-- {
+		for j := len(after) - 1; j >= 0; j-- {
+			if before[i] == after[j] {
+				table[i][j] = 1 + table[i+1][j+1]
+			} else if table[i+1][j] >= table[i][j+1] {
+				table[i][j] = table[i+1][j]
+			} else {
+				table[i][j] = table[i][j+1]
+			}
+		}
+	}
+	var ops []operation
+	for i, j := 0, 0; i < len(before) || j < len(after); {
+		switch {
+		case i < len(before) && j < len(after) && before[i] == after[j]:
+			ops = append(ops, operation{' ', before[i]})
+			i++
+			j++
+		case j < len(after) && (i == len(before) || table[i][j+1] >= table[i+1][j]):
+			ops = append(ops, operation{'+', after[j]})
+			j++
+		default:
+			ops = append(ops, operation{'-', before[i]})
+			i++
+		}
+	}
+	var output strings.Builder
+	output.WriteString("--- intent.md\n+++ intent.md\n")
+	for start := 0; start < len(ops); {
+		for start < len(ops) && ops[start].kind == ' ' {
+			start++
+		}
+		if start == len(ops) {
+			break
+		}
+		hunkStart := start - 3
+		if hunkStart < 0 {
+			hunkStart = 0
+		}
+		end := start + 1
+		for end < len(ops) {
+			if ops[end].kind != ' ' {
+				end++
+				continue
+			}
+			contextEnd := end
+			for contextEnd < len(ops) && ops[contextEnd].kind == ' ' {
+				contextEnd++
+			}
+			if contextEnd-end > 6 {
+				end += 3
+				break
+			}
+			end = contextEnd
+		}
+		oldStart, newStart := 1, 1
+		for _, op := range ops[:hunkStart] {
+			if op.kind != '+' {
+				oldStart++
+			}
+			if op.kind != '-' {
+				newStart++
+			}
+		}
+		oldCount, newCount := 0, 0
+		for _, op := range ops[hunkStart:end] {
+			if op.kind != '+' {
+				oldCount++
+			}
+			if op.kind != '-' {
+				newCount++
+			}
+		}
+		fmt.Fprintf(&output, "@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+		for _, op := range ops[hunkStart:end] {
+			output.WriteByte(op.kind)
+			output.WriteString(op.line)
+			output.WriteByte('\n')
+		}
+		start = end
+	}
+	return output.String()
+}
+
+func diffLines(value string) []string {
+	if value == "" {
+		return nil
+	}
+	lines := strings.Split(value, "\n")
+	if lines[len(lines)-1] == "" {
+		return lines[:len(lines)-1]
+	}
+	return lines
 }

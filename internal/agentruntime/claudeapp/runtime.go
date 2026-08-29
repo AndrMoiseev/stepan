@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +30,7 @@ type thread struct {
 	sessionID    string
 	config       agentruntime.ThreadConfig
 	bootstrapped bool
+	closed       bool
 }
 
 // Runtime has no process-tree containment in v1. It deliberately uses the
@@ -64,7 +64,6 @@ type responseQuery struct {
 }
 
 type activePolicy struct {
-	policy       agentruntime.TurnPolicy
 	writableRoot string
 	workspace    string
 	artifactRoot string
@@ -111,57 +110,45 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 	return runtime, nil
 }
 
-func (runtime *Runtime) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	runtime.stateMu.Lock()
 	defer runtime.stateMu.Unlock()
 	if runtime.closed {
 		return nil, agentruntime.ErrRuntimeClosed
 	}
-	if len(configs) > 1 {
-		return nil, errors.New("thread configuration must be supplied at most once")
+	config = config.Clone()
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
-	config := agentruntime.ThreadConfig{Workspace: runtime.workspace, OutputSchema: json.RawMessage(`{"type":"object"}`)}
-	if len(configs) == 1 {
-		config = configs[0].Clone()
-		if err := config.Validate(); err != nil {
-			return nil, err
+	if config.Workspace != runtime.workspace {
+		return nil, errors.New("thread workspace does not match runtime workspace")
+	}
+	if config.ArtifactRoot != "" {
+		artifact, err := canonicalDirectory(config.ArtifactRoot)
+		if err != nil {
+			return nil, fmt.Errorf("artifact root: %w", err)
 		}
-		if config.Workspace != runtime.workspace {
-			return nil, errors.New("thread workspace does not match runtime workspace")
+		if pathWithin(runtime.workspace, artifact) {
+			return nil, errors.New("artifact root must be outside workspace")
 		}
+		config.ArtifactRoot = artifact
 	}
 	id := runtime.nextSession.Add(1)
 	return &thread{runtime: runtime, sessionID: fmt.Sprintf("stepan-%d", id), config: config}, nil
 }
 
-func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, legacy ...agentruntime.TurnOptions) (json.RawMessage, error) {
+func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json.RawMessage, error) {
 	item, ok := handle.(*thread)
-	if !ok || item == nil || item.runtime != runtime || item.sessionID == "" {
+	if !ok || item == nil || item.runtime != runtime || item.sessionID == "" || item.closed {
 		return nil, errors.New("invalid Claude thread handle")
 	}
 	if prompt == "" {
 		return nil, errors.New("turn prompt is required")
 	}
-	if len(legacy) > 1 {
-		return nil, errors.New("turn options must be supplied at most once")
-	}
-	options := agentruntime.TurnOptions{OutputSchema: item.config.OutputSchema}
-	if len(legacy) == 1 {
-		options = legacy[0].Clone()
-	} else if item.config.ArtifactRoot != "" {
-		policy, err := agentruntime.SingleWriteRootTurnPolicy(item.config.ArtifactRoot)
-		if err != nil {
-			return nil, err
-		}
-		options.Policy = policy
-	}
-	if _, err := decodeJSONObject(options.OutputSchema); err != nil {
+	if _, err := decodeJSONObject(item.config.OutputSchema); err != nil {
 		return nil, fmt.Errorf("output schema: %w", err)
 	}
-	policy, err := runtime.validatePolicy(options.Policy, item.config)
-	if err != nil {
-		return nil, fmt.Errorf("turn policy: %w", err)
-	}
+	policy := activePolicy{workspace: runtime.workspace, artifactRoot: item.config.ArtifactRoot, writableRoot: item.config.ArtifactRoot}
 	if !runtime.turnMu.TryLock() {
 		return nil, agentruntime.ErrTurnInProgress
 	}
@@ -188,7 +175,7 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, legac
 		runtime.stateMu.Unlock()
 	}()
 
-	if len(legacy) == 0 && !item.bootstrapped {
+	if !item.bootstrapped {
 		prompt = item.config.BootstrapInstructions + "\n\n" + prompt
 		item.bootstrapped = true
 	}
@@ -211,6 +198,23 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string, legac
 		return nil, runtime.runtimeError("receive turn", err)
 	}
 	return output, nil
+}
+
+// CloseThread invalidates the logical session handle. The Claude SDK has no
+// per-session close operation, so the provider process remains available for
+// other threads while this handle becomes unusable.
+func (runtime *Runtime) CloseThread(handle agentruntime.Thread) error {
+	item, ok := handle.(*thread)
+	if !ok || item == nil || item.runtime != runtime || item.sessionID == "" {
+		return errors.New("invalid Claude thread handle")
+	}
+	runtime.stateMu.Lock()
+	defer runtime.stateMu.Unlock()
+	if runtime.closed {
+		return agentruntime.ErrRuntimeClosed
+	}
+	item.closed = true
+	return nil
 }
 
 func (runtime *Runtime) Interrupt() error {
@@ -322,25 +326,6 @@ func (runtime *Runtime) runtimeError(action string, err error) error {
 	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
 }
 
-func (runtime *Runtime) validatePolicy(policy agentruntime.TurnPolicy, config agentruntime.ThreadConfig) (activePolicy, error) {
-	root, writable := policy.WritableRoot()
-	if !writable {
-		return activePolicy{policy: policy, workspace: runtime.workspace}, nil
-	}
-	canonicalRoot, err := canonicalDirectory(root)
-	if err != nil {
-		return activePolicy{}, err
-	}
-	info, err := os.Stat(canonicalRoot)
-	if err != nil {
-		return activePolicy{}, err
-	}
-	if !info.IsDir() {
-		return activePolicy{}, errors.New("writable root is not a directory")
-	}
-	return activePolicy{policy: policy, writableRoot: canonicalRoot, workspace: runtime.workspace, artifactRoot: canonicalRoot}, nil
-}
-
 func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
 	runtime.stateMu.Lock()
 	policy := runtime.activePolicy
@@ -364,8 +349,7 @@ func permitTool(name string, input map[string]any, policy activePolicy, workspac
 		return err
 	}
 	if name == "Write" || name == "Edit" {
-		_, writable := policy.policy.WritableRoot()
-		if !writable {
+		if policy.writableRoot == "" {
 			return errors.New("write denied in read-only turn")
 		}
 		return pathWithinRoot(policy.writableRoot, candidate)

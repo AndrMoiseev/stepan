@@ -25,7 +25,7 @@ func TestRuntimeInterruptAcknowledgedAndRepeatedClose(t *testing.T) {
 	if _, _, _, active := runtime.connection.activeTurn(); active {
 		t.Fatal("turn ID remained active after interrupt")
 	}
-	if _, err := runtime.RunTurn(thread, "retry", TurnOptions{OutputSchema: testSchema}); !errors.Is(err, ErrTurnInterrupted) {
+	if _, err := runtime.RunTurn(thread, "retry"); !errors.Is(err, ErrTurnInterrupted) {
 		t.Fatalf("closed runtime turn = %v", err)
 	}
 }
@@ -84,16 +84,16 @@ func TestRuntimeCrashRequiresNewRuntimeAndThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldThread, err := old.StartThread()
+	oldThread, err := old.StartThread(testThreadConfig(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
 	oldPID := old.process.command.Process.Pid
-	_, err = old.RunTurn(oldThread, "crash", TurnOptions{OutputSchema: testSchema})
+	_, err = old.RunTurn(oldThread, "crash")
 	if !errors.Is(err, ErrAppServerExited) || !strings.Contains(err.Error(), "fake crash") {
 		t.Fatalf("crash error = %v", err)
 	}
-	if _, err := old.StartThread(); !errors.Is(err, ErrAppServerExited) {
+	if _, err := old.StartThread(testThreadConfig(workspace)); !errors.Is(err, ErrAppServerExited) {
 		t.Fatalf("old runtime reused = %v", err)
 	}
 	_ = old.Close()
@@ -104,7 +104,7 @@ func TestRuntimeCrashRequiresNewRuntimeAndThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer fresh.Close()
-	newThread, err := fresh.StartThread()
+	newThread, err := fresh.StartThread(testThreadConfig(workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,13 +123,13 @@ func startRuntimeTurn(t *testing.T, scenario string) (*Runtime, *Thread, <-chan 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	thread, err := runtime.StartThread()
+	thread, err := runtime.StartThread(testThreadConfig(runtime.workspace))
 	if err != nil {
 		t.Fatal(err)
 	}
 	turnErr := make(chan error, 1)
 	go func() {
-		_, err := runtime.RunTurn(thread, "wait", TurnOptions{OutputSchema: testSchema})
+		_, err := runtime.RunTurn(thread, "wait")
 		turnErr <- err
 	}()
 	deadline := time.Now().Add(time.Second)

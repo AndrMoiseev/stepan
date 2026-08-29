@@ -14,6 +14,7 @@ func RunInteractive(ctx context.Context, controller *Controller, ui InteractiveU
 	defer stop()
 	for {
 		if err := ctx.Err(); err != nil {
+			controller.Cancel()
 			return err
 		}
 		progress, err := ui.Main()
@@ -31,10 +32,12 @@ func RunInteractive(ctx context.Context, controller *Controller, ui InteractiveU
 			continue
 		}
 		if err == ErrCanceled {
+			controller.Cancel()
 			_ = interrupt()
 			return err
 		}
 		if ctx.Err() != nil {
+			controller.Cancel()
 			return ctx.Err()
 		}
 		ui.ReportError(err)

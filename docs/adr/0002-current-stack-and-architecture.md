@@ -76,7 +76,7 @@ flowchart LR
 - `internal/agentruntime` — provider-neutral thread configuration: bootstrap,
   schema, read-only workspace, один внешний artifact root и lifecycle.
 - `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
-  turn-scoped filesystem permission callback; не управляет деревом процессов.
+  thread-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
   сравнение до/после turn и проверка write boundary.
 - `internal/codexprobe` — диагностический App Server flow, replay artifacts и
@@ -98,34 +98,44 @@ thread, turns выполняются последовательно.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Draft: WRITTEN + feature_id + postconditions
-    Draft --> Draft: ANSWERED / UPDATED
-    Draft --> Idle: /approve
+    Idle --> Dialogue: feature_id selected
+    Dialogue --> Dialogue: message
+    Dialogue --> Published: first draft
+    Published --> Published: message
+    Published --> Review: later draft
+    Review --> Published: apply / reject
+    Review --> Rework: rework
+    Rework --> Review: revised draft
+    Published --> Idle: /approve
 ```
 
 Текущий источник истины разделён так:
 
 - состояние диалога, thread/turn IDs и approvals живут только в памяти процесса;
-- созданная спецификация сохраняется в `docs/changes/features/<feature-id>/`;
-- фактические изменения и границы записи проверяются по Git, а не по сообщению
-  агента;
+- Stepan публикует `intent.md` и append-only `mem-log.md` в
+  `docs/changes/features/<dated-feature-id>/`; агент пишет только временный
+  draft во внешнем artifact root;
+- revision применяет ровно байты, для которых был показан diff: перед записью
+  повторно проверяется hash draft;
 - `.stepan/`, durable event log и resume в пользовательском пути пока не
   используются.
 
 Durable approval manager существует в `codexprobe`, но текущий путь
-`cmd/stepan → specflow.Session → codexapp.Runtime` использует turn-scoped
-in-memory approvals.
+`cmd/stepan → specflow.Session → codexapp.Runtime` использует thread-scoped
+in-memory policy и turn-local evidence для approval.
 
 ### Инварианты текущего пути
 
 - Stepan, а не Codex, выбирает переходы workflow.
 - Свободный текст агента не меняет состояние: переход требует результата,
   валидного относительно схемы конкретного turn.
-- Turn по умолчанию read-only и без сети. Первый turn `/feature` получает
-  writable root `docs/changes/features/`, чтобы сам выбрать feature ID; update
-  turn получает один writable root каталога текущей спецификации.
-- После записи отдельно проверяются structured status, наличие
-  `specification.md` и Git write boundary.
+- Конфигурация schema и доступа фиксируется при создании thread; `RunTurn`
+  принимает только новый пользовательский текст. Workspace read-only, а
+  основной intent thread может писать только в один внешний artifact root.
+- Агент возвращает строгий `message | draft` envelope; Stepan сам публикует
+  `intent.md`, журналирует решения и показывает unified diff для revision.
+- `/approve` и отмена журналируются, закрывают thread и удаляют только
+  внешний artifact root; resume не предусмотрен.
 - Ошибка протокола, approval или containment закрывает текущий flow без
   автоматического retry.
 - Закрытие Codex runtime завершает контролируемое дерево App Server через

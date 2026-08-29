@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
@@ -31,18 +32,18 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := runtime.StartThread()
+	first, err := runtime.StartThread(testThreadConfig(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := runtime.StartThread()
+	second, err := runtime.StartThread(testThreadConfig(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(first, "initial", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); err != nil {
+	if _, err := runtime.RunTurn(first, "initial"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(first, "write", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); err != nil {
+	if _, err := runtime.RunTurn(first, "write"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.sessions) != 2 || fake.sessions[0] != fake.sessions[1] || fake.sessions[0] == "" {
@@ -71,14 +72,14 @@ func TestClaudeRuntimeRejectsForeignThreadAndBadTerminalOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	if _, err := runtime.RunTurn(&thread{sessionID: "foreign"}, "turn", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); err == nil {
+	if _, err := runtime.RunTurn(&thread{sessionID: "foreign"}, "turn"); err == nil {
 		t.Fatal("foreign thread was accepted")
 	}
-	handle, err := runtime.StartThread()
+	handle, err := runtime.StartThread(testThreadConfig(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(handle, "turn", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); !errors.Is(err, agentruntime.ErrRuntimeExited) {
+	if _, err := runtime.RunTurn(handle, "turn"); !errors.Is(err, agentruntime.ErrRuntimeExited) {
 		t.Fatalf("invalid result error = %v", err)
 	}
 }
@@ -93,11 +94,11 @@ func TestClaudeRuntimeRejectsTerminalResultForAnotherSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	handle, err := runtime.StartThread()
+	handle, err := runtime.StartThread(testThreadConfig(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(handle, "turn", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); !errors.Is(err, agentruntime.ErrRuntimeExited) {
+	if _, err := runtime.RunTurn(handle, "turn"); !errors.Is(err, agentruntime.ErrRuntimeExited) {
 		t.Fatalf("foreign result error = %v", err)
 	}
 }
@@ -113,17 +114,17 @@ func TestClaudeRuntimeDoesNotReuseDelayedTerminalResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer runtime.Close()
-	handle, err := runtime.StartThread()
+	handle, err := runtime.StartThread(testThreadConfig(config))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(handle, "first", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); err != nil {
+	if _, err := runtime.RunTurn(handle, "first"); err != nil {
 		t.Fatal(err)
 	}
 	fake.drainReceived()
 	fake.send(&claudecode.ResultMessage{SessionID: fake.session(0), StructuredOutput: map[string]any{"status": "WRITTEN"}})
 	fake.waitReceived()
-	if _, err := runtime.RunTurn(handle, "second", agentruntime.TurnOptions{OutputSchema: config.EnvelopeSchema}); !errors.Is(err, agentruntime.ErrRuntimeExited) {
+	if _, err := runtime.RunTurn(handle, "second"); !errors.Is(err, agentruntime.ErrRuntimeExited) {
 		t.Fatalf("second turn after duplicate = %v", err)
 	}
 	if got := fake.sessionCount(); got != 1 {
@@ -139,14 +140,26 @@ func TestClaudeRuntimeAcceptsExactExternalArtifactRoot(t *testing.T) {
 	}
 	defer runtime.Close()
 	artifact := t.TempDir()
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(artifact)
+	handle, err := runtime.StartThread(agentruntime.ThreadConfig{Workspace: config.Workspace, OutputSchema: config.EnvelopeSchema, ArtifactRoot: artifact})
 	if err != nil {
 		t.Fatal(err)
 	}
-	active, err := runtime.validatePolicy(policy, agentruntime.ThreadConfig{Workspace: config.Workspace, ArtifactRoot: artifact})
-	if err != nil || active.writableRoot == "" {
-		t.Fatalf("external artifact root = %#v, %v", active, err)
+	item := handle.(*thread)
+	if item.config.ArtifactRoot == "" {
+		t.Fatal("external artifact root was not retained by thread")
 	}
+}
+
+func TestClaudeCloseThreadInvalidatesItsHandle(t *testing.T) {
+	conformance.ClosedThread(t, func(t *testing.T) (agentruntime.Runtime, agentruntime.ThreadConfig) {
+		t.Helper()
+		config := testConfig(t)
+		runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return &fakeClient{} })
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime, testThreadConfig(config)
+	})
 }
 
 func TestClaudeRuntimeInterruptThenClosesOnce(t *testing.T) {
@@ -165,7 +178,7 @@ func TestClaudeRuntimeInterruptThenClosesOnce(t *testing.T) {
 	if fake.interrupts != 1 || fake.disconnects != 1 {
 		t.Fatalf("interrupts = %d, disconnects = %d", fake.interrupts, fake.disconnects)
 	}
-	if _, err := runtime.StartThread(); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+	if _, err := runtime.StartThread(testThreadConfig(config)); !errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		t.Fatalf("start after interrupt = %v", err)
 	}
 }
@@ -215,12 +228,8 @@ func TestPermissionEvaluatorFailsClosed(t *testing.T) {
 	if err := os.Mkdir(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writePolicy, err := agentruntime.SingleWriteRootTurnPolicy(writeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readOnly := activePolicy{policy: agentruntime.ReadOnlyTurnPolicy()}
-	write := activePolicy{policy: writePolicy, writableRoot: writeRoot}
+	readOnly := activePolicy{}
+	write := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
 	if err := permitTool("Read", map[string]any{"file_path": inside}, readOnly, workspace); err != nil {
 		t.Fatalf("read inside: %v", err)
 	}
@@ -247,12 +256,8 @@ func TestPermissionEvaluatorResolvesEveryPathFromWorkspace(t *testing.T) {
 	if err := os.MkdirAll(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(writeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := activePolicy{policy: policy, writableRoot: writeRoot}
-	readOnly := activePolicy{policy: agentruntime.ReadOnlyTurnPolicy()}
+	active := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
+	readOnly := activePolicy{}
 
 	if err := permitTool("Write", map[string]any{"file_path": "specification.md"}, active, workspace); err == nil {
 		t.Fatal("relative write was resolved from writable root")
@@ -297,11 +302,7 @@ func TestPermissionEvaluatorRejectsMalformedToolPaths(t *testing.T) {
 	if err := os.Mkdir(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := agentruntime.SingleWriteRootTurnPolicy(writeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	active := activePolicy{policy: policy, writableRoot: writeRoot}
+	active := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
 	for _, tool := range []string{"Read", "Write", "Edit", "Glob", "Grep"} {
 		field := "file_path"
 		other := "path"
@@ -336,6 +337,10 @@ func testConfig(t *testing.T) Config {
 		t.Fatal(err)
 	}
 	return Config{Executable: executable, Workspace: root, EnvelopeSchema: []byte(`{"type":"object"}`)}
+}
+
+func testThreadConfig(config Config) agentruntime.ThreadConfig {
+	return agentruntime.ThreadConfig{Workspace: config.Workspace, OutputSchema: config.EnvelopeSchema}
 }
 
 func assertLockedOptions(t *testing.T, options *claudecode.Options, config Config) {

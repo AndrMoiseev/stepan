@@ -20,19 +20,7 @@ type Thread struct {
 	cwd          string
 	config       agentruntime.ThreadConfig
 	bootstrapped bool
-}
-
-type TurnOptions = agentruntime.TurnOptions
-type TurnPolicy = agentruntime.TurnPolicy
-
-func ReadOnlyTurnPolicy() TurnPolicy { return agentruntime.ReadOnlyTurnPolicy() }
-
-func SingleWriteRootTurnPolicy(root string) (TurnPolicy, error) {
-	root, err := canonicalPath(root)
-	if err != nil {
-		return TurnPolicy{}, fmt.Errorf("canonicalize writable root: %w", err)
-	}
-	return agentruntime.SingleWriteRootTurnPolicy(root)
+	closed       bool
 }
 
 type turnRun struct {
@@ -70,7 +58,7 @@ func (err *terminalTurnError) Error() string {
 	return fmt.Sprintf("turn %s: %s; details: %s", err.status, err.message, err.details)
 }
 
-func (connection *Connection) StartThread(cwd string, configs ...agentruntime.ThreadConfig) (*Thread, error) {
+func (connection *Connection) StartThread(cwd string, config agentruntime.ThreadConfig) (*Thread, error) {
 	cwd, err := canonicalPath(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize Git root: %w", err)
@@ -88,42 +76,39 @@ func (connection *Connection) StartThread(cwd string, configs ...agentruntime.Th
 		connection.fail(err)
 		return nil, connection.Err()
 	}
-	config := agentruntime.ThreadConfig{Workspace: cwd}
-	if len(configs) > 1 {
-		return nil, errors.New("thread configuration must be supplied at most once")
+	config = config.Clone()
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
-	if len(configs) == 1 {
-		config = configs[0].Clone()
+	if config.Workspace != cwd {
+		return nil, errors.New("thread workspace does not match connection workspace")
+	}
+	if config.ArtifactRoot != "" {
+		artifact, err := canonicalPath(config.ArtifactRoot)
+		if err != nil {
+			return nil, fmt.Errorf("canonicalize artifact root: %w", err)
+		}
+		if within(cwd, artifact) {
+			return nil, errors.New("artifact root must be outside workspace")
+		}
+		config.ArtifactRoot = artifact
 	}
 	return &Thread{ID: response.Thread.ID, connection: connection, cwd: cwd, config: config}, nil
 }
 
-func (connection *Connection) RunTurn(thread *Thread, prompt string, legacy ...TurnOptions) (json.RawMessage, error) {
-	if thread == nil || thread.connection != connection || thread.ID == "" {
+func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMessage, error) {
+	if thread == nil || thread.connection != connection || thread.ID == "" || thread.closed {
 		return nil, errors.New("invalid thread handle")
 	}
 	if prompt == "" {
 		return nil, errors.New("turn prompt is required")
 	}
-	if len(legacy) > 1 {
-		return nil, errors.New("turn options must be supplied at most once")
-	}
-	options := TurnOptions{OutputSchema: thread.config.OutputSchema}
-	if len(legacy) == 1 {
-		options = legacy[0].Clone()
-	} else if thread.config.ArtifactRoot != "" {
-		policy, err := agentruntime.SingleWriteRootTurnPolicy(thread.config.ArtifactRoot)
-		if err != nil {
-			return nil, err
-		}
-		options.Policy = policy
-	}
-	if len(legacy) == 0 && !thread.bootstrapped {
+	if !thread.bootstrapped {
 		prompt = thread.config.BootstrapInstructions + "\n\n" + prompt
 		thread.bootstrapped = true
 	}
 	var schema map[string]json.RawMessage
-	if len(options.OutputSchema) == 0 || json.Unmarshal(options.OutputSchema, &schema) != nil || schema == nil {
+	if len(thread.config.OutputSchema) == 0 || json.Unmarshal(thread.config.OutputSchema, &schema) != nil || schema == nil {
 		return nil, errors.New("output schema must be a JSON object")
 	}
 	if !connection.turnMu.TryLock() {
@@ -135,7 +120,11 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, legacy ...T
 	if thread.config.ArtifactRoot != "" {
 		readable = append(readable, thread.config.ArtifactRoot)
 	}
-	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{ReadableRoots: readable, WritableRoots: writableRoots(options.Policy)})
+	writable := []string(nil)
+	if thread.config.ArtifactRoot != "" {
+		writable = []string{thread.config.ArtifactRoot}
+	}
+	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{ReadableRoots: readable, WritableRoots: writable})
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +160,7 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string, legacy ...T
 		"cwd":            thread.cwd,
 		"approvalPolicy": "on-request",
 		"sandboxPolicy":  map[string]any{"type": "readOnly", "networkAccess": false},
-		"outputSchema":   json.RawMessage(options.OutputSchema),
+		"outputSchema":   json.RawMessage(thread.config.OutputSchema),
 	}
 	if err := connection.Call("turn/start", params, &started); err != nil {
 		return nil, err
@@ -292,12 +281,15 @@ func (run *turnRun) evaluateApproval(request ApprovalRequest) ApprovalDecision {
 	return run.approvals.Evaluate(request)
 }
 
-func writableRoots(policy TurnPolicy) []string {
-	root, ok := policy.WritableRoot()
-	if !ok {
+func (connection *Connection) CloseThread(thread *Thread) error {
+	if thread == nil || thread.connection != connection || thread.ID == "" {
+		return errors.New("invalid thread handle")
+	}
+	if thread.closed {
 		return nil
 	}
-	return []string{root}
+	thread.closed = true
+	return nil
 }
 
 func (run *turnRun) observeFileChanges(message Message) error {

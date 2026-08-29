@@ -61,28 +61,22 @@ func StartRuntime(executable, workspace string) (*Runtime, error) {
 	return runtime, nil
 }
 
-func (runtime *Runtime) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
-	config := agentruntime.ThreadConfig{Workspace: runtime.workspace}
-	if len(configs) > 1 {
-		return nil, errors.New("thread configuration must be supplied at most once")
+	config = config.Clone()
+	if err := config.Validate(); err != nil {
+		return nil, err
 	}
-	if len(configs) == 1 {
-		config = configs[0].Clone()
-		if err := config.Validate(); err != nil {
-			return nil, err
-		}
-		if config.Workspace != runtime.workspace {
-			return nil, errors.New("thread workspace does not match runtime workspace")
-		}
+	if config.Workspace != runtime.workspace {
+		return nil, errors.New("thread workspace does not match runtime workspace")
 	}
 	thread, err := runtime.connection.StartThread(runtime.workspace, config)
 	return thread, runtime.classify(err)
 }
 
-func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, legacy ...TurnOptions) (json.RawMessage, error) {
+func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string) (json.RawMessage, error) {
 	if err := runtime.stateError(); err != nil {
 		return nil, err
 	}
@@ -90,11 +84,19 @@ func (runtime *Runtime) RunTurn(thread agentruntime.Thread, prompt string, legac
 	if !ok {
 		return nil, errors.New("invalid Codex thread handle")
 	}
-	if len(legacy) > 1 {
-		return nil, errors.New("turn options must be supplied at most once")
-	}
-	output, err := runtime.connection.RunTurn(codexThread, prompt, legacy...)
+	output, err := runtime.connection.RunTurn(codexThread, prompt)
 	return output, runtime.classify(err)
+}
+
+func (runtime *Runtime) CloseThread(thread agentruntime.Thread) error {
+	if err := runtime.stateError(); err != nil {
+		return err
+	}
+	codexThread, ok := thread.(*Thread)
+	if !ok || codexThread == nil || codexThread.connection != runtime.connection {
+		return errors.New("invalid Codex thread handle")
+	}
+	return runtime.connection.CloseThread(codexThread)
 }
 
 var _ agentruntime.Runtime = (*Runtime)(nil)

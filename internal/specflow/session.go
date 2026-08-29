@@ -40,30 +40,44 @@ func newSession(start func(context.Context) (agentruntime.Runtime, error)) *Sess
 	return &Session{start: start}
 }
 
-func (session *Session) StartThread(configs ...agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+func (session *Session) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	slot, err := session.current()
 	if err != nil {
 		return nil, err
 	}
-	thread, err := slot.runtime.StartThread(configs...)
+	thread, err := slot.runtime.StartThread(config)
 	if err != nil {
 		session.discard(slot)
 	}
 	return thread, err
 }
 
-func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options ...agentruntime.TurnOptions) (json.RawMessage, error) {
+func (session *Session) RunTurn(thread agentruntime.Thread, prompt string) (json.RawMessage, error) {
 	session.mu.Lock()
 	slot := session.runtime
 	session.mu.Unlock()
 	if slot == nil {
 		return nil, agentruntime.ErrRuntimeClosed
 	}
-	output, err := slot.runtime.RunTurn(thread, prompt, options...)
+	output, err := slot.runtime.RunTurn(thread, prompt)
 	if err != nil {
 		session.discard(slot)
 	}
 	return output, err
+}
+
+func (session *Session) CloseThread(thread agentruntime.Thread) error {
+	session.mu.Lock()
+	slot := session.runtime
+	session.mu.Unlock()
+	if slot == nil {
+		return agentruntime.ErrRuntimeClosed
+	}
+	if err := slot.runtime.CloseThread(thread); err != nil {
+		session.discard(slot)
+		return err
+	}
+	return nil
 }
 
 func (session *Session) Interrupt() error { return session.stop(true) }

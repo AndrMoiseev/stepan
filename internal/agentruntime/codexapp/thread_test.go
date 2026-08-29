@@ -9,9 +9,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
 )
 
 var testSchema = json.RawMessage(`{"type":"object"}`)
+
+func testThreadConfig(workspace string) agentruntime.ThreadConfig {
+	return agentruntime.ThreadConfig{Workspace: workspace, OutputSchema: testSchema}
+}
 
 func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
 	root := canonicalTempDir(t)
@@ -72,12 +79,12 @@ func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
 	}()
 
 	for threadIndex, turns := range []int{2, 1} {
-		thread, err := connection.StartThread(root)
+		thread, err := connection.StartThread(root, testThreadConfig(root))
 		if err != nil || thread.ID != fmt.Sprintf("thread-%d", threadIndex+1) {
 			t.Fatalf("thread = %+v, %v", thread, err)
 		}
 		for turnIndex := range turns {
-			output, err := connection.RunTurn(thread, "prompt", TurnOptions{OutputSchema: testSchema})
+			output, err := connection.RunTurn(thread, "prompt")
 			want := fmt.Sprintf(`{"thread":%d,"turn":%d}`, threadIndex+1, turnIndex+1)
 			if err != nil || string(output) != want {
 				t.Fatalf("turn output = %s, %v", output, err)
@@ -121,17 +128,17 @@ func TestRunTurnRejectsConcurrentTurn(t *testing.T) {
 		<-release
 		serverErr <- sendCompletedTurn(server, "thread", "turn", "item", `{"ok":true}`, `{"ok":true}`)
 	}()
-	thread, err := connection.StartThread(root)
+	thread, err := connection.StartThread(root, testThreadConfig(root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	first := make(chan error, 1)
 	go func() {
-		_, err := connection.RunTurn(thread, "first", TurnOptions{OutputSchema: testSchema})
+		_, err := connection.RunTurn(thread, "first")
 		first <- err
 	}()
 	<-received
-	if _, err := connection.RunTurn(thread, "second", TurnOptions{OutputSchema: testSchema}); !errors.Is(err, ErrTurnInProgress) {
+	if _, err := connection.RunTurn(thread, "second"); !errors.Is(err, ErrTurnInProgress) {
 		t.Fatalf("concurrent turn error = %v", err)
 	}
 	close(release)
@@ -169,11 +176,11 @@ func TestRunTurnReturnsFailedTurnMessageWithoutClosingConnection(t *testing.T) {
 		serverErr <- err
 	}()
 
-	thread, err := connection.StartThread(root)
+	thread, err := connection.StartThread(root, testThreadConfig(root))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := connection.RunTurn(thread, "prompt", TurnOptions{OutputSchema: testSchema}); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+	if _, err := connection.RunTurn(thread, "prompt"); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
 		t.Fatalf("failed turn error = %v", err)
 	}
 	if err := connection.Err(); err != nil {
@@ -182,6 +189,19 @@ func TestRunTurnReturnsFailedTurnMessageWithoutClosingConnection(t *testing.T) {
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCloseThreadInvalidatesItsHandle(t *testing.T) {
+	conformance.ClosedThread(t, func(t *testing.T) (agentruntime.Runtime, agentruntime.ThreadConfig) {
+		t.Helper()
+		t.Setenv("GO_WANT_CODEXAPP_FAKE", "runtime-interrupt-ignore")
+		workspace := t.TempDir()
+		runtime, err := StartRuntime(os.Args[0], workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime, testThreadConfig(workspace)
+	})
 }
 
 func TestCompletedTurnValidation(t *testing.T) {
@@ -313,7 +333,7 @@ func TestStartThreadCanonicalizesCWD(t *testing.T) {
 		}
 		serverErr <- err
 	}()
-	if _, err := connection.StartThread(filepath.Join(nested, ".")); err != nil {
+	if _, err := connection.StartThread(filepath.Join(nested, "."), testThreadConfig(nested)); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-serverErr; err != nil {

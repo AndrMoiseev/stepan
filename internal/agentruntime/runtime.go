@@ -20,38 +20,6 @@ var (
 // Thread is an opaque provider-owned logical conversation handle.
 type Thread any
 
-// TurnOptions is retained for adapter protocol tests. Intent-flow callers do
-// not use it: the schema and filesystem policy belong to ThreadConfig.
-type TurnOptions struct {
-	OutputSchema json.RawMessage
-	Policy       TurnPolicy
-}
-
-// Clone prevents a caller from mutating the schema bytes retained by a
-// provider while a turn is in flight.
-func (options TurnOptions) Clone() TurnOptions {
-	options.OutputSchema = append(json.RawMessage(nil), options.OutputSchema...)
-	return options
-}
-
-// TurnPolicy permits either no writes or one absolute writable root. The
-// provider remains responsible for checking that the root is valid for its
-// workspace before the turn begins.
-type TurnPolicy struct{ writableRoot string }
-
-func ReadOnlyTurnPolicy() TurnPolicy { return TurnPolicy{} }
-
-func SingleWriteRootTurnPolicy(root string) (TurnPolicy, error) {
-	if !filepath.IsAbs(root) {
-		return TurnPolicy{}, fmt.Errorf("writable root %q must be absolute", root)
-	}
-	return TurnPolicy{writableRoot: filepath.Clean(root)}, nil
-}
-
-func (policy TurnPolicy) WritableRoot() (string, bool) {
-	return policy.writableRoot, policy.writableRoot != ""
-}
-
 // ThreadConfig is immutable security and conversation setup for a logical
 // thread. Workspace is readable, ArtifactRoot (when present) is the exact
 // single writable directory, and everything else is denied by adapters.
@@ -80,13 +48,13 @@ func (config ThreadConfig) Validate() error {
 	return nil
 }
 
-// Runtime owns one provider connection. Calls to RunTurn are sequential.
+// Runtime owns one provider connection. A ThreadConfig is accepted only when
+// the thread is created; RunTurn deliberately has no policy or schema inputs.
+// Calls to RunTurn are sequential.
 type Runtime interface {
-	// The optional form keeps adapter protocol tests source-compatible. New
-	// callers must supply exactly one ThreadConfig; a thread never accepts a
-	// policy change after creation.
-	StartThread(...ThreadConfig) (Thread, error)
-	RunTurn(Thread, string, ...TurnOptions) (json.RawMessage, error)
+	StartThread(ThreadConfig) (Thread, error)
+	RunTurn(Thread, string) (json.RawMessage, error)
+	CloseThread(Thread) error
 	Interrupt() error
 	Close() error
 }
