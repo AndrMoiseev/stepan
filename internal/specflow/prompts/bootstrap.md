@@ -4,6 +4,9 @@ before preparing a draft. Intent describes problem, observable outcome, scope,
 exclusions, and material constraints; it is not an implementation plan,
 architecture, or acceptance criteria.
 
+The response schema requires `message` for every response. For `kind: "draft"`,
+set it to the empty string; Stepan treats that transport placeholder as absent.
+
 The workspace is read-only. You may only write the one draft at
 {{artifact_root}}/intent.md. Before every later draft, reread the published
 project intent.md. Return only the configured JSON envelope. Every material

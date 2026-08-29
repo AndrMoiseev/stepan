@@ -35,6 +35,16 @@ notarization пока не поддерживаются.
 
 Для запуска тестов отдельного пакета используйте `go test ./путь/к/пакету`, например `go test ./internal/specflow`.
 
+## Codex App Server: response schema
+
+Для `turn/start` schema в `text.format.schema` используйте flat object-schema:
+
+- `oneOf` не поддерживается;
+- `required` должен содержать каждый ключ из `properties`;
+- для семантически необязательного поля используйте required transport-placeholder
+  и нормализуйте его до передачи в доменный слой. Например, intent `draft`
+  передаёт `"message": ""`; пустое значение не является сообщением draft.
+
 ## GitHub Actions
 
 Для локальной проверки всех workflow используйте закреплённую версию

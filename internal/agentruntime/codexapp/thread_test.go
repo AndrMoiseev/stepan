@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
+	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
 var testSchema = json.RawMessage(`{"type":"object"}`)
@@ -188,6 +190,77 @@ func TestRunTurnReturnsFailedTurnMessageWithoutClosingConnection(t *testing.T) {
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCodexIntentDialogueSchemaAvoidsUnsupportedOneOf(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		request, err := server.Read()
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+		}
+		if err == nil {
+			request, err = server.Read()
+		}
+		if err == nil {
+			var params struct {
+				Schema json.RawMessage `json:"outputSchema"`
+			}
+			schemaErr := json.Unmarshal(request.Params, &params)
+			if schemaErr == nil && bytes.Contains(params.Schema, []byte(`"oneOf"`)) {
+				schemaErr = fmt.Errorf("Codex received unsupported dialogue schema: %s", params.Schema)
+			}
+			if schemaErr == nil {
+				var schema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+					Required   []string                   `json:"required"`
+				}
+				if json.Unmarshal(params.Schema, &schema) != nil || len(schema.Properties) != len(schema.Required) {
+					schemaErr = fmt.Errorf("Codex requires every dialogue property to be required: %s", params.Schema)
+				} else {
+					required := make(map[string]bool, len(schema.Required))
+					for _, name := range schema.Required {
+						required[name] = true
+					}
+					for name := range schema.Properties {
+						if !required[name] {
+							schemaErr = fmt.Errorf("Codex dialogue schema misses required %q: %s", name, params.Schema)
+							break
+						}
+					}
+				}
+			}
+			if sendErr := server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": "turn"}}); sendErr != nil {
+				err = sendErr
+			} else if sendErr = sendCompletedTurn(server, "thread", "turn", "item", `{"kind":"message","message":"ok","decisions":[]}`, `{"kind":"message","message":"ok","decisions":[]}`); sendErr != nil {
+				err = sendErr
+			} else {
+				err = schemaErr
+			}
+		}
+		serverErr <- err
+	}()
+	thread, err := connection.StartThread(root, agentruntime.ThreadConfig{Workspace: root, OutputSchema: specflow.DialogueSchema()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.RunTurn(thread, "brief"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNormalizeCodexDraftEnvelopeRemovesRequiredEmptyMessage(t *testing.T) {
+	output := normalizeDraftEnvelope(json.RawMessage(`{"kind":"draft","message":"","decisions":[]}`))
+	if bytes.Contains(output, []byte(`"message"`)) {
+		t.Fatalf("draft still contains Codex placeholder: %s", output)
+	}
+	if output := normalizeDraftEnvelope(json.RawMessage(`{"kind":"draft","message":"explanation","decisions":[]}`)); !bytes.Contains(output, []byte(`"message"`)) {
+		t.Fatalf("non-empty draft message was removed: %s", output)
 	}
 }
 

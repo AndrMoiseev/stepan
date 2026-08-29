@@ -200,9 +200,33 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 				}
 				return nil, connection.failTurn(err)
 			}
-			return output, nil
+			return normalizeDraftEnvelope(output), nil
 		}
 	}
+}
+
+// Codex requires every response-schema property to be required. The provider
+// therefore receives a mandatory message field even though the domain's draft
+// variant must not have one. An empty draft placeholder is transport metadata,
+// not part of the provider-neutral envelope.
+func normalizeDraftEnvelope(output json.RawMessage) json.RawMessage {
+	var envelope struct {
+		Kind    string  `json:"kind"`
+		Message *string `json:"message"`
+	}
+	if json.Unmarshal(output, &envelope) != nil || envelope.Kind != "draft" || envelope.Message == nil || *envelope.Message != "" {
+		return output
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(output, &object) != nil {
+		return output
+	}
+	delete(object, "message")
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return output
+	}
+	return normalized
 }
 
 func (connection *Connection) activeTurn() (threadID, turnID string, done <-chan struct{}, active bool) {

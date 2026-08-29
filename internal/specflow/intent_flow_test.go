@@ -67,6 +67,12 @@ func TestEnvelopeRejectsInvalidCombinations(t *testing.T) {
 	}
 }
 
+func TestEnvelopeAcceptsCodexEmptyDraftMessagePlaceholder(t *testing.T) {
+	if _, err := DecodeEnvelope([]byte(`{"kind":"draft","message":"","decisions":[]}`)); err != nil {
+		t.Fatalf("empty draft placeholder = %v", err)
+	}
+}
+
 func TestReviewApplyRejectsDraftChangedAfterDiff(t *testing.T) {
 	c, runner, intent := testController(t, []intentStep{
 		{output: `{"feature_id":"safe-apply"}`},
