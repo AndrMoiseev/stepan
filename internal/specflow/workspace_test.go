@@ -71,10 +71,10 @@ func TestPrepareSpecTargetDoesNotCreateOrChangeAnything(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.Directory != filepath.Join(repo, "docs", "changes", "features", "new-spec") || target.Entrypoint != filepath.Join(target.Directory, "specification.md") {
+	if target.Directory != filepath.Join(repo, "docs", "changes", "features", "new-spec") || target.Entrypoint != filepath.Join(target.Directory, "spec.md") {
 		t.Fatalf("unexpected target: %#v", target)
 	}
-	if target.DisplayPath != "docs/changes/features/new-spec/specification.md" {
+	if target.DisplayPath != "docs/changes/features/new-spec/spec.md" {
 		t.Fatalf("DisplayPath = %q", target.DisplayPath)
 	}
 	if _, err := os.Lstat(target.Directory); !os.IsNotExist(err) {

@@ -32,6 +32,7 @@ type ReviewRun struct {
 	OriginalFingerprint Fingerprint  `json:"original_fingerprint"`
 	AcceptedFingerprint *Fingerprint `json:"accepted_fingerprint,omitempty"`
 	Attempts            int          `json:"attempts"`
+	ReportHash          string       `json:"report_hash,omitempty"`
 }
 
 func (r ReviewRun) Validate() error {
@@ -43,6 +44,9 @@ func (r ReviewRun) Validate() error {
 	}
 	if r.Attempts < 0 || r.Attempts > DefaultRetryLimit {
 		return fmt.Errorf("%w: review attempts must be between 0 and %d", ErrInvalidDomainValue, DefaultRetryLimit)
+	}
+	if r.ReportHash != "" && len(r.ReportHash) != 64 {
+		return fmt.Errorf("%w: invalid review report hash", ErrInvalidDomainValue)
 	}
 	return nil
 }

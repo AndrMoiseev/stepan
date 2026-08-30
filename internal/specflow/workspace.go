@@ -92,8 +92,45 @@ type FeatureTarget struct {
 	ID                string
 	Directory         string
 	IntentPath        string
+	SpecPath          string
+	PlanPath          string
 	JournalPath       string
+	StatePath         string
+	ReviewsDirectory  string
 	DisplayIntentPath string
+}
+
+func (t FeatureTarget) DocumentPath(stage Stage) (string, error) {
+	switch stage {
+	case StageIntent:
+		return t.IntentPath, nil
+	case StageSpec:
+		return t.SpecPath, nil
+	case StagePlan:
+		return t.PlanPath, nil
+	default:
+		return "", domainError("stage", stage)
+	}
+}
+
+func (t FeatureTarget) DisplayDocumentPath(stage Stage) (string, error) {
+	if !stage.Valid() {
+		return "", domainError("stage", stage)
+	}
+	return path.Join(featuresDirectoryPath, t.ID, string(stage)+".md"), nil
+}
+
+func (t FeatureTarget) ArtifactFilename(stage Stage, review bool) (string, error) {
+	if review {
+		if stage != StageSpec && stage != StagePlan {
+			return "", fmt.Errorf("%w: %s has no review artifact", ErrInvalidDomainValue, stage)
+		}
+		return "review.md", nil
+	}
+	if !stage.Valid() {
+		return "", domainError("stage", stage)
+	}
+	return string(stage) + ".md", nil
 }
 
 func PrepareFeatureTarget(root, date, featureID string) (FeatureTarget, error) {
@@ -118,11 +155,40 @@ func PrepareFeatureTarget(root, date, featureID string) (FeatureTarget, error) {
 			if err := CheckContainment(root, directory); err != nil {
 				return FeatureTarget{}, err
 			}
-			return FeatureTarget{ID: id, Directory: directory, IntentPath: filepath.Join(directory, "intent.md"), JournalPath: filepath.Join(directory, "mem-log.md"), DisplayIntentPath: path.Join(featuresDirectoryPath, id, "intent.md")}, nil
+			return featureTarget(root, id)
 		} else if err != nil {
 			return FeatureTarget{}, err
 		}
 	}
+}
+
+func FeatureTargetForID(root, featureID string) (FeatureTarget, error) {
+	if err := ValidateFeatureID(featureID); err != nil {
+		return FeatureTarget{}, err
+	}
+	root, err := canonicalExisting(root)
+	if err != nil {
+		return FeatureTarget{}, err
+	}
+	return featureTarget(root, featureID)
+}
+
+func featureTarget(root, id string) (FeatureTarget, error) {
+	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath), id)
+	if err := CheckContainment(root, directory); err != nil {
+		return FeatureTarget{}, err
+	}
+	return FeatureTarget{
+		ID:                id,
+		Directory:         directory,
+		IntentPath:        filepath.Join(directory, "intent.md"),
+		SpecPath:          filepath.Join(directory, "spec.md"),
+		PlanPath:          filepath.Join(directory, "plan.md"),
+		JournalPath:       filepath.Join(directory, "mem-log.md"),
+		StatePath:         filepath.Join(directory, "state.json"),
+		ReviewsDirectory:  filepath.Join(directory, "reviews"),
+		DisplayIntentPath: path.Join(featuresDirectoryPath, id, "intent.md"),
+	}, nil
 }
 
 func CreateArtifactRoot(workspace string) (string, error) {
@@ -130,7 +196,7 @@ func CreateArtifactRoot(workspace string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	root, err := os.MkdirTemp("", "stepan-intent-")
+	root, err := os.MkdirTemp("", "stepan-artifact-")
 	if err != nil {
 		return "", err
 	}
@@ -174,8 +240,8 @@ func SpecTargetForID(root, specID string) (SpecTarget, error) {
 	}
 	return SpecTarget{
 		Directory:   directory,
-		Entrypoint:  filepath.Join(directory, "specification.md"),
-		DisplayPath: path.Join(featuresDirectoryPath, specID, "specification.md"),
+		Entrypoint:  filepath.Join(directory, "spec.md"),
+		DisplayPath: path.Join(featuresDirectoryPath, specID, "spec.md"),
 	}, nil
 }
 

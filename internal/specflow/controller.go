@@ -348,6 +348,11 @@ func removeArtifact(root string) error {
 	if root == "" {
 		return nil
 	}
+	if _, err := os.Lstat(root); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	canonical, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return err
