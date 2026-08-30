@@ -73,6 +73,9 @@ func (r *FSFeatureRepository) Create(request CreateFeatureRequest) (FeatureSnaps
 	if request.At.IsZero() {
 		request.At = r.now()
 	}
+	if err := r.ensureCleanRepository(); err != nil {
+		return FeatureSnapshot{}, err
+	}
 	target, err := FeatureTargetForID(r.root, request.FeatureID)
 	if err != nil {
 		return FeatureSnapshot{}, err
@@ -120,6 +123,10 @@ func (r *FSFeatureRepository) Load(featureID string) (FeatureSnapshot, error) {
 }
 
 func (r *FSFeatureRepository) loadLocked(featureID string) (FeatureSnapshot, error) {
+	return r.loadLockedCore(featureID, true)
+}
+
+func (r *FSFeatureRepository) loadLockedCore(featureID string, recoverPhase bool) (FeatureSnapshot, error) {
 	target, err := FeatureTargetForID(r.root, featureID)
 	if err != nil {
 		return FeatureSnapshot{}, err
@@ -137,6 +144,21 @@ func (r *FSFeatureRepository) loadLocked(featureID string) (FeatureSnapshot, err
 	}
 	if len(recovery.Diagnostics) > 0 {
 		return FeatureSnapshot{}, fmt.Errorf("%w: %s", ErrRepositoryBlocked, recovery.Diagnostics[0].Message)
+	}
+	if recoverPhase {
+		phaseRecovery, err := r.recoverPhaseLocked(featureID)
+		if err != nil {
+			return FeatureSnapshot{}, err
+		}
+		if len(phaseRecovery.Diagnostics) > 0 {
+			return FeatureSnapshot{}, fmt.Errorf("%w: %s", ErrRepositoryBlocked, phaseRecovery.Diagnostics[0].Message)
+		}
+		if phaseRecovery.Completed {
+			info, err = os.Lstat(target.Directory)
+			if err != nil {
+				return FeatureSnapshot{}, fmt.Errorf("load feature %s after recovery: %w", featureID, err)
+			}
+		}
 	}
 
 	stateBytes, err := readRegularFile(target.StatePath)
@@ -1076,7 +1098,18 @@ func (r *FSFeatureRepository) Recover(featureID string) (RecoveryResult, error) 
 	if err != nil {
 		return RecoveryResult{}, err
 	}
-	return r.recoverLocked(target)
+	fileRecovery, err := r.recoverLocked(target)
+	if err != nil || len(fileRecovery.Diagnostics) > 0 {
+		return fileRecovery, err
+	}
+	phaseRecovery, err := r.recoverPhaseLocked(featureID)
+	if err != nil {
+		return RecoveryResult{}, err
+	}
+	return RecoveryResult{
+		Completed:   fileRecovery.Completed || phaseRecovery.Completed,
+		Diagnostics: append(fileRecovery.Diagnostics, phaseRecovery.Diagnostics...),
+	}, nil
 }
 
 func (r *FSFeatureRepository) recoverLocked(target FeatureTarget) (RecoveryResult, error) {

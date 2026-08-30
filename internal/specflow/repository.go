@@ -9,6 +9,7 @@ import (
 var (
 	ErrRepositoryBlocked = errors.New("feature repository is blocked")
 	ErrExternalChanges   = errors.New("feature artifacts changed outside Stepan")
+	ErrPhaseCommit       = errors.New("feature phase commit failed")
 )
 
 // FeatureRepository is the durable seam used by flow orchestration. Each
@@ -23,6 +24,9 @@ type FeatureRepository interface {
 	RecordDecision(featureID string, stage Stage, role Role, decision Decision) (FeatureSnapshot, error)
 	RecordActivity(featureID string, entry MemLogEntry) (FeatureSnapshot, error)
 	DiscardPending(featureID string, stage Stage, artifactRoot string) (FeatureSnapshot, error)
+	Approve(ApproveStageRequest) (PhaseCommitResult, error)
+	ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error)
+	SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error)
 	InspectChanges(featureID string) (ChangeInspection, error)
 	Recover(featureID string) (RecoveryResult, error)
 }
@@ -105,6 +109,44 @@ type ReviewPublication struct {
 	Path       string
 	Validation DocumentResult
 	Feature    FeatureSnapshot
+}
+
+type ApproveStageRequest struct {
+	FeatureID string
+	Stage     Stage
+	At        time.Time
+}
+
+type ReviseIntentRequest struct {
+	FeatureID string
+	At        time.Time
+}
+
+type SupersedeIntentRequest struct {
+	OldFeatureID string
+	NewFeatureID string
+	At           time.Time
+}
+
+// ApprovalBlocker is a complete, user-actionable preflight reason. Approval
+// operations return all blockers without mutating durable feature state.
+type ApprovalBlocker struct {
+	Code    string
+	Path    string
+	Message string
+}
+
+type PhaseCommitResult struct {
+	Committed bool
+	Blocking  []ApprovalBlocker
+	Feature   FeatureSnapshot
+}
+
+type SupersessionResult struct {
+	Committed bool
+	Blocking  []ApprovalBlocker
+	Old       FeatureSnapshot
+	New       FeatureSnapshot
 }
 
 type ChangeClass string
