@@ -2,15 +2,11 @@ package specflow
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 )
-
-//go:embed prompts/bootstrap.md
-var promptFiles embed.FS
 
 type FeatureIDResult struct {
 	FeatureID string `json:"feature_id"`
@@ -149,14 +145,12 @@ func validateDecision(value Decision) error {
 }
 
 func BootstrapPrompt(brief, artifactRoot string) string {
-	template, err := promptFiles.ReadFile("prompts/bootstrap.md")
+	runtimeContext := "Artifact root: " + artifactRoot + "\n\nFeature brief:\n" + brief
+	prompt, err := NewEmbeddedPromptCatalog().Compose(RoleIntentAuthor, runtimeContext)
 	if err != nil {
-		panic("read embedded intent bootstrap prompt: " + err.Error())
+		panic("compose embedded intent prompt: " + err.Error())
 	}
-	return strings.TrimSpace(strings.NewReplacer(
-		"{{artifact_root}}", artifactRoot,
-		"{{brief}}", brief,
-	).Replace(string(template)))
+	return prompt
 }
 
 func FeatureIDPrompt(brief string) string {

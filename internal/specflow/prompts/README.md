@@ -1,9 +1,10 @@
-# Intent dialogue prompt
+# Prompt assets
 
-`bootstrap.md` is the only embedded prompt used by `/feature`. Stepan renders
-it once when creating the main intent thread, replacing `{{artifact_root}}` and
-`{{brief}}`. Later user turns are sent as literal dialogue input without a
-stage-specific system prompt.
+System contracts, role instructions, and capability modules are immutable
+embedded defaults resolved through logical IDs by `PromptCatalog`. Control-plane
+composition is defined in Go and does not depend on physical asset paths.
 
-The former `initial`, `question`, `change`, `change-answer`, and `update`
-templates were intentionally removed with the multi-stage specification flow.
+`bootstrap.md` is retained temporarily as a legacy migration asset until the
+intent-only lifecycle is removed. It is no longer embedded or used to compose
+new threads; the compatibility `BootstrapPrompt` function delegates to
+`PromptCatalog`.
