@@ -24,13 +24,6 @@ const (
 	StateAwaitingRework
 )
 
-type Progress struct {
-	State     State
-	Path      string
-	Message   string
-	Diff      string
-	FeatureID string
-}
 type ReviewAction string
 
 const (
