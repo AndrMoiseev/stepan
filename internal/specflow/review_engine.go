@@ -33,6 +33,7 @@ type ReviewEngine struct {
 	run          *liveReviewRun
 	pendingDrift bool
 	terminal     bool
+	registry     *SessionRegistry
 }
 
 func NewReviewEngine(workspace string, runner dialogueRunner, repository FeatureRepository, catalog PromptCatalog) (*ReviewEngine, error) {
@@ -121,18 +122,29 @@ func (e *ReviewEngine) Start(request StartReviewRequest) (ReviewResult, error) {
 			_ = removeArtifact(artifactRoot)
 			return ReviewResult{}, fmt.Errorf("compose %s reviewer prompt: %w", request.Stage, err)
 		}
-		thread, err := e.runner.StartThread(agentruntime.ThreadConfig{
-			BootstrapInstructions: prompt,
-			OutputSchema:          DialogueSchema(),
-			Workspace:             e.workspace,
-			ArtifactRoot:          artifactRoot,
-		})
-		if err != nil {
-			_ = removeArtifact(artifactRoot)
-			return ReviewResult{}, fmt.Errorf("start %s reviewer thread: %w", request.Stage, err)
+		if registry, managed := e.runner.(*SessionRegistry); managed {
+			registered, acquireErr := registry.Acquire(SessionRequest{FeatureID: request.FeatureID, Role: role, Config: agentruntime.ThreadConfig{
+				BootstrapInstructions: prompt, OutputSchema: DialogueSchema(), Workspace: e.workspace, ArtifactRoot: artifactRoot,
+			}})
+			if acquireErr != nil {
+				_ = removeArtifact(artifactRoot)
+				return ReviewResult{}, fmt.Errorf("start %s reviewer thread: %w", request.Stage, acquireErr)
+			}
+			e.thread = registered.Thread
+			e.artifactRoot = registered.ArtifactRoot
+			e.registry = registry
+			reuse = registered.Reused
+		} else {
+			thread, startErr := e.runner.StartThread(agentruntime.ThreadConfig{
+				BootstrapInstructions: prompt, OutputSchema: DialogueSchema(), Workspace: e.workspace, ArtifactRoot: artifactRoot,
+			})
+			if startErr != nil {
+				_ = removeArtifact(artifactRoot)
+				return ReviewResult{}, fmt.Errorf("start %s reviewer thread: %w", request.Stage, startErr)
+			}
+			e.thread = thread
+			e.artifactRoot = artifactRoot
 		}
-		e.thread = thread
-		e.artifactRoot = artifactRoot
 	}
 
 	e.feature = feature
@@ -705,6 +717,11 @@ func (e *ReviewEngine) Close() error {
 		e.reset()
 		return nil
 	}
+	if e.registry != nil && e.run != nil {
+		releaseErr := e.registry.Release(e.run.request.FeatureID, e.run.role)
+		e.reset()
+		return releaseErr
+	}
 	var closeErr error
 	if e.thread != nil {
 		closeErr = e.runner.CloseThread(e.thread)
@@ -729,6 +746,7 @@ func (e *ReviewEngine) reset() {
 	e.run = nil
 	e.pendingDrift = false
 	e.terminal = false
+	e.registry = nil
 }
 
 func validateReviewTarget(feature FeatureSnapshot, policy StagePolicy) (DocumentResult, []StableID) {

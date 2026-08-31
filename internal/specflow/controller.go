@@ -934,10 +934,15 @@ func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
 }
 
 func (c *FeatureController) close() (Progress, error) {
-	err := errors.Join(c.reviewer.Close(), c.author.Close())
-	if errors.Is(err, ErrExternalChanges) || errors.Is(err, ErrRepositoryBlocked) {
-		err = nil
+	engineErr := errors.Join(c.reviewer.Close(), c.author.Close())
+	if errors.Is(engineErr, ErrExternalChanges) || errors.Is(engineErr, ErrRepositoryBlocked) {
+		engineErr = nil
 	}
+	var sessionErr error
+	if closer, ok := c.author.(interface{ CloseFeatureSessions(string) error }); ok {
+		sessionErr = closer.CloseFeatureSessions(c.featureID)
+	}
+	err := errors.Join(engineErr, sessionErr)
 	c.revisionPending = false
 	c.lastStage = StageResult{}
 	c.lastReview = ReviewResult{}

@@ -93,6 +93,9 @@ type StageEngine struct {
 	parserAttempt int
 	workingIDs    []StableID
 	feature       FeatureSnapshot
+	registry      *SessionRegistry
+	resumed       bool
+	resumeContext string
 }
 
 func NewStageEngine(workspace string, runner dialogueRunner, repository FeatureRepository, catalog PromptCatalog) (*StageEngine, error) {
@@ -106,10 +109,12 @@ func NewStageEngine(workspace string, runner dialogueRunner, repository FeatureR
 	if runner == nil || repository == nil || catalog == nil {
 		return nil, fmt.Errorf("create stage engine: runner, repository, and prompt catalog are required")
 	}
-	return &StageEngine{
+	engine := &StageEngine{
 		workspace: absolute, runner: runner, repository: repository, catalog: catalog,
 		now: time.Now, newRoot: CreateArtifactRoot,
-	}, nil
+	}
+	engine.registry, _ = runner.(*SessionRegistry)
+	return engine, nil
 }
 
 func (e *StageEngine) Policy() (StagePolicy, bool) {
@@ -141,18 +146,36 @@ func (e *StageEngine) Start(request StartStageRequest) (StagePolicy, error) {
 	if err != nil {
 		return StagePolicy{}, fmt.Errorf("create %s artifact root: %w", request.Stage, err)
 	}
-	runtimeContext := authorRuntimeContext(feature, policy, artifactRoot, request.RuntimeContext)
-	prompt, err := e.catalog.Compose(policy.AuthorRole, runtimeContext)
-	if err != nil {
-		_ = removeArtifact(artifactRoot)
-		return StagePolicy{}, fmt.Errorf("compose %s author prompt: %w", request.Stage, err)
+	registry, managed := e.registry, e.registry != nil
+	actualRoot := artifactRoot
+	var thread agentruntime.Thread
+	var resumed bool
+	if managed {
+		runtimeContext := authorRuntimeContext(feature, policy, artifactRoot, request.RuntimeContext)
+		prompt, composeErr := e.catalog.Compose(policy.AuthorRole, runtimeContext)
+		if composeErr != nil {
+			_ = removeArtifact(artifactRoot)
+			return StagePolicy{}, fmt.Errorf("compose %s author prompt: %w", request.Stage, composeErr)
+		}
+		registered, acquireErr := registry.Acquire(SessionRequest{FeatureID: request.FeatureID, Role: policy.AuthorRole, Config: agentruntime.ThreadConfig{
+			BootstrapInstructions: prompt, OutputSchema: DialogueSchema(), Workspace: e.workspace, ArtifactRoot: artifactRoot,
+		}})
+		if acquireErr != nil {
+			_ = removeArtifact(artifactRoot)
+			return StagePolicy{}, fmt.Errorf("start %s author thread: %w", request.Stage, acquireErr)
+		}
+		thread, actualRoot, resumed = registered.Thread, registered.ArtifactRoot, registered.Reused
+	} else {
+		runtimeContext := authorRuntimeContext(feature, policy, artifactRoot, request.RuntimeContext)
+		prompt, composeErr := e.catalog.Compose(policy.AuthorRole, runtimeContext)
+		if composeErr != nil {
+			_ = removeArtifact(artifactRoot)
+			return StagePolicy{}, fmt.Errorf("compose %s author prompt: %w", request.Stage, composeErr)
+		}
+		thread, err = e.runner.StartThread(agentruntime.ThreadConfig{
+			BootstrapInstructions: prompt, OutputSchema: DialogueSchema(), Workspace: e.workspace, ArtifactRoot: artifactRoot,
+		})
 	}
-	thread, err := e.runner.StartThread(agentruntime.ThreadConfig{
-		BootstrapInstructions: prompt,
-		OutputSchema:          DialogueSchema(),
-		Workspace:             e.workspace,
-		ArtifactRoot:          artifactRoot,
-	})
 	if err != nil {
 		_ = removeArtifact(artifactRoot)
 		return StagePolicy{}, fmt.Errorf("start %s author thread: %w", request.Stage, err)
@@ -160,8 +183,13 @@ func (e *StageEngine) Start(request StartStageRequest) (StagePolicy, error) {
 	e.featureID = request.FeatureID
 	e.policy = policy
 	e.thread = thread
-	e.artifactRoot = artifactRoot
+	e.artifactRoot = actualRoot
 	e.feature = feature
+	e.registry = registry
+	e.resumed = resumed
+	if resumed {
+		e.resumeContext = authorRuntimeContext(feature, policy, actualRoot, request.RuntimeContext)
+	}
 	e.pending = nil
 	e.parserAttempt = 0
 	e.workingIDs = nil
@@ -202,6 +230,19 @@ func authorRuntimeContext(feature FeatureSnapshot, policy StagePolicy, artifactR
 			}
 		}
 	}
+	context.WriteString("Current and previous review reports (read-only):")
+	reviewCount := 0
+	for _, review := range feature.Reviews {
+		if review.Stage != policy.Stage {
+			continue
+		}
+		fmt.Fprintf(&context, "\n- %s", review.Path)
+		reviewCount++
+	}
+	if reviewCount == 0 {
+		context.WriteString(" none")
+	}
+	context.WriteByte('\n')
 	if strings.TrimSpace(extra) != "" {
 		context.WriteString("\nSession context:\n")
 		context.WriteString(strings.TrimSpace(extra))
@@ -234,6 +275,11 @@ func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 }
 
 func (e *StageEngine) runMode(prompt string, external, reviewRework bool) (StageResult, error) {
+	if e.resumed && e.resumeContext != "" {
+		prompt = "Current durable session context (authoritative documents and mem-log override conversation memory):\n" + e.resumeContext + "\n\nContinue with this turn:\n" + prompt
+		e.resumed = false
+		e.resumeContext = ""
+	}
 	for {
 		raw, err := e.runner.RunTurn(e.thread, prompt)
 		if err != nil {
@@ -540,6 +586,11 @@ func (e *StageEngine) Close() error {
 	if e.thread == nil {
 		return nil
 	}
+	if e.registry != nil {
+		releaseErr := e.registry.Release(e.featureID, e.policy.AuthorRole)
+		e.reset()
+		return releaseErr
+	}
 	closeErr := e.runner.CloseThread(e.thread)
 	_, discardErr := e.repository.DiscardPending(e.featureID, e.policy.Stage, e.artifactRoot)
 	var cleanupErr error
@@ -551,6 +602,13 @@ func (e *StageEngine) Close() error {
 	}
 	e.reset()
 	return errors.Join(closeErr, discardErr, cleanupErr)
+}
+
+func (e *StageEngine) CloseFeatureSessions(featureID string) error {
+	if e.registry == nil {
+		return nil
+	}
+	return e.registry.CloseFeature(featureID)
 }
 
 func (e *StageEngine) ready() error {
@@ -569,6 +627,8 @@ func (e *StageEngine) reset() {
 	e.parserAttempt = 0
 	e.workingIDs = nil
 	e.feature = FeatureSnapshot{}
+	e.resumed = false
+	e.resumeContext = ""
 }
 
 func (e *StageEngine) record(kind MemLogEventKind, body string) error {

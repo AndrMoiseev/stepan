@@ -27,18 +27,19 @@ func NewCommandHint(command, description string) (CommandHint, error) {
 // Progress is the controller-owned presentation contract. CommandHints are
 // ordered domain data; terminal rendering is deliberately not represented.
 type Progress struct {
-	FlowStatus   FlowStatus
-	CurrentStage Stage
-	StageStatus  StageStatus
-	ReviewStatus ReviewStatus
-	CommandHints []CommandHint
-	TextAllowed  bool
-	Documents    []DocumentPath
-	Diagnostics  []DocumentDiagnostic
-	Blocking     []ApprovalBlocker
-	Event        ControllerEvent
-	Review       ReviewResult
-	Revision     []RevisionAction
+	FlowStatus          FlowStatus
+	CurrentStage        Stage
+	StageStatus         StageStatus
+	ReviewStatus        ReviewStatus
+	CommandHints        []CommandHint
+	TextAllowed         bool
+	Documents           []DocumentPath
+	Diagnostics         []DocumentDiagnostic
+	RecoveryDiagnostics []RecoveryDiagnostic
+	Blocking            []ApprovalBlocker
+	Event               ControllerEvent
+	Review              ReviewResult
+	Revision            []RevisionAction
 
 	Path      string
 	Message   string
