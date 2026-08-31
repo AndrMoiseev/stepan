@@ -31,13 +31,15 @@ func (a RevisionAction) Valid() bool {
 type StageOutcome string
 
 const (
-	StageAuthorMessage      StageOutcome = "author_message"
-	StageDraftPublished     StageOutcome = "draft_published"
-	StageRevisionPending    StageOutcome = "revision_pending"
-	StageRevisionApplied    StageOutcome = "revision_applied"
-	StageRevisionRejected   StageOutcome = "revision_rejected"
-	StageAuthorDiagnostics  StageOutcome = "author_diagnostics"
-	StageExternalChangeRead StageOutcome = "external_change_read"
+	StageAuthorMessage          StageOutcome = "author_message"
+	StageDraftPublished         StageOutcome = "draft_published"
+	StageRevisionPending        StageOutcome = "revision_pending"
+	StageRevisionApplied        StageOutcome = "revision_applied"
+	StageRevisionRejected       StageOutcome = "revision_rejected"
+	StageAuthorDiagnostics      StageOutcome = "author_diagnostics"
+	StageExternalChangeRead     StageOutcome = "external_change_read"
+	StageReviewReworkPublished  StageOutcome = "review_rework_published"
+	StageReviewDecisionRequired StageOutcome = "review_decision_required"
 )
 
 // StageResult is the author engine's event/effect boundary. FeatureController
@@ -58,6 +60,14 @@ type StartStageRequest struct {
 	FeatureID      string
 	Stage          Stage
 	RuntimeContext string
+}
+
+// ReviewReworkRequest is deliberately narrower than a normal author message.
+// The author receives the current report path and the already-agreed fix scope;
+// reviewer conversation and dismissed findings are not part of this contract.
+type ReviewReworkRequest struct {
+	ReportPath string
+	Findings   []FindingSnapshot
 }
 
 type pendingAuthorRevision struct {
@@ -220,6 +230,10 @@ func (e *StageEngine) Submit(message string) (StageResult, error) {
 }
 
 func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
+	return e.runMode(prompt, external, false)
+}
+
+func (e *StageEngine) runMode(prompt string, external, reviewRework bool) (StageResult, error) {
 	for {
 		raw, err := e.runner.RunTurn(e.thread, prompt)
 		if err != nil {
@@ -229,13 +243,13 @@ func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 		if err != nil {
 			return StageResult{}, fmt.Errorf("decode %s author response: %w", e.policy.Stage, err)
 		}
-		if !external {
+		if !external && !reviewRework {
 			if err := e.recordDecisions(envelope.Decisions); err != nil {
 				return StageResult{}, err
 			}
 		}
 		if envelope.Kind == KindMessage {
-			if !external {
+			if !external && !reviewRework {
 				if err := e.record(MemLogAgentMessage, envelope.Message); err != nil {
 					return StageResult{}, err
 				}
@@ -243,6 +257,8 @@ func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 			outcome := StageAuthorMessage
 			if external {
 				outcome = StageExternalChangeRead
+			} else if reviewRework {
+				outcome = StageReviewDecisionRequired
 			}
 			return e.result(outcome, envelope.Message, "", nil, envelope.Decisions), nil
 		}
@@ -253,6 +269,12 @@ func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 		}
 		e.workingIDs = observedStableIDs(inspection.Validation.ObservedIDs)
 		if inspection.Validation.Valid() {
+			if reviewRework {
+				if len(envelope.Decisions) > 0 {
+					return e.result(StageReviewDecisionRequired, "The author reported a material decision during automatic review rework.", "", nil, envelope.Decisions), nil
+				}
+				return e.publishReviewRework(inspection)
+			}
 			return e.acceptValidDraft(inspection, envelope.Decisions)
 		}
 		e.parserAttempt++
@@ -266,6 +288,95 @@ func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 		prompt = parserRepairPrompt(e.policy.ArtifactFilename, inspection.Validation.Diagnostics)
 		external = false
 	}
+}
+
+// ReworkFromReview runs the current author session in review-scoped mode. A
+// valid artifact is published immediately and its diff is informational: no
+// pending revision decision is created.
+func (e *StageEngine) ReworkFromReview(request ReviewReworkRequest) (StageResult, error) {
+	if err := e.ready(); err != nil {
+		return StageResult{}, err
+	}
+	if e.pending != nil {
+		return StageResult{}, ErrRevisionDecisionPending
+	}
+	reportPath := strings.TrimSpace(request.ReportPath)
+	if reportPath == "" {
+		return StageResult{}, fmt.Errorf("review rework report path must not be empty")
+	}
+	feature, err := e.repository.Load(e.featureID)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("reload feature for review rework: %w", err)
+	}
+	e.feature = feature
+	latestRun, latestPath := uint64(0), ""
+	stageState, _ := feature.State.Stage(e.policy.Stage)
+	for _, report := range stageState.Reviews {
+		if report.ID > latestRun {
+			latestRun = report.ID
+			latestPath = filepath.Join(feature.Target.Directory, filepath.FromSlash(report.Path))
+		}
+	}
+	requestedPath, err := filepath.Abs(reportPath)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("resolve review rework report path: %w", err)
+	}
+	if latestPath == "" || !strings.EqualFold(filepath.Clean(requestedPath), filepath.Clean(latestPath)) {
+		return StageResult{}, fmt.Errorf("review rework requires the current %s review report", e.policy.Stage)
+	}
+	if len(request.Findings) == 0 {
+		return StageResult{}, fmt.Errorf("review rework scope must contain at least one finding")
+	}
+	ids := make([]string, 0, len(request.Findings))
+	seen := make(map[StableID]struct{}, len(request.Findings))
+	for _, finding := range request.Findings {
+		if !finding.ID.Valid() || finding.Status != FindingOpen || finding.Decision.Decision != DecisionFix ||
+			(finding.Kind == FindingMaterial && finding.Decision.DecidedBy != DecidedByUser) ||
+			(finding.Kind == FindingContractViolation && finding.Decision.DecidedBy != DecidedByReviewer) {
+			return StageResult{}, fmt.Errorf("review rework scope contains finding %q without an agreed open fix", finding.ID)
+		}
+		if _, duplicate := seen[finding.ID]; duplicate {
+			return StageResult{}, fmt.Errorf("review rework scope contains duplicate finding %s", finding.ID)
+		}
+		seen[finding.ID] = struct{}{}
+		ids = append(ids, finding.ID.String())
+	}
+	current, ok := e.feature.Documents[e.policy.Stage]
+	if !ok {
+		return StageResult{}, fmt.Errorf("review rework requires a published %s document", e.policy.Stage)
+	}
+	e.parserAttempt = 0
+	prompt := fmt.Sprintf("Perform automatic review-scoped rework of the current %s document. Read the current review report at %s. Apply only the agreed open fix findings listed below; do not apply dismissed findings or use reviewer conversation as input. If any new material decision is required, return a message instead of an artifact. Otherwise overwrite %s with the complete corrected document and return an artifact envelope.\n\nAgreed finding IDs:\n- %s\n\nCurrent revision: %s",
+		e.policy.Stage, reportPath, e.policy.ArtifactFilename, strings.Join(ids, "\n- "), current.Hash)
+	return e.runMode(prompt, false, true)
+}
+
+func (e *StageEngine) publishReviewRework(inspection DraftInspection) (StageResult, error) {
+	current, ok := e.feature.Documents[e.policy.Stage]
+	if !ok {
+		return StageResult{}, fmt.Errorf("publish review rework: no current %s document", e.policy.Stage)
+	}
+	pendingBytes, err := os.ReadFile(filepath.Join(e.artifactRoot, e.policy.ArtifactFilename))
+	if err != nil {
+		return StageResult{}, fmt.Errorf("read review rework %s artifact: %w", e.policy.Stage, err)
+	}
+	diff := unifiedArtifactDiff(e.policy.ArtifactFilename, current.Content, pendingBytes)
+	request := e.draftRequest()
+	request.ExpectedHash = inspection.Hash
+	publication, err := e.repository.PublishAuthorDraft(request)
+	if err != nil {
+		return StageResult{}, fmt.Errorf("publish automatic %s review rework: %w", e.policy.Stage, err)
+	}
+	if !publication.Published {
+		return StageResult{}, fmt.Errorf("publish automatic %s review rework: draft became invalid", e.policy.Stage)
+	}
+	e.feature = publication.Feature
+	if err := e.record(MemLogDiff, "informational automatic review rework diff:\n"+diff); err != nil {
+		return StageResult{}, err
+	}
+	e.parserAttempt = 0
+	e.workingIDs = nil
+	return e.result(StageReviewReworkPublished, "", diff, nil, nil), nil
 }
 
 func (e *StageEngine) inspectDraft() (DraftInspection, error) {

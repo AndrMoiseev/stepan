@@ -15,8 +15,29 @@ const (
 	ReviewReportCompleted    ReviewOutcome = "review_completed"
 	ReviewMaterialDecisions  ReviewOutcome = "material_decisions"
 	ReviewReworkRequired     ReviewOutcome = "rework_required"
+	ReviewAuthorDecision     ReviewOutcome = "author_decision"
+	ReviewEscalation         ReviewOutcome = "escalated"
 	ReviewFingerprintChanged ReviewOutcome = "fingerprint_changed"
 )
+
+type ReviewProgressKind string
+
+const (
+	ReviewProgressReworkStarted ReviewProgressKind = "rework_started"
+	ReviewProgressDiff          ReviewProgressKind = "informational_diff"
+)
+
+type ReviewProgressEvent struct {
+	Kind    ReviewProgressKind
+	Message string
+	Diff    string
+}
+
+type MaterialFindingDecision struct {
+	FindingID StableID
+	Decision  FindingDecision
+	Rationale string
+}
 
 type ReviewFingerprintAction string
 
@@ -53,6 +74,8 @@ type ReviewResult struct {
 	OriginalFingerprint Fingerprint
 	CurrentFingerprint  Fingerprint
 	FingerprintActions  []ReviewFingerprintAction
+	Progress            []ReviewProgressEvent
+	ReworkAttempts      int
 	Feature             FeatureSnapshot
 }
 
@@ -65,5 +88,6 @@ type liveReviewRun struct {
 	turnFingerprint   Fingerprint
 	previousFindings  []FindingSnapshot
 	candidateFindings []FindingSnapshot
-	attempts          int
+	reviewerTurns     int
+	reworkAttempts    int
 }

@@ -17,9 +17,8 @@ var (
 	ErrReviewFingerprintDecision = errors.New("review fingerprint decision is pending")
 )
 
-// ReviewEngine owns one explicit /review run. It never starts an author turn:
-// material decisions and automatic rework belong to the controller and the
-// next review lifecycle layer.
+// ReviewEngine owns one explicit /review run, including its material decision
+// queue and bounded reviewer -> author -> reviewer rework loop.
 type ReviewEngine struct {
 	workspace  string
 	runner     dialogueRunner
@@ -150,9 +149,25 @@ func (e *ReviewEngine) Start(request StartReviewRequest) (ReviewResult, error) {
 	return e.runTurn(turnPrompt, targetIDs, true)
 }
 
+// StartWithAuthor is the lifecycle entry used when the controller has a live
+// author session. Contract-only reports proceed directly to automatic rework;
+// reports with material findings still stop at the ordered decision queue.
+func (e *ReviewEngine) StartWithAuthor(request StartReviewRequest, author *StageEngine) (ReviewResult, error) {
+	result, err := e.Start(request)
+	if err != nil || result.Outcome != ReviewReworkRequired {
+		return result, err
+	}
+	return e.AutomaticRework(author)
+}
+
 // Submit continues reviewer dialogue without creating another numbered run.
-// TASK-008 can layer material-decision semantics on this primitive.
 func (e *ReviewEngine) Submit(message string) (ReviewResult, error) {
+	return e.SubmitWithAuthor(message, nil)
+}
+
+// SubmitWithAuthor continues free-form reviewer dialogue and automatically
+// starts rework if that turn resolves the final material finding.
+func (e *ReviewEngine) SubmitWithAuthor(message string, author *StageEngine) (ReviewResult, error) {
 	if e.run == nil || e.thread == nil {
 		return ReviewResult{}, ErrReviewNotStarted
 	}
@@ -162,8 +177,327 @@ func (e *ReviewEngine) Submit(message string) (ReviewResult, error) {
 	if strings.TrimSpace(message) == "" {
 		return ReviewResult{}, fmt.Errorf("reviewer message must not be empty")
 	}
+	entry, err := NewMemLogEntry(e.run.request.Stage, e.run.role, MemLogUserMessage, e.now(), message)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	feature, err := e.repository.RecordActivity(e.run.request.FeatureID, entry)
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("record reviewer dialogue input: %w", err)
+	}
+	e.feature = feature
 	_, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
-	return e.runTurn(strings.TrimSpace(message), targetIDs, false)
+	result, err := e.runTurn(strings.TrimSpace(message), targetIDs, false)
+	if err != nil || result.Outcome != ReviewReworkRequired || author == nil {
+		return result, err
+	}
+	return e.AutomaticRework(author)
+}
+
+// ApplyPendingMaterial implements /apply: every currently pending material
+// finding is accepted in report order and the author loop starts immediately.
+func (e *ReviewEngine) ApplyPendingMaterial(author *StageEngine) (ReviewResult, error) {
+	if e.run == nil || e.thread == nil {
+		return ReviewResult{}, ErrReviewNotStarted
+	}
+	pending := pendingMaterialFindings(e.run.candidateFindings)
+	if len(pending) == 0 {
+		return ReviewResult{}, fmt.Errorf("no material review decisions are pending")
+	}
+	decisions := make([]MaterialFindingDecision, 0, len(pending))
+	for _, finding := range pending {
+		decisions = append(decisions, MaterialFindingDecision{
+			FindingID: finding.ID, Decision: DecisionFix,
+			Rationale: "User accepted the pending recommendation with /apply.",
+		})
+	}
+	return e.decideMaterial(decisions, author)
+}
+
+// DecideMaterial records one explicit fix/dismiss decision. Dismissal requires
+// user rationale and can never target a contract violation.
+func (e *ReviewEngine) DecideMaterial(decision MaterialFindingDecision, author *StageEngine) (ReviewResult, error) {
+	return e.decideMaterial([]MaterialFindingDecision{decision}, author)
+}
+
+func (e *ReviewEngine) decideMaterial(decisions []MaterialFindingDecision, author *StageEngine) (ReviewResult, error) {
+	if e.run == nil || e.thread == nil {
+		return ReviewResult{}, ErrReviewNotStarted
+	}
+	if e.pendingDrift {
+		return ReviewResult{}, ErrReviewFingerprintDecision
+	}
+	if len(decisions) == 0 {
+		return ReviewResult{}, fmt.Errorf("material review decision is required")
+	}
+	updated := cloneFindingSnapshots(e.run.candidateFindings)
+	seen := make(map[StableID]struct{}, len(decisions))
+	for _, requested := range decisions {
+		if !requested.FindingID.Valid() || (requested.Decision != DecisionFix && requested.Decision != DecisionDismiss) {
+			return ReviewResult{}, fmt.Errorf("invalid material decision for finding %q", requested.FindingID)
+		}
+		rationale := strings.TrimSpace(requested.Rationale)
+		if rationale == "" || strings.ContainsAny(rationale, "\r\n") {
+			return ReviewResult{}, fmt.Errorf("material finding decision requires a single-line user rationale")
+		}
+		if _, duplicate := seen[requested.FindingID]; duplicate {
+			return ReviewResult{}, fmt.Errorf("duplicate material decision for finding %s", requested.FindingID)
+		}
+		seen[requested.FindingID] = struct{}{}
+		index := findingIndex(updated, requested.FindingID)
+		if index < 0 {
+			return ReviewResult{}, fmt.Errorf("review finding %s is not present", requested.FindingID)
+		}
+		finding := updated[index]
+		if finding.Kind == FindingContractViolation {
+			if requested.Decision == DecisionDismiss {
+				return ReviewResult{}, fmt.Errorf("contract violation %s cannot be dismissed", requested.FindingID)
+			}
+			return ReviewResult{}, fmt.Errorf("contract violation %s is already fixed by reviewer decision", requested.FindingID)
+		}
+		if finding.Status != FindingOpen || finding.Decision.Decision != DecisionPending {
+			return ReviewResult{}, fmt.Errorf("material finding %s is not pending", requested.FindingID)
+		}
+		finding.Decision = FindingDecisionRecord{Decision: requested.Decision, DecidedBy: DecidedByUser, Rationale: rationale}
+		if requested.Decision == DecisionDismiss {
+			finding.Status = FindingDismissed
+		}
+		updated[index] = finding
+	}
+
+	data, err := os.ReadFile(filepath.Join(e.artifactRoot, "review.md"))
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("read live review report for material decision: %w", err)
+	}
+	for _, requested := range decisions {
+		data, err = rewriteFindingDecision(data, requested)
+		if err != nil {
+			return ReviewResult{}, err
+		}
+	}
+	for _, requested := range decisions {
+		label := "fix"
+		if requested.Decision == DecisionDismiss {
+			label = "dismiss"
+		}
+		decision := Decision{Author: DecisionUser, Decision: label + " review finding " + requested.FindingID.String(),
+			Rationale: strings.TrimSpace(requested.Rationale), Alternatives: []string{}, Supersedes: []int{}}
+		feature, err := e.repository.RecordDecision(e.run.request.FeatureID, e.run.request.Stage, e.run.role, decision)
+		if err != nil {
+			return ReviewResult{}, fmt.Errorf("record material review decision: %w", err)
+		}
+		e.feature = feature
+	}
+	if err := os.WriteFile(filepath.Join(e.artifactRoot, "review.md"), data, 0o600); err != nil {
+		return ReviewResult{}, fmt.Errorf("write live review report decision: %w", err)
+	}
+	_, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
+	validation, err := e.inspectReport(targetIDs)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	if !validation.Valid() {
+		return ReviewResult{}, fmt.Errorf("material decision made review report invalid: %s", conciseDocumentDiagnostics(validation.Diagnostics))
+	}
+	e.run.candidateFindings = findingsFromDocument(validation)
+	result, err := e.publishCandidate(e.run.turnFingerprint)
+	if err != nil || result.Outcome != ReviewReworkRequired || author == nil {
+		return result, err
+	}
+	return e.AutomaticRework(author)
+}
+
+// AutomaticRework runs the bounded author/reviewer loop for the current
+// numbered report. A newly discovered material question returns immediately;
+// the already-consumed attempt budget is retained for this run.
+func (e *ReviewEngine) AutomaticRework(author *StageEngine) (ReviewResult, error) {
+	if e.run == nil || e.thread == nil {
+		return ReviewResult{}, ErrReviewNotStarted
+	}
+	if author == nil {
+		return ReviewResult{}, fmt.Errorf("automatic review rework requires the current author session")
+	}
+	if e.pendingDrift {
+		return ReviewResult{}, ErrReviewFingerprintDecision
+	}
+	if policy, ok := author.Policy(); !ok || policy.Stage != e.run.request.Stage || author.featureID != e.run.request.FeatureID {
+		return ReviewResult{}, fmt.Errorf("automatic review rework requires the current %s author session for feature %s", e.run.request.Stage, e.run.request.FeatureID)
+	}
+	if len(pendingMaterialFindings(e.run.candidateFindings)) > 0 {
+		return ReviewResult{}, fmt.Errorf("material review decisions are still pending")
+	}
+
+	progress := make([]ReviewProgressEvent, 0, DefaultRetryLimit*2)
+	for {
+		scope := openFixFindings(e.run.candidateFindings)
+		if len(scope) == 0 {
+			result := e.baseResult(ReviewReportCompleted, ReviewCompleted, "")
+			result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
+			result.Progress = append([]ReviewProgressEvent(nil), progress...)
+			result.ReworkAttempts = e.run.reworkAttempts
+			e.terminal = true
+			return result, nil
+		}
+		if e.run.reworkAttempts >= DefaultRetryLimit {
+			return e.escalate(progress)
+		}
+
+		e.run.reworkAttempts++
+		started := ReviewProgressEvent{Kind: ReviewProgressReworkStarted,
+			Message: fmt.Sprintf("Automatic review rework attempt %d of %d started.", e.run.reworkAttempts, DefaultRetryLimit)}
+		progress = append(progress, started)
+		if err := e.recordAttempt(started.Message); err != nil {
+			return ReviewResult{}, err
+		}
+		if err := e.publishStatus(ReviewAutomaticRework); err != nil {
+			return ReviewResult{}, err
+		}
+
+		rework, err := author.ReworkFromReview(ReviewReworkRequest{ReportPath: e.currentReportPath(), Findings: scope})
+		if err != nil {
+			return ReviewResult{}, fmt.Errorf("automatic %s author rework: %w", e.run.request.Stage, err)
+		}
+		switch rework.Outcome {
+		case StageReviewDecisionRequired:
+			return e.captureAuthorDecision(rework, progress)
+		case StageAuthorDiagnostics:
+			return e.escalateWithMessage(progress, rework.Message)
+		case StageReviewReworkPublished:
+			progress = append(progress, ReviewProgressEvent{Kind: ReviewProgressDiff,
+				Message: fmt.Sprintf("Automatic review rework attempt %d published.", e.run.reworkAttempts), Diff: rework.Diff})
+		default:
+			return ReviewResult{}, fmt.Errorf("automatic review rework returned unexpected author outcome %q", rework.Outcome)
+		}
+
+		e.feature = rework.Feature
+		fingerprint, err := reviewFingerprint(e.feature, mustPolicy(e.run.request.Stage))
+		if err != nil {
+			return ReviewResult{}, err
+		}
+		e.run.turnFingerprint = fingerprint
+		validation, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
+		if !validation.Valid() {
+			return e.escalateWithMessage(progress, conciseDocumentDiagnostics(validation.Diagnostics))
+		}
+		result, err := e.runTurn("Recheck the automatically reworked current document against every finding in the same review.md. Preserve immutable finding fields and user/reviewer decision provenance. Mark a fix resolved only after verifying the actual document change, keep an unfixed problem open, and add a new pending material finding only when a new user decision is genuinely required.", targetIDs, true)
+		if err != nil {
+			return ReviewResult{}, err
+		}
+		result.Progress = append([]ReviewProgressEvent(nil), progress...)
+		result.ReworkAttempts = e.run.reworkAttempts
+		switch result.Outcome {
+		case ReviewReportCompleted, ReviewMaterialDecisions, ReviewFingerprintChanged:
+			return result, nil
+		case ReviewReworkRequired:
+			if e.run.reworkAttempts >= DefaultRetryLimit {
+				return e.escalate(progress)
+			}
+			continue
+		case ReviewReportDiagnostics:
+			return e.escalateWithMessage(progress, result.Message)
+		default:
+			return ReviewResult{}, fmt.Errorf("automatic review recheck returned unexpected outcome %q", result.Outcome)
+		}
+	}
+}
+
+func (e *ReviewEngine) captureAuthorDecision(authorResult StageResult, progress []ReviewProgressEvent) (ReviewResult, error) {
+	message := strings.TrimSpace(authorResult.Message)
+	if len(authorResult.Decisions) > 0 {
+		var details strings.Builder
+		for _, decision := range authorResult.Decisions {
+			fmt.Fprintf(&details, "\n- %s (rationale: %s)", decision.Decision, decision.Rationale)
+		}
+		message += "\nAuthor-reported material decision(s):" + details.String()
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "The author found a new material decision during automatic review rework."
+	}
+	_, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
+	result, err := e.runTurn("The author stopped automatic rework because a new material decision is required. Update the same review.md with a new open material finding whose decision is pending, preserving every existing finding. Then return an artifact envelope. Author message:\n\n"+message, targetIDs, true)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	result.Progress = append([]ReviewProgressEvent(nil), progress...)
+	result.ReworkAttempts = e.run.reworkAttempts
+	if result.Outcome == ReviewMaterialDecisions {
+		return result, nil
+	}
+	result.Outcome = ReviewAuthorDecision
+	result.Status = ReviewAwaitingDecisions
+	result.Message = message
+	if err := e.publishStatus(ReviewAwaitingDecisions); err != nil {
+		return ReviewResult{}, err
+	}
+	result.Feature = e.feature
+	return result, nil
+}
+
+func (e *ReviewEngine) escalate(progress []ReviewProgressEvent) (ReviewResult, error) {
+	return e.escalateWithMessage(progress, conciseOpenFindings(e.run.candidateFindings))
+}
+
+func (e *ReviewEngine) escalateWithMessage(progress []ReviewProgressEvent, message string) (ReviewResult, error) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "Automatic review rework exhausted without resolving every finding."
+	}
+	if err := e.publishStatus(ReviewEscalated); err != nil {
+		return ReviewResult{}, err
+	}
+	entry, err := NewMemLogEntry(e.run.request.Stage, e.run.role, MemLogError, e.now(), "automatic review rework escalated: "+message)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	feature, err := e.repository.RecordActivity(e.run.request.FeatureID, entry)
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("record review escalation: %w", err)
+	}
+	e.feature = feature
+	e.terminal = true
+	result := e.baseResult(ReviewEscalation, ReviewEscalated, message)
+	result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
+	result.Progress = append([]ReviewProgressEvent(nil), progress...)
+	result.ReworkAttempts = e.run.reworkAttempts
+	return result, nil
+}
+
+func (e *ReviewEngine) publishStatus(status ReviewStatus) error {
+	accepted := e.run.turnFingerprint
+	publication, err := e.repository.PublishReview(ReviewArtifactRequest{
+		FeatureID: e.run.request.FeatureID, Stage: e.run.request.Stage, ArtifactRoot: e.artifactRoot,
+		RunID: e.run.runID, Status: status, Original: e.run.original, Accepted: &accepted,
+		Attempts: e.run.reworkAttempts, ActiveIDs: reviewTargetIDs(e.feature, e.run.request.Stage),
+		PreviousFindings: e.run.previousFindings, Provider: e.run.request.Provider, Model: e.run.request.Model,
+		CreatedAt: e.run.createdAt, UpdatedAt: e.now(),
+	})
+	if err != nil {
+		return fmt.Errorf("publish %s review status %s: %w", e.run.request.Stage, status, err)
+	}
+	if !publication.Published {
+		return fmt.Errorf("publish %s review status %s: report became invalid: %s", e.run.request.Stage, status, conciseDocumentDiagnostics(publication.Validation.Diagnostics))
+	}
+	e.feature = publication.Feature
+	e.run.runID = publication.RunID
+	return nil
+}
+
+func (e *ReviewEngine) recordAttempt(message string) error {
+	entry, err := NewMemLogEntry(e.run.request.Stage, e.run.role, MemLogAttempt, e.now(), message)
+	if err != nil {
+		return err
+	}
+	feature, err := e.repository.RecordActivity(e.run.request.FeatureID, entry)
+	if err != nil {
+		return fmt.Errorf("record automatic review attempt: %w", err)
+	}
+	e.feature = feature
+	return nil
+}
+
+func (e *ReviewEngine) currentReportPath() string {
+	return filepath.Join(e.feature.Target.Directory, reviewRelativePath(e.run.request.Stage, e.run.runID))
 }
 
 func (e *ReviewEngine) DecideFingerprint(action ReviewFingerprintAction) (ReviewResult, error) {
@@ -203,7 +537,7 @@ func (e *ReviewEngine) DecideFingerprint(action ReviewFingerprintAction) (Review
 
 func (e *ReviewEngine) runTurn(prompt string, targetIDs []StableID, artifactRequired bool) (ReviewResult, error) {
 	for parserAttempt := 0; parserAttempt < DefaultRetryLimit; parserAttempt++ {
-		e.run.attempts++
+		e.run.reviewerTurns++
 		stage := e.run.request.Stage
 		raw, err := e.runner.RunTurn(e.thread, prompt)
 		if err != nil {
@@ -275,7 +609,7 @@ func (e *ReviewEngine) publishProvisional() error {
 	publication, err := e.repository.PublishReview(ReviewArtifactRequest{
 		FeatureID: e.run.request.FeatureID, Stage: e.run.request.Stage, ArtifactRoot: e.artifactRoot,
 		RunID: e.run.runID, Status: ReviewRunning, Original: e.run.original,
-		Attempts: min(e.run.attempts, DefaultRetryLimit), ActiveIDs: reviewTargetIDs(e.feature, e.run.request.Stage),
+		Attempts: e.run.reworkAttempts, ActiveIDs: reviewTargetIDs(e.feature, e.run.request.Stage),
 		PreviousFindings: e.run.previousFindings, Provider: e.run.request.Provider, Model: e.run.request.Model,
 		CreatedAt: e.run.createdAt, UpdatedAt: e.now(),
 	})
@@ -296,7 +630,7 @@ func (e *ReviewEngine) publishCandidate(accepted Fingerprint) (ReviewResult, err
 	publication, err := e.repository.PublishReview(ReviewArtifactRequest{
 		FeatureID: e.run.request.FeatureID, Stage: e.run.request.Stage, ArtifactRoot: e.artifactRoot,
 		RunID: e.run.runID, Status: status, Original: e.run.original, Accepted: &acceptedCopy,
-		Attempts: min(e.run.attempts, DefaultRetryLimit), ActiveIDs: reviewTargetIDs(e.feature, e.run.request.Stage),
+		Attempts: e.run.reworkAttempts, ActiveIDs: reviewTargetIDs(e.feature, e.run.request.Stage),
 		PreviousFindings: e.run.previousFindings, Provider: e.run.request.Provider, Model: e.run.request.Model,
 		CreatedAt: e.run.createdAt, UpdatedAt: e.now(),
 	})
@@ -321,6 +655,7 @@ func (e *ReviewEngine) publishCandidate(accepted Fingerprint) (ReviewResult, err
 	result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
 	result.MaterialFindings = pendingMaterialFindings(e.run.candidateFindings)
 	result.CurrentFingerprint = accepted
+	result.ReworkAttempts = e.run.reworkAttempts
 	e.terminal = status == ReviewCompleted
 	return result, nil
 }
@@ -360,6 +695,7 @@ func (e *ReviewEngine) baseResult(outcome ReviewOutcome, status ReviewStatus, me
 		result.Path = filepath.ToSlash(reviewRelativePath(e.run.request.Stage, e.run.runID))
 		result.OriginalFingerprint = e.run.original
 		result.CurrentFingerprint = e.run.turnFingerprint
+		result.ReworkAttempts = e.run.reworkAttempts
 	}
 	return result
 }
@@ -532,6 +868,91 @@ func pendingMaterialFindings(findings []FindingSnapshot) []FindingSnapshot {
 		}
 	}
 	return result
+}
+
+func openFixFindings(findings []FindingSnapshot) []FindingSnapshot {
+	result := make([]FindingSnapshot, 0)
+	for _, finding := range findings {
+		if finding.Status == FindingOpen && finding.Decision.Decision == DecisionFix {
+			result = append(result, cloneFindingSnapshot(finding))
+		}
+	}
+	return result
+}
+
+func findingIndex(findings []FindingSnapshot, id StableID) int {
+	for i := range findings {
+		if findings[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func rewriteFindingDecision(data []byte, requested MaterialFindingDecision) ([]byte, error) {
+	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	start, end := -1, len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+		fields := strings.Fields(heading)
+		if len(fields) == 0 {
+			continue
+		}
+		id, err := ParseStableID(fields[0])
+		if err != nil || (id.Family() != IDSpecFinding && id.Family() != IDPlanFinding) {
+			continue
+		}
+		if start >= 0 {
+			end = i
+			break
+		}
+		if id == requested.FindingID {
+			start = i
+		}
+	}
+	if start < 0 {
+		return nil, fmt.Errorf("review finding %s is not present in review.md", requested.FindingID)
+	}
+	values := map[string]string{
+		"Decision":   string(requested.Decision),
+		"Decided-by": string(DecidedByUser),
+		"Rationale":  strings.TrimSpace(requested.Rationale),
+	}
+	if requested.Decision == DecisionDismiss {
+		values["Status"] = string(FindingDismissed)
+	}
+	for name, value := range values {
+		found := false
+		prefix := strings.ToLower(name) + ":"
+		for i := start + 1; i < end; i++ {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(lines[i])), prefix) {
+				lines[i] = name + ": " + value
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("review finding %s has no %s field", requested.FindingID, name)
+		}
+	}
+	return []byte(strings.Join(lines, "\n")), nil
+}
+
+func conciseOpenFindings(findings []FindingSnapshot) string {
+	open := openFixFindings(findings)
+	if len(open) == 0 {
+		return "Automatic review rework exhausted without a verified resolution."
+	}
+	var result strings.Builder
+	result.WriteString("Automatic review rework exhausted; unresolved findings:")
+	for _, finding := range open {
+		fmt.Fprintf(&result, "\n- %s: %s", finding.ID, finding.Problem)
+	}
+	return result.String()
 }
 
 func cloneFindingSnapshots(values []FindingSnapshot) []FindingSnapshot {

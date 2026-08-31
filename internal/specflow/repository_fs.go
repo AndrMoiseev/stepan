@@ -523,6 +523,7 @@ func (r *FSFeatureRepository) PublishReview(request ReviewArtifactRequest) (Revi
 			sort.Slice(stageState.Reviews, func(i, j int) bool { return stageState.Reviews[i].ID < stageState.Reviews[j].ID })
 		}
 		stageState.ReviewStatus = request.Status
+		stageState.RetryCounters.ReviewRework = request.Attempts
 		snapshot.Stages[request.Stage] = stageState
 		state, err = NewFlowStateFromSnapshot(snapshot)
 		if err != nil {
