@@ -59,6 +59,12 @@ func (r *FSFeatureRepository) Approve(request ApproveStageRequest) (PhaseCommitR
 	stageState.ApprovedHash = stageState.CurrentHash
 	stageState.Outdated = false
 	snapshot.Stages[request.Stage] = stageState
+	if next, ok := nextPlanningStage(request.Stage); ok {
+		nextState := snapshot.Stages[next]
+		nextState.Status = StageDrafting
+		snapshot.Stages[next] = nextState
+		snapshot.CurrentStage = next
+	}
 	committedState, err := NewFlowStateFromSnapshot(snapshot)
 	if err != nil {
 		return PhaseCommitResult{}, err
@@ -77,6 +83,17 @@ func (r *FSFeatureRepository) Approve(request ApproveStageRequest) (PhaseCommitR
 		return PhaseCommitResult{}, err
 	}
 	return r.finishSingleFeatureCommit(transaction, feature, request.At)
+}
+
+func nextPlanningStage(stage Stage) (Stage, bool) {
+	switch stage {
+	case StageIntent:
+		return StageSpec, true
+	case StageSpec:
+		return StagePlan, true
+	default:
+		return "", false
+	}
 }
 
 func validateApprovalRequest(request ApproveStageRequest) error {

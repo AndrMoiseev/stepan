@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -469,4 +470,541 @@ func diffLines(value string) []string {
 		return lines[:len(lines)-1]
 	}
 	return lines
+}
+
+// ControllerCommandKind is the provider-neutral command surface of the
+// intent -> spec -> plan control plane. Terminal parsing is deliberately kept
+// outside this package boundary.
+type ControllerCommandKind string
+
+const (
+	ControllerAuthorMessage     ControllerCommandKind = "author_message"
+	ControllerRevisionDecision  ControllerCommandKind = "revision_decision"
+	ControllerStartReview       ControllerCommandKind = "review"
+	ControllerReviewMessage     ControllerCommandKind = "review_message"
+	ControllerReviewDecision    ControllerCommandKind = "review_decision"
+	ControllerApplyReview       ControllerCommandKind = "apply_review"
+	ControllerFingerprintChoice ControllerCommandKind = "review_fingerprint_decision"
+	ControllerApprove           ControllerCommandKind = "approve"
+	ControllerReviseSpec        ControllerCommandKind = "revise_spec"
+	ControllerStatus            ControllerCommandKind = "status"
+	ControllerClose             ControllerCommandKind = "close"
+)
+
+type ControllerCommand struct {
+	Kind              ControllerCommandKind
+	Message           string
+	RevisionAction    RevisionAction
+	ReworkScope       string
+	ReviewDecision    MaterialFindingDecision
+	FingerprintAction ReviewFingerprintAction
+	Provider          string
+	Model             string
+	RuntimeContext    string
+}
+
+type ControllerEvent string
+
+const (
+	ControllerStateShown      ControllerEvent = "state_shown"
+	ControllerAuthorStarted   ControllerEvent = "author_started"
+	ControllerAuthorUpdated   ControllerEvent = "author_updated"
+	ControllerReviewUpdated   ControllerEvent = "review_updated"
+	ControllerApprovalBlocked ControllerEvent = "approval_blocked"
+	ControllerStageCommitted  ControllerEvent = "stage_committed"
+	ControllerSessionClosed   ControllerEvent = "session_closed"
+)
+
+var (
+	ErrControllerNotOpen        = errors.New("feature controller is not open")
+	ErrControllerCommandInvalid = errors.New("controller command is unavailable")
+)
+
+type featureAuthorEngine interface {
+	Policy() (StagePolicy, bool)
+	Start(StartStageRequest) (StagePolicy, error)
+	Submit(string) (StageResult, error)
+	Decide(RevisionAction, string) (StageResult, error)
+	Close() error
+}
+
+type featureReviewEngine interface {
+	Start(StartReviewRequest) (ReviewResult, error)
+	Submit(string) (ReviewResult, error)
+	Apply() (ReviewResult, error)
+	Decide(MaterialFindingDecision) (ReviewResult, error)
+	DecideFingerprint(ReviewFingerprintAction) (ReviewResult, error)
+	Close() error
+}
+
+type reviewEngineBinding struct {
+	reviewer *ReviewEngine
+	author   *StageEngine
+}
+
+func (b reviewEngineBinding) Start(request StartReviewRequest) (ReviewResult, error) {
+	return b.reviewer.StartWithAuthor(request, b.author)
+}
+func (b reviewEngineBinding) Submit(message string) (ReviewResult, error) {
+	return b.reviewer.SubmitWithAuthor(message, b.author)
+}
+func (b reviewEngineBinding) Apply() (ReviewResult, error) {
+	return b.reviewer.ApplyPendingMaterial(b.author)
+}
+func (b reviewEngineBinding) Decide(decision MaterialFindingDecision) (ReviewResult, error) {
+	return b.reviewer.DecideMaterial(decision, b.author)
+}
+func (b reviewEngineBinding) DecideFingerprint(action ReviewFingerprintAction) (ReviewResult, error) {
+	return b.reviewer.DecideFingerprint(action)
+}
+func (b reviewEngineBinding) Close() error { return b.reviewer.Close() }
+
+// FeatureController is the single in-process owner of canonical planning-flow
+// state. It accepts a new snapshot only after a repository or engine operation
+// has durably succeeded, and reloads that snapshot before every user command.
+type FeatureController struct {
+	repository FeatureRepository
+	author     featureAuthorEngine
+	reviewer   featureReviewEngine
+	now        func() time.Time
+
+	featureID       string
+	feature         FeatureSnapshot
+	revisionPending bool
+	lastStage       StageResult
+	lastReview      ReviewResult
+}
+
+func NewFeatureController(repository FeatureRepository, author *StageEngine, reviewer *ReviewEngine) (*FeatureController, error) {
+	if repository == nil || author == nil || reviewer == nil {
+		return nil, fmt.Errorf("create feature controller: repository, author engine, and review engine are required")
+	}
+	return newFeatureController(repository, author, reviewEngineBinding{reviewer: reviewer, author: author}), nil
+}
+
+func newFeatureController(repository FeatureRepository, author featureAuthorEngine, reviewer featureReviewEngine) *FeatureController {
+	return &FeatureController{repository: repository, author: author, reviewer: reviewer, now: time.Now}
+}
+
+// Begin creates a durable feature and opens only its intent author. If opening
+// the runtime session fails, the returned progress still describes the created
+// durable flow and can be resumed later.
+func (c *FeatureController) Begin(request CreateFeatureRequest, runtimeContext string) (Progress, error) {
+	if c.repository == nil || c.author == nil || c.reviewer == nil {
+		return Progress{}, fmt.Errorf("begin feature: controller dependencies are required")
+	}
+	feature, err := c.repository.Create(request)
+	if err != nil {
+		return Progress{}, fmt.Errorf("begin feature: %w", err)
+	}
+	c.accept(feature)
+	return c.startStage(StageIntent, runtimeContext)
+}
+
+// Open selects an existing flow without implicitly creating a provider
+// session. Resume/session policy can therefore decide when to start the role.
+func (c *FeatureController) Open(featureID string) (Progress, error) {
+	if strings.TrimSpace(featureID) == "" {
+		return Progress{}, fmt.Errorf("open feature: feature ID is required")
+	}
+	c.featureID = featureID
+	if err := c.reload(); err != nil {
+		return c.progress(ControllerStateShown), fmt.Errorf("open feature: %w", err)
+	}
+	return c.progress(ControllerStateShown), nil
+}
+
+func (c *FeatureController) StartStage(stage Stage, runtimeContext string) (Progress, error) {
+	if err := c.reloadForCommand(); err != nil {
+		return c.progress(ControllerStateShown), err
+	}
+	return c.startStage(stage, runtimeContext)
+}
+
+func (c *FeatureController) StartCurrentStage(runtimeContext string) (Progress, error) {
+	if err := c.reloadForCommand(); err != nil {
+		return c.progress(ControllerStateShown), err
+	}
+	return c.startStage(c.feature.State.CurrentStage(), runtimeContext)
+}
+
+func (c *FeatureController) Execute(command ControllerCommand) (Progress, error) {
+	if err := c.reloadForCommand(); err != nil {
+		return c.progress(ControllerStateShown), err
+	}
+	switch command.Kind {
+	case ControllerAuthorMessage:
+		return c.authorMessage(command.Message)
+	case ControllerRevisionDecision:
+		return c.revisionDecision(command.RevisionAction, command.ReworkScope)
+	case ControllerStartReview:
+		return c.startReview(command)
+	case ControllerReviewMessage:
+		return c.reviewMessage(command.Message)
+	case ControllerReviewDecision:
+		return c.reviewDecision(command.ReviewDecision)
+	case ControllerApplyReview:
+		return c.applyReview()
+	case ControllerFingerprintChoice:
+		return c.fingerprintDecision(command.FingerprintAction)
+	case ControllerApprove:
+		return c.approve(command.RuntimeContext)
+	case ControllerReviseSpec:
+		return c.unavailable("/revise-spec requires the stage-specific external revision lifecycle")
+	case ControllerStatus:
+		return c.progress(ControllerStateShown), nil
+	case ControllerClose:
+		return c.close()
+	default:
+		return c.unavailable(fmt.Sprintf("unknown controller command %q", command.Kind))
+	}
+}
+
+func (c *FeatureController) AuthorMessage(message string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerAuthorMessage, Message: message})
+}
+func (c *FeatureController) RevisionDecision(action RevisionAction, scope string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerRevisionDecision, RevisionAction: action, ReworkScope: scope})
+}
+func (c *FeatureController) StartReview(provider, model, runtimeContext string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerStartReview, Provider: provider, Model: model, RuntimeContext: runtimeContext})
+}
+func (c *FeatureController) ReviewMessage(message string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerReviewMessage, Message: message})
+}
+func (c *FeatureController) ApplyReview() (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerApplyReview})
+}
+func (c *FeatureController) ReviewDecision(decision MaterialFindingDecision) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerReviewDecision, ReviewDecision: decision})
+}
+func (c *FeatureController) ReviewFingerprintDecision(action ReviewFingerprintAction) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerFingerprintChoice, FingerprintAction: action})
+}
+func (c *FeatureController) Approve(runtimeContext string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerApprove, RuntimeContext: runtimeContext})
+}
+func (c *FeatureController) Status() (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerStatus})
+}
+func (c *FeatureController) Close() (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerClose})
+}
+
+func (c *FeatureController) startStage(stage Stage, runtimeContext string) (Progress, error) {
+	current := c.feature.State.CurrentStage()
+	if stage != current {
+		return c.unavailable(fmt.Sprintf("cannot start %s author while current stage is %s", stage, current))
+	}
+	state, _ := c.feature.State.Stage(stage)
+	if state.Status != StageDrafting && state.Status != StagePublished {
+		return c.unavailable(fmt.Sprintf("cannot start %s author while stage is %s", stage, state.Status))
+	}
+	if policy, active := c.author.Policy(); active {
+		if policy.Stage == stage {
+			return c.progress(ControllerAuthorStarted), nil
+		}
+		return c.unavailable(fmt.Sprintf("%s author session is already active", policy.Stage))
+	}
+	if _, err := c.author.Start(StartStageRequest{FeatureID: c.featureID, Stage: stage, RuntimeContext: runtimeContext}); err != nil {
+		return c.fail("start author", err)
+	}
+	return c.progress(ControllerAuthorStarted), nil
+}
+
+func (c *FeatureController) authorMessage(message string) (Progress, error) {
+	stage := c.feature.State.CurrentStage()
+	state, _ := c.feature.State.Stage(stage)
+	if c.revisionPending || reviewBlocksAuthorInput(state.ReviewStatus) {
+		return c.unavailable("author message is not available while a decision or review is pending")
+	}
+	if state.Status != StageDrafting && state.Status != StagePublished {
+		return c.unavailable(fmt.Sprintf("author message is unavailable while %s is %s", stage, state.Status))
+	}
+	if policy, active := c.author.Policy(); !active || policy.Stage != stage {
+		return c.unavailable(fmt.Sprintf("%s author session is not active", stage))
+	}
+	result, err := c.author.Submit(message)
+	if err != nil {
+		return c.fail("submit author message", err)
+	}
+	c.accept(result.Feature)
+	c.lastStage = result
+	c.revisionPending = result.Outcome == StageRevisionPending
+	return c.progress(ControllerAuthorUpdated), nil
+}
+
+func (c *FeatureController) revisionDecision(action RevisionAction, scope string) (Progress, error) {
+	if !c.revisionPending {
+		return c.unavailable("no author revision is awaiting a decision")
+	}
+	result, err := c.author.Decide(action, scope)
+	if err != nil {
+		return c.fail("decide author revision", err)
+	}
+	c.accept(result.Feature)
+	c.lastStage = result
+	c.revisionPending = result.Outcome == StageRevisionPending
+	return c.progress(ControllerAuthorUpdated), nil
+}
+
+func (c *FeatureController) startReview(command ControllerCommand) (Progress, error) {
+	stage := c.feature.State.CurrentStage()
+	state, _ := c.feature.State.Stage(stage)
+	policy, _ := PolicyForStage(stage)
+	if !policy.ReviewAvailable || state.Status != StagePublished || c.revisionPending {
+		return c.unavailable(fmt.Sprintf("/review is unavailable for %s in %s", stage, state.Status))
+	}
+	if authorPolicy, active := c.author.Policy(); !active || authorPolicy.Stage != stage {
+		return c.unavailable(fmt.Sprintf("%s author session is required before review", stage))
+	}
+	result, err := c.reviewer.Start(StartReviewRequest{FeatureID: c.featureID, Stage: stage, Provider: command.Provider, Model: command.Model, RuntimeContext: command.RuntimeContext})
+	if err != nil {
+		return c.fail("start review", err)
+	}
+	c.accept(result.Feature)
+	c.lastReview = result
+	return c.progress(ControllerReviewUpdated), nil
+}
+
+func (c *FeatureController) reviewMessage(message string) (Progress, error) {
+	if !reviewAcceptsInput(c.currentReviewStatus()) {
+		return c.unavailable("review dialogue is not active")
+	}
+	result, err := c.reviewer.Submit(message)
+	if err != nil {
+		return c.fail("submit review message", err)
+	}
+	c.accept(result.Feature)
+	c.lastReview = result
+	return c.progress(ControllerReviewUpdated), nil
+}
+
+func (c *FeatureController) applyReview() (Progress, error) {
+	if c.currentReviewStatus() != ReviewAwaitingDecisions {
+		return c.unavailable("/apply requires pending material review decisions")
+	}
+	result, err := c.reviewer.Apply()
+	if err != nil {
+		return c.fail("apply review findings", err)
+	}
+	c.accept(result.Feature)
+	c.lastReview = result
+	return c.progress(ControllerReviewUpdated), nil
+}
+
+func (c *FeatureController) reviewDecision(decision MaterialFindingDecision) (Progress, error) {
+	if c.currentReviewStatus() != ReviewAwaitingDecisions {
+		return c.unavailable("no material review decision is pending")
+	}
+	result, err := c.reviewer.Decide(decision)
+	if err != nil {
+		return c.fail("record review decision", err)
+	}
+	c.accept(result.Feature)
+	c.lastReview = result
+	return c.progress(ControllerReviewUpdated), nil
+}
+
+func (c *FeatureController) fingerprintDecision(action ReviewFingerprintAction) (Progress, error) {
+	if len(c.lastReview.FingerprintActions) == 0 {
+		return c.unavailable("no review fingerprint decision is pending")
+	}
+	result, err := c.reviewer.DecideFingerprint(action)
+	if err != nil {
+		return c.fail("decide review fingerprint", err)
+	}
+	c.accept(result.Feature)
+	c.lastReview = result
+	return c.progress(ControllerReviewUpdated), nil
+}
+
+func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
+	stage := c.feature.State.CurrentStage()
+	state, _ := c.feature.State.Stage(stage)
+	if state.Status != StagePublished || c.revisionPending {
+		return c.unavailable(fmt.Sprintf("/approve requires a published %s without a pending revision", stage))
+	}
+	if !approvalReviewReady(state.ReviewStatus) {
+		return c.unavailable(fmt.Sprintf("/approve is blocked while %s review is %s", stage, state.ReviewStatus))
+	}
+	result, err := c.repository.Approve(ApproveStageRequest{FeatureID: c.featureID, Stage: stage, At: c.now()})
+	if err != nil {
+		if result.Feature.Target.ID != "" {
+			c.accept(result.Feature)
+		}
+		return c.fail("approve stage", err)
+	}
+	c.accept(result.Feature)
+	if !result.Committed {
+		progress := c.progress(ControllerApprovalBlocked)
+		progress.Blocking = append([]ApprovalBlocker(nil), result.Blocking...)
+		return progress, nil
+	}
+
+	closeErr := errors.Join(c.reviewer.Close(), c.author.Close())
+	c.revisionPending = false
+	c.lastStage = StageResult{}
+	c.lastReview = ReviewResult{}
+	if reloadErr := c.reload(); reloadErr != nil {
+		return c.progress(ControllerStageCommitted), errors.Join(closeErr, reloadErr)
+	}
+	if closeErr != nil {
+		return c.progress(ControllerStageCommitted), fmt.Errorf("close committed %s sessions: %w", stage, closeErr)
+	}
+	if next := c.feature.State.CurrentStage(); next != stage {
+		return c.startStage(next, runtimeContext)
+	}
+	return c.progress(ControllerStageCommitted), nil
+}
+
+func (c *FeatureController) close() (Progress, error) {
+	err := errors.Join(c.reviewer.Close(), c.author.Close())
+	c.revisionPending = false
+	c.lastStage = StageResult{}
+	c.lastReview = ReviewResult{}
+	if reloadErr := c.reload(); reloadErr != nil {
+		err = errors.Join(err, reloadErr)
+	}
+	progress := c.progress(ControllerSessionClosed)
+	if err != nil {
+		return progress, fmt.Errorf("close feature session: %w", err)
+	}
+	return progress, nil
+}
+
+func (c *FeatureController) reloadForCommand() error {
+	if strings.TrimSpace(c.featureID) == "" {
+		return ErrControllerNotOpen
+	}
+	if err := c.reload(); err != nil {
+		return fmt.Errorf("load command snapshot: %w", err)
+	}
+	if !c.feature.Changes.Empty() {
+		return c.feature.Changes.Error()
+	}
+	return nil
+}
+
+func (c *FeatureController) reload() error {
+	feature, err := c.repository.Load(c.featureID)
+	if err != nil {
+		return err
+	}
+	c.accept(feature)
+	return nil
+}
+
+func (c *FeatureController) accept(feature FeatureSnapshot) {
+	if feature.Target.ID == "" {
+		return
+	}
+	c.featureID = feature.Target.ID
+	c.feature = feature
+}
+
+func (c *FeatureController) fail(operation string, cause error) (Progress, error) {
+	reloadErr := c.reload()
+	if reloadErr != nil {
+		cause = errors.Join(cause, fmt.Errorf("reload durable snapshot: %w", reloadErr))
+	}
+	return c.progress(ControllerStateShown), fmt.Errorf("%s: %w", operation, cause)
+}
+
+func (c *FeatureController) unavailable(message string) (Progress, error) {
+	return c.progress(ControllerStateShown), fmt.Errorf("%w: %s", ErrControllerCommandInvalid, message)
+}
+
+func (c *FeatureController) currentReviewStatus() ReviewStatus {
+	state, ok := c.feature.State.Stage(c.feature.State.CurrentStage())
+	if !ok {
+		return ReviewNotStarted
+	}
+	return state.ReviewStatus
+}
+
+func (c *FeatureController) progress(event ControllerEvent) Progress {
+	if c.feature.Target.ID == "" {
+		return Progress{Event: event}
+	}
+	hints, textAllowed := controllerHints(c.feature.State, c.revisionPending)
+	progress, err := NewProgress(c.feature.State, hints, textAllowed)
+	if err != nil {
+		return Progress{Event: event, FeatureID: c.featureID}
+	}
+	progress.Event = event
+	progress.FeatureID = c.featureID
+	progress.Message = c.lastStage.Message
+	progress.Diff = c.lastStage.Diff
+	progress.Diagnostics = append([]DocumentDiagnostic(nil), c.lastStage.Diagnostics...)
+	progress.Revision = append([]RevisionAction(nil), c.lastStage.RevisionActions...)
+	progress.Review = c.lastReview
+	if len(c.lastReview.Diagnostics) > 0 {
+		progress.Diagnostics = append([]DocumentDiagnostic(nil), c.lastReview.Diagnostics...)
+	}
+	progress.Documents = make([]DocumentPath, 0, len(c.feature.Documents))
+	for _, stage := range stages {
+		if document, ok := c.feature.Documents[stage]; ok {
+			progress.Documents = append(progress.Documents, DocumentPath{Stage: stage, Path: document.Path})
+			if stage == c.feature.State.CurrentStage() {
+				progress.Path = document.Path
+			}
+		}
+	}
+	return progress
+}
+
+func controllerHints(state FlowState, revisionPending bool) ([]CommandHint, bool) {
+	stage := state.CurrentStage()
+	stageState, _ := state.Stage(stage)
+	if revisionPending {
+		return mustCommandHints([][2]string{{"/status", "Show the durable flow state."}, {"/exit", "Close the current session and discard the pending draft."}}), false
+	}
+	pairs := make([][2]string, 0, 5)
+	textAllowed := stageState.Status == StageDrafting || stageState.Status == StagePublished
+	if stageState.Status == StagePublished && (stage == StageSpec || stage == StagePlan) &&
+		(stageState.ReviewStatus == ReviewNotStarted || stageState.ReviewStatus == ReviewCompleted || stageState.ReviewStatus == ReviewEscalated) {
+		pairs = append(pairs, [2]string{"/review", "Start agent review of the current published document."})
+	}
+	if stageState.ReviewStatus == ReviewAwaitingDecisions {
+		pairs = append(pairs, [2]string{"/apply", "Accept every pending material review recommendation."})
+	}
+	if stageState.Status == StagePublished && approvalReviewReady(stageState.ReviewStatus) {
+		pairs = append(pairs, [2]string{"/approve", "Validate and commit the current stage."})
+	}
+	if stage == StagePlan && stageState.Status != StageCommitted {
+		pairs = append(pairs, [2]string{"/revise-spec", "Open the specification author dialogue."})
+	}
+	pairs = append(pairs, [2]string{"/status", "Show stages, documents, and review state."})
+	pairs = append(pairs, [2]string{"/exit", "Close the current session while preserving the flow."})
+	return mustCommandHints(pairs), textAllowed && !reviewBlocksAuthorInput(stageState.ReviewStatus)
+}
+
+func mustCommandHints(values [][2]string) []CommandHint {
+	result := make([]CommandHint, 0, len(values))
+	for _, value := range values {
+		hint, err := NewCommandHint(value[0], value[1])
+		if err != nil {
+			panic(err)
+		}
+		result = append(result, hint)
+	}
+	return result
+}
+
+func approvalReviewReady(status ReviewStatus) bool {
+	return status == ReviewNotStarted || status == ReviewCompleted
+}
+
+func reviewBlocksAuthorInput(status ReviewStatus) bool {
+	switch status {
+	case ReviewRunning, ReviewAwaitingDecisions, ReviewAutomaticRework:
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewAcceptsInput(status ReviewStatus) bool {
+	return status == ReviewRunning || status == ReviewAwaitingDecisions || status == ReviewEscalated
 }

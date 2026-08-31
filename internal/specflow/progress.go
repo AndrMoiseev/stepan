@@ -10,6 +10,11 @@ type CommandHint struct {
 	Description string
 }
 
+type DocumentPath struct {
+	Stage Stage
+	Path  string
+}
+
 func NewCommandHint(command, description string) (CommandHint, error) {
 	command = strings.TrimSpace(command)
 	description = strings.TrimSpace(description)
@@ -28,6 +33,12 @@ type Progress struct {
 	ReviewStatus ReviewStatus
 	CommandHints []CommandHint
 	TextAllowed  bool
+	Documents    []DocumentPath
+	Diagnostics  []DocumentDiagnostic
+	Blocking     []ApprovalBlocker
+	Event        ControllerEvent
+	Review       ReviewResult
+	Revision     []RevisionAction
 
 	Path      string
 	Message   string

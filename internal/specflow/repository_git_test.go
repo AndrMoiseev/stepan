@@ -98,6 +98,96 @@ func TestRepositoryApprovalValidatesAndCommitsOnlyFeature(t *testing.T) {
 	}
 }
 
+func TestRepositorySequentialApprovalsPersistCurrentStage(t *testing.T) {
+	root := initializedCommitRepository(t)
+	repository, featureID := publishedIntentFeature(t, root, "canonical-stages", "Canonical stages")
+
+	intentResult, err := repository.Approve(ApproveStageRequest{FeatureID: featureID, Stage: StageIntent, At: repositoryTestTime.Add(time.Minute)})
+	if err != nil || !intentResult.Committed {
+		t.Fatalf("approve intent = %#v, %v", intentResult, err)
+	}
+	assertCurrentControllerStage(t, intentResult.Feature, StageSpec, StageDrafting)
+	durableIntent := loadDurableControllerStage(t, root, featureID, StageSpec, StageDrafting)
+
+	intent := durableIntent.Documents[StageIntent]
+	specRoot := writeRepositoryArtifact(t, root, "spec.md", validRepositorySpec())
+	specPublication, err := repository.PublishAuthorDraft(DraftArtifactRequest{
+		FeatureID: featureID, Stage: StageSpec, ArtifactRoot: specRoot, Mode: ValidateDraft,
+		UpstreamHashes: []UpstreamHash{{Stage: StageIntent, Hash: intent.Hash}}, At: repositoryTestTime.Add(2 * time.Minute),
+	})
+	if err != nil || !specPublication.Published {
+		t.Fatalf("publish spec = %#v, %v", specPublication.Validation.Diagnostics, err)
+	}
+	specResult, err := repository.Approve(ApproveStageRequest{FeatureID: featureID, Stage: StageSpec, At: repositoryTestTime.Add(3 * time.Minute)})
+	if err != nil || !specResult.Committed {
+		t.Fatalf("approve spec = %#v, %v", specResult, err)
+	}
+	assertCurrentControllerStage(t, specResult.Feature, StagePlan, StageDrafting)
+	durableSpec := loadDurableControllerStage(t, root, featureID, StagePlan, StageDrafting)
+
+	planRoot := writeRepositoryArtifact(t, root, "plan.md", validRepositoryPlan())
+	planPublication, err := repository.PublishAuthorDraft(DraftArtifactRequest{
+		FeatureID: featureID, Stage: StagePlan, ArtifactRoot: planRoot, Mode: ValidateDraft,
+		ActiveIDs: activeDocumentIDs(durableSpec, []Stage{StageIntent, StageSpec}),
+		UpstreamHashes: []UpstreamHash{
+			{Stage: StageIntent, Hash: durableSpec.Documents[StageIntent].Hash},
+			{Stage: StageSpec, Hash: durableSpec.Documents[StageSpec].Hash},
+		},
+		At: repositoryTestTime.Add(4 * time.Minute),
+	})
+	if err != nil || !planPublication.Published {
+		t.Fatalf("publish plan = %#v, %v", planPublication.Validation.Diagnostics, err)
+	}
+	planResult, err := repository.Approve(ApproveStageRequest{FeatureID: featureID, Stage: StagePlan, At: repositoryTestTime.Add(5 * time.Minute)})
+	if err != nil || !planResult.Committed {
+		t.Fatalf("approve plan = %#v, %v", planResult, err)
+	}
+	assertCurrentControllerStage(t, planResult.Feature, StagePlan, StageCommitted)
+	durablePlan := loadDurableControllerStage(t, root, featureID, StagePlan, StageCommitted)
+	if durablePlan.State.Status() != FlowActive {
+		t.Fatalf("committed plan closed flow: %s", durablePlan.State.Status())
+	}
+}
+
+func loadDurableControllerStage(t *testing.T, root, featureID string, stage Stage, status StageStatus) FeatureSnapshot {
+	t.Helper()
+	reopened := newTestFeatureRepository(t, root)
+	feature, err := reopened.Load(featureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCurrentControllerStage(t, feature, stage, status)
+	return feature
+}
+
+func assertCurrentControllerStage(t *testing.T, feature FeatureSnapshot, stage Stage, status StageStatus) {
+	t.Helper()
+	if feature.State.CurrentStage() != stage {
+		t.Fatalf("current stage = %s, want %s", feature.State.CurrentStage(), stage)
+	}
+	stageState, _ := feature.State.Stage(stage)
+	if stageState.Status != status {
+		t.Fatalf("%s status = %s, want %s", stage, stageState.Status, status)
+	}
+}
+
+func validRepositoryPlan() string {
+	return `# Plan
+
+## TASK-001 — implement canonical flow
+
+Traces: REQ-001, DEC-001
+
+### Test scenario — canonical flow
+
+Traces: AC-001
+
+The controller advances through the fixed stages and leaves the plan committed.
+
+## Open questions
+`
+}
+
 func TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex(t *testing.T) {
 	root := initializedCommitRepository(t)
 	repository, featureID := publishedIntentFeature(t, root, "commit-failure", "Retry approval")
