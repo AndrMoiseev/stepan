@@ -36,6 +36,7 @@ type SessionRecoveryResult struct {
 
 type ResumableFlow struct {
 	FeatureID    string
+	FlowStatus   FlowStatus
 	CurrentStage Stage
 	StageStatus  StageStatus
 	ReviewStatus ReviewStatus
@@ -182,7 +183,7 @@ func (r *FSFeatureRepository) DiscoverResumable() ([]ResumableFlow, error) {
 			updated = feature.Journal[len(feature.Journal)-1].At
 		}
 		result = append(result, ResumableFlow{
-			FeatureID: feature.Target.ID, CurrentStage: stage, StageStatus: state.Status,
+			FeatureID: feature.Target.ID, FlowStatus: feature.State.Status(), CurrentStage: stage, StageStatus: state.Status,
 			ReviewStatus: state.ReviewStatus, Updated: updated,
 		})
 	}
