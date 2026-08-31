@@ -487,6 +487,7 @@ const (
 	ControllerFingerprintChoice ControllerCommandKind = "review_fingerprint_decision"
 	ControllerApprove           ControllerCommandKind = "approve"
 	ControllerReviseSpec        ControllerCommandKind = "revise_spec"
+	ControllerClassifyIntent    ControllerCommandKind = "classify_intent_revision"
 	ControllerStatus            ControllerCommandKind = "status"
 	ControllerClose             ControllerCommandKind = "close"
 )
@@ -501,7 +502,16 @@ type ControllerCommand struct {
 	Provider          string
 	Model             string
 	RuntimeContext    string
+	IntentRevision    IntentRevisionClassification
+	NewFeatureID      string
 }
+
+type IntentRevisionClassification string
+
+const (
+	IntentRevisionNonMaterial IntentRevisionClassification = "non_material"
+	IntentRevisionMaterial    IntentRevisionClassification = "material"
+)
 
 type ControllerEvent string
 
@@ -513,6 +523,9 @@ const (
 	ControllerApprovalBlocked ControllerEvent = "approval_blocked"
 	ControllerStageCommitted  ControllerEvent = "stage_committed"
 	ControllerSessionClosed   ControllerEvent = "session_closed"
+	ControllerExternalRead    ControllerEvent = "external_revision_read"
+	ControllerExternalApplied ControllerEvent = "external_revision_applied"
+	ControllerSuperseded      ControllerEvent = "feature_superseded"
 )
 
 var (
@@ -525,6 +538,7 @@ type featureAuthorEngine interface {
 	Start(StartStageRequest) (StagePolicy, error)
 	Submit(string) (StageResult, error)
 	Decide(RevisionAction, string) (StageResult, error)
+	ReReadCurrentDocument() (StageResult, error)
 	Close() error
 }
 
@@ -568,11 +582,13 @@ type FeatureController struct {
 	reviewer   featureReviewEngine
 	now        func() time.Time
 
-	featureID       string
-	feature         FeatureSnapshot
-	revisionPending bool
-	lastStage       StageResult
-	lastReview      ReviewResult
+	featureID          string
+	feature            FeatureSnapshot
+	revisionPending    bool
+	lastStage          StageResult
+	lastReview         ReviewResult
+	externalIntentHash string
+	revisingSpec       bool
 }
 
 func NewFeatureController(repository FeatureRepository, author *StageEngine, reviewer *ReviewEngine) (*FeatureController, error) {
@@ -615,22 +631,56 @@ func (c *FeatureController) Open(featureID string) (Progress, error) {
 }
 
 func (c *FeatureController) StartStage(stage Stage, runtimeContext string) (Progress, error) {
-	if err := c.reloadForCommand(); err != nil {
+	if strings.TrimSpace(c.featureID) == "" {
+		return c.progress(ControllerStateShown), ErrControllerNotOpen
+	}
+	if err := c.reload(); err != nil {
 		return c.progress(ControllerStateShown), err
+	}
+	if !c.feature.Changes.Empty() {
+		return c.handleExternalRevision(runtimeContext)
 	}
 	return c.startStage(stage, runtimeContext)
 }
 
 func (c *FeatureController) StartCurrentStage(runtimeContext string) (Progress, error) {
-	if err := c.reloadForCommand(); err != nil {
+	if strings.TrimSpace(c.featureID) == "" {
+		return c.progress(ControllerStateShown), ErrControllerNotOpen
+	}
+	if err := c.reload(); err != nil {
 		return c.progress(ControllerStateShown), err
+	}
+	if !c.feature.Changes.Empty() {
+		return c.handleExternalRevision(runtimeContext)
 	}
 	return c.startStage(c.feature.State.CurrentStage(), runtimeContext)
 }
 
 func (c *FeatureController) Execute(command ControllerCommand) (Progress, error) {
-	if err := c.reloadForCommand(); err != nil {
+	if strings.TrimSpace(c.featureID) == "" {
+		return c.progress(ControllerStateShown), ErrControllerNotOpen
+	}
+	if err := c.reload(); err != nil {
 		return c.progress(ControllerStateShown), err
+	}
+	if c.externalIntentHash != "" {
+		if !c.externalIntentStillPending() {
+			c.externalIntentHash = ""
+		} else {
+			switch command.Kind {
+			case ControllerClassifyIntent:
+				return c.classifyIntentRevision(command)
+			case ControllerStatus:
+				return c.progress(ControllerStateShown), nil
+			case ControllerClose:
+				return c.close()
+			default:
+				return c.unavailable("the committed intent revision must be classified as material or non-material")
+			}
+		}
+	}
+	if !c.feature.Changes.Empty() {
+		return c.handleExternalRevision(command.RuntimeContext)
 	}
 	switch command.Kind {
 	case ControllerAuthorMessage:
@@ -650,7 +700,9 @@ func (c *FeatureController) Execute(command ControllerCommand) (Progress, error)
 	case ControllerApprove:
 		return c.approve(command.RuntimeContext)
 	case ControllerReviseSpec:
-		return c.unavailable("/revise-spec requires the stage-specific external revision lifecycle")
+		return c.reviseSpec(command.RuntimeContext)
+	case ControllerClassifyIntent:
+		return c.unavailable("no committed intent revision is awaiting classification")
 	case ControllerStatus:
 		return c.progress(ControllerStateShown), nil
 	case ControllerClose:
@@ -684,6 +736,12 @@ func (c *FeatureController) ReviewFingerprintDecision(action ReviewFingerprintAc
 func (c *FeatureController) Approve(runtimeContext string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerApprove, RuntimeContext: runtimeContext})
 }
+func (c *FeatureController) ReviseSpec(runtimeContext string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerReviseSpec, RuntimeContext: runtimeContext})
+}
+func (c *FeatureController) ClassifyIntentRevision(classification IntentRevisionClassification, newFeatureID, runtimeContext string) (Progress, error) {
+	return c.Execute(ControllerCommand{Kind: ControllerClassifyIntent, IntentRevision: classification, NewFeatureID: newFeatureID, RuntimeContext: runtimeContext})
+}
 func (c *FeatureController) Status() (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerStatus})
 }
@@ -713,12 +771,12 @@ func (c *FeatureController) startStage(stage Stage, runtimeContext string) (Prog
 }
 
 func (c *FeatureController) authorMessage(message string) (Progress, error) {
-	stage := c.feature.State.CurrentStage()
+	stage := c.currentAuthorStage()
 	state, _ := c.feature.State.Stage(stage)
 	if c.revisionPending || reviewBlocksAuthorInput(state.ReviewStatus) {
 		return c.unavailable("author message is not available while a decision or review is pending")
 	}
-	if state.Status != StageDrafting && state.Status != StagePublished {
+	if state.Status != StageDrafting && state.Status != StagePublished && !(c.revisingSpec && stage == StageSpec && state.Status == StageCommitted) {
 		return c.unavailable(fmt.Sprintf("author message is unavailable while %s is %s", stage, state.Status))
 	}
 	if policy, active := c.author.Policy(); !active || policy.Stage != stage {
@@ -745,6 +803,9 @@ func (c *FeatureController) revisionDecision(action RevisionAction, scope string
 	c.accept(result.Feature)
 	c.lastStage = result
 	c.revisionPending = result.Outcome == StageRevisionPending
+	if c.revisingSpec && result.Outcome == StageRevisionApplied {
+		return c.activateRevisedSpec()
+	}
 	return c.progress(ControllerAuthorUpdated), nil
 }
 
@@ -820,6 +881,19 @@ func (c *FeatureController) fingerprintDecision(action ReviewFingerprintAction) 
 }
 
 func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
+	if c.revisingSpec {
+		spec, _ := c.feature.State.Stage(StageSpec)
+		if spec.CurrentHash == spec.ApprovedHash {
+			closeErr := c.author.Close()
+			c.revisingSpec = false
+			c.revisionPending = false
+			c.lastStage = StageResult{}
+			if reloadErr := c.reload(); reloadErr != nil {
+				return c.progress(ControllerStateShown), errors.Join(closeErr, reloadErr)
+			}
+			return c.progress(ControllerStateShown), closeErr
+		}
+	}
 	stage := c.feature.State.CurrentStage()
 	state, _ := c.feature.State.Stage(stage)
 	if state.Status != StagePublished || c.revisionPending {
@@ -844,6 +918,7 @@ func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
 
 	closeErr := errors.Join(c.reviewer.Close(), c.author.Close())
 	c.revisionPending = false
+	c.revisingSpec = false
 	c.lastStage = StageResult{}
 	c.lastReview = ReviewResult{}
 	if reloadErr := c.reload(); reloadErr != nil {
@@ -860,9 +935,14 @@ func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
 
 func (c *FeatureController) close() (Progress, error) {
 	err := errors.Join(c.reviewer.Close(), c.author.Close())
+	if errors.Is(err, ErrExternalChanges) || errors.Is(err, ErrRepositoryBlocked) {
+		err = nil
+	}
 	c.revisionPending = false
 	c.lastStage = StageResult{}
 	c.lastReview = ReviewResult{}
+	c.externalIntentHash = ""
+	c.revisingSpec = false
 	if reloadErr := c.reload(); reloadErr != nil {
 		err = errors.Join(err, reloadErr)
 	}
@@ -873,17 +953,175 @@ func (c *FeatureController) close() (Progress, error) {
 	return progress, nil
 }
 
-func (c *FeatureController) reloadForCommand() error {
-	if strings.TrimSpace(c.featureID) == "" {
-		return ErrControllerNotOpen
+func (c *FeatureController) reviseSpec(runtimeContext string) (Progress, error) {
+	if c.feature.State.CurrentStage() != StagePlan {
+		return c.unavailable("/revise-spec is available only from plan")
 	}
-	if err := c.reload(); err != nil {
-		return fmt.Errorf("load command snapshot: %w", err)
+	spec, _ := c.feature.State.Stage(StageSpec)
+	if spec.Status != StageCommitted {
+		return c.unavailable("/revise-spec requires a committed spec")
 	}
-	if !c.feature.Changes.Empty() {
-		return c.feature.Changes.Error()
+	if policy, active := c.author.Policy(); active {
+		if policy.Stage == StageSpec {
+			c.revisingSpec = true
+			return c.progress(ControllerAuthorStarted), nil
+		}
+		if err := errors.Join(c.reviewer.Close(), c.author.Close()); err != nil {
+			return c.fail("switch to spec author", err)
+		}
 	}
-	return nil
+	if _, err := c.author.Start(StartStageRequest{FeatureID: c.featureID, Stage: StageSpec, RuntimeContext: runtimeContext}); err != nil {
+		return c.fail("start spec revision author", err)
+	}
+	c.revisingSpec = true
+	return c.progress(ControllerAuthorStarted), nil
+}
+
+func (c *FeatureController) activateRevisedSpec() (Progress, error) {
+	result, err := c.repository.AcceptExternalRevision(ExternalRevisionRequest{FeatureID: c.featureID, Stage: StageSpec, At: c.now()})
+	if err != nil {
+		return c.fail("activate revised spec", err)
+	}
+	c.accept(result.Feature)
+	if !result.Accepted {
+		progress := c.progress(ControllerExternalRead)
+		progress.Diagnostics = append([]DocumentDiagnostic(nil), result.Validation.Diagnostics...)
+		return progress, nil
+	}
+	c.revisingSpec = false
+	return c.progress(ControllerExternalApplied), nil
+}
+
+func (c *FeatureController) handleExternalRevision(runtimeContext string) (Progress, error) {
+	if len(c.feature.Changes.Blocking) > 0 {
+		return c.progress(ControllerStateShown), c.feature.Changes.Error()
+	}
+	if len(c.feature.Changes.DocumentRevisions) != 1 {
+		return c.progress(ControllerStateShown), fmt.Errorf("%w: exactly one document may be revised at a time", ErrExternalChanges)
+	}
+	change := c.feature.Changes.DocumentRevisions[0]
+	if change.Missing {
+		return c.progress(ControllerStateShown), fmt.Errorf("%w: revised %s document must not be removed", ErrExternalChanges, change.Stage)
+	}
+	stageState, _ := c.feature.State.Stage(change.Stage)
+	if change.Stage == StageIntent && stageState.Status != StageCommitted {
+		return c.progress(ControllerStateShown), fmt.Errorf("%w: only a committed intent uses the external revision lifecycle", ErrExternalChanges)
+	}
+	if change.Stage == StageSpec && c.feature.State.CurrentStage() != StagePlan && c.feature.State.CurrentStage() != StageSpec {
+		return c.progress(ControllerStateShown), fmt.Errorf("%w: spec cannot be revised from %s", ErrExternalChanges, c.feature.State.CurrentStage())
+	}
+	if change.Stage == StagePlan && c.feature.State.CurrentStage() != StagePlan {
+		return c.progress(ControllerStateShown), fmt.Errorf("%w: plan cannot be revised from %s", ErrExternalChanges, c.feature.State.CurrentStage())
+	}
+	if err := c.prepareExternalAuthor(change.Stage, runtimeContext); err != nil {
+		return c.fail("start external revision author", err)
+	}
+	read, err := c.author.ReReadCurrentDocument()
+	if err != nil {
+		return c.fail("re-read external revision", err)
+	}
+	c.lastStage = read
+	inspection, err := c.repository.InspectExternalRevision(ExternalRevisionRequest{FeatureID: c.featureID, Stage: change.Stage, At: c.now()})
+	if err != nil {
+		return c.fail("inspect external revision", err)
+	}
+	c.accept(inspection.Feature)
+	if !inspection.Validation.Valid() {
+		progress := c.progress(ControllerExternalRead)
+		progress.Diagnostics = append([]DocumentDiagnostic(nil), inspection.Validation.Diagnostics...)
+		return progress, nil
+	}
+	if change.Stage == StageIntent {
+		c.externalIntentHash = change.ActualHash
+		return c.progress(ControllerExternalRead), nil
+	}
+	accepted, err := c.repository.AcceptExternalRevision(ExternalRevisionRequest{FeatureID: c.featureID, Stage: change.Stage, At: c.now()})
+	if err != nil {
+		return c.fail("accept external revision", err)
+	}
+	c.accept(accepted.Feature)
+	if !accepted.Accepted {
+		progress := c.progress(ControllerExternalRead)
+		progress.Diagnostics = append([]DocumentDiagnostic(nil), accepted.Validation.Diagnostics...)
+		return progress, nil
+	}
+	c.revisingSpec = change.Stage == StageSpec
+	return c.progress(ControllerExternalApplied), nil
+}
+
+func (c *FeatureController) prepareExternalAuthor(stage Stage, runtimeContext string) error {
+	if policy, active := c.author.Policy(); active {
+		if policy.Stage == stage {
+			return nil
+		}
+		closeErr := errors.Join(c.reviewer.Close(), c.author.Close())
+		if closeErr != nil && !errors.Is(closeErr, ErrExternalChanges) && !errors.Is(closeErr, ErrRepositoryBlocked) {
+			return closeErr
+		}
+	}
+	_, err := c.author.Start(StartStageRequest{FeatureID: c.featureID, Stage: stage, RuntimeContext: runtimeContext})
+	return err
+}
+
+func (c *FeatureController) classifyIntentRevision(command ControllerCommand) (Progress, error) {
+	if command.IntentRevision != IntentRevisionNonMaterial && command.IntentRevision != IntentRevisionMaterial {
+		return c.unavailable("intent revision classification must be material or non-material")
+	}
+	closeErr := errors.Join(c.reviewer.Close(), c.author.Close())
+	if closeErr != nil && !errors.Is(closeErr, ErrExternalChanges) && !errors.Is(closeErr, ErrRepositoryBlocked) {
+		return c.fail("close intent revision author", closeErr)
+	}
+	if command.IntentRevision == IntentRevisionNonMaterial {
+		result, err := c.repository.ReviseIntent(ReviseIntentRequest{FeatureID: c.featureID, At: c.now()})
+		if err != nil {
+			return c.fail("commit non-material intent revision", err)
+		}
+		c.accept(result.Feature)
+		if !result.Committed {
+			progress := c.progress(ControllerApprovalBlocked)
+			progress.Blocking = append([]ApprovalBlocker(nil), result.Blocking...)
+			return progress, nil
+		}
+		c.externalIntentHash = ""
+		return c.progress(ControllerExternalApplied), nil
+	}
+	if strings.TrimSpace(command.NewFeatureID) == "" {
+		return c.unavailable("a new feature ID is required for a material intent revision")
+	}
+	result, err := c.repository.SupersedeIntent(SupersedeIntentRequest{OldFeatureID: c.featureID, NewFeatureID: command.NewFeatureID, At: c.now()})
+	if err != nil {
+		return c.fail("supersede material intent revision", err)
+	}
+	if !result.Committed {
+		c.accept(result.Old)
+		progress := c.progress(ControllerApprovalBlocked)
+		progress.Blocking = append([]ApprovalBlocker(nil), result.Blocking...)
+		return progress, nil
+	}
+	c.accept(result.New)
+	c.externalIntentHash = ""
+	c.revisionPending = false
+	c.lastStage = StageResult{}
+	c.lastReview = ReviewResult{}
+	if _, err := c.author.Start(StartStageRequest{FeatureID: c.featureID, Stage: StageIntent, RuntimeContext: command.RuntimeContext}); err != nil {
+		return c.progress(ControllerSuperseded), fmt.Errorf("start superseding intent author: %w", err)
+	}
+	return c.progress(ControllerSuperseded), nil
+}
+
+func (c *FeatureController) externalIntentStillPending() bool {
+	if len(c.feature.Changes.DocumentRevisions) != 1 {
+		return false
+	}
+	change := c.feature.Changes.DocumentRevisions[0]
+	return change.Stage == StageIntent && change.ActualHash == c.externalIntentHash
+}
+
+func (c *FeatureController) currentAuthorStage() Stage {
+	if c.revisingSpec {
+		return StageSpec
+	}
+	return c.feature.State.CurrentStage()
 }
 
 func (c *FeatureController) reload() error {
@@ -939,6 +1177,15 @@ func (c *FeatureController) progress(event ControllerEvent) Progress {
 	progress.Diagnostics = append([]DocumentDiagnostic(nil), c.lastStage.Diagnostics...)
 	progress.Revision = append([]RevisionAction(nil), c.lastStage.RevisionActions...)
 	progress.Review = c.lastReview
+	if c.externalIntentHash != "" {
+		progress.CommandHints = mustCommandHints([][2]string{
+			{"/non-material", "Keep downstream approvals and commit the revised intent."},
+			{"/material", "Supersede this feature and approve the revised intent in a new feature."},
+			{"/status", "Show the durable flow state."},
+			{"/exit", "Close the current session while preserving the revised document."},
+		})
+		progress.TextAllowed = false
+	}
 	if len(c.lastReview.Diagnostics) > 0 {
 		progress.Diagnostics = append([]DocumentDiagnostic(nil), c.lastReview.Diagnostics...)
 	}
@@ -972,7 +1219,7 @@ func controllerHints(state FlowState, revisionPending bool) ([]CommandHint, bool
 	if stageState.Status == StagePublished && approvalReviewReady(stageState.ReviewStatus) {
 		pairs = append(pairs, [2]string{"/approve", "Validate and commit the current stage."})
 	}
-	if stage == StagePlan && stageState.Status != StageCommitted {
+	if stage == StagePlan {
 		pairs = append(pairs, [2]string{"/revise-spec", "Open the specification author dialogue."})
 	}
 	pairs = append(pairs, [2]string{"/status", "Show stages, documents, and review state."})

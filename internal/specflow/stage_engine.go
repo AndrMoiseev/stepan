@@ -542,8 +542,15 @@ func (e *StageEngine) Close() error {
 	}
 	closeErr := e.runner.CloseThread(e.thread)
 	_, discardErr := e.repository.DiscardPending(e.featureID, e.policy.Stage, e.artifactRoot)
+	var cleanupErr error
+	if discardErr != nil {
+		// External document changes can deliberately block repository mutations.
+		// The artifact root is still session-owned and must not leak when the
+		// controller switches to the author responsible for that revision.
+		cleanupErr = removeArtifact(e.artifactRoot)
+	}
 	e.reset()
-	return errors.Join(closeErr, discardErr)
+	return errors.Join(closeErr, discardErr, cleanupErr)
 }
 
 func (e *StageEngine) ready() error {

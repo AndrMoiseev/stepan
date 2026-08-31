@@ -61,7 +61,12 @@ func (r *FSFeatureRepository) Approve(request ApproveStageRequest) (PhaseCommitR
 	snapshot.Stages[request.Stage] = stageState
 	if next, ok := nextPlanningStage(request.Stage); ok {
 		nextState := snapshot.Stages[next]
-		nextState.Status = StageDrafting
+		if request.Stage == StageSpec && nextState.CurrentHash != "" {
+			nextState.Status = StagePublished
+			nextState.Outdated = true
+		} else {
+			nextState.Status = StageDrafting
+		}
 		snapshot.Stages[next] = nextState
 		snapshot.CurrentStage = next
 	}
@@ -280,7 +285,9 @@ func (r *FSFeatureRepository) ReviseIntent(request ReviseIntentRequest) (PhaseCo
 	if err != nil {
 		return PhaseCommitResult{}, err
 	}
-	snapshot := feature.State.Snapshot()
+	parsed := ParseDocument(DocumentRequest{Kind: DocumentIntent, Mode: ValidateDraft, Markdown: string(changed), RetainedIDs: retainedDocumentIDs(feature, StageIntent), IssuedIDs: feature.State.IssuedIDs()})
+	revised := reserveObservedIDs(feature.State, parsed.ObservedIDs)
+	snapshot := revised.Snapshot()
 	intent := snapshot.Stages[StageIntent]
 	intent.CurrentHash = hash(changed)
 	intent.ApprovedHash = intent.CurrentHash
@@ -402,6 +409,8 @@ func (r *FSFeatureRepository) SupersedeIntent(request SupersedeIntentRequest) (S
 		return SupersessionResult{}, err
 	}
 	newSnapshot := NewFlowState().Snapshot()
+	parsed := ParseDocument(DocumentRequest{Kind: DocumentIntent, Mode: ValidateDraft, Markdown: string(changed)})
+	newSnapshot.IssuedIDs = observedStableIDs(parsed.ObservedIDs)
 	newSnapshot.Supersession.Supersedes = request.OldFeatureID
 	newIntent := newSnapshot.Stages[StageIntent]
 	newIntent.Status = StagePublished

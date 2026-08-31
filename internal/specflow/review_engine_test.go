@@ -518,6 +518,12 @@ func (r *reviewRepositoryStub) Approve(ApproveStageRequest) (PhaseCommitResult, 
 func (r *reviewRepositoryStub) ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error) {
 	return PhaseCommitResult{}, fmt.Errorf("unexpected ReviseIntent")
 }
+func (r *reviewRepositoryStub) InspectExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	return ExternalRevisionResult{}, fmt.Errorf("unexpected InspectExternalRevision")
+}
+func (r *reviewRepositoryStub) AcceptExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	return ExternalRevisionResult{}, fmt.Errorf("unexpected AcceptExternalRevision")
+}
 func (r *reviewRepositoryStub) SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error) {
 	return SupersessionResult{}, fmt.Errorf("unexpected SupersedeIntent")
 }

@@ -25,6 +25,8 @@ type FeatureRepository interface {
 	RecordActivity(featureID string, entry MemLogEntry) (FeatureSnapshot, error)
 	DiscardPending(featureID string, stage Stage, artifactRoot string) (FeatureSnapshot, error)
 	Approve(ApproveStageRequest) (PhaseCommitResult, error)
+	InspectExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error)
+	AcceptExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error)
 	ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error)
 	SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error)
 	InspectChanges(featureID string) (ChangeInspection, error)
@@ -120,6 +122,18 @@ type ApproveStageRequest struct {
 type ReviseIntentRequest struct {
 	FeatureID string
 	At        time.Time
+}
+
+type ExternalRevisionRequest struct {
+	FeatureID string
+	Stage     Stage
+	At        time.Time
+}
+
+type ExternalRevisionResult struct {
+	Accepted   bool
+	Validation DocumentResult
+	Feature    FeatureSnapshot
 }
 
 type SupersedeIntentRequest struct {

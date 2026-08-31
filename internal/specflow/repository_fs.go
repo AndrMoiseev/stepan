@@ -352,6 +352,94 @@ func (r *FSFeatureRepository) PublishAuthorDraft(request DraftArtifactRequest) (
 	}, nil
 }
 
+func (r *FSFeatureRepository) InspectExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inspectExternalRevisionLocked(request, false)
+}
+
+func (r *FSFeatureRepository) AcceptExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inspectExternalRevisionLocked(request, true)
+}
+
+func (r *FSFeatureRepository) inspectExternalRevisionLocked(request ExternalRevisionRequest, accept bool) (ExternalRevisionResult, error) {
+	if strings.TrimSpace(request.FeatureID) == "" || !request.Stage.Valid() {
+		return ExternalRevisionResult{}, fmt.Errorf("%w: invalid external revision request", ErrInvalidDomainValue)
+	}
+	if request.At.IsZero() {
+		request.At = r.now()
+	}
+	feature, err := r.loadLocked(request.FeatureID)
+	if err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	stageState, _ := feature.State.Stage(request.Stage)
+	publishedSpecRevision := accept && request.Stage == StageSpec && feature.State.CurrentStage() == StagePlan &&
+		stageState.Status == StagePublished && stageState.CurrentHash != "" && stageState.CurrentHash != stageState.ApprovedHash && feature.Changes.Empty()
+	manualRevision := len(feature.Changes.Blocking) == 0 && len(feature.Changes.DocumentRevisions) == 1 && feature.Changes.DocumentRevisions[0].Stage == request.Stage
+	if !manualRevision && !publishedSpecRevision {
+		return ExternalRevisionResult{}, fmt.Errorf("%w: exactly one %s document revision is required", ErrExternalChanges, request.Stage)
+	}
+	document, ok := feature.Documents[request.Stage]
+	if !ok || (manualRevision && feature.Changes.DocumentRevisions[0].Missing) {
+		return ExternalRevisionResult{}, fmt.Errorf("%w: revised %s document must exist", ErrExternalChanges, request.Stage)
+	}
+	policy, _ := PolicyForStage(request.Stage)
+	validation := ParseDocument(DocumentRequest{
+		Kind: documentKindForStage(request.Stage), Mode: policy.ParserMode, Markdown: string(document.Content),
+		ActiveIDs: activeDocumentIDs(feature, policy.UpstreamStages), IssuedIDs: feature.State.IssuedIDs(),
+		RetainedIDs: retainedDocumentIDs(feature, request.Stage),
+	})
+	state := reserveObservedIDs(feature.State, validation.ObservedIDs)
+	accepted := accept && validation.Valid()
+	if accepted {
+		snapshot := state.Snapshot()
+		stageState := snapshot.Stages[request.Stage]
+		stageState.Status = StagePublished
+		stageState.CurrentHash = document.Hash
+		stageState.UpstreamHashes = upstreamDocumentHashes(feature, policy.UpstreamStages)
+		stageState.ReviewStatus = ReviewNotStarted
+		stageState.RetryCounters = RetryCounters{}
+		stageState.Outdated = false
+		snapshot.Stages[request.Stage] = stageState
+		snapshot.CurrentStage = request.Stage
+		state, err = NewFlowStateFromSnapshot(snapshot)
+		if err != nil {
+			return ExternalRevisionResult{}, err
+		}
+	}
+	stateBytes, err := encodeState(state)
+	if err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	body := fmt.Sprintf("external %s revision inspected: hash=%s valid=%t diagnostics=%d", request.Stage, document.Hash, validation.Valid(), len(validation.Diagnostics))
+	if accepted {
+		body = fmt.Sprintf("external %s revision accepted: hash=%s", request.Stage, document.Hash)
+	}
+	entry, err := NewMemLogEntry(request.Stage, mustAuthorRole(request.Stage), MemLogRevisionDecision, request.At, body)
+	if err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	journalBytes, err := appendFeatureJournal(feature, entry, hash(stateBytes))
+	if err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	writes := map[string][]byte{"state.json": stateBytes, "mem-log.md": journalBytes}
+	if accepted {
+		writes[string(request.Stage)+".md"] = document.Content
+	}
+	if err := r.applyMutation(feature.Target, "external-"+string(request.Stage), writes); err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	loaded, err := r.loadLocked(request.FeatureID)
+	if err != nil {
+		return ExternalRevisionResult{}, err
+	}
+	return ExternalRevisionResult{Accepted: accepted, Validation: validation, Feature: loaded}, nil
+}
+
 func validateDraftRequest(request DraftArtifactRequest) error {
 	if strings.TrimSpace(request.FeatureID) == "" || !request.Stage.Valid() || !request.Mode.Valid() {
 		return fmt.Errorf("%w: invalid author draft request", ErrInvalidDomainValue)

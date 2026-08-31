@@ -205,10 +205,14 @@ func TestFeatureControllerSessionCloseKeepsPublishedState(t *testing.T) {
 }
 
 type controllerRepositoryStub struct {
-	feature   FeatureSnapshot
-	loads     int
-	approvals int
-	approve   func(ApproveStageRequest) (PhaseCommitResult, error)
+	feature         FeatureSnapshot
+	loads           int
+	approvals       int
+	approve         func(ApproveStageRequest) (PhaseCommitResult, error)
+	inspectExternal func(ExternalRevisionRequest) (ExternalRevisionResult, error)
+	acceptExternal  func(ExternalRevisionRequest) (ExternalRevisionResult, error)
+	reviseIntent    func(ReviseIntentRequest) (PhaseCommitResult, error)
+	supersedeIntent func(SupersedeIntentRequest) (SupersessionResult, error)
 }
 
 func newControllerRepositoryStub(feature FeatureSnapshot) *controllerRepositoryStub {
@@ -231,6 +235,18 @@ func (r *controllerRepositoryStub) Approve(request ApproveStageRequest) (PhaseCo
 	r.approvals++
 	return r.approve(request)
 }
+func (r *controllerRepositoryStub) InspectExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	if r.inspectExternal != nil {
+		return r.inspectExternal(request)
+	}
+	return ExternalRevisionResult{}, errors.New("unexpected InspectExternalRevision")
+}
+func (r *controllerRepositoryStub) AcceptExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
+	if r.acceptExternal != nil {
+		return r.acceptExternal(request)
+	}
+	return ExternalRevisionResult{}, errors.New("unexpected AcceptExternalRevision")
+}
 func (r *controllerRepositoryStub) InspectAuthorDraft(DraftArtifactRequest) (DraftInspection, error) {
 	return DraftInspection{}, errors.New("unexpected InspectAuthorDraft")
 }
@@ -249,10 +265,16 @@ func (r *controllerRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureS
 func (r *controllerRepositoryStub) DiscardPending(string, Stage, string) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
-func (r *controllerRepositoryStub) ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error) {
+func (r *controllerRepositoryStub) ReviseIntent(request ReviseIntentRequest) (PhaseCommitResult, error) {
+	if r.reviseIntent != nil {
+		return r.reviseIntent(request)
+	}
 	return PhaseCommitResult{}, errors.New("unexpected ReviseIntent")
 }
-func (r *controllerRepositoryStub) SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error) {
+func (r *controllerRepositoryStub) SupersedeIntent(request SupersedeIntentRequest) (SupersessionResult, error) {
+	if r.supersedeIntent != nil {
+		return r.supersedeIntent(request)
+	}
 	return SupersessionResult{}, errors.New("unexpected SupersedeIntent")
 }
 func (r *controllerRepositoryStub) InspectChanges(string) (ChangeInspection, error) {
@@ -267,6 +289,9 @@ type controllerAuthorStub struct {
 	policy StagePolicy
 	starts []Stage
 	closes int
+	submit func(string) (StageResult, error)
+	decide func(RevisionAction, string) (StageResult, error)
+	reread func() (StageResult, error)
 }
 
 func (a *controllerAuthorStub) Policy() (StagePolicy, bool) { return a.policy, a.active }
@@ -279,11 +304,23 @@ func (a *controllerAuthorStub) Start(request StartStageRequest) (StagePolicy, er
 	a.starts = append(a.starts, request.Stage)
 	return policy, nil
 }
-func (a *controllerAuthorStub) Submit(string) (StageResult, error) {
+func (a *controllerAuthorStub) Submit(message string) (StageResult, error) {
+	if a.submit != nil {
+		return a.submit(message)
+	}
 	return StageResult{}, errors.New("unexpected Submit")
 }
-func (a *controllerAuthorStub) Decide(RevisionAction, string) (StageResult, error) {
+func (a *controllerAuthorStub) Decide(action RevisionAction, scope string) (StageResult, error) {
+	if a.decide != nil {
+		return a.decide(action, scope)
+	}
 	return StageResult{}, errors.New("unexpected Decide")
+}
+func (a *controllerAuthorStub) ReReadCurrentDocument() (StageResult, error) {
+	if a.reread != nil {
+		return a.reread()
+	}
+	return StageResult{}, errors.New("unexpected ReReadCurrentDocument")
 }
 func (a *controllerAuthorStub) Close() error {
 	a.closes++
