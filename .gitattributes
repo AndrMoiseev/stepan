@@ -1,0 +1,2 @@
+# Feature-flow artifacts are validated and hashed byte-for-byte.
+/docs/changes/features/** text eol=lf
