@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "flow_status": "active",
+  "current_stage": "spec",
+  "stages": {
+    "intent": {
+      "status": "committed",
+      "review_status": "not_started",
+      "current_hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c",
+      "approved_hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c",
+      "upstream_hashes": null,
+      "outdated": false,
+      "retry_counters": {
+        "parser_repair": 0,
+        "review_rework": 0
+      },
+      "reviews": null
+    },
+    "plan": {
+      "status": "not_started",
+      "review_status": "not_started",
+      "upstream_hashes": null,
+      "outdated": false,
+      "retry_counters": {
+        "parser_repair": 0,
+        "review_rework": 0
+      },
+      "reviews": null
+    },
+    "spec": {
+      "status": "drafting",
+      "review_status": "not_started",
+      "upstream_hashes": null,
+      "outdated": false,
+      "retry_counters": {
+        "parser_repair": 0,
+        "review_rework": 0
+      },
+      "reviews": null
+    }
+  },
+  "issued_ids": null,
+  "supersession": {}
+}
