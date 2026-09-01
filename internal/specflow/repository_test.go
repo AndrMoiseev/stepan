@@ -1,6 +1,7 @@
 package specflow
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,47 @@ import (
 )
 
 var repositoryTestTime = time.Date(2026, 8, 30, 12, 0, 0, 0, time.FixedZone("MSK", 3*60*60))
+
+func TestFeatureRepositoryLoadsAndRewritesCRLFMemoryLog(t *testing.T) {
+	repoRoot := initRepository(t)
+	repository := newTestFeatureRepository(t, repoRoot)
+	featureID := "2026-09-01-crlf-memory-log"
+	created, err := repository.Create(CreateFeatureRequest{FeatureID: featureID, Brief: "Resume on Windows", At: repositoryTestTime})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := os.ReadFile(created.Target.JournalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal = bytes.ReplaceAll(journal, []byte("\n"), []byte("\r\n"))
+	if err := os.WriteFile(created.Target.JournalPath, journal, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := newTestFeatureRepository(t, repoRoot)
+	loaded, err := reopened.Load(featureID)
+	if err != nil {
+		t.Fatalf("load CRLF mem-log: %v", err)
+	}
+	if len(loaded.Journal) != 1 || loaded.Journal[0].Kind != MemLogBrief {
+		t.Fatalf("loaded journal = %#v", loaded.Journal)
+	}
+	entry, err := NewMemLogEntry(StageIntent, RoleIntentAuthor, MemLogAgentMessage, repositoryTestTime.Add(time.Minute), "First line\nSecond line")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reopened.RecordActivity(featureID, entry); err != nil {
+		t.Fatalf("append CRLF mem-log: %v", err)
+	}
+	rewritten, err := os.ReadFile(created.Target.JournalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(rewritten, []byte("\r\n")) {
+		t.Fatal("rewritten mem-log was not canonicalized to LF")
+	}
+}
 
 func TestFeatureRepositoryRoundTripRestoresAuthoritativeArtifacts(t *testing.T) {
 	repoRoot := initRepository(t)

@@ -54,7 +54,8 @@ type MemLogEntry struct {
 }
 
 func NewMemLogEntry(stage Stage, role Role, kind MemLogEventKind, at time.Time, body string) (MemLogEntry, error) {
-	entry := MemLogEntry{Stage: stage, Role: role, Kind: kind, At: at, Body: strings.TrimSpace(body)}
+	body = strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(body), "\r\n", "\n"), "\r", "\n")
+	entry := MemLogEntry{Stage: stage, Role: role, Kind: kind, At: at, Body: body}
 	if err := validateMemLogEntry(entry, false); err != nil {
 		return MemLogEntry{}, err
 	}
@@ -117,6 +118,7 @@ func appendMemLogBytes(existing []byte, entry MemLogEntry, previous string) ([]b
 	if err := validateMemLogEntry(entry, false); err != nil {
 		return nil, MemLogEntry{}, err
 	}
+	existing = canonicalMemLogBytes(existing)
 	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
 		return nil, MemLogEntry{}, fmt.Errorf("mem-log must end with a newline")
 	}
@@ -152,6 +154,7 @@ func memLogChecksum(entry MemLogEntry, previous string) string {
 }
 
 func parseMemLog(data []byte, featureID string) ([]MemLogEntry, error) {
+	data = canonicalMemLogBytes(data)
 	header := []byte(memLogHeaderPrefix + featureID + "\n")
 	if !bytes.HasPrefix(data, header) {
 		return nil, fmt.Errorf("mem-log header does not identify feature %s", featureID)
@@ -227,6 +230,14 @@ func parseMemLog(data []byte, featureID string) ([]MemLogEntry, error) {
 		return nil, fmt.Errorf("mem-log has no feature brief")
 	}
 	return entries, nil
+}
+
+func canonicalMemLogBytes(data []byte) []byte {
+	crlfHeader := []byte(strings.ReplaceAll(memLogHeaderPrefix, "\n", "\r\n"))
+	if bytes.HasPrefix(data, crlfHeader) {
+		return bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n"))
+	}
+	return data
 }
 
 func readLogLine(data []byte, offset int) (string, int, error) {
