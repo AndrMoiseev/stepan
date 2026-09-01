@@ -63,6 +63,10 @@ func (c *ApplicationController) DiscoverResumable() ([]ResumableFlow, error) {
 	return c.manager.Discover()
 }
 
+func (c *ApplicationController) PreflightFeature() error {
+	return c.manager.PreflightBegin()
+}
+
 func (c *ApplicationController) Resume(featureID string) (Progress, error) {
 	progress, err := c.manager.Activate(featureID, c.runtimeContext())
 	c.current = progress

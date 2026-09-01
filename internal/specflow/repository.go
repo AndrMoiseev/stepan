@@ -8,6 +8,7 @@ import (
 
 var (
 	ErrRepositoryBlocked = errors.New("feature repository is blocked")
+	ErrRepositoryDirty   = errors.New("git working tree or index has uncommitted changes")
 	ErrExternalChanges   = errors.New("feature artifacts changed outside Stepan")
 	ErrPhaseCommit       = errors.New("feature phase commit failed")
 )

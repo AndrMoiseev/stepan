@@ -3,6 +3,7 @@ package specflow
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,7 +20,13 @@ type UI struct {
 func NewUI() *UI {
 	return &UI{input: bufio.NewReader(os.Stdin), output: os.Stdout}
 }
-func (u *UI) ReportError(err error) { u.say("Ошибка: " + err.Error()) }
+func (u *UI) ReportError(err error) {
+	if errors.Is(err, ErrRepositoryDirty) {
+		u.say("Нельзя начать feature flow: в Git есть незакоммиченные изменения. Закоммитьте или временно уберите их, затем повторите /feature.")
+		return
+	}
+	u.say("Ошибка: " + err.Error())
+}
 
 // MainPrompt renders the commands that exist outside a feature flow and reads
 // one main-menu action. It does not start or resume a feature itself.

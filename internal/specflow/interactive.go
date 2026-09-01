@@ -9,6 +9,7 @@ import (
 // flow input is intentionally forwarded unchanged; interpretation and durable
 // state transitions belong to the controller behind this interface.
 type PlanningInteractiveController interface {
+	PreflightFeature() error
 	StartFeature(string) (Progress, error)
 	DiscoverResumable() ([]ResumableFlow, error)
 	Resume(string) (Progress, error)
@@ -47,6 +48,9 @@ func RunPlanningInteractive(ctx context.Context, controller PlanningInteractiveC
 		var progress Progress
 		switch main.Action {
 		case MainActionFeature:
+			if err = controller.PreflightFeature(); err != nil {
+				break
+			}
 			brief := main.Brief
 			if main.NeedBrief {
 				brief, err = ui.ReadFeatureBrief()

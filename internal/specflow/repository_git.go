@@ -820,7 +820,7 @@ func (r *FSFeatureRepository) ensureCleanRepository() error {
 	if len(paths) == 0 {
 		return nil
 	}
-	return fmt.Errorf("%w: Git working tree and index must be clean: %s", ErrRepositoryBlocked, strings.Join(paths, ", "))
+	return fmt.Errorf("%w: %w: Git working tree and index must be clean: %s", ErrRepositoryBlocked, ErrRepositoryDirty, strings.Join(paths, ", "))
 }
 
 func (r *FSFeatureRepository) recoverPhaseLocked(featureID string) (RecoveryResult, error) {

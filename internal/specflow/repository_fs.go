@@ -61,6 +61,15 @@ func newFSFeatureRepository(root string, faults repositoryFaults) (*FSFeatureRep
 	}, nil
 }
 
+// PreflightCreate checks the read-only prerequisites for starting a feature.
+// Create repeats this check while holding the repository lock so a concurrent
+// working-tree change cannot bypass the mutation boundary.
+func (r *FSFeatureRepository) PreflightCreate() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ensureCleanRepository()
+}
+
 func (r *FSFeatureRepository) Create(request CreateFeatureRequest) (FeatureSnapshot, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

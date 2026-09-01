@@ -20,8 +20,13 @@ func TestRepositoryRequiresCleanTreeForCreateAndApproval(t *testing.T) {
 		writeGitTestFile(t, root, "tracked.txt", "unstaged\n")
 
 		repository := newTestFeatureRepository(t, root)
+		preflightErr := repository.PreflightCreate()
+		if !errors.Is(preflightErr, ErrRepositoryBlocked) || !errors.Is(preflightErr, ErrRepositoryDirty) ||
+			!strings.Contains(preflightErr.Error(), "staged.txt") || !strings.Contains(preflightErr.Error(), "tracked.txt") {
+			t.Fatalf("PreflightCreate() error = %v, want every dirty path", preflightErr)
+		}
 		_, err := repository.Create(CreateFeatureRequest{FeatureID: "2026-08-30-dirty-create", Brief: "Must be clean", At: repositoryTestTime})
-		if !errors.Is(err, ErrRepositoryBlocked) || !strings.Contains(err.Error(), "staged.txt") || !strings.Contains(err.Error(), "tracked.txt") {
+		if !errors.Is(err, ErrRepositoryBlocked) || !errors.Is(err, ErrRepositoryDirty) || !strings.Contains(err.Error(), "staged.txt") || !strings.Contains(err.Error(), "tracked.txt") {
 			t.Fatalf("Create() error = %v, want every dirty path", err)
 		}
 		if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(featuresDirectoryPath), "2026-08-30-dirty-create")); !os.IsNotExist(statErr) {

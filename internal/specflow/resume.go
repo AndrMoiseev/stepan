@@ -47,6 +47,7 @@ type ResumableFlow struct {
 // operations instead of spreading state/journal ordering across callers.
 type SessionLifecycleRepository interface {
 	FeatureRepository
+	PreflightCreate() error
 	CloseFeatureSession(SessionCloseRequest) (FeatureSnapshot, error)
 	RecoverFeatureSession(SessionRecoveryRequest) (SessionRecoveryResult, error)
 	DiscoverResumable() ([]ResumableFlow, error)
@@ -75,6 +76,10 @@ func NewResumeManager(repository SessionLifecycleRepository, registry *SessionRe
 
 func (m *ResumeManager) Discover() ([]ResumableFlow, error) {
 	return m.repository.DiscoverResumable()
+}
+
+func (m *ResumeManager) PreflightBegin() error {
+	return m.repository.PreflightCreate()
 }
 
 func (m *ResumeManager) Begin(request CreateFeatureRequest, runtimeContext string) (Progress, error) {

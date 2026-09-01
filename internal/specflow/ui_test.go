@@ -31,6 +31,22 @@ func TestLineChatWritesOnePromptPerMessage(t *testing.T) {
 	}
 }
 
+func TestDirtyRepositoryErrorIsReportedWithoutTechnicalDetails(t *testing.T) {
+	var output bytes.Buffer
+	ui := &UI{input: bufio.NewReader(strings.NewReader("")), output: &output}
+	ui.ReportError(fmt.Errorf("begin feature: %w: %w: Git working tree and index must be clean: internal/specflow/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty))
+
+	text := output.String()
+	if !strings.Contains(text, "Нельзя начать feature flow: в Git есть незакоммиченные изменения") {
+		t.Fatalf("friendly repository error missing from %q", text)
+	}
+	for _, technical := range []string{"begin feature", "feature repository is blocked", "internal/specflow/controller.go"} {
+		if strings.Contains(text, technical) {
+			t.Fatalf("technical detail %q leaked in %q", technical, text)
+		}
+	}
+}
+
 func TestFlowPromptRendersOnlyProgressCommandsInControllerOrder(t *testing.T) {
 	known := []string{"/review", "/apply", "/approve", "/revise-spec", "/status", "/exit"}
 	tests := []struct {
@@ -273,16 +289,37 @@ func TestInteractiveForwardsFlowInputWithoutLocalStateChanges(t *testing.T) {
 	}
 }
 
+func TestInteractiveChecksRepositoryBeforeReadingFeatureBrief(t *testing.T) {
+	blocked := fmt.Errorf("%w: %w: Git working tree and index must be clean: internal/specflow/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty)
+	controller := &planningControllerStub{preflightErr: blocked}
+	ui := &planningUIStub{needBrief: true, flowErr: ErrCanceled}
+
+	err := RunPlanningInteractive(context.Background(), controller, ui)
+	if !errors.Is(err, ErrCanceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if ui.briefCalls != 0 || controller.startCalls != 0 {
+		t.Fatalf("blocked flow advanced: brief_calls=%d start_calls=%d", ui.briefCalls, controller.startCalls)
+	}
+	if len(ui.reported) != 1 || !errors.Is(ui.reported[0], ErrRepositoryBlocked) {
+		t.Fatalf("reported errors = %#v", ui.reported)
+	}
+}
+
 type planningControllerStub struct {
-	flows     []ResumableFlow
-	resumed   []string
-	submitted []string
-	closes    int
+	flows        []ResumableFlow
+	resumed      []string
+	submitted    []string
+	closes       int
+	startCalls   int
+	preflightErr error
 }
 
 func (c *planningControllerStub) StartFeature(string) (Progress, error) {
+	c.startCalls++
 	return activeInteractiveProgress(), nil
 }
+func (c *planningControllerStub) PreflightFeature() error { return c.preflightErr }
 func (c *planningControllerStub) DiscoverResumable() ([]ResumableFlow, error) {
 	return append([]ResumableFlow(nil), c.flows...), nil
 }
@@ -306,9 +343,12 @@ func activeInteractiveProgress() Progress {
 type planningUIStub struct {
 	mainCalls      int
 	flowCalls      int
+	briefCalls     int
 	flowInput      string
 	flowErr        error
 	exitAfterInput bool
+	needBrief      bool
+	reported       []error
 }
 
 func (u *planningUIStub) MainPrompt() (MainCommand, error) {
@@ -316,9 +356,12 @@ func (u *planningUIStub) MainPrompt() (MainCommand, error) {
 	if u.mainCalls > 1 {
 		return MainCommand{}, ErrCanceled
 	}
-	return MainCommand{Action: MainActionFeature, Brief: "brief"}, nil
+	return MainCommand{Action: MainActionFeature, Brief: "brief", NeedBrief: u.needBrief}, nil
 }
-func (u *planningUIStub) ReadFeatureBrief() (string, error) { return "brief", nil }
+func (u *planningUIStub) ReadFeatureBrief() (string, error) {
+	u.briefCalls++
+	return "brief", nil
+}
 func (u *planningUIStub) ResumePrompt([]ResumableFlow) (string, error) {
 	return "", fmt.Errorf("unexpected resume prompt")
 }
@@ -329,4 +372,4 @@ func (u *planningUIStub) FlowPrompt(context.Context, Progress) (string, error) {
 	}
 	return u.flowInput, u.flowErr
 }
-func (u *planningUIStub) ReportError(error) {}
+func (u *planningUIStub) ReportError(err error) { u.reported = append(u.reported, err) }
