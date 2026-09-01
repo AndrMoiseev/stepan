@@ -270,6 +270,26 @@ func (e *StageEngine) Submit(message string) (StageResult, error) {
 	return e.run(message, false)
 }
 
+// SubmitBrief starts the intent dialogue with the feature brief already stored
+// as the first mem-log entry by repository creation. Unlike Submit, it must not
+// append the same user text to the journal a second time.
+func (e *StageEngine) SubmitBrief(brief string) (StageResult, error) {
+	if err := e.ready(); err != nil {
+		return StageResult{}, err
+	}
+	if e.policy.Stage != StageIntent {
+		return StageResult{}, fmt.Errorf("feature brief is only valid for the intent author")
+	}
+	if e.pending != nil {
+		return StageResult{}, ErrRevisionDecisionPending
+	}
+	if strings.TrimSpace(brief) == "" {
+		return StageResult{}, fmt.Errorf("feature brief must not be empty")
+	}
+	e.parserAttempt = 0
+	return e.run(brief, false)
+}
+
 func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 	return e.runMode(prompt, external, false)
 }

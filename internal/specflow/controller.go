@@ -215,6 +215,7 @@ var (
 type featureAuthorEngine interface {
 	Policy() (StagePolicy, bool)
 	Start(StartStageRequest) (StagePolicy, error)
+	SubmitBrief(string) (StageResult, error)
 	Submit(string) (StageResult, error)
 	Decide(RevisionAction, string) (StageResult, error)
 	ReReadCurrentDocument() (StageResult, error)
@@ -293,7 +294,17 @@ func (c *FeatureController) Begin(request CreateFeatureRequest, runtimeContext s
 		return Progress{}, fmt.Errorf("begin feature: %w", err)
 	}
 	c.accept(feature)
-	return c.startStage(StageIntent, runtimeContext)
+	if _, err := c.startStage(StageIntent, runtimeContext); err != nil {
+		return c.progress(ControllerStateShown), err
+	}
+	result, err := c.author.SubmitBrief(request.Brief)
+	if err != nil {
+		return c.fail("submit feature brief", err)
+	}
+	c.accept(result.Feature)
+	c.lastStage = result
+	c.revisionPending = result.Outcome == StageRevisionPending
+	return c.progress(ControllerAuthorUpdated), nil
 }
 
 // Open selects an existing flow without implicitly creating a provider

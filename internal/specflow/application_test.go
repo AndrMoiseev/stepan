@@ -15,7 +15,7 @@ import (
 
 func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(t *testing.T) {
 	root := initializedCommitRepository(t)
-	runtime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int)}
+	runtime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int), firstIntentQuestion: "What outcome should this planning flow produce?"}
 	repository := newTestFeatureRepository(t, root)
 	registry, err := NewSessionRegistry(runtime, repository)
 	if err != nil {
@@ -104,9 +104,48 @@ func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(
 	}
 }
 
+func TestApplicationControllerStartFeatureReturnsInitialAuthorQuestion(t *testing.T) {
+	root := initializedCommitRepository(t)
+	runtime := &fullFlowRuntime{
+		configs:             make(map[int]agentruntime.ThreadConfig),
+		turns:               make(map[Role]int),
+		firstIntentQuestion: "Какой результат должен увидеть пользователь?",
+	}
+	application, repository, registry := newApplicationHarness(t, root, runtime)
+	t.Cleanup(func() { _ = registry.Close() })
+	application.now = func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }
+
+	progress, err := application.StartFeature("Добавить поддержку нового агента")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := progress.Message, runtime.firstIntentQuestion; got != want {
+		t.Fatalf("initial author message = %q, want %q; turns=%v progress=%#v", got, want, runtime.turns, progress)
+	}
+	if !reflect.DeepEqual(runtime.intentInputs, []string{"Добавить поддержку нового агента"}) {
+		t.Fatalf("intent inputs = %#v", runtime.intentInputs)
+	}
+	feature, err := repository.Load(progress.FeatureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	briefs, userMessages := 0, 0
+	for _, entry := range feature.Journal {
+		if entry.Kind == MemLogBrief {
+			briefs++
+		}
+		if entry.Kind == MemLogUserMessage {
+			userMessages++
+		}
+	}
+	if briefs != 1 || userMessages != 0 {
+		t.Fatalf("initial journal entries: briefs=%d user_messages=%d journal=%#v", briefs, userMessages, feature.Journal)
+	}
+}
+
 func TestApplicationControllerResumeDiscardsPendingRevisionAndStartsFromPublishedDocument(t *testing.T) {
 	root := initializedCommitRepository(t)
-	firstRuntime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int)}
+	firstRuntime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int), firstIntentQuestion: "What should be resumed?"}
 	application, repository, registry := newApplicationHarness(t, root, firstRuntime)
 	application.now = func() time.Time { return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC) }
 
@@ -218,10 +257,12 @@ func assertApplicationProgress(t *testing.T, progress Progress, stage Stage, sta
 }
 
 type fullFlowRuntime struct {
-	next         int
-	configs      map[int]agentruntime.ThreadConfig
-	turns        map[Role]int
-	startedRoles []Role
+	next                int
+	configs             map[int]agentruntime.ThreadConfig
+	turns               map[Role]int
+	startedRoles        []Role
+	firstIntentQuestion string
+	intentInputs        []string
 }
 
 func (r *fullFlowRuntime) artifactRoot(role Role) string {
@@ -242,14 +283,25 @@ func (r *fullFlowRuntime) StartThread(config agentruntime.ThreadConfig) (agentru
 	return r.next, nil
 }
 
-func (r *fullFlowRuntime) RunTurn(thread agentruntime.Thread, _ string) (json.RawMessage, error) {
+func (r *fullFlowRuntime) RunTurn(thread agentruntime.Thread, input string) (json.RawMessage, error) {
 	config := r.configs[thread.(int)]
 	role := roleFromPrompt(config.BootstrapInstructions)
 	if role == "" {
 		return json.RawMessage(`{"feature_id":"complete-flow"}`), nil
 	}
+	if role == RoleIntentAuthor {
+		r.intentInputs = append(r.intentInputs, input)
+	}
 	r.turns[role]++
-	artifact := fullFlowArtifact(role, r.turns[role])
+	if role == RoleIntentAuthor && r.turns[role] == 1 && r.firstIntentQuestion != "" {
+		payload, err := json.Marshal(Envelope{Kind: KindMessage, Message: r.firstIntentQuestion, Decisions: []Decision{}})
+		return payload, err
+	}
+	artifactTurn := r.turns[role]
+	if role == RoleIntentAuthor && r.firstIntentQuestion != "" {
+		artifactTurn--
+	}
+	artifact := fullFlowArtifact(role, artifactTurn)
 	filename := "review.md"
 	if role == RoleIntentAuthor {
 		filename = "intent.md"

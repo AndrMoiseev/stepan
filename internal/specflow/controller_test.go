@@ -304,6 +304,9 @@ func (a *controllerAuthorStub) Start(request StartStageRequest) (StagePolicy, er
 	a.starts = append(a.starts, request.Stage)
 	return policy, nil
 }
+func (a *controllerAuthorStub) SubmitBrief(message string) (StageResult, error) {
+	return a.Submit(message)
+}
 func (a *controllerAuthorStub) Submit(message string) (StageResult, error) {
 	if a.submit != nil {
 		return a.submit(message)
