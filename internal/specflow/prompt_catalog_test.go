@@ -197,20 +197,6 @@ func TestDefaultDocumentPromptsCarryMachineReadableContracts(t *testing.T) {
 	}
 }
 
-func TestBootstrapPromptUsesIntentCatalogAndRuntimeContext(t *testing.T) {
-	prompt := BootstrapPrompt("Keep the semantic brief", `C:\artifact-root`)
-	for _, required := range []string{
-		"[system/intent-author]", "[roles/intent-author]",
-		"[capabilities/common/project-context]", "[capabilities/common/brainstorming]",
-		"[capabilities/intent/author]", "[capabilities/intent/document]",
-		"C:\\artifact-root", "Keep the semantic brief",
-	} {
-		if !strings.Contains(prompt, required) {
-			t.Fatalf("bootstrap prompt does not contain %q\n%s", required, prompt)
-		}
-	}
-}
-
 var promptLayerPattern = regexp.MustCompile(`(?m)^## [^\n]+ \[([a-z0-9/-]+)\]$`)
 
 func promptLayerIDs(prompt string) []PromptID {

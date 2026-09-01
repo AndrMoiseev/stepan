@@ -159,8 +159,8 @@ func (r *SessionRegistry) RunTurn(thread agentruntime.Thread, prompt string) (js
 	return r.runner.RunTurn(thread, prompt)
 }
 
-// CloseThread is the hard-close compatibility path used after a failed turn.
-// Normal engine detachment uses Release and preserves the conversation.
+// CloseThread is the hard-close failure path used after a failed turn. Normal
+// engine detachment uses Release and preserves the conversation.
 func (r *SessionRegistry) CloseThread(thread agentruntime.Thread) error {
 	r.mu.Lock()
 	var found sessionKey

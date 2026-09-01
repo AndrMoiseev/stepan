@@ -165,7 +165,7 @@ func TestFeatureControllerReturnsContextSpecificProgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if progress.TextAllowed || progress.Path != "plan.md" || len(progress.Documents) != 3 {
+	if !progress.TextAllowed || progress.Path != "plan.md" || len(progress.Documents) != 3 {
 		t.Fatalf("progress = %#v", progress)
 	}
 	want := []string{"/apply", "/revise-spec", "/status", "/exit"}

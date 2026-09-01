@@ -13,12 +13,6 @@ import (
 
 var specIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
-type SpecTarget struct {
-	Directory   string
-	Entrypoint  string
-	DisplayPath string
-}
-
 const featuresDirectoryPath = "docs/changes/features"
 
 func displayFeaturesDirectory() string { return featuresDirectoryPath }
@@ -65,39 +59,34 @@ func FindGitRoot(ctx context.Context, start string) (string, error) {
 	return canonicalExisting(root)
 }
 
-func ValidateSpecID(specID string) error {
-	return ValidateFeatureID(specID)
-}
-
-func ValidateFeatureID(specID string) error {
-	if specID == "" {
-		return fmt.Errorf("spec-id must not be empty")
+func ValidateFeatureID(featureID string) error {
+	if featureID == "" {
+		return fmt.Errorf("feature ID must not be empty")
 	}
-	if len(specID) > 64 {
-		return fmt.Errorf("spec-id must not exceed 64 characters")
+	if len(featureID) > 64 {
+		return fmt.Errorf("feature ID must not exceed 64 characters")
 	}
-	upper := strings.ToUpper(specID)
+	upper := strings.ToUpper(featureID)
 	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" ||
 		len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9' {
-		return fmt.Errorf("spec-id %q is a reserved Windows device name", specID)
+		return fmt.Errorf("feature ID %q is a reserved Windows device name", featureID)
 	}
-	if !specIDPattern.MatchString(specID) {
-		return fmt.Errorf("spec-id must start and end with [a-z0-9] and otherwise match [a-z0-9-]+")
+	if !specIDPattern.MatchString(featureID) {
+		return fmt.Errorf("feature ID must start and end with [a-z0-9] and otherwise match [a-z0-9-]+")
 	}
 	return nil
 }
 
-// FeatureTarget names the durable intent artifacts for one intent dialogue.
+// FeatureTarget names every durable artifact in one planning flow.
 type FeatureTarget struct {
-	ID                string
-	Directory         string
-	IntentPath        string
-	SpecPath          string
-	PlanPath          string
-	JournalPath       string
-	StatePath         string
-	ReviewsDirectory  string
-	DisplayIntentPath string
+	ID               string
+	Directory        string
+	IntentPath       string
+	SpecPath         string
+	PlanPath         string
+	JournalPath      string
+	StatePath        string
+	ReviewsDirectory string
 }
 
 func (t FeatureTarget) DocumentPath(stage Stage) (string, error) {
@@ -179,15 +168,14 @@ func featureTarget(root, id string) (FeatureTarget, error) {
 		return FeatureTarget{}, err
 	}
 	return FeatureTarget{
-		ID:                id,
-		Directory:         directory,
-		IntentPath:        filepath.Join(directory, "intent.md"),
-		SpecPath:          filepath.Join(directory, "spec.md"),
-		PlanPath:          filepath.Join(directory, "plan.md"),
-		JournalPath:       filepath.Join(directory, "mem-log.md"),
-		StatePath:         filepath.Join(directory, "state.json"),
-		ReviewsDirectory:  filepath.Join(directory, "reviews"),
-		DisplayIntentPath: path.Join(featuresDirectoryPath, id, "intent.md"),
+		ID:               id,
+		Directory:        directory,
+		IntentPath:       filepath.Join(directory, "intent.md"),
+		SpecPath:         filepath.Join(directory, "spec.md"),
+		PlanPath:         filepath.Join(directory, "plan.md"),
+		JournalPath:      filepath.Join(directory, "mem-log.md"),
+		StatePath:        filepath.Join(directory, "state.json"),
+		ReviewsDirectory: filepath.Join(directory, "reviews"),
 	}, nil
 }
 
@@ -210,39 +198,6 @@ func CreateArtifactRoot(workspace string) (string, error) {
 		return "", fmt.Errorf("artifact root must be outside Git workspace")
 	}
 	return canonical, nil
-}
-
-func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
-	target, err := SpecTargetForID(root, specID)
-	if err != nil {
-		return SpecTarget{}, err
-	}
-	directory := target.Directory
-	if _, err := os.Lstat(directory); err == nil {
-		return SpecTarget{}, fmt.Errorf("specification directory %q already exists", directory)
-	} else if !os.IsNotExist(err) {
-		return SpecTarget{}, fmt.Errorf("check specification directory %q: %w", directory, err)
-	}
-	return target, nil
-}
-
-func SpecTargetForID(root, specID string) (SpecTarget, error) {
-	if err := ValidateSpecID(specID); err != nil {
-		return SpecTarget{}, err
-	}
-	root, err := canonicalExisting(root)
-	if err != nil {
-		return SpecTarget{}, fmt.Errorf("canonicalize Git root: %w", err)
-	}
-	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath), specID)
-	if err := CheckContainment(root, directory); err != nil {
-		return SpecTarget{}, err
-	}
-	return SpecTarget{
-		Directory:   directory,
-		Entrypoint:  filepath.Join(directory, "spec.md"),
-		DisplayPath: path.Join(featuresDirectoryPath, specID, "spec.md"),
-	}, nil
 }
 
 func CheckContainment(root, target string) error {

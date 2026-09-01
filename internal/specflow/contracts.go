@@ -16,9 +16,6 @@ type Kind string
 const (
 	KindMessage  Kind = "message"
 	KindArtifact Kind = "artifact"
-	// KindDraft is accepted only as a transition aid for the intent-only flow.
-	// DecodeEnvelope always normalizes it to KindArtifact.
-	KindDraft Kind = "draft"
 )
 
 type DecisionAuthor string
@@ -102,14 +99,6 @@ func DecodeEnvelope(data []byte) (Envelope, error) {
 		}
 		value.Kind = KindArtifact
 		value.Message = ""
-	case KindDraft:
-		// Temporary compatibility for artifacts emitted by the original intent
-		// prompt. New provider schemas cannot emit this shape.
-		if raw.Message != nil && *raw.Message != "" {
-			return Envelope{}, fmt.Errorf("legacy draft kind forbids message")
-		}
-		value.Kind = KindArtifact
-		value.Message = ""
 	default:
 		return Envelope{}, fmt.Errorf("unknown kind %q", raw.Kind)
 	}
@@ -142,15 +131,6 @@ func validateDecision(value Decision) error {
 		return fmt.Errorf("alternatives and supersedes are required")
 	}
 	return nil
-}
-
-func BootstrapPrompt(brief, artifactRoot string) string {
-	runtimeContext := "Artifact root: " + artifactRoot + "\n\nFeature brief:\n" + brief
-	prompt, err := NewEmbeddedPromptCatalog().Compose(RoleIntentAuthor, runtimeContext)
-	if err != nil {
-		panic("compose embedded intent prompt: " + err.Error())
-	}
-	return prompt
 }
 
 func FeatureIDPrompt(brief string) string {

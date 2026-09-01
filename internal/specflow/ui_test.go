@@ -157,6 +157,17 @@ func TestFlowPromptRejectsInputNotAdvertisedByProgress(t *testing.T) {
 	if input, err := ui.FlowPrompt(context.Background(), Progress{Revision: []RevisionAction{RevisionApply}}); err != nil || input != "apply" {
 		t.Fatalf("advertised revision action = %q, %v", input, err)
 	}
+
+	ui = &UI{input: bufio.NewReader(strings.NewReader("rework\nKeep the public contract unchanged\n")), output: &bytes.Buffer{}}
+	if input, err := ui.FlowPrompt(context.Background(), Progress{Revision: []RevisionAction{RevisionRework}}); err != nil || input != "rework Keep the public contract unchanged" {
+		t.Fatalf("revision rework scope = %q, %v", input, err)
+	}
+
+	ui = &UI{input: bufio.NewReader(strings.NewReader("rerun\n")), output: &bytes.Buffer{}}
+	progress := Progress{Review: ReviewResult{Message: "Documents changed during review.", FingerprintActions: []ReviewFingerprintAction{ReviewFingerprintRerun}}}
+	if input, err := ui.FlowPrompt(context.Background(), progress); err != nil || input != "rerun" {
+		t.Fatalf("fingerprint action = %q, %v", input, err)
+	}
 }
 
 func TestResumeTableFiltersAndSelectsByDisplayedNumber(t *testing.T) {

@@ -12,70 +12,14 @@ import (
 )
 
 type UI struct {
-	controller *Controller
-	input      *bufio.Reader
-	output     io.Writer
+	input  *bufio.Reader
+	output io.Writer
 }
 
-func NewUI(c *Controller) *UI {
-	return &UI{controller: c, input: bufio.NewReader(os.Stdin), output: os.Stdout}
+func NewUI() *UI {
+	return &UI{input: bufio.NewReader(os.Stdin), output: os.Stdout}
 }
 func (u *UI) ReportError(err error) { u.say("Ошибка: " + err.Error()) }
-func (u *UI) Main() (Progress, error) {
-	for {
-		value, err := u.readLine("Вы > ")
-		if err != nil {
-			return Progress{}, err
-		}
-		command, err := ParseMainCommand(value)
-		if err != nil {
-			u.say(err.Error())
-			continue
-		}
-		if command.NeedBrief {
-			u.say("Опишите намерение.")
-			brief, err := u.text()
-			if err != nil {
-				return Progress{}, err
-			}
-			u.thinking()
-			return u.controller.StartFeature(brief)
-		}
-		u.thinking()
-		return u.controller.StartFeature(command.Brief)
-	}
-}
-func (u *UI) Dialogue(_ context.Context, p Progress) (Progress, error) {
-	if p.Message != "" {
-		u.say(p.Message)
-	}
-	if p.State == StateIntentPublished {
-		u.say("Intent опубликован: " + p.Path + ". Продолжайте диалог или введите /approve.")
-	} else if p.State == StateAwaitingBrief {
-		u.say("Опишите намерение.")
-	} else if p.State == StateAwaitingRework {
-		u.say("Опишите доработку draft.")
-	}
-	value, err := u.text()
-	if err != nil {
-		return p, err
-	}
-	u.thinking()
-	return u.controller.Submit(value)
-}
-func (u *UI) Review(_ context.Context, p Progress) (Progress, error) {
-	u.say("Новый draft intent:\n" + p.Diff)
-	value, err := u.readLine("Вы > [apply | reject | rework] ")
-	if err != nil {
-		return p, err
-	}
-	action, err := ParseReviewAction(value)
-	if err != nil {
-		u.say(err.Error())
-		return p, nil
-	}
-	return u.controller.Review(action)
-}
 
 // MainPrompt renders the commands that exist outside a feature flow and reads
 // one main-menu action. It does not start or resume a feature itself.
@@ -138,6 +82,20 @@ func (u *UI) FlowPrompt(_ context.Context, progress Progress) (string, error) {
 		return trimmed, nil
 	}
 	if revisionAllowed(progress, trimmed) {
+		if trimmed == string(RevisionRework) {
+			u.say("Опишите границы доработки.")
+			scope, scopeErr := u.text()
+			if scopeErr != nil {
+				return "", scopeErr
+			}
+			if strings.TrimSpace(scope) == "" {
+				return "", fmt.Errorf("rework scope must not be empty")
+			}
+			return trimmed + " " + strings.TrimSpace(scope), nil
+		}
+		return trimmed, nil
+	}
+	if fingerprintAllowed(progress, trimmed) {
 		return trimmed, nil
 	}
 	if !progress.TextAllowed {
@@ -149,6 +107,9 @@ func (u *UI) FlowPrompt(_ context.Context, progress Progress) (string, error) {
 func (u *UI) renderProgress(progress Progress) {
 	if progress.Message != "" {
 		u.say(progress.Message)
+	}
+	if progress.Review.Message != "" {
+		u.say(progress.Review.Message)
 	}
 	if progress.FeatureID != "" {
 		_, _ = fmt.Fprintf(u.output, "\nFeature: %s\nCurrent stage: %s\nStage status: %s\nReview status: %s\n", progress.FeatureID, progress.CurrentStage, progress.StageStatus, progress.ReviewStatus)
@@ -189,6 +150,9 @@ func (u *UI) renderProgress(progress Progress) {
 	if len(progress.Revision) > 0 {
 		u.renderRevisionTable(progress.Revision)
 	}
+	if len(progress.Review.FingerprintActions) > 0 {
+		u.renderFingerprintTable(progress.Review.FingerprintActions)
+	}
 	u.renderCommandTable(progress.CommandHints)
 	if progress.TextAllowed {
 		_, _ = fmt.Fprintln(u.output, "Обычный текст: разрешён.")
@@ -212,6 +176,20 @@ func (u *UI) renderRevisionTable(actions []RevisionAction) {
 		RevisionApply:  "Publish this revision.",
 		RevisionReject: "Discard this revision.",
 		RevisionRework: "Ask the author to rework this revision.",
+	}
+	writer := tabwriter.NewWriter(u.output, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(writer, "\nAction\t| Description")
+	_, _ = fmt.Fprintln(writer, "---\t|---")
+	for _, action := range actions {
+		_, _ = fmt.Fprintf(writer, "%s\t| %s\n", action, descriptions[action])
+	}
+	_ = writer.Flush()
+}
+
+func (u *UI) renderFingerprintTable(actions []ReviewFingerprintAction) {
+	descriptions := map[ReviewFingerprintAction]string{
+		ReviewFingerprintRerun:  "Run the review again for the current revisions.",
+		ReviewFingerprintAccept: "Accept the report for the current revisions.",
 	}
 	writer := tabwriter.NewWriter(u.output, 0, 4, 2, ' ', 0)
 	_, _ = fmt.Fprintln(writer, "\nAction\t| Description")

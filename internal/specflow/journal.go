@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -239,100 +238,4 @@ func readLogLine(data []byte, offset int) (string, int, error) {
 		return "", offset, fmt.Errorf("unterminated mem-log line")
 	}
 	return string(data[offset : offset+end]), offset + end + 1, nil
-}
-
-// Journal is retained as the intent-only controller adapter until that
-// controller is replaced. It writes the same typed format as FeatureRepository.
-type Journal struct {
-	path         string
-	featureID    string
-	nextDecision int
-	now          func() time.Time
-}
-
-func NewJournal(path, datedID, brief string) (*Journal, error) {
-	data, _, err := newMemLog(datedID, brief, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if _, err = file.Write(data); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if err := file.Close(); err != nil {
-		return nil, err
-	}
-	return &Journal{path: path, featureID: datedID, nextDecision: 1, now: time.Now}, nil
-}
-
-func (j *Journal) append(kind MemLogEventKind, text string) error {
-	if j == nil {
-		return fmt.Errorf("mem-log is unavailable")
-	}
-	data, err := os.ReadFile(j.path)
-	if err != nil {
-		return err
-	}
-	entries, err := parseMemLog(data, j.featureID)
-	if err != nil {
-		return err
-	}
-	entry, err := NewMemLogEntry(StageIntent, RoleIntentAuthor, kind, j.now(), text)
-	if err != nil {
-		return err
-	}
-	entry.Sequence = uint64(len(entries))
-	updated, _, err := appendMemLogBytes(data, entry, entries[len(entries)-1].Checksum)
-	if err != nil {
-		return err
-	}
-	file, err := os.OpenFile(j.path, os.O_WRONLY|os.O_APPEND, 0)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	_, err = file.Write(updated[len(data):])
-	return err
-}
-
-func (j *Journal) User(text string) error   { return j.append(MemLogUserMessage, text) }
-func (j *Journal) Agent(text string) error  { return j.append(MemLogAgentMessage, text) }
-func (j *Journal) Rework(text string) error { return j.append(MemLogRevisionDecision, "rework: "+text) }
-func (j *Journal) Event(text string) error  { return j.append(MemLogSession, text) }
-
-func (j *Journal) Decisions(values []Decision) error {
-	if j == nil {
-		return fmt.Errorf("mem-log is unavailable")
-	}
-	next := j.nextDecision
-	for _, value := range values {
-		for _, id := range value.Supersedes {
-			if id <= 0 || id >= next {
-				return fmt.Errorf("decision supersedes unknown or future decision %d", id)
-			}
-		}
-		next++
-	}
-	if len(values) == 0 {
-		return nil
-	}
-	var record strings.Builder
-	next = j.nextDecision
-	for _, value := range values {
-		alternatives := "(none)"
-		if len(value.Alternatives) > 0 {
-			alternatives = strings.Join(value.Alternatives, "; ")
-		}
-		fmt.Fprintf(&record, "## Decision D-%03d\n\nauthor: %s\n\ndecision: %s\n\nrationale: %s\n\nalternatives: %s\n\nsupersedes: %v\n", next, value.Author, value.Decision, value.Rationale, alternatives, value.Supersedes)
-		next++
-	}
-	if err := j.append(MemLogDecision, record.String()); err != nil {
-		return err
-	}
-	j.nextDecision = next
-	return nil
 }

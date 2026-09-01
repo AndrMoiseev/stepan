@@ -45,11 +45,6 @@ type Progress struct {
 	Message   string
 	Diff      string
 	FeatureID string
-
-	// State is retained only while the original intent-only controller is
-	// migrated by later plan tasks. New planning-flow code must use the
-	// independent fields above.
-	State State
 }
 
 func NewProgress(state FlowState, hints []CommandHint, textAllowed bool) (Progress, error) {

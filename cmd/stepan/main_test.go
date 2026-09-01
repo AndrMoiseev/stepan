@@ -5,12 +5,24 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
 func TestPreflightRejectsUnsupportedPlatformBeforeHandles(t *testing.T) {
 	err := preflight("linux", "amd64", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "require windows/amd64") {
 		t.Fatalf("preflight error = %v", err)
+	}
+}
+
+func TestComposePlanningFlowBuildsDurableApplication(t *testing.T) {
+	root := t.TempDir()
+	session := specflow.NewSession(func(context.Context) (agentruntime.Runtime, error) { return nil, context.Canceled })
+	application, registry, err := composePlanningFlow(root, session, agentConfig{kind: agentCodex, executable: "codex"})
+	if err != nil || application == nil || registry == nil {
+		t.Fatalf("compose planning flow = %T, %T, %v", application, registry, err)
 	}
 }
 

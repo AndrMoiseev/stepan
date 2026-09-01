@@ -45,8 +45,15 @@ func run(ctx context.Context, args []string) int {
 
 	session := specflow.NewSession(runtimeFactory(config, root))
 	defer session.Close()
-	controller := specflow.NewController(root, session)
-	err = specflow.RunInteractive(ctx, controller, specflow.NewUI(controller), session.Interrupt)
+	controller, registry, err := composePlanningFlow(root, session, config)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start planning flow:", err)
+		return 2
+	}
+	defer registry.Close()
+	stopInterrupt := context.AfterFunc(ctx, func() { _ = session.Interrupt() })
+	defer stopInterrupt()
+	err = specflow.RunPlanningInteractive(ctx, controller, specflow.NewUI())
 	if errors.Is(err, context.Canceled) || errors.Is(err, specflow.ErrCanceled) {
 		return 130
 	}
@@ -55,6 +62,39 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	return 0
+}
+
+func composePlanningFlow(root string, session *specflow.Session, config agentConfig) (*specflow.ApplicationController, *specflow.SessionRegistry, error) {
+	repository, err := specflow.NewFSFeatureRepository(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	registry, err := specflow.NewSessionRegistry(session, repository)
+	if err != nil {
+		return nil, nil, err
+	}
+	catalog := specflow.NewEmbeddedPromptCatalog()
+	author, err := specflow.NewStageEngine(root, registry, repository, catalog)
+	if err != nil {
+		return nil, nil, err
+	}
+	reviewer, err := specflow.NewReviewEngine(root, registry, repository, catalog)
+	if err != nil {
+		return nil, nil, err
+	}
+	flow, err := specflow.NewFeatureController(repository, author, reviewer)
+	if err != nil {
+		return nil, nil, err
+	}
+	manager, err := specflow.NewResumeManager(repository, registry, flow)
+	if err != nil {
+		return nil, nil, err
+	}
+	application, err := specflow.NewApplicationController(root, session, manager, flow, specflow.RuntimeIdentity{Provider: string(config.kind), Model: "default"})
+	if err != nil {
+		return nil, nil, err
+	}
+	return application, registry, nil
 }
 
 func runtimeFactory(config agentConfig, root string) func(context.Context) (agentruntime.Runtime, error) {

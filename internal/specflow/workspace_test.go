@@ -5,12 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestValidateSpecID(t *testing.T) {
+func TestValidateFeatureID(t *testing.T) {
 	valid := []string{"a", "spec-1", strings.Repeat("a", 64), "com0", "lpt0"}
 	invalid := []string{"", "-", "-prefix", "suffix-", "UPPER", "has_underscore", "has space", "тест", strings.Repeat("a", 65), "CON", "prn", "Aux", "nul"}
 	for index := 1; index <= 9; index++ {
@@ -18,15 +17,15 @@ func TestValidateSpecID(t *testing.T) {
 	}
 	for _, specID := range valid {
 		t.Run("valid_"+specID, func(t *testing.T) {
-			if err := ValidateSpecID(specID); err != nil {
-				t.Fatalf("ValidateSpecID(%q): %v", specID, err)
+			if err := ValidateFeatureID(specID); err != nil {
+				t.Fatalf("ValidateFeatureID(%q): %v", specID, err)
 			}
 		})
 	}
 	for _, specID := range invalid {
 		t.Run("invalid_"+specID, func(t *testing.T) {
-			if err := ValidateSpecID(specID); err == nil {
-				t.Fatalf("ValidateSpecID(%q) succeeded", specID)
+			if err := ValidateFeatureID(specID); err == nil {
+				t.Fatalf("ValidateFeatureID(%q) succeeded", specID)
 			}
 		})
 	}
@@ -58,80 +57,6 @@ func TestFindGitRootOutsideWorkingTree(t *testing.T) {
 	_, err := FindGitRoot(context.Background(), directory)
 	if err == nil || !strings.Contains(err.Error(), "Git root") {
 		t.Fatalf("FindGitRoot() error = %v, want clear Git root error", err)
-	}
-}
-
-func TestPrepareSpecTargetDoesNotCreateOrChangeAnything(t *testing.T) {
-	repo := initRepository(t)
-	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("unchanged"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	before := gitStatus(t, repo)
-	target, err := PrepareSpecTarget(repo, "new-spec")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if target.Directory != filepath.Join(repo, "docs", "changes", "features", "new-spec") || target.Entrypoint != filepath.Join(target.Directory, "spec.md") {
-		t.Fatalf("unexpected target: %#v", target)
-	}
-	if target.DisplayPath != "docs/changes/features/new-spec/spec.md" {
-		t.Fatalf("DisplayPath = %q", target.DisplayPath)
-	}
-	if _, err := os.Lstat(target.Directory); !os.IsNotExist(err) {
-		t.Fatalf("target was created or cannot be checked: %v", err)
-	}
-	if after := gitStatus(t, repo); after != before {
-		t.Fatalf("working tree changed: before %q, after %q", before, after)
-	}
-	if err := os.MkdirAll(target.Directory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := CheckContainment(repo, target.Directory); err != nil {
-		t.Fatalf("repeated containment check: %v", err)
-	}
-}
-
-func TestPrepareSpecTargetRejectsExistingTargetWithoutChangingIt(t *testing.T) {
-	repo := initRepository(t)
-	directory := filepath.Join(repo, "docs", "changes", "features", "existing")
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(directory, "keep.txt")
-	if err := os.WriteFile(file, []byte("keep"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := PrepareSpecTarget(repo, "existing"); err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("PrepareSpecTarget() error = %v", err)
-	}
-	data, err := os.ReadFile(file)
-	if err != nil || string(data) != "keep" {
-		t.Fatalf("existing target changed: data=%q err=%v", data, err)
-	}
-}
-
-func TestPrepareSpecTargetRejectsWindowsReparseEscape(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows reparse point test")
-	}
-	repo := initRepository(t)
-	docs := filepath.Join(repo, "docs")
-	outside := t.TempDir()
-	if err := os.MkdirAll(docs, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(docs, "changes"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	junction := filepath.Join(docs, "changes", "features")
-	if output, err := exec.Command("cmd", "/c", "mklink", "/J", junction, outside).CombinedOutput(); err != nil {
-		t.Fatalf("create junction: %v: %s", err, output)
-	}
-	if _, err := PrepareSpecTarget(repo, "escaped"); err == nil || !strings.Contains(err.Error(), "escapes Git root") {
-		t.Fatalf("PrepareSpecTarget() error = %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(outside, "escaped")); !os.IsNotExist(err) {
-		t.Fatalf("escaped target was created or cannot be checked: %v", err)
 	}
 }
 

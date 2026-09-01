@@ -91,15 +91,12 @@ func revisionAllowed(progress Progress, input string) bool {
 	}
 	return false
 }
-func ParseReviewAction(input string) (ReviewAction, error) {
-	switch strings.TrimSpace(strings.ToLower(input)) {
-	case "apply", "/apply":
-		return ReviewApply, nil
-	case "reject", "/reject":
-		return ReviewReject, nil
-	case "rework", "/rework":
-		return ReviewRework, nil
-	default:
-		return "", fmt.Errorf("unknown review action %q; use apply, reject, or rework", input)
+
+func fingerprintAllowed(progress Progress, input string) bool {
+	for _, action := range progress.Review.FingerprintActions {
+		if input == string(action) {
+			return true
+		}
 	}
+	return false
 }

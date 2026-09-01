@@ -323,6 +323,7 @@ func (r *FSFeatureRepository) ReviseIntent(request ReviseIntentRequest) (PhaseCo
 
 func (r *FSFeatureRepository) intentRevisionBlockers(feature FeatureSnapshot) []ApprovalBlocker {
 	blocking := make([]ApprovalBlocker, 0)
+	displayIntent, _ := feature.Target.DisplayDocumentPath(StageIntent)
 	intentState, _ := feature.State.Stage(StageIntent)
 	if feature.State.Status() != FlowActive || intentState.Status != StageCommitted || intentState.ApprovedHash == "" {
 		blocking = append(blocking, ApprovalBlocker{Code: "intent-status", Path: "state.json", Message: "intent must be committed before revision"})
@@ -333,13 +334,13 @@ func (r *FSFeatureRepository) intentRevisionBlockers(feature FeatureSnapshot) []
 		}
 	}
 	if len(feature.Changes.DocumentRevisions) != 1 || feature.Changes.DocumentRevisions[0].Stage != StageIntent {
-		blocking = append(blocking, ApprovalBlocker{Code: "intent-revision", Path: feature.Target.DisplayIntentPath, Message: "exactly one manual intent revision is required"})
+		blocking = append(blocking, ApprovalBlocker{Code: "intent-revision", Path: displayIntent, Message: "exactly one manual intent revision is required"})
 	} else if data, err := readRegularFile(feature.Target.IntentPath); err != nil {
-		blocking = append(blocking, ApprovalBlocker{Code: "intent-revision", Path: feature.Target.DisplayIntentPath, Message: err.Error()})
+		blocking = append(blocking, ApprovalBlocker{Code: "intent-revision", Path: displayIntent, Message: err.Error()})
 	} else {
 		result := r.validateDocumentForApproval(feature, StageIntent, data)
 		for _, diagnostic := range result.Diagnostics {
-			blocking = append(blocking, ApprovalBlocker{Code: string(diagnostic.Code), Path: feature.Target.DisplayIntentPath, Message: diagnostic.Message})
+			blocking = append(blocking, ApprovalBlocker{Code: string(diagnostic.Code), Path: displayIntent, Message: diagnostic.Message})
 		}
 	}
 	paths, err := r.changedGitPaths()
