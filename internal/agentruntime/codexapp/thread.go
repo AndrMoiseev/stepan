@@ -63,21 +63,11 @@ func (connection *Connection) StartThread(cwd string, config agentruntime.Thread
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize Git root: %w", err)
 	}
-	var response struct {
-		Thread struct {
-			ID string `json:"id"`
-		} `json:"thread"`
-	}
-	if err := connection.Call("thread/start", map[string]string{"cwd": cwd}, &response); err != nil {
-		return nil, err
-	}
-	if response.Thread.ID == "" {
-		err := errors.New("thread/start response has no thread.id")
-		connection.fail(err)
-		return nil, connection.Err()
-	}
 	config = config.Clone()
 	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	if err := validateCodexSchema(config.OutputSchema); err != nil {
 		return nil, err
 	}
 	if config.Workspace != cwd {
@@ -92,6 +82,19 @@ func (connection *Connection) StartThread(cwd string, config agentruntime.Thread
 			return nil, errors.New("artifact root must be outside workspace")
 		}
 		config.ArtifactRoot = artifact
+	}
+	var response struct {
+		Thread struct {
+			ID string `json:"id"`
+		} `json:"thread"`
+	}
+	if err := connection.Call("thread/start", map[string]string{"cwd": cwd}, &response); err != nil {
+		return nil, err
+	}
+	if response.Thread.ID == "" {
+		err := errors.New("thread/start response has no thread.id")
+		connection.fail(err)
+		return nil, connection.Err()
 	}
 	return &Thread{ID: response.Thread.ID, connection: connection, cwd: cwd, config: config}, nil
 }
@@ -200,33 +203,73 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 				}
 				return nil, connection.failTurn(err)
 			}
-			return normalizeDraftEnvelope(output), nil
+			if err := agentruntime.ValidateOutput(thread.config.OutputSchema, output); err != nil {
+				return nil, err
+			}
+			return output, nil
 		}
 	}
 }
 
-// Codex requires every response-schema property to be required. The provider
-// therefore receives a mandatory message field even though the domain's draft
-// variant must not have one. An empty draft placeholder is transport metadata,
-// not part of the provider-neutral envelope.
-func normalizeDraftEnvelope(output json.RawMessage) json.RawMessage {
-	var envelope struct {
-		Kind    string  `json:"kind"`
-		Message *string `json:"message"`
+func validateCodexSchema(raw json.RawMessage) error {
+	var schema any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return errors.New("output schema must be a JSON object")
 	}
-	if json.Unmarshal(output, &envelope) != nil || envelope.Kind != "draft" || envelope.Message == nil || *envelope.Message != "" {
-		return output
+	if _, ok := schema.(map[string]any); !ok {
+		return errors.New("output schema must be a JSON object")
 	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal(output, &object) != nil {
-		return output
+	if err := validateCodexSchemaNode(schema); err != nil {
+		return fmt.Errorf("Codex output schema: %w", err)
 	}
-	delete(object, "message")
-	normalized, err := json.Marshal(object)
-	if err != nil {
-		return output
+	return nil
+}
+
+func validateCodexSchemaNode(node any) error {
+	object, ok := node.(map[string]any)
+	if !ok {
+		return nil
 	}
-	return normalized
+	if _, exists := object["oneOf"]; exists {
+		return errors.New("oneOf is not supported")
+	}
+	if properties, ok := object["properties"].(map[string]any); ok {
+		requiredItems, ok := object["required"].([]any)
+		if !ok {
+			return errors.New("required must contain every property")
+		}
+		required := make(map[string]bool, len(requiredItems))
+		for _, item := range requiredItems {
+			name, ok := item.(string)
+			if !ok {
+				return errors.New("required contains a non-string property")
+			}
+			required[name] = true
+		}
+		if len(required) != len(properties) {
+			return errors.New("required must contain every property")
+		}
+		for name := range properties {
+			if !required[name] {
+				return fmt.Errorf("property %q is not required", name)
+			}
+		}
+	}
+	for _, child := range object {
+		switch value := child.(type) {
+		case map[string]any:
+			if err := validateCodexSchemaNode(value); err != nil {
+				return err
+			}
+		case []any:
+			for _, item := range value {
+				if err := validateCodexSchemaNode(item); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (connection *Connection) activeTurn() (threadID, turnID string, done <-chan struct{}, active bool) {

@@ -197,6 +197,9 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json
 	if err != nil {
 		return nil, runtime.runtimeError("receive turn", err)
 	}
+	if err := agentruntime.ValidateOutput(item.config.OutputSchema, output); err != nil {
+		return nil, fmt.Errorf("Claude structured output: %w", err)
+	}
 	return output, nil
 }
 

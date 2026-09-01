@@ -22,6 +22,125 @@ func testThreadConfig(workspace string) agentruntime.ThreadConfig {
 	return agentruntime.ThreadConfig{Workspace: workspace, OutputSchema: testSchema}
 }
 
+func TestCodexProviderParity(t *testing.T) {
+	conformance.ProviderParity(t, func(t *testing.T, outputs []json.RawMessage) conformance.Fixture {
+		t.Helper()
+		root := canonicalTempDir(t)
+		connection, server, serverErr := threadTestConnection(t)
+		go serveConformanceScript(server, outputs, serverErr)
+		return conformance.Fixture{
+			Runtime:      &connectionRuntime{connection: connection, workspace: root},
+			Workspace:    root,
+			OutputSchema: specflow.DialogueSchema(),
+			Decode: func(raw json.RawMessage) (conformance.DomainEnvelope, error) {
+				envelope, err := specflow.DecodeEnvelope(raw)
+				return conformance.DomainEnvelope{Kind: string(envelope.Kind), Message: envelope.Message, DecisionCount: len(envelope.Decisions)}, err
+			},
+			Wait: func() error {
+				return <-serverErr
+			},
+			WriteAllowed: func(config agentruntime.ThreadConfig, target string) bool {
+				evaluator, err := NewApprovalEvaluator(config.Workspace, AccessPolicy{
+					ReadableRoots: []string{config.Workspace, config.ArtifactRoot},
+					WritableRoots: []string{config.ArtifactRoot},
+				})
+				return err == nil && allowedRequestedPath(evaluator.policy, target, evaluator.policy.WritableRoots)
+			},
+		}
+	})
+}
+
+type connectionRuntime struct {
+	connection *Connection
+	workspace  string
+}
+
+func (runtime *connectionRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	return runtime.connection.StartThread(runtime.workspace, config)
+}
+
+func (runtime *connectionRuntime) RunTurn(handle agentruntime.Thread, prompt string) (json.RawMessage, error) {
+	thread, ok := handle.(*Thread)
+	if !ok {
+		return nil, errors.New("invalid Codex thread handle")
+	}
+	return runtime.connection.RunTurn(thread, prompt)
+}
+
+func (runtime *connectionRuntime) CloseThread(handle agentruntime.Thread) error {
+	thread, ok := handle.(*Thread)
+	if !ok {
+		return errors.New("invalid Codex thread handle")
+	}
+	return runtime.connection.CloseThread(thread)
+}
+
+func (runtime *connectionRuntime) Interrupt() error { return runtime.Close() }
+func (runtime *connectionRuntime) Close() error     { return runtime.connection.Close() }
+
+func serveConformanceScript(server *Transport, outputs []json.RawMessage, result chan<- error) {
+	threadCount := 0
+	turnCount := 0
+	threadTurns := make(map[string]int)
+	for turnCount < len(outputs) {
+		request, err := server.Read()
+		if err != nil {
+			result <- err
+			return
+		}
+		switch request.Method {
+		case "thread/start":
+			threadCount++
+			if err := server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": fmt.Sprintf("thread-%d", threadCount)}}); err != nil {
+				result <- err
+				return
+			}
+		case "turn/start":
+			var params struct {
+				ThreadID string              `json:"threadId"`
+				Input    []map[string]string `json:"input"`
+				CWD      string              `json:"cwd"`
+				Sandbox  struct {
+					Type    string `json:"type"`
+					Network bool   `json:"networkAccess"`
+				} `json:"sandboxPolicy"`
+				Schema json.RawMessage `json:"outputSchema"`
+			}
+			if err := json.Unmarshal(request.Params, &params); err != nil || params.ThreadID == "" || len(params.Input) != 1 || params.CWD == "" || params.Sandbox.Type != "readOnly" || params.Sandbox.Network {
+				result <- fmt.Errorf("invalid conformance turn params: %s", request.Params)
+				return
+			}
+			if err := validateCodexSchema(params.Schema); err != nil {
+				result <- err
+				return
+			}
+			threadTurns[params.ThreadID]++
+			if threadTurns[params.ThreadID] == 1 && !strings.Contains(params.Input[0]["text"], "effective ") {
+				result <- fmt.Errorf("first %s turn omitted effective prompt", params.ThreadID)
+				return
+			}
+			if threadTurns[params.ThreadID] > 1 && strings.Contains(params.Input[0]["text"], "effective ") {
+				result <- fmt.Errorf("subsequent %s turn repeated effective prompt", params.ThreadID)
+				return
+			}
+			turnCount++
+			turnID := fmt.Sprintf("turn-%d", turnCount)
+			if err := server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": turnID}}); err != nil {
+				result <- err
+				return
+			}
+			if err := sendCompletedTurn(server, params.ThreadID, turnID, fmt.Sprintf("item-%d", turnCount), string(outputs[turnCount-1]), string(outputs[turnCount-1])); err != nil {
+				result <- err
+				return
+			}
+		default:
+			result <- fmt.Errorf("unexpected conformance method %q", request.Method)
+			return
+		}
+	}
+	result <- nil
+}
+
 func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
 	root := canonicalTempDir(t)
 	connection, server, serverErr := threadTestConnection(t)
@@ -254,13 +373,17 @@ func TestCodexIntentDialogueSchemaAvoidsUnsupportedOneOf(t *testing.T) {
 	}
 }
 
-func TestNormalizeCodexDraftEnvelopeRemovesRequiredEmptyMessage(t *testing.T) {
-	output := normalizeDraftEnvelope(json.RawMessage(`{"kind":"draft","message":"","decisions":[]}`))
-	if bytes.Contains(output, []byte(`"message"`)) {
-		t.Fatalf("draft still contains Codex placeholder: %s", output)
+func TestCodexSchemaRejectsUnionAndOptionalProperties(t *testing.T) {
+	for _, schema := range []json.RawMessage{
+		json.RawMessage(`{"oneOf":[{"type":"object"}]}`),
+		json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string"}},"required":[]}`),
+	} {
+		if err := validateCodexSchema(schema); err == nil {
+			t.Fatalf("Codex accepted incompatible schema: %s", schema)
+		}
 	}
-	if output := normalizeDraftEnvelope(json.RawMessage(`{"kind":"draft","message":"explanation","decisions":[]}`)); !bytes.Contains(output, []byte(`"message"`)) {
-		t.Fatalf("non-empty draft message was removed: %s", output)
+	if err := validateCodexSchema(specflow.DialogueSchema()); err != nil {
+		t.Fatalf("dialogue schema is not Codex-compatible: %v", err)
 	}
 }
 

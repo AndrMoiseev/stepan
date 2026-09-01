@@ -2,17 +2,53 @@ package claudeapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
+	"github.com/AndrMoiseev/stepan/internal/specflow"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
+
+func TestClaudeProviderParity(t *testing.T) {
+	conformance.ProviderParity(t, func(t *testing.T, outputs []json.RawMessage) conformance.Fixture {
+		t.Helper()
+		config := testConfig(t)
+		config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+		messages := make([]claudecode.Message, len(outputs))
+		for index, output := range outputs {
+			var structured map[string]any
+			if err := json.Unmarshal(output, &structured); err != nil {
+				t.Fatal(err)
+			}
+			messages[index] = &claudecode.ResultMessage{StructuredOutput: structured}
+		}
+		runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client {
+			return &fakeClient{messages: messages}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return conformance.Fixture{
+			Runtime: runtime, Workspace: config.Workspace, OutputSchema: specflow.DialogueSchema(),
+			Decode: func(raw json.RawMessage) (conformance.DomainEnvelope, error) {
+				envelope, err := specflow.DecodeEnvelope(raw)
+				return conformance.DomainEnvelope{Kind: string(envelope.Kind), Message: envelope.Message, DecisionCount: len(envelope.Decisions)}, err
+			},
+			WriteAllowed: func(threadConfig agentruntime.ThreadConfig, target string) bool {
+				policy := activePolicy{workspace: threadConfig.Workspace, artifactRoot: threadConfig.ArtifactRoot, writableRoot: threadConfig.ArtifactRoot}
+				return permitTool("Write", map[string]any{"file_path": target}, policy, threadConfig.Workspace) == nil
+			},
+		}
+	})
+}
 
 func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	config := testConfig(t)
@@ -32,7 +68,9 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := runtime.StartThread(testThreadConfig(config))
+	firstConfig := testThreadConfig(config)
+	firstConfig.BootstrapInstructions = "effective intent-author prompt"
+	first, err := runtime.StartThread(firstConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +86,9 @@ func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	}
 	if len(fake.sessions) != 2 || fake.sessions[0] != fake.sessions[1] || fake.sessions[0] == "" {
 		t.Fatalf("sessions = %#v", fake.sessions)
+	}
+	if len(fake.prompts) != 2 || !strings.Contains(fake.prompts[0], "effective intent-author prompt") || strings.Contains(fake.prompts[1], "effective intent-author prompt") {
+		t.Fatalf("bootstrap prompt lifecycle = %#v", fake.prompts)
 	}
 	if first == second {
 		t.Fatal("two ideas received the same thread handle")
@@ -363,6 +404,7 @@ type fakeClient struct {
 	mu            sync.Mutex
 	messages      []claudecode.Message
 	sessions      []string
+	prompts       []string
 	disconnects   int
 	interrupts    int
 	connectErr    error
@@ -388,9 +430,10 @@ func (client *fakeClient) Disconnect() error {
 	client.disconnects++
 	return client.disconnectErr
 }
-func (client *fakeClient) QueryWithSession(_ context.Context, _ string, session string) error {
+func (client *fakeClient) QueryWithSession(_ context.Context, prompt string, session string) error {
 	client.mu.Lock()
 	client.sessions = append(client.sessions, session)
+	client.prompts = append(client.prompts, prompt)
 	var messages []claudecode.Message
 	if client.queries < len(client.batches) {
 		messages = client.batches[client.queries]
