@@ -286,13 +286,7 @@ func (r *FSFeatureRepository) CloseFeatureSession(request SessionCloseRequest) (
 			delete(r.pending, pendingDraftKey(request.FeatureID, artifact.Stage))
 		}
 	}
-	stage := feature.State.CurrentStage()
-	role := mustAuthorRole(stage)
-	entry, err := NewMemLogEntry(stage, role, MemLogSession, request.At, "feature sessions closed; pending draft discarded; published revision preserved")
-	if err != nil {
-		return FeatureSnapshot{}, err
-	}
-	return r.recordActivityLocked(feature, entry)
+	return feature, nil
 }
 
 func (r *FSFeatureRepository) RecoverFeatureSession(request SessionRecoveryRequest) (SessionRecoveryResult, error) {

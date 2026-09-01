@@ -290,6 +290,24 @@ func (e *StageEngine) SubmitBrief(brief string) (StageResult, error) {
 	return e.run(brief, false)
 }
 
+// BeginStageDialogue gives a newly opened downstream author its first turn.
+// The prompt is control-plane input rather than a user message, so it is not
+// recorded in the feature memory log.
+func (e *StageEngine) BeginStageDialogue() (StageResult, error) {
+	if err := e.ready(); err != nil {
+		return StageResult{}, err
+	}
+	if e.policy.Stage == StageIntent {
+		return StageResult{}, fmt.Errorf("intent dialogue must begin with the feature brief")
+	}
+	if e.pending != nil {
+		return StageResult{}, ErrRevisionDecisionPending
+	}
+	e.parserAttempt = 0
+	prompt := fmt.Sprintf("Begin the %s stage now. Read the approved upstream documents and identify material ambiguities before drafting. Ask the user the next material clarification question or a small related set. If no material ambiguity remains, write the complete %s artifact.", e.policy.Stage, e.policy.ArtifactFilename)
+	return e.run(prompt, false)
+}
+
 func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 	return e.runMode(prompt, external, false)
 }

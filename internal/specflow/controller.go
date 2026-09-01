@@ -216,6 +216,7 @@ type featureAuthorEngine interface {
 	Policy() (StagePolicy, bool)
 	Start(StartStageRequest) (StagePolicy, error)
 	SubmitBrief(string) (StageResult, error)
+	BeginStageDialogue() (StageResult, error)
 	Submit(string) (StageResult, error)
 	Decide(RevisionAction, string) (StageResult, error)
 	ReReadCurrentDocument() (StageResult, error)
@@ -618,7 +619,17 @@ func (c *FeatureController) approve(runtimeContext string) (Progress, error) {
 		return c.progress(ControllerStageCommitted), fmt.Errorf("close committed %s sessions: %w", stage, closeErr)
 	}
 	if next := c.feature.State.CurrentStage(); next != stage {
-		return c.startStage(next, runtimeContext)
+		if _, err := c.startStage(next, runtimeContext); err != nil {
+			return c.progress(ControllerStageCommitted), err
+		}
+		result, err := c.author.BeginStageDialogue()
+		if err != nil {
+			return c.fail("begin next stage dialogue", err)
+		}
+		c.accept(result.Feature)
+		c.lastStage = result
+		c.revisionPending = result.Outcome == StageRevisionPending
+		return c.progress(ControllerAuthorUpdated), nil
 	}
 	return c.progress(ControllerStageCommitted), nil
 }

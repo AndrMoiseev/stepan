@@ -74,6 +74,10 @@ func TestSessionRegistryReusesThreadsByFeatureAndRole(t *testing.T) {
 		t.Fatalf("one thread per exercised role = %d, want 4", len(runner.configs))
 	}
 
+	featureBeforeClose, err := repository.Load(featureID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := registry.CloseFeature(featureID); err != nil {
 		t.Fatal(err)
 	}
@@ -84,8 +88,8 @@ func TestSessionRegistryReusesThreadsByFeatureAndRole(t *testing.T) {
 	if feature.State.Status() != FlowActive {
 		t.Fatalf("session close changed flow status: %s", feature.State.Status())
 	}
-	if got := feature.Journal[len(feature.Journal)-1]; got.Kind != MemLogSession || !strings.Contains(got.Body, "sessions closed") {
-		t.Fatalf("session close journal entry = %#v", got)
+	if len(feature.Journal) != len(featureBeforeClose.Journal) {
+		t.Fatalf("session close changed feature journal: before=%d after=%d journal=%#v", len(featureBeforeClose.Journal), len(feature.Journal), feature.Journal)
 	}
 	journalEntries := len(feature.Journal)
 	if err := registry.CloseFeature(featureID); err != nil {

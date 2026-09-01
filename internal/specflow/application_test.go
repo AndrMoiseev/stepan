@@ -143,6 +143,43 @@ func TestApplicationControllerStartFeatureReturnsInitialAuthorQuestion(t *testin
 	}
 }
 
+func TestApplicationControllerApproveIntentReturnsInitialSpecQuestion(t *testing.T) {
+	root := initializedCommitRepository(t)
+	runtime := &fullFlowRuntime{
+		configs:             make(map[int]agentruntime.ThreadConfig),
+		turns:               make(map[Role]int),
+		firstIntentQuestion: "What outcome should the feature produce?",
+		firstSpecQuestion:   "Which requirements and constraints must the specification cover?",
+	}
+	application, repository, registry := newApplicationHarness(t, root, runtime)
+	t.Cleanup(func() { _ = registry.Close() })
+	application.now = func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }
+
+	progress := submitApplication(t, application, "start", "Ask before writing the specification")
+	if progress.Message != runtime.firstIntentQuestion {
+		t.Fatalf("initial intent question = %q", progress.Message)
+	}
+	progress = submitApplication(t, application, "intent draft", "Write the intent")
+	assertApplicationProgress(t, progress, StageIntent, StagePublished, ReviewNotStarted, "/approve")
+
+	progress = submitApplication(t, application, "intent approval", "/approve")
+	if got, want := progress.Message, runtime.firstSpecQuestion; got != want {
+		t.Fatalf("initial spec question = %q, want %q; turns=%v progress=%#v", got, want, runtime.turns, progress)
+	}
+	if runtime.turns[RoleSpecAuthor] != 1 {
+		t.Fatalf("spec author turns = %d, want 1", runtime.turns[RoleSpecAuthor])
+	}
+	feature, err := repository.Load(progress.FeatureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range feature.Journal {
+		if entry.Stage == StageSpec && entry.Kind == MemLogUserMessage {
+			t.Fatalf("internal spec kickoff was recorded as a user message: %#v", entry)
+		}
+	}
+}
+
 func TestApplicationControllerResumeDiscardsPendingRevisionAndStartsFromPublishedDocument(t *testing.T) {
 	root := initializedCommitRepository(t)
 	firstRuntime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int), firstIntentQuestion: "What should be resumed?"}
@@ -262,6 +299,7 @@ type fullFlowRuntime struct {
 	turns               map[Role]int
 	startedRoles        []Role
 	firstIntentQuestion string
+	firstSpecQuestion   string
 	intentInputs        []string
 }
 
@@ -297,8 +335,19 @@ func (r *fullFlowRuntime) RunTurn(thread agentruntime.Thread, input string) (jso
 		payload, err := json.Marshal(Envelope{Kind: KindMessage, Message: r.firstIntentQuestion, Decisions: []Decision{}})
 		return payload, err
 	}
+	if (role == RoleSpecAuthor || role == RolePlanAuthor) && r.turns[role] == 1 {
+		question := r.firstSpecQuestion
+		if question == "" {
+			question = "What should this stage clarify before drafting?"
+		}
+		payload, err := json.Marshal(Envelope{Kind: KindMessage, Message: question, Decisions: []Decision{}})
+		return payload, err
+	}
 	artifactTurn := r.turns[role]
 	if role == RoleIntentAuthor && r.firstIntentQuestion != "" {
+		artifactTurn--
+	}
+	if role == RoleSpecAuthor || role == RolePlanAuthor {
 		artifactTurn--
 	}
 	artifact := fullFlowArtifact(role, artifactTurn)
