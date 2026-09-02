@@ -180,6 +180,50 @@ func TestApplicationControllerApproveIntentReturnsInitialSpecQuestion(t *testing
 	}
 }
 
+func TestApplicationControllerResumeDraftingSpecReturnsAuthorQuestion(t *testing.T) {
+	root := initializedCommitRepository(t)
+	firstRuntime := &fullFlowRuntime{
+		configs:             make(map[int]agentruntime.ThreadConfig),
+		turns:               make(map[Role]int),
+		firstIntentQuestion: "What outcome should the feature produce?",
+		firstSpecQuestion:   "What should the initial specification clarify?",
+	}
+	application, _, registry := newApplicationHarness(t, root, firstRuntime)
+	application.now = func() time.Time { return time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC) }
+
+	progress := submitApplication(t, application, "start", "Resume specification questions")
+	progress = submitApplication(t, application, "intent draft", "Write the intent")
+	progress = submitApplication(t, application, "intent approval", "/approve")
+	if progress.CurrentStage != StageSpec || progress.StageStatus != StageDrafting || progress.Message != firstRuntime.firstSpecQuestion {
+		t.Fatalf("spec before close = %#v", progress)
+	}
+	if _, err := application.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	secondRuntime := &fullFlowRuntime{
+		configs:           make(map[int]agentruntime.ThreadConfig),
+		turns:             make(map[Role]int),
+		firstSpecQuestion: "What should we clarify next in the restored specification?",
+	}
+	resumedApplication, _, resumedRegistry := newApplicationHarness(t, root, secondRuntime)
+	t.Cleanup(func() { _ = resumedRegistry.Close() })
+
+	resumed, err := resumedApplication.Resume(progress.FeatureID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := resumed.Message, secondRuntime.firstSpecQuestion; got != want {
+		t.Fatalf("resumed spec question = %q, want %q; turns=%v progress=%#v", got, want, secondRuntime.turns, resumed)
+	}
+	if secondRuntime.turns[RoleSpecAuthor] != 1 {
+		t.Fatalf("resumed spec author turns = %d, want 1", secondRuntime.turns[RoleSpecAuthor])
+	}
+}
+
 func TestApplicationControllerResumeDiscardsPendingRevisionAndStartsFromPublishedDocument(t *testing.T) {
 	root := initializedCommitRepository(t)
 	firstRuntime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int), firstIntentQuestion: "What should be resumed?"}

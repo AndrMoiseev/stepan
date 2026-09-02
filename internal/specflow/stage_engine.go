@@ -308,6 +308,21 @@ func (e *StageEngine) BeginStageDialogue() (StageResult, error) {
 	return e.run(prompt, false)
 }
 
+// ResumeStageDialogue gives a restored drafting stage an active first turn.
+// Durable documents and the memory log are authoritative; the control-plane
+// continuation prompt is not recorded as a user message.
+func (e *StageEngine) ResumeStageDialogue() (StageResult, error) {
+	if err := e.ready(); err != nil {
+		return StageResult{}, err
+	}
+	if e.pending != nil {
+		return StageResult{}, ErrRevisionDecisionPending
+	}
+	e.parserAttempt = 0
+	prompt := fmt.Sprintf("Resume the current %s dialogue from the authoritative documents and memory log. Ask the user the next unresolved material clarification question or a small related set. If no material ambiguity remains, write the complete %s artifact.", e.policy.Stage, e.policy.ArtifactFilename)
+	return e.run(prompt, false)
+}
+
 func (e *StageEngine) run(prompt string, external bool) (StageResult, error) {
 	return e.runMode(prompt, external, false)
 }

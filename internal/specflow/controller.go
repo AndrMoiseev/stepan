@@ -217,6 +217,7 @@ type featureAuthorEngine interface {
 	Start(StartStageRequest) (StagePolicy, error)
 	SubmitBrief(string) (StageResult, error)
 	BeginStageDialogue() (StageResult, error)
+	ResumeStageDialogue() (StageResult, error)
 	Submit(string) (StageResult, error)
 	Decide(RevisionAction, string) (StageResult, error)
 	ReReadCurrentDocument() (StageResult, error)
@@ -344,7 +345,20 @@ func (c *FeatureController) StartCurrentStage(runtimeContext string) (Progress, 
 	if !c.feature.Changes.Empty() {
 		return c.handleExternalRevision(runtimeContext)
 	}
-	return c.startStage(c.feature.State.CurrentStage(), runtimeContext)
+	stage := c.feature.State.CurrentStage()
+	state, _ := c.feature.State.Stage(stage)
+	progress, err := c.startStage(stage, runtimeContext)
+	if err != nil || state.Status != StageDrafting {
+		return progress, err
+	}
+	result, err := c.author.ResumeStageDialogue()
+	if err != nil {
+		return c.fail("resume current stage dialogue", err)
+	}
+	c.accept(result.Feature)
+	c.lastStage = result
+	c.revisionPending = result.Outcome == StageRevisionPending
+	return c.progress(ControllerAuthorUpdated), nil
 }
 
 func (c *FeatureController) Execute(command ControllerCommand) (Progress, error) {

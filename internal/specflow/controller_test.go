@@ -310,6 +310,9 @@ func (a *controllerAuthorStub) SubmitBrief(message string) (StageResult, error) 
 func (a *controllerAuthorStub) BeginStageDialogue() (StageResult, error) {
 	return StageResult{Stage: a.policy.Stage, Outcome: StageAuthorMessage}, nil
 }
+func (a *controllerAuthorStub) ResumeStageDialogue() (StageResult, error) {
+	return StageResult{Stage: a.policy.Stage, Outcome: StageAuthorMessage}, nil
+}
 func (a *controllerAuthorStub) Submit(message string) (StageResult, error) {
 	if a.submit != nil {
 		return a.submit(message)
