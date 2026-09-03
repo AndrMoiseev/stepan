@@ -11,23 +11,46 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+
+	"github.com/charmbracelet/x/term"
+	"github.com/mattn/go-colorable"
+)
+
+const (
+	ansiReset       = "\x1b[0m"
+	ansiBrightBlue  = "\x1b[94m"
+	ansiBoldBlue    = "\x1b[1;34m"
+	ansiBlue        = "\x1b[34m"
+	ansiGreen       = "\x1b[32m"
+	ansiYellow      = "\x1b[33m"
+	ansiRed         = "\x1b[31m"
+	ansiBoldMagenta = "\x1b[1;35m"
+	ansiBoldCyan    = "\x1b[1;36m"
+	ansiInputArea   = "\x1b[48;5;238;97m"
 )
 
 type UI struct {
 	input            *bufio.Reader
 	output           io.Writer
 	activityInterval time.Duration
+	color            bool
 }
 
 func NewUI() *UI {
-	return &UI{input: bufio.NewReader(os.Stdin), output: os.Stdout, activityInterval: 120 * time.Millisecond}
+	_, noColor := os.LookupEnv("NO_COLOR")
+	color := !noColor && term.IsTerminal(os.Stdout.Fd())
+	var output io.Writer = os.Stdout
+	if color {
+		output = colorable.NewColorableStdout()
+	}
+	return &UI{input: bufio.NewReader(os.Stdin), output: output, activityInterval: 120 * time.Millisecond, color: color}
 }
 func (u *UI) ReportError(err error) {
 	if errors.Is(err, ErrRepositoryDirty) {
-		u.say("Нельзя начать feature flow: в Git есть незакоммиченные изменения. Закоммитьте или временно уберите их, затем повторите /feature.")
+		u.sayStyled(ansiRed, "Нельзя начать feature flow: в Git есть незакоммиченные изменения. Закоммитьте или временно уберите их, затем повторите /feature.")
 		return
 	}
-	u.say("Ошибка: " + err.Error())
+	u.sayStyled(ansiRed, "Ошибка: "+err.Error())
 }
 
 // MainPrompt renders the commands that exist outside a feature flow and reads
@@ -121,7 +144,7 @@ func (u *UI) renderProgress(progress Progress) {
 		u.say(progress.Review.Message)
 	}
 	if progress.FeatureID != "" {
-		_, _ = fmt.Fprintf(u.output, "\nFeature: %s\nCurrent stage: %s\nStage status: %s\nReview status: %s\n", progress.FeatureID, progress.CurrentStage, progress.StageStatus, progress.ReviewStatus)
+		u.renderStatusPanel(progress)
 	}
 	if progress.Diff != "" {
 		_, _ = fmt.Fprintf(u.output, "\nDiff:\n%s\n", progress.Diff)
@@ -141,7 +164,8 @@ func (u *UI) renderProgress(progress Progress) {
 		if finding.Status != FindingOpen {
 			continue
 		}
-		_, _ = fmt.Fprintf(u.output, "\nReview finding %s [%s, %s]\nProblem: %s\n", finding.ID, finding.Kind, finding.Severity, finding.Problem)
+		heading := fmt.Sprintf("Review finding %s [%s, %s]", finding.ID, finding.Kind, finding.Severity)
+		_, _ = fmt.Fprintf(u.output, "\n%s\nProblem: %s\n", u.style(findingStyle(finding.Severity), heading), finding.Problem)
 		if finding.Location != "" {
 			_, _ = fmt.Fprintf(u.output, "Location: %s\n", finding.Location)
 		}
@@ -186,13 +210,17 @@ func (u *UI) renderProgress(progress Progress) {
 }
 
 func (u *UI) renderCommandTable(hints []CommandHint) {
-	writer := tabwriter.NewWriter(u.output, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(writer, "\nCommand\t| Description")
-	_, _ = fmt.Fprintln(writer, "---\t|---")
+	width := 0
 	for _, hint := range hints {
-		_, _ = fmt.Fprintf(writer, "%s\t| %s\n", hint.Command, hint.Description)
+		if len(hint.Command) > width {
+			width = len(hint.Command)
+		}
 	}
-	_ = writer.Flush()
+	_, _ = fmt.Fprintf(u.output, "\n%s\n", u.style(ansiBoldMagenta, "КОМАНДЫ"))
+	for _, hint := range hints {
+		command := fmt.Sprintf("%-*s", width, hint.Command)
+		_, _ = fmt.Fprintf(u.output, "  %s  %s\n", u.style(ansiBoldCyan, command), hint.Description)
+	}
 }
 
 func (u *UI) renderRevisionTable(actions []RevisionAction) {
@@ -239,8 +267,16 @@ func (u *UI) renderResumeTable(rows []ResumeRow) {
 }
 func (u *UI) text() (string, error) { return u.readLine("Вы > ") }
 func (u *UI) readLine(prompt string) (string, error) {
-	_, _ = fmt.Fprint(u.output, prompt)
+	if u.color {
+		coloredPrompt := strings.Replace(prompt, "Вы > ", " Вы › ", 1)
+		_, _ = fmt.Fprint(u.output, ansiInputArea, coloredPrompt)
+	} else {
+		_, _ = fmt.Fprint(u.output, prompt)
+	}
 	value, err := u.input.ReadString('\n')
+	if u.color {
+		_, _ = fmt.Fprint(u.output, ansiReset)
+	}
 	if err != nil && err != io.EOF {
 		return "", err
 	}
@@ -252,6 +288,62 @@ func (u *UI) readLine(prompt string) (string, error) {
 }
 func (u *UI) say(message string) { _, _ = fmt.Fprintf(u.output, "\nStepan > %s\n\n", message) }
 func (u *UI) thinking()          { _, _ = fmt.Fprint(u.output, "\nStepan думает…\n\n") }
+
+func (u *UI) sayStyled(style, message string) {
+	_, _ = fmt.Fprintf(u.output, "\nStepan > %s\n\n", u.style(style, message))
+}
+
+func (u *UI) style(style, value string) string {
+	if !u.color || value == "" {
+		return value
+	}
+	return style + value + ansiReset
+}
+
+func (u *UI) renderStatusPanel(progress Progress) {
+	border := u.style(ansiBrightBlue, "│")
+	label := func(value string) string { return u.style(ansiBoldBlue, value) }
+	_, _ = fmt.Fprintf(u.output, "\n%s %s  %s\n", border, label("FEATURE"), u.style("\x1b[1m", progress.FeatureID))
+	_, _ = fmt.Fprintf(u.output, "%s %s    %s · %s\n", border, label("STAGE"), progress.CurrentStage, u.style(stageStatusStyle(progress.StageStatus), string(progress.StageStatus)))
+	_, _ = fmt.Fprintf(u.output, "%s %s   %s\n", border, label("REVIEW"), u.style(reviewStatusStyle(progress.ReviewStatus), string(progress.ReviewStatus)))
+}
+
+func stageStatusStyle(status StageStatus) string {
+	switch status {
+	case StagePublished, StageCommitted:
+		return ansiGreen
+	case StageDrafting:
+		return ansiBlue
+	default:
+		return ansiBrightBlue
+	}
+}
+
+func reviewStatusStyle(status ReviewStatus) string {
+	switch status {
+	case ReviewAwaitingDecisions, ReviewAutomaticRework:
+		return ansiYellow
+	case ReviewAuthorDialogue:
+		return ansiBoldMagenta
+	case ReviewEscalated:
+		return ansiRed
+	case ReviewCompleted:
+		return ansiGreen
+	default:
+		return ansiBlue
+	}
+}
+
+func findingStyle(severity FindingSeverity) string {
+	switch severity {
+	case SeverityBlocker:
+		return ansiRed
+	case SeverityMajor:
+		return ansiYellow
+	default:
+		return ansiBlue
+	}
+}
 
 // BeginActivity renders a live terminal spinner until the returned function is
 // called. The stop function is idempotent so every controller exit path can use
@@ -268,7 +360,7 @@ func (u *UI) BeginActivity(label string) func() {
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	var once sync.Once
-	_, _ = fmt.Fprintf(u.output, "\nStepan > %s %s", label, frames[0])
+	_, _ = fmt.Fprintf(u.output, "\nStepan > %s %s", label, u.style(ansiYellow, frames[0]))
 	go func() {
 		defer close(stopped)
 		ticker := time.NewTicker(interval)
@@ -277,7 +369,7 @@ func (u *UI) BeginActivity(label string) func() {
 		for {
 			select {
 			case <-ticker.C:
-				_, _ = fmt.Fprintf(u.output, "\rStepan > %s %s", label, frames[frame%len(frames)])
+				_, _ = fmt.Fprintf(u.output, "\rStepan > %s %s", label, u.style(ansiYellow, frames[frame%len(frames)]))
 				frame++
 			case <-done:
 				return
@@ -288,7 +380,7 @@ func (u *UI) BeginActivity(label string) func() {
 		once.Do(func() {
 			close(done)
 			<-stopped
-			_, _ = fmt.Fprintf(u.output, "\rStepan > %s — готово.\n\n", label)
+			_, _ = fmt.Fprintf(u.output, "\rStepan > %s — %s\n\n", label, u.style(ansiGreen, "готово."))
 		})
 	}
 }

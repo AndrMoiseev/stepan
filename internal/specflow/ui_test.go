@@ -29,6 +29,36 @@ func TestLineChatWritesOnePromptPerMessage(t *testing.T) {
 	if strings.Count(output.String(), "question") != 1 {
 		t.Fatalf("chat duplicated assistant message: %q", output.String())
 	}
+	if strings.Contains(output.String(), "\x1b[") {
+		t.Fatalf("non-terminal UI emitted ANSI escapes: %q", output.String())
+	}
+}
+
+func TestDecoratedUIUsesDistinctStatusCommandAndInputAccents(t *testing.T) {
+	var output bytes.Buffer
+	ui := &UI{input: bufio.NewReader(strings.NewReader("/review\n")), output: &output, color: true}
+	progress := Progress{
+		FeatureID: "2026-09-01-qwen-code-support", CurrentStage: StageSpec,
+		StageStatus: StagePublished, ReviewStatus: ReviewNotStarted,
+		CommandHints: []CommandHint{{Command: "/review", Description: "Start review."}},
+	}
+	if _, err := ui.FlowPrompt(context.Background(), progress); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for name, want := range map[string]string{
+		"status panel": ansiBrightBlue + "│",
+		"commands":     ansiBoldMagenta + "КОМАНДЫ",
+		"command":      ansiBoldCyan + "/review",
+		"input":        ansiInputArea + " Вы › ",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("%s accent %q missing from %q", name, want, text)
+		}
+	}
+	if !strings.Contains(text, ansiGreen+string(StagePublished)) || !strings.Contains(text, ansiBlue+string(ReviewNotStarted)) {
+		t.Fatalf("semantic status colors missing from %q", text)
+	}
 }
 
 func TestDirtyRepositoryErrorIsReportedWithoutTechnicalDetails(t *testing.T) {
@@ -144,7 +174,7 @@ func TestProgressDiagnosticsAppearBeforeCommandTable(t *testing.T) {
 	}
 	text := output.String()
 	for _, diagnostic := range []string{"invalid heading", "needs attention"} {
-		if strings.Index(text, diagnostic) < 0 || strings.Index(text, diagnostic) > strings.Index(text, "Command") {
+		if strings.Index(text, diagnostic) < 0 || strings.Index(text, diagnostic) > strings.Index(text, "КОМАНДЫ") {
 			t.Fatalf("diagnostic is not before command table: %q", text)
 		}
 	}
@@ -174,7 +204,7 @@ func TestFlowPromptRendersActionableReviewFindings(t *testing.T) {
 			t.Fatalf("review detail %q missing from %q", want, text)
 		}
 	}
-	if strings.Index(text, "SPEC-F-5") > strings.Index(text, "Command") {
+	if strings.Index(text, "SPEC-F-5") > strings.Index(text, "КОМАНДЫ") {
 		t.Fatalf("review finding appears after commands: %q", text)
 	}
 }

@@ -6,6 +6,7 @@ require (
 	charm.land/huh/v2 v2.0.3
 	github.com/arch-go/arch-go v1.7.0
 	github.com/charmbracelet/x/term v0.2.2
+	github.com/mattn/go-colorable v0.1.13
 	github.com/severity1/claude-agent-sdk-go v0.6.22
 )
 
@@ -28,7 +29,6 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.20 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
