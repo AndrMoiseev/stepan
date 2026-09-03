@@ -13,7 +13,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(t *testing.T) {
+func TestApplicationControllerRunsUserInitiatedReviewRounds(t *testing.T) {
 	root := initializedCommitRepository(t)
 	runtime := &fullFlowRuntime{configs: make(map[int]agentruntime.ThreadConfig), turns: make(map[Role]int), firstIntentQuestion: "What outcome should this planning flow produce?"}
 	repository := newTestFeatureRepository(t, root)
@@ -57,20 +57,34 @@ func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(
 	progress = submitApplication(t, application, "spec draft", "Write the specification")
 	assertApplicationProgress(t, progress, StageSpec, StagePublished, ReviewNotStarted, "/review", "/approve")
 	progress = submitApplication(t, application, "spec review", "/review")
-	assertApplicationProgress(t, progress, StageSpec, StagePublished, ReviewCompleted, "/review", "/approve")
-	if progress.Review.ReworkAttempts != 1 || len(progress.Review.Progress) != 2 {
-		t.Fatalf("spec review did not expose automatic rework: %#v", progress.Review)
+	assertApplicationProgress(t, progress, StageSpec, StagePublished, ReviewAutomaticRework, "/apply")
+	if runtime.turns[RoleSpecAuthor] != 2 || runtime.turns[RoleSpecReviewer] != 1 {
+		t.Fatalf("review ran an automatic round: author=%d reviewer=%d", runtime.turns[RoleSpecAuthor], runtime.turns[RoleSpecReviewer])
 	}
+	progress = submitApplication(t, application, "apply spec review", "/apply")
+	assertApplicationProgress(t, progress, StageSpec, StagePublished, ReviewNotStarted, "/review", "/approve")
+	if runtime.turns[RoleSpecAuthor] != 3 || runtime.turns[RoleSpecReviewer] != 1 {
+		t.Fatalf("apply did not stop after author rework: author=%d reviewer=%d", runtime.turns[RoleSpecAuthor], runtime.turns[RoleSpecReviewer])
+	}
+	progress = submitApplication(t, application, "second spec review", "/review")
+	assertApplicationProgress(t, progress, StageSpec, StagePublished, ReviewCompleted, "/review", "/approve")
 	progress = submitApplication(t, application, "spec approval", "/approve")
 	assertApplicationProgress(t, progress, StagePlan, StageDrafting, ReviewNotStarted)
 
 	progress = submitApplication(t, application, "plan draft", "Write the plan")
 	assertApplicationProgress(t, progress, StagePlan, StagePublished, ReviewNotStarted, "/review", "/approve")
 	progress = submitApplication(t, application, "plan review", "/review")
-	assertApplicationProgress(t, progress, StagePlan, StagePublished, ReviewCompleted, "/review", "/approve")
-	if progress.Review.ReworkAttempts != 1 || len(progress.Review.Progress) != 2 {
-		t.Fatalf("plan review did not expose automatic rework: %#v", progress.Review)
+	assertApplicationProgress(t, progress, StagePlan, StagePublished, ReviewAutomaticRework, "/apply")
+	if runtime.turns[RolePlanAuthor] != 2 || runtime.turns[RolePlanReviewer] != 1 {
+		t.Fatalf("plan review ran an automatic round: author=%d reviewer=%d", runtime.turns[RolePlanAuthor], runtime.turns[RolePlanReviewer])
 	}
+	progress = submitApplication(t, application, "apply plan review", "/apply")
+	assertApplicationProgress(t, progress, StagePlan, StagePublished, ReviewNotStarted, "/review", "/approve")
+	if runtime.turns[RolePlanAuthor] != 3 || runtime.turns[RolePlanReviewer] != 1 {
+		t.Fatalf("plan apply did not stop after author rework: author=%d reviewer=%d", runtime.turns[RolePlanAuthor], runtime.turns[RolePlanReviewer])
+	}
+	progress = submitApplication(t, application, "second plan review", "/review")
+	assertApplicationProgress(t, progress, StagePlan, StagePublished, ReviewCompleted, "/review", "/approve")
 	progress = submitApplication(t, application, "plan approval", "/approve")
 	assertApplicationProgress(t, progress, StagePlan, StageCommitted, ReviewCompleted)
 
@@ -78,7 +92,11 @@ func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(feature.Documents) != 3 || len(feature.Reviews) != 2 || !strings.HasSuffix(filepath.ToSlash(feature.Reviews[0].Path), "/reviews/spec-001.md") || !strings.HasSuffix(filepath.ToSlash(feature.Reviews[1].Path), "/reviews/plan-001.md") {
+	if len(feature.Documents) != 3 || len(feature.Reviews) != 4 ||
+		!strings.HasSuffix(filepath.ToSlash(feature.Reviews[0].Path), "/reviews/spec-001.md") ||
+		!strings.HasSuffix(filepath.ToSlash(feature.Reviews[1].Path), "/reviews/spec-002.md") ||
+		!strings.HasSuffix(filepath.ToSlash(feature.Reviews[2].Path), "/reviews/plan-001.md") ||
+		!strings.HasSuffix(filepath.ToSlash(feature.Reviews[3].Path), "/reviews/plan-002.md") {
 		t.Fatalf("durable artifacts = documents:%#v reviews:%#v", feature.Documents, feature.Reviews)
 	}
 	flows, err := application.DiscoverResumable()
@@ -92,15 +110,37 @@ func TestApplicationControllerRunsCompletePlanningFlowWithTwoReviewReworkCycles(
 	if !reflect.DeepEqual(runtime.startedRoles, wantRoles) {
 		t.Fatalf("role sessions = %v, want %v", runtime.startedRoles, wantRoles)
 	}
-	log := gitOutputForTest(t, root, "log", "-3", "--format=%s")
+	log := gitOutputForTest(t, root, "log", "--format=%s")
 	for _, message := range []string{
 		"feature(2026-08-30-complete-flow): approve plan",
 		"feature(2026-08-30-complete-flow): approve spec",
 		"feature(2026-08-30-complete-flow): approve intent",
+		"feature(2026-08-30-complete-flow): checkpoint intent author-draft",
 	} {
 		if !strings.Contains(log, message) {
 			t.Fatalf("phase commit %q missing from:\n%s", message, log)
 		}
+	}
+	subjectCounts := make(map[string]int)
+	for _, subject := range strings.Split(strings.TrimSpace(log), "\n") {
+		subjectCounts[strings.TrimSpace(subject)]++
+	}
+	for message, want := range map[string]int{
+		"feature(2026-08-30-complete-flow): checkpoint spec author-draft":  1,
+		"feature(2026-08-30-complete-flow): checkpoint spec review":        2,
+		"feature(2026-08-30-complete-flow): checkpoint spec review-apply":  1,
+		"feature(2026-08-30-complete-flow): checkpoint spec review-rework": 1,
+		"feature(2026-08-30-complete-flow): checkpoint plan author-draft":  1,
+		"feature(2026-08-30-complete-flow): checkpoint plan review":        2,
+		"feature(2026-08-30-complete-flow): checkpoint plan review-apply":  1,
+		"feature(2026-08-30-complete-flow): checkpoint plan review-rework": 1,
+	} {
+		if got := subjectCounts[message]; got != want {
+			t.Fatalf("checkpoint count for %q = %d, want %d; log:\n%s", message, got, want, log)
+		}
+	}
+	if status := gitStatus(t, root); status != "" {
+		t.Fatalf("completed flow left dirty checkpoints: %q", status)
 	}
 }
 

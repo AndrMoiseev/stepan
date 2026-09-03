@@ -25,6 +25,10 @@ type PlanningInteractiveUI interface {
 	ReportError(error)
 }
 
+type PlanningActivityUI interface {
+	BeginActivity(string) func()
+}
+
 // RunPlanningInteractive drives only terminal navigation. It never computes a
 // transition and uses the same idempotent controller Close path for /exit,
 // closed input, and context cancellation (Ctrl+C).
@@ -58,7 +62,9 @@ func RunPlanningInteractive(ctx context.Context, controller PlanningInteractiveC
 					return err
 				}
 			}
+			stop := beginPlanningActivity(ui, "Автор начинает feature flow")
 			progress, err = controller.StartFeature(brief)
+			stop()
 		case MainActionResume:
 			var flows []ResumableFlow
 			flows, err = controller.DiscoverResumable()
@@ -69,7 +75,9 @@ func RunPlanningInteractive(ctx context.Context, controller PlanningInteractiveC
 					continue
 				}
 				if err == nil {
+					stop := beginPlanningActivity(ui, "Stepan восстанавливает feature flow")
 					progress, err = controller.Resume(featureID)
+					stop()
 				}
 			}
 		default:
@@ -101,7 +109,9 @@ func RunPlanningInteractive(ctx context.Context, controller PlanningInteractiveC
 			if input == "/exit" {
 				progress, err = controller.Close()
 			} else {
+				stop := beginPlanningActivity(ui, planningActivityLabel(input))
 				progress, err = controller.Submit(input)
+				stop()
 			}
 			if err != nil {
 				ui.ReportError(err)
@@ -110,5 +120,30 @@ func RunPlanningInteractive(ctx context.Context, controller PlanningInteractiveC
 		if err != nil {
 			ui.ReportError(err)
 		}
+	}
+}
+
+func beginPlanningActivity(ui PlanningInteractiveUI, label string) func() {
+	activity, ok := ui.(PlanningActivityUI)
+	if !ok {
+		return func() {}
+	}
+	return activity.BeginActivity(label)
+}
+
+func planningActivityLabel(input string) string {
+	switch input {
+	case "/review":
+		return "Ревьюер проверяет документ"
+	case "/apply":
+		return "Автор применяет замечания ревью"
+	case "/approve":
+		return "Stepan фиксирует утверждение стадии"
+	case "/revise-spec":
+		return "Stepan возвращает спецификацию в работу"
+	case "/status":
+		return "Stepan обновляет состояние flow"
+	default:
+		return "Автор продолжает работу"
 	}
 }

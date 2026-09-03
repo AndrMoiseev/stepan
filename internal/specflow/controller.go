@@ -239,10 +239,10 @@ type reviewEngineBinding struct {
 }
 
 func (b reviewEngineBinding) Start(request StartReviewRequest) (ReviewResult, error) {
-	return b.reviewer.StartWithAuthor(request, b.author)
+	return b.reviewer.Start(request)
 }
 func (b reviewEngineBinding) Submit(message string) (ReviewResult, error) {
-	return b.reviewer.SubmitWithAuthor(message, b.author)
+	return b.reviewer.Submit(message)
 }
 func (b reviewEngineBinding) Apply() (ReviewResult, error) {
 	return b.reviewer.ApplyPendingMaterial(b.author)
@@ -478,6 +478,7 @@ func (c *FeatureController) startStage(stage Stage, runtimeContext string) (Prog
 func (c *FeatureController) authorMessage(message string) (Progress, error) {
 	stage := c.currentAuthorStage()
 	state, _ := c.feature.State.Stage(stage)
+	reviewStatusBefore := state.ReviewStatus
 	if c.revisionPending || reviewBlocksAuthorInput(state.ReviewStatus) {
 		return c.unavailable("author message is not available while a decision or review is pending")
 	}
@@ -494,6 +495,16 @@ func (c *FeatureController) authorMessage(message string) (Progress, error) {
 	c.accept(result.Feature)
 	c.lastStage = result
 	c.revisionPending = result.Outcome == StageRevisionPending
+	if reviewStatusBefore == ReviewAuthorDialogue {
+		if result.Outcome == StageReviewDecisionRequired {
+			c.lastReview.Outcome = ReviewAuthorDecision
+			c.lastReview.Status = ReviewAuthorDialogue
+			c.lastReview.Message = result.Message
+			c.lastReview.Feature = result.Feature
+		} else {
+			c.lastReview = ReviewResult{}
+		}
+	}
 	return c.progress(ControllerAuthorUpdated), nil
 }
 
@@ -547,8 +558,9 @@ func (c *FeatureController) reviewMessage(message string) (Progress, error) {
 }
 
 func (c *FeatureController) applyReview() (Progress, error) {
-	if c.currentReviewStatus() != ReviewAwaitingDecisions {
-		return c.unavailable("/apply requires pending material review decisions")
+	status := c.currentReviewStatus()
+	if status != ReviewAwaitingDecisions && status != ReviewAutomaticRework {
+		return c.unavailable("/apply requires a published review with agreed fixes")
 	}
 	result, err := c.reviewer.Apply()
 	if err != nil {
@@ -934,7 +946,7 @@ func controllerHints(state FlowState, revisionPending bool) ([]CommandHint, bool
 		(stageState.ReviewStatus == ReviewNotStarted || stageState.ReviewStatus == ReviewCompleted || stageState.ReviewStatus == ReviewEscalated) {
 		pairs = append(pairs, [2]string{"/review", "Start agent review of the current published document."})
 	}
-	if stageState.ReviewStatus == ReviewAwaitingDecisions {
+	if stageState.ReviewStatus == ReviewAwaitingDecisions || stageState.ReviewStatus == ReviewAutomaticRework {
 		pairs = append(pairs, [2]string{"/apply", "Accept every pending material review recommendation."})
 	}
 	if stageState.Status == StagePublished && approvalReviewReady(stageState.ReviewStatus) {

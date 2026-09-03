@@ -8,17 +8,19 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 )
 
 type UI struct {
-	input  *bufio.Reader
-	output io.Writer
+	input            *bufio.Reader
+	output           io.Writer
+	activityInterval time.Duration
 }
 
 func NewUI() *UI {
-	return &UI{input: bufio.NewReader(os.Stdin), output: os.Stdout}
+	return &UI{input: bufio.NewReader(os.Stdin), output: os.Stdout, activityInterval: 120 * time.Millisecond}
 }
 func (u *UI) ReportError(err error) {
 	if errors.Is(err, ErrRepositoryDirty) {
@@ -132,6 +134,21 @@ func (u *UI) renderProgress(progress Progress) {
 			_, _ = fmt.Fprintf(u.output, "\nDiff:\n%s\n", event.Diff)
 		}
 	}
+	if progress.Review.Path != "" {
+		_, _ = fmt.Fprintf(u.output, "\nReview document: %s\n", progress.Review.Path)
+	}
+	for _, finding := range progress.Review.Findings {
+		if finding.Status != FindingOpen {
+			continue
+		}
+		_, _ = fmt.Fprintf(u.output, "\nReview finding %s [%s, %s]\nProblem: %s\n", finding.ID, finding.Kind, finding.Severity, finding.Problem)
+		if finding.Location != "" {
+			_, _ = fmt.Fprintf(u.output, "Location: %s\n", finding.Location)
+		}
+		if finding.Recommendation != "" {
+			_, _ = fmt.Fprintf(u.output, "Recommendation: %s\n", finding.Recommendation)
+		}
+	}
 	for _, diagnostic := range progress.Diagnostics {
 		location := ""
 		if diagnostic.Line > 0 {
@@ -235,3 +252,43 @@ func (u *UI) readLine(prompt string) (string, error) {
 }
 func (u *UI) say(message string) { _, _ = fmt.Fprintf(u.output, "\nStepan > %s\n\n", message) }
 func (u *UI) thinking()          { _, _ = fmt.Fprint(u.output, "\nStepan думает…\n\n") }
+
+// BeginActivity renders a live terminal spinner until the returned function is
+// called. The stop function is idempotent so every controller exit path can use
+// it safely.
+func (u *UI) BeginActivity(label string) func() {
+	if u.output == nil {
+		return func() {}
+	}
+	interval := u.activityInterval
+	if interval <= 0 {
+		interval = 120 * time.Millisecond
+	}
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	var once sync.Once
+	_, _ = fmt.Fprintf(u.output, "\nStepan > %s %s", label, frames[0])
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		frame := 1
+		for {
+			select {
+			case <-ticker.C:
+				_, _ = fmt.Fprintf(u.output, "\rStepan > %s %s", label, frames[frame%len(frames)])
+				frame++
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-stopped
+			_, _ = fmt.Fprintf(u.output, "\rStepan > %s — готово.\n\n", label)
+		})
+	}
+}

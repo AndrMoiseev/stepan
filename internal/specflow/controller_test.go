@@ -262,6 +262,9 @@ func (r *controllerRepositoryStub) RecordDecision(string, Stage, Role, Decision)
 func (r *controllerRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
 	return FeatureSnapshot{}, errors.New("unexpected RecordActivity")
 }
+func (r *controllerRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
+	return r.feature, nil
+}
 func (r *controllerRepositoryStub) DiscardPending(string, Stage, string) (FeatureSnapshot, error) {
 	return r.feature, nil
 }

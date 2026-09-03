@@ -133,13 +133,14 @@ const (
 	ReviewRunning           ReviewStatus = "running"
 	ReviewAwaitingDecisions ReviewStatus = "awaiting_decisions"
 	ReviewAutomaticRework   ReviewStatus = "automatic_rework"
+	ReviewAuthorDialogue    ReviewStatus = "author_dialogue"
 	ReviewEscalated         ReviewStatus = "escalated"
 	ReviewCompleted         ReviewStatus = "completed"
 )
 
 func (s ReviewStatus) Valid() bool {
 	switch s {
-	case ReviewNotStarted, ReviewRunning, ReviewAwaitingDecisions, ReviewAutomaticRework, ReviewEscalated, ReviewCompleted:
+	case ReviewNotStarted, ReviewRunning, ReviewAwaitingDecisions, ReviewAutomaticRework, ReviewAuthorDialogue, ReviewEscalated, ReviewCompleted:
 		return true
 	default:
 		return false

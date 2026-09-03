@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestReviewMaterialApplyPublishesScopedReworkAndSameReviewerResolvesFindings(t *testing.T) {
+func TestReviewMaterialApplyPublishesScopedReworkWithoutAutomaticReview(t *testing.T) {
 	root := initRepository(t)
 	repository := newTestFeatureRepository(t, root)
 	featureID := "2026-08-30-review-rework"
@@ -17,10 +17,7 @@ func TestReviewMaterialApplyPublishesScopedReworkAndSameReviewerResolvesFindings
 	if _, err := author.Start(StartStageRequest{FeatureID: featureID, Stage: StageSpec}); err != nil {
 		t.Fatal(err)
 	}
-	reviewerRunner := &reviewRunner{steps: []reviewRuntimeStep{
-		{artifact: mixedReviewWithPendingMaterials()},
-		{artifact: resolvedMixedReview()},
-	}}
+	reviewerRunner := &reviewRunner{steps: []reviewRuntimeStep{{artifact: mixedReviewWithPendingMaterials()}}}
 	review := newTestReviewEngine(t, root, reviewerRunner, repository)
 
 	started, err := review.Start(testStartReviewRequest(featureID))
@@ -28,10 +25,10 @@ func TestReviewMaterialApplyPublishesScopedReworkAndSameReviewerResolvesFindings
 		t.Fatalf("initial review = %#v, author turns=%d, err=%v", started, authorRunner.turns, err)
 	}
 	completed, err := review.ApplyPendingMaterial(author)
-	if err != nil || completed.Outcome != ReviewReportCompleted || completed.Status != ReviewCompleted || completed.ReworkAttempts != 1 {
+	if err != nil || completed.Outcome != ReviewReportCompleted || completed.Status != ReviewNotStarted || completed.ReworkAttempts != 1 {
 		t.Fatalf("completed rework = %#v, %v", completed, err)
 	}
-	if authorRunner.turns != 1 || reviewerRunner.turns != 2 {
+	if authorRunner.turns != 1 || reviewerRunner.turns != 1 {
 		t.Fatalf("runtime turns: author=%d reviewer=%d", authorRunner.turns, reviewerRunner.turns)
 	}
 	if len(completed.Progress) != 2 || completed.Progress[0].Kind != ReviewProgressReworkStarted ||
@@ -51,7 +48,7 @@ func TestReviewMaterialApplyPublishesScopedReworkAndSameReviewerResolvesFindings
 		t.Fatal("automatic rework did not publish the author artifact")
 	}
 	report := string(loaded.Reviews[0].Content)
-	if strings.Count(report, "Decided-by: user") != 2 || strings.Count(report, "Status: resolved") != 3 {
+	if strings.Count(report, "Decided-by: user") != 2 || strings.Count(report, "Status: open") != 3 {
 		t.Fatalf("review provenance/resolutions were not retained:\n%s", report)
 	}
 }
@@ -92,13 +89,13 @@ func TestReviewDismissalRequiresRationaleAndNeverChangesDocument(t *testing.T) {
 	}
 }
 
-func TestReviewRetryExhaustionRetainsCounterAcrossNewFinding(t *testing.T) {
+func TestReviewApplyInvokesAuthorOnceAndNextReviewIsExplicit(t *testing.T) {
 	root := initRepository(t)
 	repository := newTestFeatureRepository(t, root)
 	featureID := "2026-08-30-review-retry"
 	preparePublishedSpec(t, root, repository, featureID)
 	reworked := strings.Replace(validRepositorySpec(), "The state survives restart.", "The state survives every restart.", 1)
-	authorRunner := &stageRunner{steps: []stageRuntimeStep{{artifact: reworked}, {artifact: reworked}, {artifact: reworked}}}
+	authorRunner := &stageRunner{steps: []stageRuntimeStep{{artifact: reworked}}}
 	author := newTestStageEngine(t, root, authorRunner, repository)
 	if _, err := author.Start(StartStageRequest{FeatureID: featureID, Stage: StageSpec}); err != nil {
 		t.Fatal(err)
@@ -106,33 +103,25 @@ func TestReviewRetryExhaustionRetainsCounterAcrossNewFinding(t *testing.T) {
 	reviewerRunner := &reviewRunner{steps: []reviewRuntimeStep{
 		{artifact: pendingSpecReview("SPEC-F-001")},
 		{artifact: openFixedReview(false)},
-		{artifact: openFixedReviewWithNewPending()},
-		{artifact: openFixedReview(true)},
-		{artifact: openFixedReview(true)},
 	}}
 	review := newTestReviewEngine(t, root, reviewerRunner, repository)
 	if _, err := review.Start(testStartReviewRequest(featureID)); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := review.ApplyPendingMaterial(author)
-	if err != nil || pending.Outcome != ReviewMaterialDecisions || pending.ReworkAttempts != 2 || len(pending.MaterialFindings) != 1 {
-		t.Fatalf("new finding result = %#v, %v", pending, err)
+	applied, err := review.ApplyPendingMaterial(author)
+	if err != nil || applied.Outcome != ReviewReportCompleted || applied.Status != ReviewNotStarted || applied.ReworkAttempts != 1 {
+		t.Fatalf("applied review = %#v, %v", applied, err)
 	}
-	escalated, err := review.ApplyPendingMaterial(author)
-	if err != nil || escalated.Outcome != ReviewEscalation || escalated.Status != ReviewEscalated || escalated.ReworkAttempts != DefaultRetryLimit {
-		t.Fatalf("escalation = %#v, %v", escalated, err)
-	}
-	if authorRunner.turns != DefaultRetryLimit || reviewerRunner.turns != 4 {
-		t.Fatalf("fourth automatic turn ran: author=%d reviewer=%d", authorRunner.turns, reviewerRunner.turns)
-	}
-	stageState, _ := escalated.Feature.State.Stage(StageSpec)
-	if stageState.RetryCounters.ReviewRework != DefaultRetryLimit {
-		t.Fatalf("durable retry counter = %d", stageState.RetryCounters.ReviewRework)
+	if authorRunner.turns != 1 || reviewerRunner.turns != 1 {
+		t.Fatalf("unexpected automatic turns: author=%d reviewer=%d", authorRunner.turns, reviewerRunner.turns)
 	}
 
 	newRun, err := review.Start(testStartReviewRequest(featureID))
 	if err != nil || newRun.RunID != 2 || newRun.ReworkAttempts != 0 || newRun.Outcome != ReviewReworkRequired {
 		t.Fatalf("explicit new review = %#v, %v", newRun, err)
+	}
+	if authorRunner.turns != 1 || reviewerRunner.turns != 2 {
+		t.Fatalf("explicit review turns: author=%d reviewer=%d", authorRunner.turns, reviewerRunner.turns)
 	}
 	newState, _ := newRun.Feature.State.Stage(StageSpec)
 	if newState.RetryCounters.ReviewRework != 0 {
@@ -140,31 +129,42 @@ func TestReviewRetryExhaustionRetainsCounterAcrossNewFinding(t *testing.T) {
 	}
 }
 
-func TestReviewAuthorMaterialQuestionStopsLoopAndBecomesReviewerFinding(t *testing.T) {
+func TestReviewAuthorMaterialQuestionContinuesInAuthorDialogue(t *testing.T) {
 	root := initRepository(t)
 	repository := newTestFeatureRepository(t, root)
 	featureID := "2026-08-30-review-author-question"
 	preparePublishedSpec(t, root, repository, featureID)
-	authorRunner := &stageRunner{steps: []stageRuntimeStep{{message: "Should persistence favor latency or durability?"}}}
+	reworked := strings.Replace(validRepositorySpec(), "The state survives restart.", "The state favors durability and survives restart.", 1)
+	authorRunner := &stageRunner{steps: []stageRuntimeStep{
+		{message: "Should persistence favor latency or durability?"},
+		{artifact: reworked},
+	}}
 	author := newTestStageEngine(t, root, authorRunner, repository)
 	if _, err := author.Start(StartStageRequest{FeatureID: featureID, Stage: StageSpec}); err != nil {
 		t.Fatal(err)
 	}
-	reviewerRunner := &reviewRunner{steps: []reviewRuntimeStep{
-		{artifact: contractSpecReview("SPEC-F-001")},
-		{artifact: contractReviewWithNewPending()},
-	}}
+	reviewerRunner := &reviewRunner{steps: []reviewRuntimeStep{{artifact: contractSpecReview("SPEC-F-001")}}}
 	review := newTestReviewEngine(t, root, reviewerRunner, repository)
 	started, err := review.Start(testStartReviewRequest(featureID))
 	if err != nil || started.Outcome != ReviewReworkRequired {
 		t.Fatalf("started review = %#v, %v", started, err)
 	}
 	result, err := review.AutomaticRework(author)
-	if err != nil || result.Outcome != ReviewMaterialDecisions || result.ReworkAttempts != 1 || len(result.MaterialFindings) != 1 {
+	if err != nil || result.Outcome != ReviewAuthorDecision || result.Status != ReviewAuthorDialogue ||
+		!strings.Contains(result.Message, "latency or durability") || result.ReworkAttempts != 1 {
 		t.Fatalf("author question = %#v, %v", result, err)
 	}
-	if authorRunner.turns != 1 || reviewerRunner.turns != 2 {
-		t.Fatalf("loop continued past author decision: author=%d reviewer=%d", authorRunner.turns, reviewerRunner.turns)
+	stageState, _ := result.Feature.State.Stage(StageSpec)
+	if stageState.ReviewStatus != ReviewAuthorDialogue || authorRunner.turns != 1 || reviewerRunner.turns != 1 {
+		t.Fatalf("dialogue ownership: state=%s author=%d reviewer=%d", stageState.ReviewStatus, authorRunner.turns, reviewerRunner.turns)
+	}
+	published, err := author.Submit("Favor durability.")
+	if err != nil || published.Outcome != StageReviewReworkPublished {
+		t.Fatalf("continued author dialogue = %#v, %v", published, err)
+	}
+	publishedState, _ := published.Feature.State.Stage(StageSpec)
+	if publishedState.ReviewStatus != ReviewNotStarted || reviewerRunner.turns != 1 {
+		t.Fatalf("published dialogue state=%s reviewer=%d", publishedState.ReviewStatus, reviewerRunner.turns)
 	}
 }
 

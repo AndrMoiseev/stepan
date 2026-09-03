@@ -24,6 +24,7 @@ type FeatureRepository interface {
 	PublishReview(ReviewArtifactRequest) (ReviewPublication, error)
 	RecordDecision(featureID string, stage Stage, role Role, decision Decision) (FeatureSnapshot, error)
 	RecordActivity(featureID string, entry MemLogEntry) (FeatureSnapshot, error)
+	Checkpoint(CheckpointRequest) (FeatureSnapshot, error)
 	DiscardPending(featureID string, stage Stage, artifactRoot string) (FeatureSnapshot, error)
 	Approve(ApproveStageRequest) (PhaseCommitResult, error)
 	InspectExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error)
@@ -112,6 +113,27 @@ type ReviewPublication struct {
 	Path       string
 	Validation DocumentResult
 	Feature    FeatureSnapshot
+}
+
+type CheckpointKind string
+
+const (
+	CheckpointAuthorDraft  CheckpointKind = "author-draft"
+	CheckpointReview       CheckpointKind = "review"
+	CheckpointReviewApply  CheckpointKind = "review-apply"
+	CheckpointReviewRework CheckpointKind = "review-rework"
+)
+
+func (k CheckpointKind) Valid() bool {
+	return k == CheckpointAuthorDraft || k == CheckpointReview || k == CheckpointReviewApply || k == CheckpointReviewRework
+}
+
+type CheckpointRequest struct {
+	FeatureID string
+	Stage     Stage
+	Role      Role
+	Kind      CheckpointKind
+	At        time.Time
 }
 
 type ApproveStageRequest struct {

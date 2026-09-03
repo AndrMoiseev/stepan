@@ -17,8 +17,9 @@ var (
 	ErrReviewFingerprintDecision = errors.New("review fingerprint decision is pending")
 )
 
-// ReviewEngine owns one explicit /review run, including its material decision
-// queue and bounded reviewer -> author -> reviewer rework loop.
+// ReviewEngine owns one explicit /review run and its material decision queue.
+// Applying a report may invoke the author once; every later review round is
+// started explicitly by the user and receives a new numbered report.
 type ReviewEngine struct {
 	workspace  string
 	runner     dialogueRunner
@@ -53,9 +54,8 @@ func NewReviewEngine(workspace string, runner dialogueRunner, repository Feature
 	}, nil
 }
 
-// Start is the effect boundary for an explicit /review command. Duplicate
-// completed fingerprints return before an artifact root or agent thread is
-// created.
+// Start is the effect boundary for an explicit /review command. Every command
+// creates a new numbered review, even when the document fingerprint is unchanged.
 func (e *ReviewEngine) Start(request StartReviewRequest) (ReviewResult, error) {
 	if e.run != nil && !e.terminal {
 		return ReviewResult{}, fmt.Errorf("start review: a review run is already active")
@@ -82,14 +82,6 @@ func (e *ReviewEngine) Start(request StartReviewRequest) (ReviewResult, error) {
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("start %s review: %w", request.Stage, err)
 	}
-	if existing, ok := completedReviewForFingerprint(stageState, fingerprint); ok {
-		return ReviewResult{
-			Stage: request.Stage, Outcome: ReviewExisting, Status: ReviewCompleted,
-			RunID: existing.ID, Path: existing.Path, OriginalFingerprint: existing.OriginalFingerprint,
-			CurrentFingerprint: fingerprint, Feature: feature,
-		}, nil
-	}
-
 	targetValidation, targetIDs := validateReviewTarget(feature, policy)
 	if !targetValidation.Valid() {
 		return ReviewResult{
@@ -158,18 +150,17 @@ func (e *ReviewEngine) Start(request StartReviewRequest) (ReviewResult, error) {
 	if reuse {
 		turnPrompt += "\n\nCurrent run context:\n" + reviewerRuntimeContext(feature, policy, e.artifactRoot, runID, request.RuntimeContext)
 	}
-	return e.runTurn(turnPrompt, targetIDs, true)
+	result, err := e.runTurn(turnPrompt, targetIDs, true)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	return e.checkpointPublishedReview(result)
 }
 
 // StartWithAuthor is the lifecycle entry used when the controller has a live
-// author session. Contract-only reports proceed directly to automatic rework;
-// reports with material findings still stop at the ordered decision queue.
-func (e *ReviewEngine) StartWithAuthor(request StartReviewRequest, author *StageEngine) (ReviewResult, error) {
-	result, err := e.Start(request)
-	if err != nil || result.Outcome != ReviewReworkRequired {
-		return result, err
-	}
-	return e.AutomaticRework(author)
+// author session. Review never invokes the author until the user runs /apply.
+func (e *ReviewEngine) StartWithAuthor(request StartReviewRequest, _ *StageEngine) (ReviewResult, error) {
+	return e.Start(request)
 }
 
 // Submit continues reviewer dialogue without creating another numbered run.
@@ -177,9 +168,9 @@ func (e *ReviewEngine) Submit(message string) (ReviewResult, error) {
 	return e.SubmitWithAuthor(message, nil)
 }
 
-// SubmitWithAuthor continues free-form reviewer dialogue and automatically
-// starts rework if that turn resolves the final material finding.
-func (e *ReviewEngine) SubmitWithAuthor(message string, author *StageEngine) (ReviewResult, error) {
+// SubmitWithAuthor continues free-form reviewer dialogue. The author parameter
+// is retained for API compatibility; only an explicit /apply may invoke it.
+func (e *ReviewEngine) SubmitWithAuthor(message string, _ *StageEngine) (ReviewResult, error) {
 	if e.run == nil || e.thread == nil {
 		return ReviewResult{}, ErrReviewNotStarted
 	}
@@ -200,21 +191,31 @@ func (e *ReviewEngine) SubmitWithAuthor(message string, author *StageEngine) (Re
 	e.feature = feature
 	_, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
 	result, err := e.runTurn(strings.TrimSpace(message), targetIDs, false)
-	if err != nil || result.Outcome != ReviewReworkRequired || author == nil {
-		return result, err
+	if err != nil {
+		return ReviewResult{}, err
 	}
-	return e.AutomaticRework(author)
+	return e.checkpointPublishedReview(result)
 }
 
 // ApplyPendingMaterial implements /apply: every currently pending material
-// finding is accepted in report order and the author loop starts immediately.
+// finding is accepted in report order and the author is invoked exactly once.
+// A later review is never started automatically.
 func (e *ReviewEngine) ApplyPendingMaterial(author *StageEngine) (ReviewResult, error) {
 	if e.run == nil || e.thread == nil {
 		return ReviewResult{}, ErrReviewNotStarted
 	}
 	pending := pendingMaterialFindings(e.run.candidateFindings)
 	if len(pending) == 0 {
-		return ReviewResult{}, fmt.Errorf("no material review decisions are pending")
+		if len(openFixFindings(e.run.candidateFindings)) == 0 {
+			return ReviewResult{}, fmt.Errorf("review has no agreed fixes to apply")
+		}
+		result := e.baseResult(ReviewReworkRequired, ReviewAutomaticRework, "")
+		result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
+		result.MaterialFindings = nil
+		if _, err := e.checkpointResult(result, CheckpointReviewApply); err != nil {
+			return ReviewResult{}, err
+		}
+		return e.AutomaticRework(author)
 	}
 	decisions := make([]MaterialFindingDecision, 0, len(pending))
 	for _, finding := range pending {
@@ -223,7 +224,14 @@ func (e *ReviewEngine) ApplyPendingMaterial(author *StageEngine) (ReviewResult, 
 			Rationale: "User accepted the pending recommendation with /apply.",
 		})
 	}
-	return e.decideMaterial(decisions, author)
+	result, err := e.decideMaterial(decisions, nil)
+	if err != nil || result.Outcome != ReviewReworkRequired {
+		return result, err
+	}
+	if _, err := e.checkpointResult(result, CheckpointReviewApply); err != nil {
+		return ReviewResult{}, err
+	}
+	return e.AutomaticRework(author)
 }
 
 // DecideMaterial records one explicit fix/dismiss decision. Dismissal requires
@@ -319,9 +327,9 @@ func (e *ReviewEngine) decideMaterial(decisions []MaterialFindingDecision, autho
 	return e.AutomaticRework(author)
 }
 
-// AutomaticRework runs the bounded author/reviewer loop for the current
-// numbered report. A newly discovered material question returns immediately;
-// the already-consumed attempt budget is retained for this run.
+// AutomaticRework applies the current review through one author turn. Despite
+// the legacy name retained for compatibility with callers, it never invokes
+// the reviewer; another review requires a new explicit /review command.
 func (e *ReviewEngine) AutomaticRework(author *StageEngine) (ReviewResult, error) {
 	if e.run == nil || e.thread == nil {
 		return ReviewResult{}, ErrReviewNotStarted
@@ -339,139 +347,44 @@ func (e *ReviewEngine) AutomaticRework(author *StageEngine) (ReviewResult, error
 		return ReviewResult{}, fmt.Errorf("material review decisions are still pending")
 	}
 
-	progress := make([]ReviewProgressEvent, 0, DefaultRetryLimit*2)
-	for {
-		scope := openFixFindings(e.run.candidateFindings)
-		if len(scope) == 0 {
-			result := e.baseResult(ReviewReportCompleted, ReviewCompleted, "")
-			result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
-			result.Progress = append([]ReviewProgressEvent(nil), progress...)
-			result.ReworkAttempts = e.run.reworkAttempts
-			e.terminal = true
-			return result, nil
-		}
-		if e.run.reworkAttempts >= DefaultRetryLimit {
-			return e.escalate(progress)
-		}
-
-		e.run.reworkAttempts++
-		started := ReviewProgressEvent{Kind: ReviewProgressReworkStarted,
-			Message: fmt.Sprintf("Automatic review rework attempt %d of %d started.", e.run.reworkAttempts, DefaultRetryLimit)}
-		progress = append(progress, started)
-		if err := e.recordAttempt(started.Message); err != nil {
+	scope := openFixFindings(e.run.candidateFindings)
+	if len(scope) == 0 {
+		return ReviewResult{}, fmt.Errorf("review has no agreed fixes to apply")
+	}
+	e.run.reworkAttempts++
+	started := ReviewProgressEvent{Kind: ReviewProgressReworkStarted, Message: "Review findings were passed to the author."}
+	progress := []ReviewProgressEvent{started}
+	if err := e.recordAttempt(started.Message); err != nil {
+		return ReviewResult{}, err
+	}
+	if err := e.publishStatus(ReviewAutomaticRework); err != nil {
+		return ReviewResult{}, err
+	}
+	rework, err := author.ReworkFromReview(ReviewReworkRequest{ReportPath: e.currentReportPath(), Findings: scope})
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("apply %s review through author: %w", e.run.request.Stage, err)
+	}
+	if rework.Outcome == StageReviewDecisionRequired {
+		if err := e.publishStatus(ReviewAuthorDialogue); err != nil {
 			return ReviewResult{}, err
 		}
-		if err := e.publishStatus(ReviewAutomaticRework); err != nil {
-			return ReviewResult{}, err
-		}
-
-		rework, err := author.ReworkFromReview(ReviewReworkRequest{ReportPath: e.currentReportPath(), Findings: scope})
-		if err != nil {
-			return ReviewResult{}, fmt.Errorf("automatic %s author rework: %w", e.run.request.Stage, err)
-		}
-		switch rework.Outcome {
-		case StageReviewDecisionRequired:
-			return e.captureAuthorDecision(rework, progress)
-		case StageAuthorDiagnostics:
-			return e.escalateWithMessage(progress, rework.Message)
-		case StageReviewReworkPublished:
-			progress = append(progress, ReviewProgressEvent{Kind: ReviewProgressDiff,
-				Message: fmt.Sprintf("Automatic review rework attempt %d published.", e.run.reworkAttempts), Diff: rework.Diff})
-		default:
-			return ReviewResult{}, fmt.Errorf("automatic review rework returned unexpected author outcome %q", rework.Outcome)
-		}
-
-		e.feature = rework.Feature
-		fingerprint, err := reviewFingerprint(e.feature, mustPolicy(e.run.request.Stage))
-		if err != nil {
-			return ReviewResult{}, err
-		}
-		e.run.turnFingerprint = fingerprint
-		validation, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
-		if !validation.Valid() {
-			return e.escalateWithMessage(progress, conciseDocumentDiagnostics(validation.Diagnostics))
-		}
-		result, err := e.runTurn("Recheck the automatically reworked current document against every finding in the same review.md. Preserve immutable finding fields and user/reviewer decision provenance. Mark a fix resolved only after verifying the actual document change, keep an unfixed problem open, and add a new pending material finding only when a new user decision is genuinely required.", targetIDs, true)
-		if err != nil {
-			return ReviewResult{}, err
-		}
-		result.Progress = append([]ReviewProgressEvent(nil), progress...)
+		result := e.baseResult(ReviewAuthorDecision, ReviewAuthorDialogue, rework.Message)
+		result.Progress = progress
+		result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
 		result.ReworkAttempts = e.run.reworkAttempts
-		switch result.Outcome {
-		case ReviewReportCompleted, ReviewMaterialDecisions, ReviewFingerprintChanged:
-			return result, nil
-		case ReviewReworkRequired:
-			if e.run.reworkAttempts >= DefaultRetryLimit {
-				return e.escalate(progress)
-			}
-			continue
-		case ReviewReportDiagnostics:
-			return e.escalateWithMessage(progress, result.Message)
-		default:
-			return ReviewResult{}, fmt.Errorf("automatic review recheck returned unexpected outcome %q", result.Outcome)
-		}
+		return e.checkpointResultAs(result, CheckpointReviewRework, mustPolicy(e.run.request.Stage).AuthorRole)
 	}
-}
-
-func (e *ReviewEngine) captureAuthorDecision(authorResult StageResult, progress []ReviewProgressEvent) (ReviewResult, error) {
-	message := strings.TrimSpace(authorResult.Message)
-	if len(authorResult.Decisions) > 0 {
-		var details strings.Builder
-		for _, decision := range authorResult.Decisions {
-			fmt.Fprintf(&details, "\n- %s (rationale: %s)", decision.Decision, decision.Rationale)
-		}
-		message += "\nAuthor-reported material decision(s):" + details.String()
+	if rework.Outcome != StageReviewReworkPublished {
+		return ReviewResult{}, fmt.Errorf("review author returned unexpected outcome %q", rework.Outcome)
 	}
-	message = strings.TrimSpace(message)
-	if message == "" {
-		message = "The author found a new material decision during automatic review rework."
-	}
-	_, targetIDs := validateReviewTarget(e.feature, mustPolicy(e.run.request.Stage))
-	result, err := e.runTurn("The author stopped automatic rework because a new material decision is required. Update the same review.md with a new open material finding whose decision is pending, preserving every existing finding. Then return an artifact envelope. Author message:\n\n"+message, targetIDs, true)
-	if err != nil {
-		return ReviewResult{}, err
-	}
-	result.Progress = append([]ReviewProgressEvent(nil), progress...)
-	result.ReworkAttempts = e.run.reworkAttempts
-	if result.Outcome == ReviewMaterialDecisions {
-		return result, nil
-	}
-	result.Outcome = ReviewAuthorDecision
-	result.Status = ReviewAwaitingDecisions
-	result.Message = message
-	if err := e.publishStatus(ReviewAwaitingDecisions); err != nil {
-		return ReviewResult{}, err
-	}
+	e.feature = rework.Feature
+	progress = append(progress, ReviewProgressEvent{Kind: ReviewProgressDiff, Message: "Author published the review rework.", Diff: rework.Diff})
+	result := e.baseResult(ReviewReportCompleted, ReviewNotStarted, "The author published the agreed review changes. Start /review explicitly to check the new revision.")
 	result.Feature = e.feature
-	return result, nil
-}
-
-func (e *ReviewEngine) escalate(progress []ReviewProgressEvent) (ReviewResult, error) {
-	return e.escalateWithMessage(progress, conciseOpenFindings(e.run.candidateFindings))
-}
-
-func (e *ReviewEngine) escalateWithMessage(progress []ReviewProgressEvent, message string) (ReviewResult, error) {
-	message = strings.TrimSpace(message)
-	if message == "" {
-		message = "Automatic review rework exhausted without resolving every finding."
-	}
-	if err := e.publishStatus(ReviewEscalated); err != nil {
-		return ReviewResult{}, err
-	}
-	entry, err := NewMemLogEntry(e.run.request.Stage, e.run.role, MemLogError, e.now(), "automatic review rework escalated: "+message)
-	if err != nil {
-		return ReviewResult{}, err
-	}
-	feature, err := e.repository.RecordActivity(e.run.request.FeatureID, entry)
-	if err != nil {
-		return ReviewResult{}, fmt.Errorf("record review escalation: %w", err)
-	}
-	e.feature = feature
-	e.terminal = true
-	result := e.baseResult(ReviewEscalation, ReviewEscalated, message)
 	result.Findings = cloneFindingSnapshots(e.run.candidateFindings)
-	result.Progress = append([]ReviewProgressEvent(nil), progress...)
+	result.Progress = progress
 	result.ReworkAttempts = e.run.reworkAttempts
+	e.terminal = true
 	return result, nil
 }
 
@@ -712,6 +625,38 @@ func (e *ReviewEngine) baseResult(outcome ReviewOutcome, status ReviewStatus, me
 	return result
 }
 
+func (e *ReviewEngine) checkpointPublishedReview(result ReviewResult) (ReviewResult, error) {
+	switch result.Outcome {
+	case ReviewReportCompleted, ReviewMaterialDecisions, ReviewReworkRequired:
+		return e.checkpointResult(result, CheckpointReview)
+	default:
+		return result, nil
+	}
+}
+
+func (e *ReviewEngine) checkpointResult(result ReviewResult, kind CheckpointKind) (ReviewResult, error) {
+	return e.checkpointResultAs(result, kind, e.run.role)
+}
+
+func (e *ReviewEngine) checkpointResultAs(result ReviewResult, kind CheckpointKind, role Role) (ReviewResult, error) {
+	if e.run == nil {
+		return ReviewResult{}, ErrReviewNotStarted
+	}
+	feature, err := e.repository.Checkpoint(CheckpointRequest{
+		FeatureID: e.run.request.FeatureID,
+		Stage:     e.run.request.Stage,
+		Role:      role,
+		Kind:      kind,
+		At:        e.now(),
+	})
+	if err != nil {
+		return ReviewResult{}, fmt.Errorf("checkpoint %s %s: %w", e.run.request.Stage, kind, err)
+	}
+	e.feature = feature
+	result.Feature = feature
+	return result, nil
+}
+
 func (e *ReviewEngine) Close() error {
 	if e.thread == nil && e.artifactRoot == "" {
 		e.reset()
@@ -778,16 +723,6 @@ func reviewFingerprint(feature FeatureSnapshot, policy StagePolicy) (Fingerprint
 		upstream = append(upstream, UpstreamHash{Stage: stage, Hash: document.Hash})
 	}
 	return NewFingerprint(target.Hash, upstream)
-}
-
-func completedReviewForFingerprint(state StageState, fingerprint Fingerprint) (ReviewRun, bool) {
-	for i := len(state.Reviews) - 1; i >= 0; i-- {
-		run := state.Reviews[i]
-		if run.Status == ReviewCompleted && run.AcceptedFingerprint != nil && run.AcceptedFingerprint.Equal(fingerprint) {
-			return run, true
-		}
-	}
-	return ReviewRun{}, false
 }
 
 func nextReviewRunID(state StageState) uint64 {

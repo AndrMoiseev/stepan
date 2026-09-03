@@ -35,6 +35,50 @@ type phaseRecoveryManifest struct {
 	IndexPaths   []string            `json:"index_paths"`
 }
 
+func (r *FSFeatureRepository) Checkpoint(request CheckpointRequest) (FeatureSnapshot, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if strings.TrimSpace(request.FeatureID) == "" || !request.Stage.Valid() || !request.Role.Valid() || !request.Kind.Valid() {
+		return FeatureSnapshot{}, fmt.Errorf("%w: invalid checkpoint request", ErrInvalidDomainValue)
+	}
+	if request.Role != mustAuthorRole(request.Stage) {
+		reviewer, err := ReviewerRole(request.Stage)
+		if err != nil || request.Role != reviewer {
+			return FeatureSnapshot{}, fmt.Errorf("%w: checkpoint role %s does not belong to %s", ErrInvalidDomainValue, request.Role, request.Stage)
+		}
+	}
+	if request.At.IsZero() {
+		request.At = r.now()
+	}
+	feature, err := r.loadLocked(request.FeatureID)
+	if err != nil {
+		return FeatureSnapshot{}, err
+	}
+	message := fmt.Sprintf("feature(%s): checkpoint %s %s", request.FeatureID, request.Stage, request.Kind)
+	entry, err := NewMemLogEntry(request.Stage, request.Role, MemLogCommit, request.At, "checkpoint commit: "+message)
+	if err != nil {
+		return FeatureSnapshot{}, err
+	}
+	stateBytes, err := encodeState(feature.State)
+	if err != nil {
+		return FeatureSnapshot{}, err
+	}
+	journal, err := appendFeatureJournal(feature, entry, hash(stateBytes))
+	if err != nil {
+		return FeatureSnapshot{}, err
+	}
+	writes := map[string][]byte{"mem-log.md": journal}
+	transaction, err := r.beginPhaseTransaction("checkpoint-"+string(request.Kind), request.FeatureID, []string{request.FeatureID}, request.Stage, message, map[string]map[string][]byte{request.FeatureID: writes})
+	if err != nil {
+		return FeatureSnapshot{}, err
+	}
+	if err := r.applyMutation(feature.Target, "checkpoint-"+string(request.Kind), writes); err != nil {
+		return FeatureSnapshot{}, err
+	}
+	result, err := r.finishSingleFeatureCommit(transaction, feature, request.At)
+	return result.Feature, err
+}
+
 func (r *FSFeatureRepository) Approve(request ApproveStageRequest) (PhaseCommitResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -93,6 +93,7 @@ type StageEngine struct {
 	parserAttempt int
 	workingIDs    []StableID
 	feature       FeatureSnapshot
+	reviewRework  *ReviewReworkRequest
 	registry      *SessionRegistry
 	resumed       bool
 	resumeContext string
@@ -193,6 +194,7 @@ func (e *StageEngine) Start(request StartStageRequest) (StagePolicy, error) {
 	e.pending = nil
 	e.parserAttempt = 0
 	e.workingIDs = nil
+	e.reviewRework = nil
 	return policy.clone(), nil
 }
 
@@ -266,6 +268,19 @@ func (e *StageEngine) Submit(message string) (StageResult, error) {
 	e.parserAttempt = 0
 	if err := e.record(MemLogUserMessage, message); err != nil {
 		return StageResult{}, err
+	}
+	if e.reviewRework != nil {
+		result, err := e.runMode(message, false, true)
+		if err != nil {
+			return StageResult{}, err
+		}
+		if result.Outcome == StageReviewDecisionRequired {
+			if err := e.checkpoint(CheckpointReviewRework); err != nil {
+				return StageResult{}, err
+			}
+			result.Feature = e.feature
+		}
+		return result, nil
 	}
 	return e.run(message, false)
 }
@@ -445,9 +460,16 @@ func (e *StageEngine) ReworkFromReview(request ReviewReworkRequest) (StageResult
 		return StageResult{}, fmt.Errorf("review rework requires a published %s document", e.policy.Stage)
 	}
 	e.parserAttempt = 0
-	prompt := fmt.Sprintf("Perform automatic review-scoped rework of the current %s document. Read the current review report at %s. Apply only the agreed open fix findings listed below; do not apply dismissed findings or use reviewer conversation as input. If any new material decision is required, return a message instead of an artifact. Otherwise overwrite %s with the complete corrected document and return an artifact envelope.\n\nAgreed finding IDs:\n- %s\n\nCurrent revision: %s",
+	prompt := fmt.Sprintf("Perform review-scoped rework of the current %s document. Read the current review report at %s. Apply only the agreed open fix findings listed below; do not apply dismissed findings or use reviewer conversation as input. The listed fixes are already user decisions: do not repeat them in the decisions field. Use decisions only for a genuinely new material choice. If such a choice is required, ask the user directly and return a message instead of an artifact. Otherwise overwrite %s with the complete corrected document and return an artifact envelope.\n\nAgreed finding IDs:\n- %s\n\nCurrent revision: %s",
 		e.policy.Stage, reportPath, e.policy.ArtifactFilename, strings.Join(ids, "\n- "), current.Hash)
-	return e.runMode(prompt, false, true)
+	scope := request
+	scope.Findings = cloneFindingSnapshots(request.Findings)
+	e.reviewRework = &scope
+	result, err := e.runMode(prompt, false, true)
+	if err != nil {
+		return StageResult{}, err
+	}
+	return result, nil
 }
 
 func (e *StageEngine) publishReviewRework(inspection DraftInspection) (StageResult, error) {
@@ -470,7 +492,11 @@ func (e *StageEngine) publishReviewRework(inspection DraftInspection) (StageResu
 		return StageResult{}, fmt.Errorf("publish automatic %s review rework: draft became invalid", e.policy.Stage)
 	}
 	e.feature = publication.Feature
+	e.reviewRework = nil
 	if err := e.record(MemLogDiff, "informational automatic review rework diff:\n"+diff); err != nil {
+		return StageResult{}, err
+	}
+	if err := e.checkpoint(CheckpointReviewRework); err != nil {
 		return StageResult{}, err
 	}
 	e.parserAttempt = 0
@@ -542,6 +568,9 @@ func (e *StageEngine) acceptValidDraft(inspection DraftInspection, decisions []D
 			return StageResult{}, fmt.Errorf("publish first %s draft: draft became invalid", e.policy.Stage)
 		}
 		e.feature = publication.Feature
+		if err := e.checkpoint(CheckpointAuthorDraft); err != nil {
+			return StageResult{}, err
+		}
 		e.parserAttempt = 0
 		e.workingIDs = nil
 		return e.result(StageDraftPublished, "", "", nil, decisions), nil
@@ -586,6 +615,9 @@ func (e *StageEngine) Decide(action RevisionAction, reworkScope string) (StageRe
 		if err := e.record(MemLogRevisionDecision, "revision applied: "+e.pending.hash); err != nil {
 			return StageResult{}, err
 		}
+		if err := e.checkpoint(CheckpointAuthorDraft); err != nil {
+			return StageResult{}, err
+		}
 		e.pending = nil
 		e.parserAttempt = 0
 		e.workingIDs = nil
@@ -609,6 +641,21 @@ func (e *StageEngine) Decide(action RevisionAction, reworkScope string) (StageRe
 		return e.run("Rework the pending revision using only this user-provided scope. Do not make material choices beyond it:\n\n"+strings.TrimSpace(reworkScope), false)
 	}
 	panic("unreachable")
+}
+
+func (e *StageEngine) checkpoint(kind CheckpointKind) error {
+	feature, err := e.repository.Checkpoint(CheckpointRequest{
+		FeatureID: e.featureID,
+		Stage:     e.policy.Stage,
+		Role:      e.policy.AuthorRole,
+		Kind:      kind,
+		At:        e.now(),
+	})
+	if err != nil {
+		return fmt.Errorf("checkpoint %s %s: %w", e.policy.Stage, kind, err)
+	}
+	e.feature = feature
+	return nil
 }
 
 // ReReadCurrentDocument makes the existing author thread acknowledge a manual

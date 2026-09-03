@@ -309,6 +309,10 @@ func (r *FSFeatureRepository) inspectAuthorDraftLocked(request DraftArtifactRequ
 		stageState.Status = StagePublished
 		stageState.CurrentHash = draftHash
 		stageState.UpstreamHashes = append([]UpstreamHash(nil), request.UpstreamHashes...)
+		if feature.Documents[request.Stage].Hash != draftHash {
+			stageState.ReviewStatus = ReviewNotStarted
+			stageState.RetryCounters.ReviewRework = 0
+		}
 		snapshot.Stages[request.Stage] = stageState
 		state, err = NewFlowStateFromSnapshot(snapshot)
 		if err != nil {

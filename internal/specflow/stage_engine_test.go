@@ -416,6 +416,9 @@ func (r *stageRepositoryStub) RecordDecision(string, Stage, Role, Decision) (Fea
 func (r *stageRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+func (r *stageRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
+	return r.feature, nil
+}
 func (r *stageRepositoryStub) DiscardPending(_ string, _ Stage, artifactRoot string) (FeatureSnapshot, error) {
 	return r.feature, removeArtifact(artifactRoot)
 }

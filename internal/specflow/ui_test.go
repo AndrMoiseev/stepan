@@ -150,6 +150,49 @@ func TestProgressDiagnosticsAppearBeforeCommandTable(t *testing.T) {
 	}
 }
 
+func TestFlowPromptRendersActionableReviewFindings(t *testing.T) {
+	findingID, err := ParseStableID("SPEC-F-005")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	ui := &UI{input: bufio.NewReader(strings.NewReader("/apply\n")), output: &output}
+	progress := Progress{
+		Review: ReviewResult{Path: "reviews/spec-002.md", Findings: []FindingSnapshot{{
+			ID: findingID, Kind: FindingMaterial, Severity: SeverityMajor, Status: FindingOpen,
+			Problem: "The retry boundary is ambiguous.", Location: "REQ-004",
+			Recommendation: "Define the terminal retry state.",
+		}}},
+		CommandHints: []CommandHint{{Command: "/apply", Description: "Apply findings."}},
+	}
+	if _, err := ui.FlowPrompt(context.Background(), progress); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	for _, want := range []string{"reviews/spec-002.md", "SPEC-F-5", "The retry boundary is ambiguous.", "Define the terminal retry state."} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("review detail %q missing from %q", want, text)
+		}
+	}
+	if strings.Index(text, "SPEC-F-5") > strings.Index(text, "Command") {
+		t.Fatalf("review finding appears after commands: %q", text)
+	}
+}
+
+func TestActivityIndicatorAnimatesAndStops(t *testing.T) {
+	var output bytes.Buffer
+	ui := &UI{output: &output, activityInterval: time.Millisecond}
+	stop := ui.BeginActivity("Ревьюер проверяет спецификацию")
+	time.Sleep(5 * time.Millisecond)
+	stop()
+	stop()
+
+	text := output.String()
+	if !strings.Contains(text, "Ревьюер проверяет спецификацию") || !strings.Contains(text, "\r") || !strings.Contains(text, "готово") {
+		t.Fatalf("activity output is not dynamic and complete: %q", text)
+	}
+}
+
 func TestFlowPromptRejectsInputNotAdvertisedByProgress(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -289,6 +332,20 @@ func TestInteractiveForwardsFlowInputWithoutLocalStateChanges(t *testing.T) {
 	}
 }
 
+func TestInteractiveShowsActivityForLongControllerOperations(t *testing.T) {
+	controller := &planningControllerStub{}
+	ui := &planningUIStub{flowInput: "/review", exitAfterInput: true}
+	if err := RunPlanningInteractive(context.Background(), controller, ui); !errors.Is(err, ErrCanceled) {
+		t.Fatalf("run error = %v", err)
+	}
+	if len(ui.activities) < 2 || ui.activities[0] == "" || !strings.Contains(strings.ToLower(ui.activities[1]), "ревью") {
+		t.Fatalf("activity labels = %#v", ui.activities)
+	}
+	if ui.activityStops != len(ui.activities) {
+		t.Fatalf("activity stops = %d, starts = %d", ui.activityStops, len(ui.activities))
+	}
+}
+
 func TestInteractiveChecksRepositoryBeforeReadingFeatureBrief(t *testing.T) {
 	blocked := fmt.Errorf("%w: %w: Git working tree and index must be clean: internal/specflow/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty)
 	controller := &planningControllerStub{preflightErr: blocked}
@@ -349,6 +406,8 @@ type planningUIStub struct {
 	exitAfterInput bool
 	needBrief      bool
 	reported       []error
+	activities     []string
+	activityStops  int
 }
 
 func (u *planningUIStub) MainPrompt() (MainCommand, error) {
@@ -373,3 +432,7 @@ func (u *planningUIStub) FlowPrompt(context.Context, Progress) (string, error) {
 	return u.flowInput, u.flowErr
 }
 func (u *planningUIStub) ReportError(err error) { u.reported = append(u.reported, err) }
+func (u *planningUIStub) BeginActivity(label string) func() {
+	u.activities = append(u.activities, label)
+	return func() { u.activityStops++ }
+}

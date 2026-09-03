@@ -103,6 +103,32 @@ func TestRepositoryApprovalValidatesAndCommitsOnlyFeature(t *testing.T) {
 	}
 }
 
+func TestRepositoryCheckpointCommitsStableDraftWithoutApprovingIt(t *testing.T) {
+	root := initializedCommitRepository(t)
+	repository, featureID := publishedIntentFeature(t, root, "checkpoint-intent", "Checkpoint intent")
+
+	feature, err := repository.Checkpoint(CheckpointRequest{
+		FeatureID: featureID,
+		Stage:     StageIntent,
+		Role:      RoleIntentAuthor,
+		Kind:      CheckpointAuthorDraft,
+		At:        repositoryTestTime.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _ := feature.State.Stage(StageIntent)
+	if state.Status != StagePublished || state.ApprovedHash != "" {
+		t.Fatalf("checkpoint approved the draft: %#v", state)
+	}
+	if got, want := gitHeadMessage(t, root), "feature("+featureID+"): checkpoint intent author-draft"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+	if status := gitStatus(t, root); status != "" {
+		t.Fatalf("checkpoint left dirty tree: %q", status)
+	}
+}
+
 func TestRepositorySequentialApprovalsPersistCurrentStage(t *testing.T) {
 	root := initializedCommitRepository(t)
 	repository, featureID := publishedIntentFeature(t, root, "canonical-stages", "Canonical stages")

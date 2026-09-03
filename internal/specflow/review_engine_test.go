@@ -14,7 +14,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-func TestReviewEnginePublishesCompletedReportAndDuplicateSkipsAgent(t *testing.T) {
+func TestReviewEnginePublishesNewReportForEveryExplicitReview(t *testing.T) {
 	root := initRepository(t)
 	repository := newTestFeatureRepository(t, root)
 	featureID := "2026-08-30-review-completed"
@@ -46,18 +46,18 @@ func TestReviewEnginePublishesCompletedReportAndDuplicateSkipsAgent(t *testing.T
 		t.Fatal(err)
 	}
 
-	duplicateRunner := &reviewRunner{}
+	duplicateRunner := &reviewRunner{steps: []reviewRuntimeStep{{artifact: "# Review\n"}}}
 	duplicateEngine := newTestReviewEngine(t, root, duplicateRunner, repository)
 	duplicate, err := duplicateEngine.Start(testStartReviewRequest(featureID))
-	if err != nil || duplicate.Outcome != ReviewExisting || duplicate.RunID != 1 {
+	if err != nil || duplicate.Outcome != ReviewReportCompleted || duplicate.RunID != 2 || duplicate.Path != "reviews/spec-002.md" {
 		t.Fatalf("duplicate = %#v, %v", duplicate, err)
 	}
-	if duplicateRunner.threads != 0 || duplicateRunner.turns != 0 {
-		t.Fatalf("duplicate started agent: threads=%d turns=%d", duplicateRunner.threads, duplicateRunner.turns)
+	if duplicateRunner.threads != 1 || duplicateRunner.turns != 1 {
+		t.Fatalf("explicit review did not start agent: threads=%d turns=%d", duplicateRunner.threads, duplicateRunner.turns)
 	}
 	stillLoaded, err := repository.Load(featureID)
-	if err != nil || len(stillLoaded.Reviews) != 1 {
-		t.Fatalf("duplicate changed reports: %#v, %v", stillLoaded.Reviews, err)
+	if err != nil || len(stillLoaded.Reviews) != 2 {
+		t.Fatalf("explicit review reports: %#v, %v", stillLoaded.Reviews, err)
 	}
 }
 
@@ -507,6 +507,9 @@ func (r *reviewRepositoryStub) RecordDecision(string, Stage, Role, Decision) (Fe
 	return r.feature, nil
 }
 func (r *reviewRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
+	return r.feature, nil
+}
+func (r *reviewRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
 func (r *reviewRepositoryStub) DiscardPending(string, Stage, string) (FeatureSnapshot, error) {

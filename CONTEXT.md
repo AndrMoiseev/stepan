@@ -48,7 +48,8 @@ _Avoid_: Review, approval
 
 **Agent review**:
 Необязательная независимая проверка опубликованной specification или
-implementation plan отдельной reviewer-ролью.
+implementation plan отдельной reviewer-ролью. Каждый раунд явно запускается
+пользователем и создаёт новый нумерованный review document.
 _Avoid_: Revision decision, stage approval
 
 **Finding**:
@@ -58,12 +59,24 @@ _Avoid_: Open question
 
 **Stage approval**:
 Окончательное решение пользователя, что документ стадии готов и flow может
-перейти дальше после успешного phase commit.
+перейти дальше после успешного approval commit.
 _Avoid_: Revision decision, agent review
 
-**Phase commit**:
-Git commit всех накопленных файлов текущей feature после stage approval.
+**Checkpoint commit**:
+Git commit устойчивого состояния, по которому ожидается следующее решение
+пользователя: опубликованного author draft, review document, принятого `/apply`
+или опубликованной review rework.
 _Avoid_: Task commit
+
+**Approval commit**:
+Git commit утверждения пользователем текущей стадии и перехода flow дальше.
+_Avoid_: Checkpoint commit, revision decision
+
+**Review apply**:
+Явное пользовательское принятие согласованных review findings. Создаёт
+checkpoint commit и передаёт findings автору ровно на один ход; reviewer после
+этого автоматически не запускается.
+_Avoid_: Agent review, stage approval
 
 **Open question**:
 Материальная неоднозначность, которую пользователь явно отложил и которая
@@ -84,4 +97,3 @@ _Avoid_: System contract, capability
 Заменяемый содержательный prompt-модуль с одной методикой или знанием об
 артефакте, подключаемый control plane к определённым ролям.
 _Avoid_: System contract, role
-
