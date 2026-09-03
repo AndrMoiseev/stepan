@@ -28,17 +28,107 @@
       "reviews": null
     },
     "spec": {
-      "status": "drafting",
+      "status": "published",
       "review_status": "not_started",
-      "upstream_hashes": null,
+      "current_hash": "65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327",
+      "upstream_hashes": [
+        {
+          "stage": "intent",
+          "hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c"
+        }
+      ],
       "outdated": false,
       "retry_counters": {
         "parser_repair": 0,
         "review_rework": 0
       },
-      "reviews": null
+      "reviews": [
+        {
+          "id": 1,
+          "path": "reviews/spec-001.md",
+          "status": "awaiting_decisions",
+          "original_fingerprint": {
+            "target_hash": "a4ab26e6bb3284a5a0b0cbfe6ccb63ceb5b60e0bcb11d50f07786cadc0b964be",
+            "upstream_hashes": [
+              {
+                "stage": "intent",
+                "hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c"
+              }
+            ]
+          },
+          "accepted_fingerprint": {
+            "target_hash": "a4ab26e6bb3284a5a0b0cbfe6ccb63ceb5b60e0bcb11d50f07786cadc0b964be",
+            "upstream_hashes": [
+              {
+                "stage": "intent",
+                "hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c"
+              }
+            ]
+          },
+          "attempts": 2,
+          "report_hash": "9af8ea61759fea14b3936799067631a917e9890afb0d3d6f904e2272a6ef41f4"
+        }
+      ]
     }
   },
-  "issued_ids": null,
+  "issued_ids": [
+    "REQ-1",
+    "REQ-2",
+    "REQ-3",
+    "REQ-4",
+    "REQ-5",
+    "REQ-6",
+    "REQ-7",
+    "REQ-8",
+    "REQ-9",
+    "REQ-10",
+    "REQ-11",
+    "REQ-12",
+    "REQ-13",
+    "REQ-14",
+    "REQ-15",
+    "REQ-16",
+    "REQ-17",
+    "REQ-18",
+    "REQ-19",
+    "REQ-20",
+    "REQ-21",
+    "REQ-22",
+    "REQ-23",
+    "DEC-1",
+    "DEC-2",
+    "DEC-3",
+    "DEC-4",
+    "DEC-5",
+    "DEC-6",
+    "DEC-7",
+    "DEC-8",
+    "DEC-9",
+    "DEC-10",
+    "DEC-11",
+    "AC-1",
+    "AC-2",
+    "AC-3",
+    "AC-4",
+    "AC-5",
+    "AC-6",
+    "AC-7",
+    "AC-8",
+    "AC-9",
+    "AC-10",
+    "AC-11",
+    "AC-12",
+    "AC-13",
+    "AC-14",
+    "AC-15",
+    "AC-16",
+    "AC-17",
+    "AC-18",
+    "SPEC-F-1",
+    "SPEC-F-2",
+    "SPEC-F-3",
+    "SPEC-F-4",
+    "SPEC-F-5"
+  ],
   "supersession": {}
 }
