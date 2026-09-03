@@ -1,7 +1,7 @@
 {
   "version": 1,
   "flow_status": "active",
-  "current_stage": "spec",
+  "current_stage": "plan",
   "stages": {
     "intent": {
       "status": "committed",
@@ -17,7 +17,7 @@
       "reviews": null
     },
     "plan": {
-      "status": "not_started",
+      "status": "drafting",
       "review_status": "not_started",
       "upstream_hashes": null,
       "outdated": false,
@@ -28,9 +28,10 @@
       "reviews": null
     },
     "spec": {
-      "status": "published",
+      "status": "committed",
       "review_status": "not_started",
       "current_hash": "65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327",
+      "approved_hash": "65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327",
       "upstream_hashes": [
         {
           "stage": "intent",

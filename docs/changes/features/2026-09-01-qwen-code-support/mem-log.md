@@ -1899,3 +1899,42 @@ Body-Length: 87
 Checksum: f4fb348105802f8242586809c2bf87999b4ca9013ce38c17d7a0630d3e0c0d8c
 
 checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint spec review-rework
+
+## Entry 000118
+
+Stage: spec
+Role: spec-author
+Event: recovery
+At: 2026-09-03T21:39:32.8855163+03:00
+Previous: f4fb348105802f8242586809c2bf87999b4ca9013ce38c17d7a0630d3e0c0d8c
+State-Hash: ea288c4b6d3cfb27eaecceff1f4203d1a45766d8d9e728700023deff14311920
+Body-Length: 75
+Checksum: 14fd540225750d41a25ce0837318cf601cbc9805abaf9e40d1504dbf39c1e6b6
+
+session recovered from authoritative documents, review reports, and mem-log
+
+## Entry 000119
+
+Stage: spec
+Role: spec-author
+Event: approval
+At: 2026-09-03T21:48:31.3823148+03:00
+Previous: 14fd540225750d41a25ce0837318cf601cbc9805abaf9e40d1504dbf39c1e6b6
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 84
+Checksum: d3edb73f8945053616fa582063f24eabb4d006887f0b45444759230ced4f574b
+
+spec approved: hash=65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327
+
+## Entry 000120
+
+Stage: spec
+Role: spec-author
+Event: commit
+At: 2026-09-03T21:48:31.3823148+03:00
+Previous: d3edb73f8945053616fa582063f24eabb4d006887f0b45444759230ced4f574b
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 65
+Checksum: c032a558d465b13c5c428af8d8246b4b8c4c4277f2af0c74eca37707b5a287d2
+
+phase commit: feature(2026-09-01-qwen-code-support): approve spec
