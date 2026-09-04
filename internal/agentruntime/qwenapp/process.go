@@ -119,7 +119,7 @@ func (process *Process) Start() error {
 	process.artifactRoot = artifact
 	process.workspaceRoot = workspace
 	baseEnvironment := process.deps.environ()
-	sensitiveValues := sensitiveEnvironmentValues(baseEnvironment)
+	sensitiveValues := environmentValuesForRedaction(baseEnvironment)
 	sensitiveValues = append(sensitiveValues, process.config.JSONContract)
 	process.diagnostic.setSecrets(sensitiveValues)
 
@@ -441,20 +441,34 @@ type limitedDiagnostic struct {
 	mu        sync.Mutex
 	buffer    bytes.Buffer
 	truncated bool
-	secrets   []string
+	redactor  *strings.Replacer
 	capture   int
 }
 
 func (diagnostic *limitedDiagnostic) setSecrets(secrets []string) {
 	diagnostic.mu.Lock()
 	defer diagnostic.mu.Unlock()
-	diagnostic.secrets = append([]string(nil), secrets...)
+	secrets = append([]string(nil), secrets...)
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	pairs := make([]string, 0, len(secrets)*2)
+	seen := make(map[string]struct{}, len(secrets))
 	diagnostic.capture = maxDiagnosticBytes
 	longest := 0
 	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
 		if len(secret) > longest {
 			longest = len(secret)
 		}
+		if _, duplicate := seen[secret]; duplicate {
+			continue
+		}
+		seen[secret] = struct{}{}
+		pairs = append(pairs, secret, "[REDACTED]")
+	}
+	if len(pairs) > 0 {
+		diagnostic.redactor = strings.NewReplacer(pairs...)
 	}
 	diagnostic.capture += longest
 }
@@ -483,8 +497,8 @@ func (diagnostic *limitedDiagnostic) String() string {
 	diagnostic.mu.Lock()
 	defer diagnostic.mu.Unlock()
 	value := diagnostic.buffer.String()
-	for _, secret := range diagnostic.secrets {
-		value = strings.ReplaceAll(value, secret, "[REDACTED]")
+	if diagnostic.redactor != nil {
+		value = diagnostic.redactor.Replace(value)
 	}
 	value = diagnosticSecretPattern.ReplaceAllStringFunc(value, func(match string) string {
 		prefix := match
@@ -509,19 +523,19 @@ func (diagnostic *limitedDiagnostic) String() string {
 	return value
 }
 
-func sensitiveEnvironmentValues(environment []string) []string {
+// environmentValuesForRedaction deliberately does not classify values by
+// variable name. Authentication providers and CI systems use open-ended names
+// (for example GITHUB_PAT), so a name allowlist would fail open as providers
+// evolve. Replacing every non-empty value preserves the classified cause while
+// preventing inherited environment material from appearing in stderr.
+func environmentValuesForRedaction(environment []string) []string {
 	var values []string
 	for _, entry := range environment {
-		name, value, ok := strings.Cut(entry, "=")
-		if !ok || len(value) < 4 {
+		_, value, ok := strings.Cut(entry, "=")
+		if !ok || value == "" {
 			continue
 		}
-		upper := strings.ToUpper(name)
-		if strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") ||
-			strings.Contains(upper, "CREDENTIAL") || strings.Contains(upper, "API_KEY") || strings.Contains(upper, "APIKEY") {
-			values = append(values, value)
-		}
+		values = append(values, value)
 	}
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	return values
 }

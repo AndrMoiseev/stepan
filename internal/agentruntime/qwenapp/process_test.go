@@ -51,10 +51,10 @@ func runQwenFake(scenario string) int {
 		_, _ = fmt.Fprint(os.Stdout, line)
 		return 0
 	case "wait":
-		fmt.Fprintln(os.Stderr, "natural exit")
+		fmt.Fprintln(os.Stderr, "natural exit", diagnosticSecretValues())
 		return 17
 	case "assignment-failure":
-		fmt.Fprintln(os.Stderr, os.Getenv("QWEN_API_KEY"))
+		fmt.Fprintln(os.Stderr, diagnosticSecretValues())
 		fmt.Fprintln(os.Stderr, testJSONContract)
 		fmt.Fprintln(os.Stderr, strings.Repeat("x", maxDiagnosticBytes+4096))
 		if err := os.WriteFile(os.Getenv("STEPAN_QWENAPP_READY"), []byte("ready"), 0o600); err != nil {
@@ -66,6 +66,15 @@ func runQwenFake(scenario string) int {
 		return runQwenTreeFake()
 	default:
 		return 10
+	}
+}
+
+func diagnosticSecretValues() []string {
+	return []string{
+		os.Getenv("QWEN_API_KEY"),
+		os.Getenv("GITHUB_PAT"),
+		os.Getenv("CI_JOB_JWT"),
+		os.Getenv("SIGNING_MATERIAL"),
 	}
 }
 
@@ -241,12 +250,20 @@ func TestExecutableResolutionAllowsPATHAndAuthoritativeNonstandardBasename(t *te
 	if filepath.Dir(resolved) != pathDir {
 		t.Fatalf("PATH executable = %q", resolved)
 	}
+	copyExecutable(t, executable, filepath.Join(pathDir, "other-cli.exe"))
+	if _, err := ResolveExecutable("other-cli"); err == nil || !strings.Contains(err.Error(), `PATH name "qwen"`) {
+		t.Fatalf("other PATH name error = %v", err)
+	}
 }
 
 func TestInvalidRootsAndConfigAreRejectedBeforeLaunch(t *testing.T) {
 	executable := absoluteTestExecutable(t)
 	workspace := makeGitRoot(t)
 	parentArtifact := filepath.Dir(workspace)
+	fakeGitRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(fakeGitRoot, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	cases := []struct {
 		name     string
 		config   Config
@@ -254,8 +271,10 @@ func TestInvalidRootsAndConfigAreRejectedBeforeLaunch(t *testing.T) {
 	}{
 		{name: "relative workspace", config: Config{Executable: executable, Workspace: ".", JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "not git root", config: Config{Executable: executable, Workspace: t.TempDir(), JSONContract: testJSONContract}, artifact: t.TempDir()},
+		{name: "fake git metadata", config: Config{Executable: executable, Workspace: fakeGitRoot, JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "missing contract", config: Config{Executable: executable, Workspace: workspace}, artifact: t.TempDir()},
 		{name: "relative executable", config: Config{Executable: filepath.Join("dir", "qwen"), Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
+		{name: "other PATH executable", config: Config{Executable: "other-cli", Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "missing artifact", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: filepath.Join(t.TempDir(), "missing")},
 		{name: "artifact in workspace", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: filepath.Join(workspace, "artifact")},
 		{name: "artifact contains workspace", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: parentArtifact},
@@ -283,6 +302,24 @@ func TestInvalidRootsAndConfigAreRejectedBeforeLaunch(t *testing.T) {
 	}
 }
 
+func TestCanonicalGitRootAcceptsLinkedWorktree(t *testing.T) {
+	mainRoot := makeGitRoot(t)
+	if err := os.WriteFile(filepath.Join(mainRoot, "tracked.txt"), []byte("tracked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, mainRoot, "add", "tracked.txt")
+	runGit(t, mainRoot, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "initial")
+	worktree := filepath.Join(t.TempDir(), "linked-worktree")
+	runGit(t, mainRoot, "worktree", "add", "--quiet", "--detach", worktree)
+	got, err := canonicalGitRoot(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != canonicalForTest(t, worktree) {
+		t.Fatalf("worktree root = %q, want %q", got, canonicalForTest(t, worktree))
+	}
+}
+
 func TestCanonicalRootsRejectLinkIntoWorkspace(t *testing.T) {
 	workspace := makeGitRoot(t)
 	link := filepath.Join(t.TempDir(), "artifact-link")
@@ -297,7 +334,7 @@ func TestCanonicalRootsRejectLinkIntoWorkspace(t *testing.T) {
 
 func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "assignment-failure")
-	t.Setenv("QWEN_API_KEY", "credential-marker-that-must-not-leak")
+	setDiagnosticSecrets(t)
 	readyPath := filepath.Join(t.TempDir(), "ready")
 	t.Setenv("STEPAN_QWENAPP_READY", readyPath)
 
@@ -346,8 +383,10 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 			if err == nil || !errors.Is(err, test.kind) {
 				t.Fatalf("Start error = %v", err)
 			}
-			if strings.Contains(err.Error(), "credential-marker") {
-				t.Fatalf("credential leaked in error: %v", err)
+			for _, secret := range diagnosticSecretValues() {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("environment value leaked in error: %v", err)
+				}
 			}
 			if process.Stdin() != nil || process.Stdout() != nil {
 				t.Fatal("stdio published after failed containment")
@@ -363,8 +402,13 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 					t.Fatal("partially started child was not reaped")
 				}
 				diagnostic := process.Diagnostic()
-				if strings.Contains(diagnostic, "credential-marker") || strings.Contains(diagnostic, testJSONContract) || !strings.Contains(diagnostic, "[REDACTED]") {
+				if strings.Contains(diagnostic, testJSONContract) || !strings.Contains(diagnostic, "[REDACTED]") {
 					t.Fatalf("unsafe diagnostic: %q", diagnostic)
+				}
+				for _, secret := range diagnosticSecretValues() {
+					if strings.Contains(diagnostic, secret) {
+						t.Fatalf("environment value leaked in diagnostic: %q", diagnostic)
+					}
 				}
 				if len(diagnostic) > maxDiagnosticBytes || !strings.Contains(diagnostic, "[stderr truncated]") {
 					t.Fatalf("diagnostic is not bounded: len=%d", len(diagnostic))
@@ -379,6 +423,7 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 
 func TestWaitAndCloseAreIdempotent(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "wait")
+	setDiagnosticSecrets(t)
 	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
@@ -397,6 +442,11 @@ func TestWaitAndCloseAreIdempotent(t *testing.T) {
 	for err := range errorsSeen {
 		if err == nil || !strings.Contains(err.Error(), "natural exit") {
 			t.Fatalf("Wait error = %v", err)
+		}
+		for _, secret := range diagnosticSecretValues() {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("environment value leaked in Wait error: %v", err)
+			}
 		}
 	}
 	if code := process.ExitCode(); code == nil || *code != 17 {
@@ -444,10 +494,70 @@ func (job *recordingJob) Close() error {
 func makeGitRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	runGit(t, root, "init", "--quiet")
 	return root
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	arguments := append([]string{"-C", root}, args...)
+	command := exec.Command("git", arguments...)
+	command.Env = withoutGitContext(os.Environ())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, output)
+	}
+}
+
+func setDiagnosticSecrets(t *testing.T) {
+	t.Helper()
+	t.Setenv("QWEN_API_KEY", "credential-marker-that-must-not-leak")
+	t.Setenv("GITHUB_PAT", "github-pat-marker-that-must-not-leak")
+	t.Setenv("CI_JOB_JWT", "ci-jwt-marker-that-must-not-leak")
+	t.Setenv("SIGNING_MATERIAL", "opaque-signing-marker-that-must-not-leak")
+}
+
+func runQwenTreeFake() int {
+	switch os.Getenv("STEPAN_QWENAPP_TREE_LEVEL") {
+	case "":
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), "STEPAN_QWENAPP_TREE_LEVEL=child")
+		if err := command.Start(); err != nil {
+			return 51
+		}
+		time.Sleep(30 * time.Second)
+	case "child":
+		command := exec.Command(os.Args[0])
+		command.Env = append(os.Environ(), "STEPAN_QWENAPP_TREE_LEVEL=grandchild")
+		if err := command.Start(); err != nil {
+			return 52
+		}
+		data, err := json.Marshal([]int{os.Getppid(), os.Getpid(), command.Process.Pid})
+		if err != nil || os.WriteFile(os.Getenv("STEPAN_QWENAPP_PID_FILE"), data, 0o600) != nil {
+			return 53
+		}
+		time.Sleep(30 * time.Second)
+	case "grandchild":
+		time.Sleep(30 * time.Second)
+	default:
+		return 54
+	}
+	return 0
+}
+
+func waitForQwenPIDs(t *testing.T, path string) []int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil {
+			var pids []int
+			if json.Unmarshal(data, &pids) == nil && len(pids) == 3 {
+				return pids
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fake Qwen process tree did not report PIDs")
+	return nil
 }
 
 func absoluteTestExecutable(t *testing.T) string {

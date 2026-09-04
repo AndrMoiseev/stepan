@@ -25,8 +25,8 @@ func ResolveExecutable(name string) (string, error) {
 		}
 		return filepath.Clean(name), nil
 	}
-	if filepath.Base(name) != name {
-		return "", errors.New("Qwen executable must be an absolute path or a PATH name")
+	if name != defaultExecutable {
+		return "", errors.New(`Qwen executable must be an absolute path or the PATH name "qwen"`)
 	}
 	resolved, err := exec.LookPath(name)
 	if err != nil {
@@ -71,10 +71,48 @@ func canonicalGitRoot(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+	command := exec.Command("git", "-C", root, "rev-parse", "--show-toplevel")
+	command.Env = withoutGitContext(os.Environ())
+	output, err := command.Output()
+	if err != nil {
 		return "", fmt.Errorf("Qwen workspace is not a Git root: %w", err)
 	}
+	reported := strings.TrimSpace(string(output))
+	reportedRoot, err := canonicalDirectory(reported, "reported Git root")
+	if err != nil {
+		return "", fmt.Errorf("verify Qwen Git root: %w", err)
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("stat Qwen Git root: %w", err)
+	}
+	reportedInfo, err := os.Stat(reportedRoot)
+	if err != nil {
+		return "", fmt.Errorf("stat reported Git root: %w", err)
+	}
+	if !os.SameFile(rootInfo, reportedInfo) {
+		return "", errors.New("Qwen workspace must be the Git root, not a nested directory")
+	}
 	return root, nil
+}
+
+func withoutGitContext(environment []string) []string {
+	blocked := map[string]struct{}{
+		"GIT_DIR": {}, "GIT_WORK_TREE": {}, "GIT_COMMON_DIR": {},
+		"GIT_CEILING_DIRECTORIES": {}, "GIT_DISCOVERY_ACROSS_FILESYSTEM": {},
+	}
+	filtered := make([]string, 0, len(environment))
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, denied := blocked[strings.ToUpper(name)]; denied {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 func pathWithin(root, candidate string) bool {
