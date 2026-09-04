@@ -3,7 +3,9 @@ package qwenapp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -207,6 +209,126 @@ func TestTurnRunnerProtocolContentFailureDoesNotRepair(t *testing.T) {
 	}
 	if err := <-errOut; !errors.Is(err, ErrProtocol) || strings.Contains(err.Error(), "credential-body") {
 		t.Fatalf("protocol content error = %v", err)
+	}
+}
+
+func TestLateBufferedChunkCannotBecomeRepairResponse(t *testing.T) {
+	runner, connection, server, raw := establishTurnRunner(t, json.RawMessage(turnTestSchema), "role")
+	defer raw.Close()
+	errOut := make(chan struct {
+		output json.RawMessage
+		err    error
+	}, 1)
+	go func() {
+		output, err := runner.run("prompt")
+		errOut <- struct {
+			output json.RawMessage
+			err    error
+		}{output, err}
+	}()
+	_, id := readSessionPromptMessage(t, server)
+	sendAssistantChunk(t, server, "s", "initial", "invalid")
+	terminalAndLate := fmt.Sprintf(
+		"{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"stopReason\":\"end_turn\"}}\n"+
+			"{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"messageId\":\"late\",\"content\":{\"type\":\"text\",\"text\":\"{\\\"answer\\\":\\\"must-not-be-repair\\\"}\"}}}}\n",
+		id.raw,
+	)
+	if _, err := raw.Write([]byte(terminalAndLate)); err != nil {
+		t.Fatal(err)
+	}
+	got := <-errOut
+	if got.output != nil || !errors.Is(got.err, ErrProtocol) || !errors.Is(got.err, ErrConnectionClosed) {
+		t.Fatalf("late buffered result = %s, %v", got.output, got.err)
+	}
+	if connection.Err() == nil || !strings.Contains(connection.Err().Error(), "late assistant content") {
+		t.Fatalf("connection error = %v", connection.Err())
+	}
+	if unexpected, err := server.read(); err == nil {
+		t.Fatalf("late content triggered an unsafe repair prompt: %+v", unexpected)
+	}
+}
+
+func TestProcessCarriesExactContractAndImmutableSessionPrompts(t *testing.T) {
+	workspace := makeGitRoot(t)
+	artifact := t.TempDir()
+	observationPath := filepath.Join(t.TempDir(), "structured-observation.json")
+	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
+	t.Setenv("STEPAN_QWEN_ACP_CASE", "structured-turn")
+	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", observationPath)
+	process := NewProcess(Config{
+		Executable:   absoluteTestExecutable(t),
+		Workspace:    workspace,
+		JSONContract: JSONContract,
+	}, artifact)
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := OpenConnection(process)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	schema := json.RawMessage(turnTestSchema)
+	runner, err := newTurnRunner(connection, agentruntime.ThreadConfig{
+		BootstrapInstructions: "process integration role",
+		OutputSchema:          schema,
+		Workspace:             process.WorkspaceRoot(),
+		ArtifactRoot:          process.WritableRoot(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range schema {
+		schema[index] = 'x'
+	}
+	first, err := runner.run("first process request")
+	if err != nil || string(first) != `{"answer":"repaired"}` {
+		t.Fatalf("first process turn = %s, %v", first, err)
+	}
+	second, err := runner.run("second process request")
+	if err != nil || string(second) != `{"answer":"next"}` {
+		t.Fatalf("second process turn = %s, %v", second, err)
+	}
+
+	var observation acpObservation
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(observationPath)
+		if readErr == nil && json.Unmarshal(data, &observation) == nil && len(observation.Prompts) == 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(observation.Prompts) != 3 {
+		t.Fatalf("captured prompts = %#v", observation.Prompts)
+	}
+	contractCount := 0
+	for index, argument := range observation.Args {
+		if argument == "--json-schema" {
+			t.Fatalf("native schema flag reached process argv: %#v", observation.Args)
+		}
+		if argument == "--append-system-prompt" {
+			contractCount++
+			if index+1 >= len(observation.Args) || observation.Args[index+1] != JSONContract {
+				t.Fatalf("process JSON contract = %#v", observation.Args)
+			}
+		}
+	}
+	if contractCount != 1 {
+		t.Fatalf("process JSON contract occurrences = %d in %#v", contractCount, observation.Args)
+	}
+	encodedWorkspace, _ := json.Marshal(workspace)
+	encodedArtifact, _ := json.Marshal(artifact)
+	if !strings.Contains(observation.Prompts[0], "process integration role") || !strings.Contains(observation.Prompts[0], turnTestSchema) ||
+		!strings.Contains(observation.Prompts[0], string(encodedWorkspace)) || !strings.Contains(observation.Prompts[0], string(encodedArtifact)) {
+		t.Fatalf("first process prompt lacks immutable bootstrap context: %q", observation.Prompts[0])
+	}
+	if !strings.Contains(observation.Prompts[1], turnTestSchema) || strings.Contains(observation.Prompts[1], "invalid process response") {
+		t.Fatalf("process repair prompt is unsafe or missing schema: %q", observation.Prompts[1])
+	}
+	if observation.Prompts[2] != "second process request" {
+		t.Fatalf("later process prompt repeated bootstrap: %q", observation.Prompts[2])
 	}
 }
 

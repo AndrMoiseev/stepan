@@ -42,8 +42,6 @@ func newSessionPromptContext(policy filePolicy) sessionPromptContext {
 	return context
 }
 
-func ordinaryPrompt(input string) string { return strings.Clone(input) }
-
 func firstPrompt(role string, schema json.RawMessage, context sessionPromptContext, input string) string {
 	contextJSON, _ := json.Marshal(context)
 	return fmt.Sprintf("Stepan role instructions:\n%s\n\nStepan immutable session context:\n%s\n\nStepan output schema (exact JSON Schema):\n%s\n\nUser request:\n%s",

@@ -23,6 +23,7 @@ type pendingCall struct {
 	response  chan message
 	resume    chan struct{}
 	assembler *responseAssembler
+	terminal  bool
 }
 
 // inboundCall tracks responses to agent-initiated permission and delegated
@@ -101,8 +102,8 @@ func (connection *Connection) callAndCommit(method string, params, result any, c
 	return connection.callAndCommitResponse(method, params, result, commit, nil)
 }
 
-func (connection *Connection) callPrompt(params sessionPromptParams, result *promptResponse, assembler *responseAssembler) error {
-	return connection.callAndCommitResponse("session/prompt", params, result, nil, assembler)
+func (connection *Connection) callPrompt(params sessionPromptParams, result *promptResponse, assembler *responseAssembler, commit func() error) error {
+	return connection.callAndCommitResponse("session/prompt", params, result, commit, assembler)
 }
 
 func (connection *Connection) callAndCommitResponse(method string, params, result any, commit func() error, assembler *responseAssembler) error {
@@ -122,7 +123,7 @@ func (connection *Connection) callAndCommitResponse(method string, params, resul
 	connection.pending[id.key] = pending
 	if method == "session/prompt" {
 		if assembler != nil {
-			if err := assembler.bind(connection.sessionID, id.key); err != nil {
+			if err := assembler.bind(turnIdentity{sessionID: connection.sessionID, promptID: id.key}); err != nil {
 				delete(connection.pending, id.key)
 				connection.mu.Unlock()
 				return err
@@ -158,7 +159,9 @@ func (connection *Connection) callAndCommitResponse(method string, params, resul
 		}
 		turnErr := connection.releasePrompt(id)
 		close(pending.resume)
-		if callErr == nil {
+		if connectionErr := connection.Err(); connectionErr != nil {
+			callErr = connectionErr
+		} else if turnErr != nil {
 			callErr = turnErr
 		}
 		return callErr
@@ -298,8 +301,10 @@ func (connection *Connection) deliverResponse(received message) bool {
 		connection.fail(fmt.Errorf("%w: orphan response", ErrProtocol))
 		return false
 	}
-	delete(connection.pending, received.id.key)
 	isPrompt := pending.method == "session/prompt"
+	if !isPrompt {
+		delete(connection.pending, received.id.key)
+	}
 	connection.mu.Unlock()
 	if isPrompt {
 		if !connection.waitForInboundResponses() {
@@ -316,11 +321,27 @@ func (connection *Connection) deliverResponse(received message) bool {
 			connection.mu.Lock()
 			sessionID := connection.sessionID
 			connection.mu.Unlock()
-			if err := pending.assembler.terminal(sessionID, received.id.key); err != nil {
+			if err := pending.assembler.terminal(turnIdentity{sessionID: sessionID, promptID: received.id.key}); err != nil {
 				connection.fail(err)
 				return false
 			}
 		}
+		connection.mu.Lock()
+		if current := connection.pending[received.id.key]; current != pending || pending.terminal {
+			connection.mu.Unlock()
+			connection.fail(fmt.Errorf("%w: duplicate session/prompt terminal", ErrProtocol))
+			return false
+		}
+		pending.terminal = true
+		if connection.activePermission != nil {
+			connection.activePermission.accepting = false
+		}
+		connection.mu.Unlock()
+		if !connection.dispatchBufferedAfterPromptTerminal() {
+			return false
+		}
+		pending.response <- received
+		return true
 	}
 	pending.response <- received
 	select {
@@ -329,6 +350,37 @@ func (connection *Connection) deliverResponse(received message) bool {
 	case <-connection.done:
 		return false
 	}
+}
+
+// dispatchBufferedAfterPromptTerminal handles frames already decoded into the
+// NDJSON reader before the caller is allowed to commit and release the prompt.
+// Since no following prompt can have been sent yet, a session update here
+// unambiguously belongs to the terminaled assembler and must fail closed.
+func (connection *Connection) dispatchBufferedAfterPromptTerminal() bool {
+	for connection.transport.hasBufferedFrame() {
+		received, err := connection.transport.read()
+		if err != nil {
+			connection.fail(protocolError(err))
+			return false
+		}
+		switch received.kind {
+		case responseMessage:
+			if !connection.deliverResponse(received) {
+				return false
+			}
+		case notificationMessage:
+			if err := connection.dispatchNotification(received); err != nil {
+				connection.fail(err)
+				return false
+			}
+		case requestMessage:
+			if err := connection.dispatchRequest(received); err != nil {
+				connection.fail(err)
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // waitForInboundResponses preserves wire order without accepting a prompt
@@ -373,6 +425,7 @@ func (connection *Connection) releasePrompt(id requestID) error {
 		}
 		connection.activePrompt = ""
 		connection.activePermission = nil
+		delete(connection.pending, id.key)
 		return turnErr
 	}
 	return nil
@@ -387,7 +440,9 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.hasActivePromptLocked(params.SessionID)
+	promptID := connection.activePrompt
+	pending := connection.pending[promptID]
+	valid := connection.ready && params.SessionID == connection.sessionID && promptID != "" && pending != nil
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
@@ -395,17 +450,13 @@ func (connection *Connection) dispatchNotification(received message) error {
 	if err := validateSessionUpdate(params.Update); err != nil {
 		return err
 	}
-	connection.mu.Lock()
-	promptID := connection.activePrompt
-	pending := connection.pending[promptID]
-	connection.mu.Unlock()
-	if pending == nil {
-		return fmt.Errorf("%w: session/update has no active prompt", ErrProtocol)
-	}
 	if pending.assembler != nil {
-		if err := pending.assembler.observe(params.SessionID, promptID, params.Update); err != nil {
+		if err := pending.assembler.observe(turnIdentity{sessionID: params.SessionID, promptID: promptID}, params.Update); err != nil {
 			return err
 		}
+	}
+	if pending.terminal {
+		return fmt.Errorf("%w: late session/update", ErrProtocol)
 	}
 	if err := connection.observeToolCall(params.Update); err != nil {
 		return err
@@ -471,7 +522,8 @@ func (connection *Connection) dispatchRequest(received message) error {
 }
 
 func (connection *Connection) hasActivePromptLocked(sessionID string) bool {
-	return connection.ready && sessionID == connection.sessionID && connection.activePrompt != ""
+	pending := connection.pending[connection.activePrompt]
+	return connection.ready && sessionID == connection.sessionID && connection.activePrompt != "" && pending != nil && !pending.terminal
 }
 
 func (connection *Connection) fail(cause error) {

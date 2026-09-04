@@ -11,8 +11,7 @@ import (
 )
 
 type responseAssembler struct {
-	sessionID string
-	promptID  string
+	turn      turnIdentity
 	messageID string
 	hasID     bool
 	noID      bool
@@ -22,17 +21,23 @@ type responseAssembler struct {
 
 func newResponseAssembler() *responseAssembler { return &responseAssembler{} }
 
-func (assembler *responseAssembler) bind(sessionID, promptID string) error {
-	if assembler == nil || assembler.sessionID != "" || assembler.promptID != "" || sessionID == "" || promptID == "" {
+type turnIdentity struct {
+	sessionID string
+	promptID  string
+}
+
+func (identity turnIdentity) valid() bool { return identity.sessionID != "" && identity.promptID != "" }
+
+func (assembler *responseAssembler) bind(identity turnIdentity) error {
+	if assembler == nil || assembler.turn.valid() || !identity.valid() {
 		return fmt.Errorf("%w: invalid response assembler binding", ErrProtocol)
 	}
-	assembler.sessionID = sessionID
-	assembler.promptID = promptID
+	assembler.turn = identity
 	return nil
 }
 
-func (assembler *responseAssembler) observe(sessionID, promptID string, raw json.RawMessage) error {
-	if assembler == nil || assembler.sessionID != sessionID || assembler.promptID != promptID || assembler.closed {
+func (assembler *responseAssembler) observe(identity turnIdentity, raw json.RawMessage) error {
+	if assembler == nil || assembler.turn != identity || !identity.valid() || assembler.closed {
 		return fmt.Errorf("%w: foreign or late assistant content", ErrProtocol)
 	}
 	var update struct {
@@ -81,8 +86,8 @@ func (assembler *responseAssembler) observe(sessionID, promptID string, raw json
 	return nil
 }
 
-func (assembler *responseAssembler) terminal(sessionID, promptID string) error {
-	if assembler == nil || assembler.sessionID != sessionID || assembler.promptID != promptID || assembler.closed {
+func (assembler *responseAssembler) terminal(identity turnIdentity) error {
+	if assembler == nil || assembler.turn != identity || !identity.valid() || assembler.closed {
 		return fmt.Errorf("%w: duplicate or foreign assistant terminal", ErrProtocol)
 	}
 	assembler.closed = true
@@ -106,12 +111,20 @@ func (err candidateError) Error() string {
 }
 
 func validateCandidate(schema, candidate json.RawMessage) (json.RawMessage, error) {
-	data := bytes.TrimSpace(candidate)
-	if len(data) == 0 || data[0] != '{' || !utf8.Valid(data) || validateJSONObject(data) != nil {
+	data, err := strictJSONObject(candidate)
+	if err != nil {
 		return nil, candidateError{}
 	}
 	if err := agentruntime.ValidateOutput(schema, data); err != nil {
 		return nil, candidateError{schema: true}
+	}
+	return append(json.RawMessage(nil), data...), nil
+}
+
+func strictJSONObject(raw []byte) (json.RawMessage, error) {
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 || data[0] != '{' || !utf8.Valid(data) || validateJSONObject(data) != nil {
+		return nil, errors.New("value must be exactly one UTF-8 JSON object")
 	}
 	return append(json.RawMessage(nil), data...), nil
 }

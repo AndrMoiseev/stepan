@@ -9,7 +9,8 @@ import (
 
 func TestResponseAssemblerCollectsOnlyOrderedTextFromOneMessage(t *testing.T) {
 	assembler := newResponseAssembler()
-	if err := assembler.bind("session", "i:7"); err != nil {
+	identity := turnIdentity{sessionID: "session", promptID: "i:7"}
+	if err := assembler.bind(identity); err != nil {
 		t.Fatal(err)
 	}
 	updates := []map[string]any{
@@ -24,11 +25,11 @@ func TestResponseAssemblerCollectsOnlyOrderedTextFromOneMessage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := assembler.observe("session", "i:7", raw); err != nil {
+		if err := assembler.observe(identity, raw); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := assembler.terminal("session", "i:7"); err != nil {
+	if err := assembler.terminal(identity); err != nil {
 		t.Fatal(err)
 	}
 	if got := string(assembler.output()); got != `{"answer":"ok"}` {
@@ -39,52 +40,55 @@ func TestResponseAssemblerCollectsOnlyOrderedTextFromOneMessage(t *testing.T) {
 func TestResponseAssemblerRejectsAmbiguousUnknownAndLateContent(t *testing.T) {
 	tests := []struct {
 		name string
-		run  func(*responseAssembler) error
+		run  func(*responseAssembler, turnIdentity) error
 	}{
-		{name: "foreign session", run: func(a *responseAssembler) error {
-			return a.observe("foreign", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
+		{name: "foreign session", run: func(a *responseAssembler, id turnIdentity) error {
+			id.sessionID = "foreign"
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
 		}},
-		{name: "foreign prompt", run: func(a *responseAssembler) error {
-			return a.observe("session", "i:8", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
+		{name: "foreign prompt", run: func(a *responseAssembler, id turnIdentity) error {
+			id.promptID = "i:8"
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
 		}},
-		{name: "unknown content", run: func(a *responseAssembler) error {
-			return a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"future","text":"x"}}`))
+		{name: "unknown content", run: func(a *responseAssembler, id turnIdentity) error {
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"future","text":"x"}}`))
 		}},
-		{name: "missing text", run: func(a *responseAssembler) error {
-			return a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text"}}`))
+		{name: "missing text", run: func(a *responseAssembler, id turnIdentity) error {
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text"}}`))
 		}},
-		{name: "second identified message", run: func(a *responseAssembler) error {
-			if err := a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"one","content":{"type":"text","text":"x"}}`)); err != nil {
+		{name: "second identified message", run: func(a *responseAssembler, id turnIdentity) error {
+			if err := a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"one","content":{"type":"text","text":"x"}}`)); err != nil {
 				return err
 			}
-			return a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"two","content":{"type":"text","text":"y"}}`))
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"two","content":{"type":"text","text":"y"}}`))
 		}},
-		{name: "identifier appears late", run: func(a *responseAssembler) error {
-			if err := a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`)); err != nil {
+		{name: "identifier appears late", run: func(a *responseAssembler, id turnIdentity) error {
+			if err := a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`)); err != nil {
 				return err
 			}
-			return a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"one","content":{"type":"text","text":"y"}}`))
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"one","content":{"type":"text","text":"y"}}`))
 		}},
-		{name: "duplicate terminal", run: func(a *responseAssembler) error {
-			if err := a.terminal("session", "i:7"); err != nil {
+		{name: "duplicate terminal", run: func(a *responseAssembler, id turnIdentity) error {
+			if err := a.terminal(id); err != nil {
 				return err
 			}
-			return a.terminal("session", "i:7")
+			return a.terminal(id)
 		}},
-		{name: "late content", run: func(a *responseAssembler) error {
-			if err := a.terminal("session", "i:7"); err != nil {
+		{name: "late content", run: func(a *responseAssembler, id turnIdentity) error {
+			if err := a.terminal(id); err != nil {
 				return err
 			}
-			return a.observe("session", "i:7", json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
+			return a.observe(id, json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}}`))
 		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			assembler := newResponseAssembler()
-			if err := assembler.bind("session", "i:7"); err != nil {
+			identity := turnIdentity{sessionID: "session", promptID: "i:7"}
+			if err := assembler.bind(identity); err != nil {
 				t.Fatal(err)
 			}
-			err := test.run(assembler)
+			err := test.run(assembler, identity)
 			if !errors.Is(err, ErrProtocol) {
 				t.Fatalf("error = %v", err)
 			}

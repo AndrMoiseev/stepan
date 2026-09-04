@@ -310,6 +310,18 @@ type transport struct {
 	remote correlationTable
 }
 
+// hasBufferedFrame is called only by the connection reader goroutine. It
+// reports a complete frame already pulled from the OS stream into bufio so a
+// terminal prompt cannot hand that frame to a later prompt generation.
+func (transport *transport) hasBufferedFrame() bool {
+	buffered := transport.decoder.reader.Buffered()
+	if buffered == 0 {
+		return false
+	}
+	data, err := transport.decoder.reader.Peek(buffered)
+	return err == nil && bytes.IndexByte(data, '\n') >= 0
+}
+
 func newTransport(reader io.Reader, writer io.Writer) *transport {
 	return &transport{decoder: newLineDecoder(reader), writer: &lineWriter{writer: writer}}
 }

@@ -16,15 +16,17 @@ import (
 )
 
 type acpObservation struct {
-	ClientName               string `json:"clientName"`
-	ClientTitle              string `json:"clientTitle"`
-	ProtocolVersion          int    `json:"protocolVersion"`
-	CWD                      string `json:"cwd"`
-	MCPServerCount           int    `json:"mcpServerCount"`
-	HasAdditionalDirectories bool   `json:"hasAdditionalDirectories"`
-	CanReadTextFile          bool   `json:"canReadTextFile"`
-	CanWriteTextFile         bool   `json:"canWriteTextFile"`
-	ModelPromptSeen          bool   `json:"modelPromptSeen"`
+	Args                     []string `json:"args"`
+	Prompts                  []string `json:"prompts"`
+	ClientName               string   `json:"clientName"`
+	ClientTitle              string   `json:"clientTitle"`
+	ProtocolVersion          int      `json:"protocolVersion"`
+	CWD                      string   `json:"cwd"`
+	MCPServerCount           int      `json:"mcpServerCount"`
+	HasAdditionalDirectories bool     `json:"hasAdditionalDirectories"`
+	CanReadTextFile          bool     `json:"canReadTextFile"`
+	CanWriteTextFile         bool     `json:"canWriteTextFile"`
+	ModelPromptSeen          bool     `json:"modelPromptSeen"`
 }
 
 func runQwenACPFake() int {
@@ -38,6 +40,7 @@ func runQwenACPFake() int {
 		return 62
 	}
 	observation := acpObservation{
+		Args:       append([]string(nil), os.Args[1:]...),
 		ClientName: initialized.ClientInfo.Name, ClientTitle: initialized.ClientInfo.Title,
 		ProtocolVersion:  initialized.ProtocolVersion,
 		CanReadTextFile:  initialized.ClientCapabilities.FS.ReadTextFile,
@@ -90,6 +93,7 @@ func runQwenACPFake() int {
 	if err := transport.sendResult(session.id, map[string]any{"sessionId": "session-one"}); err != nil {
 		return 67
 	}
+	promptIndex := 0
 	for {
 		message, err := transport.read()
 		if err != nil {
@@ -97,7 +101,32 @@ func runQwenACPFake() int {
 		}
 		if message.method == "session/prompt" {
 			observation.ModelPromptSeen = true
+			var prompt sessionPromptParams
+			if json.Unmarshal(message.params, &prompt) != nil || prompt.SessionID != "session-one" || len(prompt.Prompt) != 1 {
+				return 69
+			}
+			observation.Prompts = append(observation.Prompts, prompt.Prompt[0].Text)
 			_ = writeACPObservation(observation)
+			if scenario == "structured-turn" {
+				responses := []string{"invalid process response", `{"answer":"repaired"}`, `{"answer":"next"}`}
+				if promptIndex >= len(responses) {
+					return 70
+				}
+				candidate := responses[promptIndex]
+				promptIndex++
+				if err := transport.sendNotification("session/update", map[string]any{
+					"sessionId": "session-one",
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk", "messageId": fmt.Sprintf("answer-%d", promptIndex),
+						"content": map[string]any{"type": "text", "text": candidate},
+					},
+				}); err != nil {
+					return 71
+				}
+				if err := transport.sendResult(message.id, map[string]string{"stopReason": "end_turn"}); err != nil {
+					return 72
+				}
+			}
 		}
 	}
 }

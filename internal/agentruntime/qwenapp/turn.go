@@ -1,7 +1,6 @@
 package qwenapp
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,8 +56,7 @@ func newTurnRunner(connection *Connection, config agentruntime.ThreadConfig) (*t
 }
 
 func validateSchemaObject(schema json.RawMessage) error {
-	data := bytes.TrimSpace(schema)
-	if len(data) == 0 || data[0] != '{' || validateJSONObject(data) != nil {
+	if _, err := strictJSONObject(schema); err != nil {
 		return errors.New("output schema must be one JSON object")
 	}
 	return nil
@@ -77,40 +75,45 @@ func (runner *turnRunner) run(prompt string) (json.RawMessage, error) {
 	defer runner.mu.Unlock()
 
 	first := !runner.bootstrapped
-	nextPrompt := ordinaryPrompt(prompt)
+	nextPrompt := strings.Clone(prompt)
 	if first {
 		nextPrompt = firstPrompt(runner.role, runner.schema, runner.context, prompt)
 	}
 	for attempt := 0; attempt < agentruntime.DefaultRetryLimit; attempt++ {
 		assembler := newResponseAssembler()
 		var terminal promptResponse
+		var output json.RawMessage
 		err := runner.connection.callPrompt(sessionPromptParams{
 			SessionID: runner.connection.SessionID(),
 			Prompt:    []promptContent{{Type: "text", Text: nextPrompt}},
-		}, &terminal, assembler)
+		}, &terminal, assembler, func() error {
+			if terminal.StopReason == "cancelled" {
+				return agentruntime.ErrTurnInterrupted
+			}
+			if terminal.StopReason != "end_turn" {
+				return fmt.Errorf("Qwen turn stopped before a final response: %s", safeStopReason(terminal.StopReason))
+			}
+			var candidateErr error
+			output, candidateErr = validateCandidate(runner.schema, assembler.output())
+			return candidateErr
+		})
 		if first {
 			// Mark the one-time bootstrap only after the first prompt has reached
 			// a terminal outcome. A local busy rejection did not send it.
 			runner.bootstrapped = !errors.Is(err, agentruntime.ErrTurnInProgress)
 			first = false
 		}
-		if err != nil {
-			return nil, err
-		}
-		if terminal.StopReason == "cancelled" {
-			return nil, agentruntime.ErrTurnInterrupted
-		}
-		if terminal.StopReason != "end_turn" {
-			return nil, fmt.Errorf("Qwen turn stopped before a final response: %s", safeStopReason(terminal.StopReason))
-		}
-		output, candidateErr := validateCandidate(runner.schema, assembler.output())
-		if candidateErr == nil {
+		var candidateErr candidateError
+		if err == nil {
 			return output, nil
+		}
+		if !errors.As(err, &candidateErr) {
+			return nil, err
 		}
 		if attempt+1 == agentruntime.DefaultRetryLimit {
 			return nil, fmt.Errorf("%w: %w after %d responses", ErrProtocol, ErrRepairExhausted, agentruntime.DefaultRetryLimit)
 		}
-		nextPrompt = repairPrompt(runner.schema, safeCandidateDiagnostic(candidateErr))
+		nextPrompt = repairPrompt(runner.schema, safeCandidateDiagnostic(err))
 	}
 	panic("unreachable repair loop")
 }
