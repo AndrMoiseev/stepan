@@ -24,7 +24,9 @@ type pendingCall struct {
 	resume   chan struct{}
 }
 
-type pendingPermission struct {
+// inboundCall tracks responses to agent-initiated permission and delegated
+// filesystem requests. These calls share one serialized response registry.
+type inboundCall struct {
 	id         requestID
 	method     string
 	sessionID  string
@@ -41,29 +43,29 @@ type Connection struct {
 	owner     connectionOwner
 	handler   connectionHandler
 
-	mu                 sync.Mutex
-	nextID             int64
-	pending            map[string]*pendingCall
-	pendingPermissions map[string]*pendingPermission
-	filePolicy         filePolicy
-	activePermission   *permissionTurn
-	sessionID          string
-	activePrompt       string
-	initialized        bool
-	ready              bool
-	err                error
-	done               chan struct{}
+	mu               sync.Mutex
+	nextID           int64
+	pending          map[string]*pendingCall
+	inboundCalls     map[string]*inboundCall
+	filePolicy       filePolicy
+	activePermission *permissionTurn
+	sessionID        string
+	activePrompt     string
+	initialized      bool
+	ready            bool
+	err              error
+	done             chan struct{}
 }
 
 func newConnection(transport *transport, owner connectionOwner, handler connectionHandler) *Connection {
 	connection := &Connection{
-		transport:          transport,
-		owner:              owner,
-		handler:            handler,
-		nextID:             1,
-		pending:            make(map[string]*pendingCall),
-		pendingPermissions: make(map[string]*pendingPermission),
-		done:               make(chan struct{}),
+		transport:    transport,
+		owner:        owner,
+		handler:      handler,
+		nextID:       1,
+		pending:      make(map[string]*pendingCall),
+		inboundCalls: make(map[string]*inboundCall),
+		done:         make(chan struct{}),
 	}
 	go connection.read()
 	return connection
@@ -138,8 +140,11 @@ func (connection *Connection) callAndCommit(method string, params, result any, c
 			close(pending.resume)
 			return connection.Err()
 		}
-		connection.releasePrompt(id)
+		turnErr := connection.releasePrompt(id)
 		close(pending.resume)
+		if callErr == nil {
+			callErr = turnErr
+		}
 		return callErr
 	case <-connection.done:
 		return connection.Err()
@@ -210,7 +215,9 @@ func (connection *Connection) sendNotification(method string, params any) error 
 	}
 	var cancellations []pendingCancellation
 	if method == "session/cancel" {
-		connection.activePermission = nil
+		if connection.activePermission != nil {
+			connection.activePermission.accepting = false
+		}
 		cancellations = connection.claimPendingCancellationsLocked()
 	}
 	connection.mu.Unlock()
@@ -279,7 +286,7 @@ func (connection *Connection) deliverResponse(received message) bool {
 	isPrompt := pending.method == "session/prompt"
 	connection.mu.Unlock()
 	if isPrompt {
-		if !connection.waitForPermissionResponses() {
+		if !connection.waitForInboundResponses() {
 			return false
 		}
 		if received.err == nil {
@@ -299,11 +306,11 @@ func (connection *Connection) deliverResponse(received message) bool {
 	}
 }
 
-// waitForPermissionResponses preserves wire order without accepting a prompt
-// terminal while a permission response is only partially written. An
-// unresolved permission is a protocol violation; in-flight responses form a
+// waitForInboundResponses preserves wire order without accepting a prompt
+// terminal while an agent-initiated response is only partially written. An
+// unresolved inbound call is a protocol violation; in-flight responses form a
 // short barrier and are rechecked after their serialized write completes.
-func (connection *Connection) waitForPermissionResponses() bool {
+func (connection *Connection) waitForInboundResponses() bool {
 	for {
 		connection.mu.Lock()
 		if connection.err != nil {
@@ -311,10 +318,10 @@ func (connection *Connection) waitForPermissionResponses() bool {
 			return false
 		}
 		var barrier <-chan struct{}
-		for _, pending := range connection.pendingPermissions {
+		for _, pending := range connection.inboundCalls {
 			if !pending.responding {
 				connection.mu.Unlock()
-				connection.fail(fmt.Errorf("%w: session/prompt completed with pending permission", ErrProtocol))
+				connection.fail(fmt.Errorf("%w: session/prompt completed with pending inbound request", ErrProtocol))
 				return false
 			}
 			barrier = pending.done
@@ -331,13 +338,19 @@ func (connection *Connection) waitForPermissionResponses() bool {
 	}
 }
 
-func (connection *Connection) releasePrompt(id requestID) {
+func (connection *Connection) releasePrompt(id requestID) error {
 	connection.mu.Lock()
+	defer connection.mu.Unlock()
 	if connection.activePrompt == id.key {
+		var turnErr error
+		if connection.activePermission != nil {
+			turnErr = connection.activePermission.cause
+		}
 		connection.activePrompt = ""
 		connection.activePermission = nil
+		return turnErr
 	}
-	connection.mu.Unlock()
+	return nil
 }
 
 func (connection *Connection) dispatchNotification(received message) error {
@@ -349,7 +362,7 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
+	valid := connection.hasActivePromptLocked(params.SessionID)
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
@@ -392,8 +405,9 @@ func (connection *Connection) dispatchRequest(received message) error {
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
+	accepting := valid && connection.activePermission.accepting
 	if valid {
-		connection.pendingPermissions[received.id.key] = &pendingPermission{
+		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "session/request_permission", sessionID: params.SessionID, toolCallID: toolCall.ToolCallID,
 			turnID: connection.activePrompt, done: make(chan struct{}),
 		}
@@ -401,6 +415,9 @@ func (connection *Connection) dispatchRequest(received message) error {
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or stale session/request_permission", ErrProtocol)
+	}
+	if !accepting {
+		return connection.respond(received.id, cancelledPermissionResult())
 	}
 	if connection.handler.permission == nil {
 		return fmt.Errorf("%w: permission mediation unavailable", ErrIncompatible)
@@ -432,7 +449,7 @@ func (connection *Connection) fail(cause error) {
 		connection.err = connectionError{cause: cause}
 	}
 	connection.pending = nil
-	connection.pendingPermissions = nil
+	connection.inboundCalls = nil
 	connection.activePrompt = ""
 	connection.activePermission = nil
 	connection.ready = false

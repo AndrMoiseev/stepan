@@ -15,6 +15,10 @@ var (
 	ErrTurnInterrupted = errors.New("turn interrupted by operator")
 	ErrRuntimeExited   = errors.New("agent runtime exited unexpectedly")
 	ErrTurnInProgress  = errors.New("a turn is already in progress")
+	// ErrPermissionDenied reports that an adapter rejected a filesystem
+	// operation under the immutable turn policy. The error is deliberately
+	// provider-neutral and contains no requested path or file content.
+	ErrPermissionDenied = errors.New("agent filesystem permission denied")
 )
 
 // Thread is an opaque provider-owned logical conversation handle.

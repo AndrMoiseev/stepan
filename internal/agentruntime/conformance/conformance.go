@@ -36,6 +36,38 @@ type DomainEnvelope struct {
 	DecisionCount int
 }
 
+// PathRoots names the filesystem regions used by provider write-policy tests.
+// LinkRoot must be a link or junction inside ArtifactRoot that resolves into
+// ExternalRoot; adapters remain responsible for creating the platform fixture.
+type PathRoots struct {
+	WorkspaceRoot string
+	ArtifactRoot  string
+	SiblingRoot   string
+	ExternalRoot  string
+	LinkRoot      string
+}
+
+// PathCase is one provider-neutral write-policy expectation.
+type PathCase struct {
+	Name        string
+	Target      string
+	WantAllowed bool
+}
+
+// WritePathCases defines the common path boundary exercised by provider
+// adapters. The existing artifact fixture is named existing.md; all other
+// targets may be absent so adapters must validate newly-created paths too.
+func WritePathCases(roots PathRoots) []PathCase {
+	return []PathCase{
+		{Name: "workspace", Target: filepath.Join(roots.WorkspaceRoot, "source.go")},
+		{Name: "artifact existing", Target: filepath.Join(roots.ArtifactRoot, "existing.md"), WantAllowed: true},
+		{Name: "artifact new target", Target: filepath.Join(roots.ArtifactRoot, "new", "document.md"), WantAllowed: true},
+		{Name: "artifact sibling", Target: filepath.Join(roots.SiblingRoot, "other.md")},
+		{Name: "external", Target: filepath.Join(roots.ExternalRoot, "other.md")},
+		{Name: "link escape", Target: filepath.Join(roots.LinkRoot, "new.md")},
+	}
+}
+
 // ClosedThread verifies a lifecycle rule shared by every provider: a closed
 // logical thread cannot accept another input, while closing the runtime remains
 // safe afterwards.

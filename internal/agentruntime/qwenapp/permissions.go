@@ -60,16 +60,19 @@ type announcedTool struct {
 }
 
 type permissionTurn struct {
-	context  permissionContext
-	tools    map[string]announcedTool
-	consumed map[string]struct{}
+	context   permissionContext
+	tools     map[string]announcedTool
+	consumed  map[string]struct{}
+	accepting bool
+	cause     error
 }
 
 func newPermissionTurn(context permissionContext) *permissionTurn {
 	return &permissionTurn{
-		context:  context,
-		tools:    make(map[string]announcedTool),
-		consumed: make(map[string]struct{}),
+		context:   context,
+		tools:     make(map[string]announcedTool),
+		consumed:  make(map[string]struct{}),
+		accepting: true,
 	}
 }
 
@@ -271,10 +274,10 @@ func (connection *Connection) mediatePermission(received message) error {
 	}
 
 	connection.mu.Lock()
-	pending := connection.pendingPermissions[received.id.key]
+	pending := connection.inboundCalls[received.id.key]
 	turn := connection.activePermission
 	requestErr := decodeErr
-	correlated := pending != nil && turn != nil && pending.turnID == turn.context.turnID && pending.sessionID == turn.context.sessionID
+	correlated := pending != nil && turn != nil && turn.accepting && pending.turnID == turn.context.turnID && pending.sessionID == turn.context.sessionID
 	if !correlated || (decodeErr == nil && (request.SessionID != pending.sessionID || pending.toolCallID != request.ToolCall.ToolCallID)) {
 		requestErr = ErrPermissionDenied
 	}
@@ -301,6 +304,9 @@ func (connection *Connection) mediatePermission(received message) error {
 	connection.mu.Unlock()
 
 	if requestErr == nil {
+		// Defense in depth: the permission request is validated independently
+		// from the earlier tool_call announcement, then both immutable snapshots
+		// are compared. Sharing one decoded value would weaken correlation.
 		name := toolNameFromMeta(request.ToolCall.Meta)
 		path, err := toolPathFromInput(request.ToolCall.RawInput)
 		target, targetErr := canonicalTargetWithin(context.workspaceRoot, context.writableRoot, path)
@@ -319,6 +325,7 @@ func (connection *Connection) mediatePermission(received message) error {
 	}
 
 	if requestErr != nil {
+		connection.recordPermissionDenial(turn)
 		return connection.respond(received.id, cancelledPermissionResult())
 	}
 	return connection.respond(received.id, selectedPermissionResult(allowOption))
@@ -334,12 +341,12 @@ func cancelledPermissionResult() any {
 
 type pendingCancellation struct {
 	id      requestID
-	pending *pendingPermission
+	pending *inboundCall
 }
 
 func (connection *Connection) claimPendingCancellationsLocked() []pendingCancellation {
 	var responses []pendingCancellation
-	for _, pending := range connection.pendingPermissions {
+	for _, pending := range connection.inboundCalls {
 		if pending.method != "session/request_permission" || pending.responding {
 			continue
 		}
@@ -375,14 +382,19 @@ func (connection *Connection) dispatchReadTextFile(received message) error {
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(request.SessionID) && connection.activePermission != nil
+	accepting := valid && connection.activePermission.accepting
 	if valid {
-		connection.pendingPermissions[received.id.key] = &pendingPermission{
-			id: received.id, method: "fs/read_text_file", turnID: connection.activePrompt, done: make(chan struct{}),
+		connection.inboundCalls[received.id.key] = &inboundCall{
+			id: received.id, method: "fs/read_text_file", sessionID: request.SessionID,
+			turnID: connection.activePrompt, done: make(chan struct{}),
 		}
 	}
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or stale fs/read_text_file", ErrProtocol)
+	}
+	if !accepting {
+		return connection.respondError(received.id, invalidParamsCode, "filesystem read denied")
 	}
 	go connection.readTextFile(received.id, request)
 	return nil
@@ -390,9 +402,10 @@ func (connection *Connection) dispatchReadTextFile(received message) error {
 
 func (connection *Connection) readTextFile(id requestID, request readTextFileRequest) {
 	connection.mu.Lock()
-	pending := connection.pendingPermissions[id.key]
+	pending := connection.inboundCalls[id.key]
 	turn := connection.activePermission
-	valid := pending != nil && turn != nil && pending.turnID == turn.context.turnID && request.SessionID == turn.context.sessionID
+	valid := pending != nil && turn != nil && turn.accepting && pending.turnID == turn.context.turnID &&
+		pending.sessionID == turn.context.sessionID && request.SessionID == pending.sessionID
 	context := permissionContext{}
 	if valid {
 		context = turn.context
@@ -405,6 +418,7 @@ func (connection *Connection) readTextFile(id requestID, request readTextFileReq
 
 	target, err := canonicalReadableTarget(context, request.Path)
 	if err != nil {
+		connection.recordPermissionDenial(turn)
 		_ = connection.respondError(id, invalidParamsCode, "filesystem read denied")
 		return
 	}
@@ -486,13 +500,21 @@ func (connection *Connection) respondError(id requestID, code int64, text string
 	return nil
 }
 
-func (connection *Connection) claimPendingResponse(id requestID) (*pendingPermission, error) {
+func (connection *Connection) recordPermissionDenial(turn *permissionTurn) {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.activePermission == turn && turn != nil && turn.accepting && turn.cause == nil {
+		turn.cause = ErrPermissionDenied
+	}
+}
+
+func (connection *Connection) claimPendingResponse(id requestID) (*inboundCall, error) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 	if connection.err != nil {
 		return nil, connection.err
 	}
-	pending := connection.pendingPermissions[id.key]
+	pending := connection.inboundCalls[id.key]
 	if pending == nil {
 		return nil, errPermissionAlreadyResolved
 	}
@@ -503,10 +525,10 @@ func (connection *Connection) claimPendingResponse(id requestID) (*pendingPermis
 	return pending, nil
 }
 
-func (connection *Connection) finishPendingResponse(id requestID, pending *pendingPermission) {
+func (connection *Connection) finishPendingResponse(id requestID, pending *inboundCall) {
 	connection.mu.Lock()
-	if current := connection.pendingPermissions[id.key]; current == pending {
-		delete(connection.pendingPermissions, id.key)
+	if current := connection.inboundCalls[id.key]; current == pending {
+		delete(connection.inboundCalls, id.key)
 	}
 	connection.mu.Unlock()
 	close(pending.done)

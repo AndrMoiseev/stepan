@@ -9,43 +9,50 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
 )
 
 func TestCanonicalTargetResolvesExistingAndNewTargetsWithoutLinkEscape(t *testing.T) {
-	cwd := t.TempDir()
-	root := filepath.Join(t.TempDir(), "artifact")
-	outside := filepath.Join(t.TempDir(), "outside")
-	for _, directory := range []string{root, outside, filepath.Join(root, "nested")} {
+	workspace := t.TempDir()
+	artifact := filepath.Join(t.TempDir(), "artifact")
+	sibling := filepath.Join(t.TempDir(), "sibling")
+	external := filepath.Join(t.TempDir(), "external")
+	for _, directory := range []string{artifact, sibling, external} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	existing := filepath.Join(root, "nested", "existing.md")
+	existing := filepath.Join(artifact, "existing.md")
 	if err := os.WriteFile(existing, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	for _, supplied := range []string{
-		existing,
-		filepath.Join(root, "nested", "new", "document.md"),
-	} {
-		target, err := canonicalTargetWithin(cwd, root, supplied)
-		if err != nil || !pathWithin(root, target) {
-			t.Fatalf("canonical target %q = %q, %v", supplied, target, err)
-		}
-	}
-
-	link := filepath.Join(root, "linked")
-	if err := makeDirectoryLink(link, outside); err != nil {
-		t.Skipf("directory link fixture unavailable: %v", err)
-	}
-	for _, supplied := range []string{
-		filepath.Join(link, "new.md"),
-		filepath.Join(link, "missing", "new.md"),
-	} {
-		if _, err := canonicalTargetWithin(cwd, root, supplied); !errors.Is(err, ErrPermissionDenied) {
-			t.Fatalf("link escape %q error = %v", supplied, err)
-		}
+	link := filepath.Join(artifact, "linked")
+	linkErr := makeDirectoryLink(link, external)
+	cases := conformance.WritePathCases(conformance.PathRoots{
+		WorkspaceRoot: workspace,
+		ArtifactRoot:  artifact,
+		SiblingRoot:   sibling,
+		ExternalRoot:  external,
+		LinkRoot:      link,
+	})
+	for _, test := range cases {
+		t.Run(test.Name, func(t *testing.T) {
+			if test.Name == "link escape" && linkErr != nil {
+				t.Skipf("directory link fixture unavailable: %v", linkErr)
+			}
+			target, err := canonicalTargetWithin(workspace, artifact, test.Target)
+			if test.WantAllowed {
+				if err != nil || !pathWithin(artifact, target) {
+					t.Fatalf("canonical target = %q, %v", target, err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrPermissionDenied) {
+				t.Fatalf("denied target error = %v", err)
+			}
+		})
 	}
 }
 
@@ -162,7 +169,10 @@ func TestPermissionMediationAllowsDistinctWritesAndRejectsInvalidGrants(t *testi
 	if outcome := requestPermission(t, server, "permission-unannounced", "unannounced", "write_file", map[string]any{"file_path": filepath.Join(artifact, "unannounced.md")}, filepath.Join(artifact, "unannounced.md"), standardPermissionOptions()); outcome != "cancelled" {
 		t.Fatalf("unannounced tool outcome = %q", outcome)
 	}
-	finishPrompt(t, server, promptErr, "end_turn")
+	finishPromptDenied(t, server, promptErr, workspace, artifact)
+	if connection.Err() != nil {
+		t.Fatalf("policy denial closed healthy connection: %v", connection.Err())
+	}
 }
 
 func TestReadOnlyTurnAndForeignOrStalePermissionFailClosed(t *testing.T) {
@@ -181,7 +191,10 @@ func TestReadOnlyTurnAndForeignOrStalePermissionFailClosed(t *testing.T) {
 		if outcome := requestPermission(t, server, "readonly-permission", "readonly", "write_file", map[string]any{"file_path": target}, target, standardPermissionOptions()); outcome != "cancelled" {
 			t.Fatalf("read-only outcome = %q", outcome)
 		}
-		finishPrompt(t, server, promptErr, "end_turn")
+		finishPromptDenied(t, server, promptErr, workspace, target)
+		if connection.Err() != nil {
+			t.Fatalf("read-only denial closed connection: %v", connection.Err())
+		}
 	})
 
 	for _, test := range []struct {
@@ -266,7 +279,7 @@ func TestDelegatedReadAllowsOnlyLogicalRootsAndNativeReadIsAdvisory(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	finishPrompt(t, server, promptErr, "end_turn")
+	finishPromptDenied(t, server, promptErr, outsideFile, "forbidden-marker")
 	if connection.Err() != nil {
 		t.Fatalf("native read status corrupted connection: %v", connection.Err())
 	}
@@ -307,11 +320,18 @@ func TestDelegatedReadRejectsForeignAndStaleSessions(t *testing.T) {
 func TestCancelClosesPendingPermissionAndRejectsLateRequest(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	handler := connectionHandler{permission: func(connection *Connection, received message) error {
-		close(started)
-		<-release
-		return connection.respond(received.id, selectedPermissionResult("allow-once"))
-	}}
+	updated := make(chan struct{}, 1)
+	handler := connectionHandler{
+		sessionUpdate: func(message) error {
+			updated <- struct{}{}
+			return nil
+		},
+		permission: func(connection *Connection, received message) error {
+			close(started)
+			<-release
+			return connection.respond(received.id, selectedPermissionResult("allow-once"))
+		},
+	}
 	workspace := t.TempDir()
 	artifact := t.TempDir()
 	connection, server, raw := establishPolicyConnection(t, workspace, artifact, handler)
@@ -341,17 +361,31 @@ func TestCancelClosesPendingPermissionAndRejectsLateRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(release)
+	for _, update := range []map[string]any{
+		{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "cancel grace"}},
+		{"sessionUpdate": "tool_call_update", "toolCallId": "tool", "kind": "edit", "status": "cancelled"},
+	} {
+		if err := server.sendNotification("session/update", map[string]any{"sessionId": "s", "update": update}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-updated:
+		case <-time.After(time.Second):
+			t.Fatal("cancel-grace session update was not routed")
+		}
+	}
 	if err := server.sendRequest(stringID("late"), "session/request_permission", map[string]any{
 		"sessionId": "s", "toolCall": map[string]any{"toolCallId": "late-tool"}, "options": standardPermissionOptions(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	waitForDone(t, connection.Done())
-	if !errors.Is(connection.Err(), ErrProtocol) || !strings.Contains(connection.Err().Error(), "foreign or stale") {
-		t.Fatalf("late request error = %v", connection.Err())
+	late, err := server.read()
+	if err != nil || permissionOutcome(t, late) != "cancelled" {
+		t.Fatalf("late permission = %+v, %v", late, err)
 	}
-	if err := <-promptErr; err == nil {
-		t.Fatal("cancelled prompt unexpectedly succeeded")
+	finishPrompt(t, server, promptErr, "cancelled")
+	if connection.Err() != nil {
+		t.Fatalf("cancel grace corrupted connection: %v", connection.Err())
 	}
 }
 
@@ -516,12 +550,30 @@ func requestRead(t *testing.T, server *transport, requestID, sessionID, path str
 
 func finishPrompt(t *testing.T, server *transport, promptErr <-chan error, stopReason string) {
 	t.Helper()
+	if err := finishPromptResult(t, server, promptErr, stopReason); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func finishPromptDenied(t *testing.T, server *transport, promptErr <-chan error, forbidden ...string) {
+	t.Helper()
+	err := finishPromptResult(t, server, promptErr, "end_turn")
+	if !errors.Is(err, agentruntime.ErrPermissionDenied) || !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("prompt denial = %v", err)
+	}
+	for _, marker := range forbidden {
+		if marker != "" && strings.Contains(err.Error(), marker) {
+			t.Fatalf("prompt denial leaked sensitive marker %q: %v", marker, err)
+		}
+	}
+}
+
+func finishPromptResult(t *testing.T, server *transport, promptErr <-chan error, stopReason string) error {
+	t.Helper()
 	if err := server.sendResult(integerID(3), map[string]string{"stopReason": stopReason}); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-promptErr; err != nil {
-		t.Fatal(err)
-	}
+	return <-promptErr
 }
 
 func uint32Pointer(value uint32) *uint32 { return &value }

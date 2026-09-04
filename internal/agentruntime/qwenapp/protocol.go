@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 const acpProtocolVersion = 1
@@ -24,8 +26,9 @@ var (
 	// terminal response is still being decoded and committed.
 	ErrTurnInProgress = errors.New("agent turn already in progress")
 	// ErrPermissionDenied classifies a filesystem operation rejected by the
-	// active-turn policy. It never includes the requested path or file content.
-	ErrPermissionDenied = errors.New("agent filesystem permission denied")
+	// active-turn policy. It aliases the provider-neutral runtime category and
+	// never includes the requested path or file content.
+	ErrPermissionDenied = agentruntime.ErrPermissionDenied
 )
 
 type messageKind uint8

@@ -314,7 +314,7 @@ func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 			}
 			<-callErr
 		}},
-		{name: "terminal with pending permission", want: "pending permission", run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
+		{name: "terminal with pending permission", want: "pending inbound request", run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
 			callErr := startPrompt(t, connection, server)
 			if err := server.sendRequest(stringID("permission"), "session/request_permission", map[string]any{
 				"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "reject", "kind": "reject_once", "name": "Reject"}},
