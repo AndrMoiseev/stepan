@@ -2294,3 +2294,55 @@ Body-Length: 86
 Checksum: effe3c5f5e233bed61a396ced123d1d79a678af2a7c5e2fa3d026d5c372422a2
 
 checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan author-draft
+
+## Entry 000143
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:25:21.6443178+03:00
+Previous: effe3c5f5e233bed61a396ced123d1d79a678af2a7c5e2fa3d026d5c372422a2
+State-Hash: 9d33c9a8b258ef7870b44f3bf98d692717fc9bc562688e6f55f90711b28e348d
+Body-Length: 81
+Checksum: f6bd74db588e05e6f5348dd13ce8f07de6d1e6838b7e84838620825b29b3a200
+
+review artifact published for plan run 1: status=running path=reviews/plan-001.md
+
+## Entry 000144
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:25:21.6971954+03:00
+Previous: f6bd74db588e05e6f5348dd13ce8f07de6d1e6838b7e84838620825b29b3a200
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 92
+Checksum: de9520e89bc1bb70acfed447f01b46beecdcbe3bb9c854d99e97b5b3f25f2625
+
+review artifact published for plan run 1: status=awaiting_decisions path=reviews/plan-001.md
+
+## Entry 000145
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:25:21.7394222+03:00
+Previous: de9520e89bc1bb70acfed447f01b46beecdcbe3bb9c854d99e97b5b3f25f2625
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 510
+Checksum: 6b62225f73fdd6e001670bb37735461cfa6095a1728adc9491d95cbf97bf6da9
+
+review run 1 accepted: started_revision=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0 accepted_for_revision=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0 upstream_started=intent=c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c,spec=65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327 upstream_accepted=intent=c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c,spec=65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327
+
+## Entry 000146
+
+Stage: plan
+Role: plan-reviewer
+Event: commit
+At: 2026-09-04T08:25:21.7644013+03:00
+Previous: 6b62225f73fdd6e001670bb37735461cfa6095a1728adc9491d95cbf97bf6da9
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 80
+Checksum: 781afe053747c001d85ca7ab226bdf568588b1f81f7fbb92f829bacc2d1b8501
+
+checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan review
