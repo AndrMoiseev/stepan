@@ -64,6 +64,8 @@ func runQwenFake(scenario string) int {
 		return 0
 	case "tree":
 		return runQwenTreeFake()
+	case "acp":
+		return runQwenACPFake()
 	default:
 		return 10
 	}
