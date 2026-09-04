@@ -17,9 +17,19 @@
       "reviews": null
     },
     "plan": {
-      "status": "drafting",
+      "status": "published",
       "review_status": "not_started",
-      "upstream_hashes": null,
+      "current_hash": "a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0",
+      "upstream_hashes": [
+        {
+          "stage": "intent",
+          "hash": "c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c"
+        },
+        {
+          "stage": "spec",
+          "hash": "65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327"
+        }
+      ],
       "outdated": false,
       "retry_counters": {
         "parser_repair": 0,
@@ -129,7 +139,15 @@
     "SPEC-F-2",
     "SPEC-F-3",
     "SPEC-F-4",
-    "SPEC-F-5"
+    "SPEC-F-5",
+    "TASK-1",
+    "TASK-2",
+    "TASK-3",
+    "TASK-4",
+    "TASK-5",
+    "TASK-6",
+    "TASK-7",
+    "TASK-8"
   ],
   "supersession": {}
 }

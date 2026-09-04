@@ -1938,3 +1938,359 @@ Body-Length: 65
 Checksum: c032a558d465b13c5c428af8d8246b4b8c4c4277f2af0c74eca37707b5a287d2
 
 phase commit: feature(2026-09-01-qwen-code-support): approve spec
+
+## Entry 000121
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-03T21:50:27.8127935+03:00
+Previous: c032a558d465b13c5c428af8d8246b4b8c4c4277f2af0c74eca37707b5a287d2
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1155
+Checksum: 378ee734118d634049791b3706f3561ddd1cb4fa3888254fac8fab8591b8bd13
+
+Обнаружено материальное противоречие между утверждённой спецификацией и её review/state. Утверждённый `spec.md` требует отдельный contained process и одну ACP-сессию на каждый logical thread (`REQ-006`, `REQ-007`, `DEC-007`), однако `reviews/spec-001.md` всё ещё имеет статус `awaiting_decisions`, а `SPEC-F-005` оставлен `pending`: он требует явного утверждения именно этой топологии и формального supersession прежнего решения D-018 об одном общем process. Как поступить: считать последующее утверждение текущего `spec.md` окончательным решением и планировать топологию «один process на thread», рассматривая review report как устаревший, или вернуть спецификацию на доработку для явного закрытия `SPEC-F-005` и фиксации supersession D-018?
+
+## Entry 000122
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-03T21:54:49.4866643+03:00
+Previous: 378ee734118d634049791b3706f3561ddd1cb4fa3888254fac8fab8591b8bd13
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 88
+Checksum: ac5346b73e9db7a14b4beeb6e55e106f8639896f113076d29abe9e1b7d04d459
+
+считать текущую спецификацию источником истины
+
+## Entry 000123
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-03T21:55:30.2894746+03:00
+Previous: ac5346b73e9db7a14b4beeb6e55e106f8639896f113076d29abe9e1b7d04d459
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 750
+Checksum: c33cf377d9f96876ef69057b48310bc1e0021b3b683ae00dc144cb758c92ab53
+
+## Decision D-021
+
+author: user
+
+decision: Считать текущую утверждённую спецификацию источником истины и планировать отдельный contained Qwen process с одной ACP-сессией на каждый logical thread.
+
+rationale: Пользователь явно указал, что текущая спецификация имеет приоритет над оставшимся pending finding в старом review report.
+
+alternatives: Вернуть спецификацию на доработку для отдельного закрытия SPEC-F-005 и формального supersession прежнего решения о едином process.
+
+supersedes: []
+
+## Entry 000124
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-03T21:55:30.3002538+03:00
+Previous: c33cf377d9f96876ef69057b48310bc1e0021b3b683ae00dc144cb758c92ab53
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1419
+Checksum: 36bc3dc5eb1f7d00487f1966e88578375e3e1bbfcbe5355614b29d801fdbd5f8
+
+Зафиксировано: текущий утверждённый `spec.md` является источником истины; план должен использовать топологию «один contained Qwen process и одна ACP-сессия на logical thread», а незакрытый `SPEC-F-005` не блокирует планирование.
+
+Остаётся противоречие в проверке: `AC-008` требует manual canary, а `AC-012` — runtime-приёмку на физическом Apple Silicon Mac, тогда как контракт плана разрешает описывать только автоматизированные test scenarios и требует ими покрыть каждый `AC-*`. Следует ли трактовать эти критерии как автоматизированные сценарии с машинными assertions, которые оператор запускает против реального CLI/на физическом Mac, или сохранить именно ручную оценку и вернуть спецификацию на пересмотр? Первый вариант позволяет продолжить план без изменения требований; второй блокирует публикацию плана до корректировки `AC-008` и `AC-012`.
+
+## Entry 000125
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-03T21:58:24.7507846+03:00
+Previous: 36bc3dc5eb1f7d00487f1966e88578375e3e1bbfcbe5355614b29d801fdbd5f8
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 278
+Checksum: 8a870bbb7b960ad98161a9edf45a7d13ac022980e85dbda2a218aaed9d21c93a
+
+остаются только автотесты, которые не требуют реального CLI. На все остальные проверки завести отдельную задачу по написанию плана ручного тестирования
+
+## Entry 000126
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-03T21:58:37.4744653+03:00
+Previous: 8a870bbb7b960ad98161a9edf45a7d13ac022980e85dbda2a218aaed9d21c93a
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 925
+Checksum: e40e8f73cf3b6e4d0831b728e99520c09f8cf788454725178d8661da5bca3a7b
+
+## Decision D-022
+
+author: user
+
+decision: В реализационном плане оставить только автоматизированные тесты, не требующие реального Qwen CLI; остальные проверки вынести в отдельный план ручного тестирования.
+
+rationale: Пользователь разделил автоматизированную проверку реализации и последующую проверку с реальным CLI или физическим оборудованием.
+
+alternatives: Включить автоматизированные сценарии, запускаемые против реального CLI и на физическом Apple Silicon Mac.; Оставить ручные проверки непосредственно в реализационном плане.
+
+supersedes: []
+
+## Entry 000127
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-03T21:58:37.4877219+03:00
+Previous: e40e8f73cf3b6e4d0831b728e99520c09f8cf788454725178d8661da5bca3a7b
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1289
+Checksum: 060205afb86adfd8dfb312de92121244e9196ed3e4c95938a12a073b0530be37
+
+Зафиксировано: реализационный план должен содержать только автотесты, не требующие реального CLI. Однако отдельную задачу на написание плана ручного тестирования добавить нельзя: контракт этой стадии прямо запрещает documentation tasks. Одновременно нельзя опустить `AC-008` и `AC-012`, поскольку каждый активный `AC-*` обязан быть покрыт автоматизированным test scenario, а эти критерии требуют фактической проверки нативного чтения Qwen и lifecycle на физическом Apple Silicon Mac.
+
+Нужна корректировка спецификации: убрать или отложить из текущей стадии части `AC-008` и `AC-012`, требующие реального CLI/оборудования, а план ручного тестирования перенести в последующую документальную стадию. Подтверждаете возврат спецификации на такую правку?
+
+## Entry 000128
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-03T22:02:51.7693399+03:00
+Previous: 060205afb86adfd8dfb312de92121244e9196ed3e4c95938a12a073b0530be37
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 357
+Checksum: bf4853d440dae6b7f497c8d58780cee5327538b0dc1cb9a698ac9289dad70037
+
+давай интеграционные тесты, требующие проверки на конкретном железе с конкретным CLI трактовать как скрипты, которые пользователь сможет запустить, но которые не будут запускаться автоматически
+
+## Entry 000129
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-03T22:05:22.3494323+03:00
+Previous: bf4853d440dae6b7f497c8d58780cee5327538b0dc1cb9a698ac9289dad70037
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 992
+Checksum: 7b44661ac63353cd017d78836e8c5be8a517bc297248538f356bac75c1daf674
+
+## Decision D-023
+
+author: user
+
+decision: Проверки с конкретным CLI или оборудованием реализовать как явно запускаемые автоматизированные integration scripts с машинными assertions, не входящие в автоматически выполняемый набор тестов.
+
+rationale: Так план сохраняет только автоматизированные test scenarios, но позволяет проверять реальный Qwen-compatible CLI и нативный lifecycle на поддерживаемом оборудовании.
+
+alternatives: Ограничиться автотестами на fake CLI и не проверять реальный runtime.; Описать проверки как ручной test plan.; Автоматически запускать hardware/CLI integration tests в общем тестовом наборе.
+
+supersedes: [22]
+
+## Entry 000130
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-03T22:05:22.3581674+03:00
+Previous: 7b44661ac63353cd017d78836e8c5be8a517bc297248538f356bac75c1daf674
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1816
+Checksum: 1d0af0b8b31d6f3aa6c7cb5f7c3db69dd4c72faf934a9568669462341cccacc1
+
+Зафиксировано: проверки, которым нужны конкретный Qwen-compatible CLI или конкретная платформа, оформляются как автоматизированные opt-in integration scripts с машинными assertions; пользователь запускает их явно, и они не входят в автоматически выполняемый набор тестов.
+
+Остаётся ambiguity из `SPEC-F-002`: ACP передаёт текст ассистента частями, а спецификация не задаёт точный алгоритм восстановления единственного JSON-ответа. Предлагаю зафиксировать следующий детерминированный вариант: для каждого первоначального или repair prompt собирать в wire order только текстовые `agent_message_chunk` текущей session; thought, tool и progress updates не включать; terminal response закрывает буфер; второй assistant message, неизвестный content type, duplicate terminal или chunk после terminal считается protocol violation; каждый repair prompt начинает новый пустой буфер в той же session. Подтверждаете этот вариант? Альтернатива — принимать только последнее цельное assistant message, но тогда фрагментированные ответы могут потеряться; без выбора план не может задать объективно тестируемое поведение `REQ-009`, `REQ-010`, `AC-005` и `AC-006`.
+
+## Entry 000131
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-04T08:11:01.2621665+03:00
+Previous: 1d0af0b8b31d6f3aa6c7cb5f7c3db69dd4c72faf934a9568669462341cccacc1
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 18
+Checksum: e78aab5255a9416cdf38ab240ed24dd41f109c76304c3a10da937864872984e3
+
+принимаем
+
+## Entry 000132
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-04T08:11:29.5300032+03:00
+Previous: e78aab5255a9416cdf38ab240ed24dd41f109c76304c3a10da937864872984e3
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1103
+Checksum: 0dccdd0ba0e29933bbb11f61aad003b924b0cb9a37f5d146ef17bca119812489
+
+## Decision D-024
+
+author: user
+
+decision: Восстанавливать финальный ACP-ответ детерминированно: собирать в wire order только текстовые agent_message_chunk текущей session и prompt, исключать thought/tool/progress, закрывать буфер terminal response и считать неоднозначные, повторные или поздние terminal-события protocol violation; каждый repair prompt начинает новый буфер в той же session.
+
+rationale: Пользователь принял предложенный алгоритм, обеспечивающий однозначное получение одного JSON-объекта и тестируемое поведение repair loop.
+
+alternatives: Принимать только последнее цельное assistant message, рискуя потерять фрагментированный ответ.; Отложить алгоритм до наблюдений с реальным CLI.
+
+supersedes: []
+
+## Entry 000133
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-04T08:11:29.5774777+03:00
+Previous: 0dccdd0ba0e29933bbb11f61aad003b924b0cb9a37f5d146ef17bca119812489
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1561
+Checksum: eb66180407d08c003b8e4078a333050877420c3c3c4f8761547878501ec22b50
+
+Зафиксировано детерминированное восстановление ACP-ответа: текстовые `agent_message_chunk` текущей session собираются в wire order отдельно для каждого prompt; thought/tool/progress не входят в JSON; terminal response закрывает буфер; неоднозначные, повторные и поздние события завершаются protocol error; repair использует новый буфер в той же session.
+
+Остаётся последний существенный пробел из `SPEC-F-003`: точный startup contract изолированного CLI. Предлагаю считать обязательным Qwen-compatible профилем сочетание safe mode, approval mode `default`, allowlist ровно `read_file`, `write_file`, `edit`, `glob`, `grep_search`, явное отключение остальных встроенных/синтетических инструментов и фоновых workflows, плюс `--include-directories <artifact-root>` и ACP mode. Тот же профиль обязан принимать явно выбранный сторонний CLI; отдельного механизма адаптации его флагов не вводим. Совместимость подтверждают fake-тесты и явно запускаемый integration script, без version/branding probe. Подтверждаете этот контракт?
+
+## Entry 000134
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-04T08:12:40.9692156+03:00
+Previous: eb66180407d08c003b8e4078a333050877420c3c3c4f8761547878501ec22b50
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 4
+Checksum: 8c62c8f855ebb58f053d73af35f3c6e0029f5b7e275d8bf95f5ac87e629e5997
+
+да
+
+## Entry 000135
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-04T08:13:36.8786244+03:00
+Previous: 8c62c8f855ebb58f053d73af35f3c6e0029f5b7e275d8bf95f5ac87e629e5997
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1124
+Checksum: 8075116997f8fb75dd545aa3ada31ab8430599213cb4bd408640d9cbcef8f916
+
+## Decision D-025
+
+author: user
+
+decision: Использовать единый Qwen-compatible startup profile: safe mode, approval mode default, allowlist ровно read_file, write_file, edit, glob и grep_search, явное отключение остальных встроенных и фоновых возможностей, один внешний artifact root и ACP mode; явно выбранный сторонний CLI обязан принимать тот же профиль.
+
+rationale: Пользователь подтвердил предложенный конкретный контракт изоляции и совместимости; отдельный launch-profile adapter для сторонних CLI не вводится.
+
+alternatives: Наследовать конфигурацию и расширенный tool surface выбранного CLI.; Добавить настраиваемые пользователем launch profiles для разных сторонних CLI.; Ограничить поддержку только официальным Qwen Code.
+
+supersedes: []
+
+## Entry 000136
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-04T08:13:36.9280978+03:00
+Previous: 8075116997f8fb75dd545aa3ada31ab8430599213cb4bd408640d9cbcef8f916
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 1682
+Checksum: 46bc49ce8337c184978cf076ca5f57bbe8560e9bc2810de74b819e498a94cdbb
+
+Startup contract принят: Qwen-compatible CLI запускается с изолированным профилем, точным allowlist пяти файловых инструментов, отключёнными дополнительными возможностями, turn-scoped approval mode, внешним artifact root и ACP transport; version/branding probe и отдельная адаптация флагов стороннего CLI не вводятся.
+
+Обнаружен ещё один пограничный случай в текущем коде. `ApplicationController.generateFeatureID` создаёт provider thread без `ArtifactRoot`, но `REQ-004` и `REQ-007` требуют для каждого Qwen thread ровно один внешний root через `--include-directories`. Предлагаю для таких read-only threads создавать внутри Qwen runtime отдельный пустой временный root вне Git workspace, подключать его process-wide и удалять при `CloseThread`; при этом исходный `ThreadConfig.ArtifactRoot` остаётся пустым, поэтому write/edit approvals всегда отклоняются. Это сохраняет единый startup contract и не требует менять provider-neutral interface. Подтверждаете? Альтернативы: запускать такой process без `--include-directories`, делая исключение из спецификации, либо менять `specflow`, чтобы feature-ID thread заранее получал внешний artifact root.
+
+## Entry 000137
+
+Stage: plan
+Role: plan-author
+Event: user_message
+At: 2026-09-04T08:15:00.3584896+03:00
+Previous: 46bc49ce8337c184978cf076ca5f57bbe8560e9bc2810de74b819e498a94cdbb
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 22
+Checksum: 92351ae2eafdd4efa4aeb1d7803816afaf4166d346e17b734d8524fd4aa827f9
+
+подтверждаю
+
+## Entry 000138
+
+Stage: plan
+Role: plan-author
+Event: decision
+At: 2026-09-04T08:19:56.3568446+03:00
+Previous: 92351ae2eafdd4efa4aeb1d7803816afaf4166d346e17b734d8524fd4aa827f9
+State-Hash: c2eb54faf8d3854dac620b56a242e2e68809d53c81a288aed25b489d6cee0d6d
+Body-Length: 909
+Checksum: 741b30b9d55c8d98e9f41d9aec949685f886a31702be0f5b1694ccbc750d96d6
+
+## Decision D-026
+
+author: user
+
+decision: Для read-only Qwen threads без заданного ArtifactRoot создавать отдельный пустой runtime-owned временный root вне Git workspace, подключать его через --include-directories и удалять при CloseThread; write/edit approvals при этом всегда отклонять.
+
+rationale: Пользователь подтвердил решение, сохраняющее единый startup contract для feature-ID и других read-only threads без изменения provider-neutral interface.
+
+alternatives: Запускать read-only process без --include-directories как исключение из спецификации.; Изменить specflow, чтобы каждый read-only thread заранее получал внешний artifact root.
+
+supersedes: []
+
+## Entry 000139
+
+Stage: plan
+Role: plan-author
+Event: attempt
+At: 2026-09-04T08:19:56.4049308+03:00
+Previous: 741b30b9d55c8d98e9f41d9aec949685f886a31702be0f5b1694ccbc750d96d6
+State-Hash: c1eeb733021513a2dac87fe106d56a98887a46d1efc60f49028601aa39b15d61
+Body-Length: 127
+Checksum: b8e4dc0cd2894122b750cd05c9201412557251e6edfd7e05478a5daa14962b06
+
+author draft observed for plan: hash=0f650b1f6cece991085a106d3376c20bf4b32bf91cf4afc31c12c61a7333a48e valid=false diagnostics=8
+
+## Entry 000140
+
+Stage: plan
+Role: plan-author
+Event: attempt
+At: 2026-09-04T08:20:12.9032957+03:00
+Previous: b8e4dc0cd2894122b750cd05c9201412557251e6edfd7e05478a5daa14962b06
+State-Hash: c1eeb733021513a2dac87fe106d56a98887a46d1efc60f49028601aa39b15d61
+Body-Length: 126
+Checksum: 1d108b958253bcf38208c8b5985a2902479f474bec705504e75420de6257059c
+
+author draft observed for plan: hash=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0 valid=true diagnostics=0
+
+## Entry 000141
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-04T08:20:12.9317835+03:00
+Previous: 1d108b958253bcf38208c8b5985a2902479f474bec705504e75420de6257059c
+State-Hash: 12289e60837a9c3f73ff20a939855f233ff3781039deb50f0f17e5144a7e5b72
+Body-Length: 102
+Checksum: 0f27a6e5c74c9b8c93af6bbfa8e8934e1e08ca93023a144556f4d618310c68f8
+
+author draft published for plan: hash=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0
+
+## Entry 000142
+
+Stage: plan
+Role: plan-author
+Event: commit
+At: 2026-09-04T08:20:12.9664521+03:00
+Previous: 0f27a6e5c74c9b8c93af6bbfa8e8934e1e08ca93023a144556f4d618310c68f8
+State-Hash: 12289e60837a9c3f73ff20a939855f233ff3781039deb50f0f17e5144a7e5b72
+Body-Length: 86
+Checksum: effe3c5f5e233bed61a396ced123d1d79a678af2a7c5e2fa3d026d5c372422a2
+
+checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan author-draft
