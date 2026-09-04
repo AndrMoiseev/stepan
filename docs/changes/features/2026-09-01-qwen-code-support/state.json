@@ -18,7 +18,7 @@
     },
     "plan": {
       "status": "published",
-      "review_status": "awaiting_decisions",
+      "review_status": "automatic_rework",
       "current_hash": "a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0",
       "upstream_hashes": [
         {
@@ -39,7 +39,7 @@
         {
           "id": 1,
           "path": "reviews/plan-001.md",
-          "status": "awaiting_decisions",
+          "status": "automatic_rework",
           "original_fingerprint": {
             "target_hash": "a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0",
             "upstream_hashes": [
@@ -67,7 +67,7 @@
             ]
           },
           "attempts": 0,
-          "report_hash": "c867219e22ebe130807bf0faa8b10a4e3a39c024e3ed257dde088c1ae0473dc6"
+          "report_hash": "e0fa68a4e9922b45e07b4dacbe80adf9bbf2447ec63bb51c0598603fe4c1a38a"
         }
       ]
     },

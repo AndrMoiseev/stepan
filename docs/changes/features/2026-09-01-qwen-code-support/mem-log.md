@@ -2346,3 +2346,134 @@ Body-Length: 80
 Checksum: 781afe053747c001d85ca7ab226bdf568588b1f81f7fbb92f829bacc2d1b8501
 
 checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan review
+
+## Entry 000147
+
+Stage: plan
+Role: plan-reviewer
+Event: decision
+At: 2026-09-04T08:26:51.1122024+03:00
+Previous: 781afe053747c001d85ca7ab226bdf568588b1f81f7fbb92f829bacc2d1b8501
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 174
+Checksum: 97358ecaaf7f84a5b024a13c233f6b97473dd03ac4f632584982bb142a617854
+
+## Decision D-027
+
+author: user
+
+decision: fix review finding PLAN-F-1
+
+rationale: User accepted the pending recommendation with /apply.
+
+alternatives: (none)
+
+supersedes: []
+
+## Entry 000148
+
+Stage: plan
+Role: plan-reviewer
+Event: decision
+At: 2026-09-04T08:26:51.1694916+03:00
+Previous: 97358ecaaf7f84a5b024a13c233f6b97473dd03ac4f632584982bb142a617854
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 174
+Checksum: 328c456c7f462df166ce665187df31d691d5373938bce8ca3c900a0bd2e68551
+
+## Decision D-028
+
+author: user
+
+decision: fix review finding PLAN-F-2
+
+rationale: User accepted the pending recommendation with /apply.
+
+alternatives: (none)
+
+supersedes: []
+
+## Entry 000149
+
+Stage: plan
+Role: plan-reviewer
+Event: decision
+At: 2026-09-04T08:26:51.195534+03:00
+Previous: 328c456c7f462df166ce665187df31d691d5373938bce8ca3c900a0bd2e68551
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 174
+Checksum: fe5dfae35f80095ae44343611a41a8d02c71dcdfe14f1b5a467d9ad8ccf23254
+
+## Decision D-029
+
+author: user
+
+decision: fix review finding PLAN-F-3
+
+rationale: User accepted the pending recommendation with /apply.
+
+alternatives: (none)
+
+supersedes: []
+
+## Entry 000150
+
+Stage: plan
+Role: plan-reviewer
+Event: decision
+At: 2026-09-04T08:26:51.2208851+03:00
+Previous: fe5dfae35f80095ae44343611a41a8d02c71dcdfe14f1b5a467d9ad8ccf23254
+State-Hash: de8806381b96868e20030c7fba213ffd61ce29d5f8896b5654b94d87451da7b1
+Body-Length: 174
+Checksum: f271ec9b95a3229e89188fa549779db436a6e1500969095bd147dedc654a6f35
+
+## Decision D-030
+
+author: user
+
+decision: fix review finding PLAN-F-4
+
+rationale: User accepted the pending recommendation with /apply.
+
+alternatives: (none)
+
+supersedes: []
+
+## Entry 000151
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:26:51.2584582+03:00
+Previous: f271ec9b95a3229e89188fa549779db436a6e1500969095bd147dedc654a6f35
+State-Hash: 390fed33ceb4ba110b2160698da090ccd77a8208b5e2438e5c46faec9afe514e
+Body-Length: 90
+Checksum: 1e9f9c226695c17a73228ae5f11294b44a68462e24c3cd8376cd168b547ba808
+
+review artifact published for plan run 1: status=automatic_rework path=reviews/plan-001.md
+
+## Entry 000152
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:26:51.2936135+03:00
+Previous: 1e9f9c226695c17a73228ae5f11294b44a68462e24c3cd8376cd168b547ba808
+State-Hash: 390fed33ceb4ba110b2160698da090ccd77a8208b5e2438e5c46faec9afe514e
+Body-Length: 510
+Checksum: 08650e1a572cb50ca738aa6828703aedfc536a86e2e66287f133bfa5635a0f5e
+
+review run 1 accepted: started_revision=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0 accepted_for_revision=a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0 upstream_started=intent=c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c,spec=65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327 upstream_accepted=intent=c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c,spec=65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327
+
+## Entry 000153
+
+Stage: plan
+Role: plan-reviewer
+Event: commit
+At: 2026-09-04T08:26:51.3181692+03:00
+Previous: 08650e1a572cb50ca738aa6828703aedfc536a86e2e66287f133bfa5635a0f5e
+State-Hash: 390fed33ceb4ba110b2160698da090ccd77a8208b5e2438e5c46faec9afe514e
+Body-Length: 86
+Checksum: b020cf9a67865144d1c98eaee66cd1ae171833788fd61eb26a422bb495bfc609
+
+checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan review-apply

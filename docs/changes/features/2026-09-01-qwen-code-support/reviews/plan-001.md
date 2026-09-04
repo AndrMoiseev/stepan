@@ -1,9 +1,9 @@
 ---
 review_id: PLAN-REVIEW-001
 stage: plan
-status: awaiting_decisions
+status: automatic_rework
 created_at: 2026-09-04T08:21:35.845293+03:00
-updated_at: 2026-09-04T08:25:21.6971954+03:00
+updated_at: 2026-09-04T08:26:51.2584582+03:00
 provider: "codex"
 model: "default"
 started_revision: a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0
@@ -27,9 +27,9 @@ Problem: В `TASK-003` outcome обещает разрешать «ровно о
 Location: TASK-003 Outcome; TASK-003 шаг 4; Test scenario — Write approval связан с активным turn и artifact root
 Traces: TASK-003
 Recommendation: Явно определить cardinality на уровне permission request: разрешать любое число различных корректно коррелированных write/edit requests активного turn, выдавая каждому отдельное одноразовое решение, и отклонять только duplicate/stale/foreign либо иначе невалидные requests. Добавить в scenario как минимум две разные допустимые операции одного turn наряду с duplicate request.
-Decision: pending
-Decided-by: none
-Rationale:
+Decision: fix
+Decided-by: user
+Rationale: User accepted the pending recommendation with /apply.
 
 ## PLAN-F-002 — Сторонний CLI не проходит требуемый полный flow
 
@@ -39,9 +39,9 @@ Problem: `AC-014` требует, чтобы executable с нестандарт�
 Location: TASK-006 Test scenario — CLI выбирает только запрошенный provider; TASK-007 Test scenario — Один shared flow проходит с тремя adapters; TASK-008 шаг 9 и Test scenario — Реальный совместимый CLI проходит изолированный contract
 Traces: TASK-006, TASK-007, TASK-008
 Recommendation: Расширить shared full-flow scenario или opt-in real-CLI scenario так, чтобы exact explicit executable с нестандартным basename проходил полный набор стадий и переходов из `AC-003`/`AC-014`, включая reviewer, material decision, automatic rework, approval, close и fresh resume, без branding/version probe или fallback.
-Decision: pending
-Decided-by: none
-Rationale:
+Decision: fix
+Decided-by: user
+Rationale: User accepted the pending recommendation with /apply.
 
 ## PLAN-F-003 — Safe diagnostics покрыты не для всех обязательных категорий ошибок
 
@@ -51,9 +51,9 @@ Problem: `AC-015` требует fixtures каждой категории из `
 Location: TASK-001 Test scenario — Startup failure не оставляет process tree и секреты; TASK-003 Test scenario — Write approval связан с активным turn и artifact root; TASK-004 Test scenario — Repair имеет ровно три response attempts; TASK-005 Test scenario — Interrupt соблюдает cancel grace и закрывает всё; TASK-008 шаг 9
 Traces: TASK-001, TASK-003, TASK-004, TASK-005, TASK-008
 Recommendation: Добавить автоматизированный diagnostic-matrix scenario с отдельной fixture для missing/non-regular executable, handshake/capability incompatibility, process exit/protocol violation, permission denial, repair exhaustion и cancellation. Для каждой ветки зафиксировать ожидаемый provider-neutral cause, допустимый Qwen context и отрицательные assertions на все запрещённые данные.
-Decision: pending
-Decided-by: none
-Rationale:
+Decision: fix
+Decided-by: user
+Rationale: User accepted the pending recommendation with /apply.
 
 ## PLAN-F-004 — Первый session prompt и immutable schema не имеют прямого тестового сценария
 
@@ -63,6 +63,6 @@ Problem: Шаги `TASK-004` правильно требуют process-level JSO
 Location: TASK-004 шаги 1–2; Test scenario — Fragmented JSON становится одним валидным envelope; Test scenario — Repair имеет ровно три response attempts
 Traces: TASK-004
 Recommendation: Добавить scenario с записывающим fake ACP agent: проверить общий process-level contract, точное наличие role instructions, schema и session context только в первом session prompt, точную schema в repair prompt и неизменность cloned schema после мутации исходного caller buffer; последующий ordinary prompt не должен повторять bootstrap.
-Decision: pending
-Decided-by: none
-Rationale:
+Decision: fix
+Decided-by: user
+Rationale: User accepted the pending recommendation with /apply.
