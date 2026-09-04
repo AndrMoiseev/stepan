@@ -19,9 +19,10 @@ type connectionHandler struct {
 }
 
 type pendingCall struct {
-	method   string
-	response chan message
-	resume   chan struct{}
+	method    string
+	response  chan message
+	resume    chan struct{}
+	assembler *responseAssembler
 }
 
 // inboundCall tracks responses to agent-initiated permission and delegated
@@ -97,6 +98,14 @@ func (connection *Connection) call(method string, params, result any) error {
 }
 
 func (connection *Connection) callAndCommit(method string, params, result any, commit func() error) error {
+	return connection.callAndCommitResponse(method, params, result, commit, nil)
+}
+
+func (connection *Connection) callPrompt(params sessionPromptParams, result *promptResponse, assembler *responseAssembler) error {
+	return connection.callAndCommitResponse("session/prompt", params, result, nil, assembler)
+}
+
+func (connection *Connection) callAndCommitResponse(method string, params, result any, commit func() error, assembler *responseAssembler) error {
 	connection.mu.Lock()
 	if connection.err != nil {
 		err := connection.err
@@ -109,9 +118,16 @@ func (connection *Connection) callAndCommit(method string, params, result any, c
 	}
 	id := integerID(connection.nextID)
 	connection.nextID++
-	pending := &pendingCall{method: method, response: make(chan message, 1), resume: make(chan struct{})}
+	pending := &pendingCall{method: method, response: make(chan message, 1), resume: make(chan struct{}), assembler: assembler}
 	connection.pending[id.key] = pending
 	if method == "session/prompt" {
+		if assembler != nil {
+			if err := assembler.bind(connection.sessionID, id.key); err != nil {
+				delete(connection.pending, id.key)
+				connection.mu.Unlock()
+				return err
+			}
+		}
 		connection.activePrompt = id.key
 		connection.activePermission = newPermissionTurn(connection.filePolicy.context(connection.sessionID, id.key))
 	}
@@ -296,6 +312,15 @@ func (connection *Connection) deliverResponse(received message) bool {
 				return false
 			}
 		}
+		if pending.assembler != nil {
+			connection.mu.Lock()
+			sessionID := connection.sessionID
+			connection.mu.Unlock()
+			if err := pending.assembler.terminal(sessionID, received.id.key); err != nil {
+				connection.fail(err)
+				return false
+			}
+		}
 	}
 	pending.response <- received
 	select {
@@ -369,6 +394,18 @@ func (connection *Connection) dispatchNotification(received message) error {
 	}
 	if err := validateSessionUpdate(params.Update); err != nil {
 		return err
+	}
+	connection.mu.Lock()
+	promptID := connection.activePrompt
+	pending := connection.pending[promptID]
+	connection.mu.Unlock()
+	if pending == nil {
+		return fmt.Errorf("%w: session/update has no active prompt", ErrProtocol)
+	}
+	if pending.assembler != nil {
+		if err := pending.assembler.observe(params.SessionID, promptID, params.Update); err != nil {
+			return err
+		}
 	}
 	if err := connection.observeToolCall(params.Update); err != nil {
 		return err

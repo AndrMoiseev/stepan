@@ -10,6 +10,11 @@ import (
 	"path/filepath"
 )
 
+// DefaultRetryLimit is the shared upper bound for retry-shaped agent loops.
+// A limit of three means three responses in total, not three retries after the
+// initial response.
+const DefaultRetryLimit = 3
+
 var (
 	ErrRuntimeClosed   = errors.New("agent runtime closed")
 	ErrTurnInterrupted = errors.New("turn interrupted by operator")

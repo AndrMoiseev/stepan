@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 const (
 	FlowStateVersion  = 1
-	DefaultRetryLimit = 3
+	DefaultRetryLimit = agentruntime.DefaultRetryLimit
 )
 
 type RetryCounters struct {
