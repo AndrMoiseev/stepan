@@ -2477,3 +2477,209 @@ Body-Length: 86
 Checksum: b020cf9a67865144d1c98eaee66cd1ae171833788fd61eb26a422bb495bfc609
 
 checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan review-apply
+
+## Entry 000154
+
+Stage: plan
+Role: plan-reviewer
+Event: attempt
+At: 2026-09-04T08:26:51.9784985+03:00
+Previous: b020cf9a67865144d1c98eaee66cd1ae171833788fd61eb26a422bb495bfc609
+State-Hash: 390fed33ceb4ba110b2160698da090ccd77a8208b5e2438e5c46faec9afe514e
+Body-Length: 42
+Checksum: d5f8ea3782bdbee1336a792f5933f92bbc75b3079676478b272bc7b4bd4ca3fa
+
+Review findings were passed to the author.
+
+## Entry 000155
+
+Stage: plan
+Role: plan-reviewer
+Event: review
+At: 2026-09-04T08:26:52.0079935+03:00
+Previous: d5f8ea3782bdbee1336a792f5933f92bbc75b3079676478b272bc7b4bd4ca3fa
+State-Hash: 2bae45e90a04dde2f6a83d53dba04081ce0072572734bfe93a6052379a5fc3f2
+Body-Length: 90
+Checksum: 9b60cde0fd30795ed03b4b55dd368ad352214fa72f25fac97ff7d6547307895f
+
+review artifact published for plan run 1: status=automatic_rework path=reviews/plan-001.md
+
+## Entry 000156
+
+Stage: plan
+Role: plan-author
+Event: attempt
+At: 2026-09-04T08:27:41.0430883+03:00
+Previous: 9b60cde0fd30795ed03b4b55dd368ad352214fa72f25fac97ff7d6547307895f
+State-Hash: 2bae45e90a04dde2f6a83d53dba04081ce0072572734bfe93a6052379a5fc3f2
+Body-Length: 126
+Checksum: 6f2d5cc0063a06ba91f1047b784624f5f369fbff82801c43b664320054a7ff53
+
+author draft observed for plan: hash=6bcfa19b628cb1a6515b7019a4c7f15e472ca10120a21b4430edcbe2576f7453 valid=true diagnostics=0
+
+## Entry 000157
+
+Stage: plan
+Role: plan-author
+Event: agent_message
+At: 2026-09-04T08:27:41.1121575+03:00
+Previous: 6f2d5cc0063a06ba91f1047b784624f5f369fbff82801c43b664320054a7ff53
+State-Hash: 91fe69f544a062d9275bd4deefcca390829f5eb0fb544da1921d67b6ba9a034b
+Body-Length: 102
+Checksum: ed7bde504645191326739515d4641169ef538c126a39cffbf4a54a511e9ae0f8
+
+author draft published for plan: hash=6bcfa19b628cb1a6515b7019a4c7f15e472ca10120a21b4430edcbe2576f7453
+
+## Entry 000158
+
+Stage: plan
+Role: plan-author
+Event: diff
+At: 2026-09-04T08:27:41.1585112+03:00
+Previous: ed7bde504645191326739515d4641169ef538c126a39cffbf4a54a511e9ae0f8
+State-Hash: 91fe69f544a062d9275bd4deefcca390829f5eb0fb544da1921d67b6ba9a034b
+Body-Length: 9129
+Checksum: 763b0e474ae3c9b840b8eb29d1458b031e1e2d233cc0a8ac544c7800ea13bac8
+
+informational automatic review rework diff:
+--- plan.md
++++ plan.md
+@@ -208,9 +208,10 @@
+ 
+ ### Outcome
+ 
++Qwen connection разрешает любое число различных корректно correlated write/edit
++requests внутри writable artifact root текущего turn, выдавая каждому отдельное
++одноразовое решение, и fail-closed отклоняет duplicate/stale/foreign либо иначе
++невалидные write и делегированные read requests.
+-Qwen connection разрешает ровно одну корректно correlated write/edit operation
+-внутри writable artifact root текущего turn и fail-closed отклоняет все остальные
+-write и делегированные read requests.
+ 
+ ### Область и ожидаемые файлы
+ 
+@@ -238,8 +239,9 @@
+ 3. Разрешать relative paths от Git `cwd`, канонизировать existing target либо
+    ближайшего existing ancestor для нового target и проверять symlink/junction
+    escape после canonicalization.
++4. Разрешать любое число различных write/edit requests только внутри непустого
++   artifact root текущего thread; для каждого request возвращать отдельный
++   одноразовый turn-scoped approval без сохранения grant.
+-4. Разрешать write/edit только внутри непустого artifact root текущего thread и
+-   возвращать одноразовый turn-scoped approval без сохранения grant.
+ 5. Отклонять Git workspace, sibling root, внешний path, stale/duplicate/foreign
+    request, ambiguous fields и запрос расширения срока полномочий.
+ 6. Для делегированного `fs/read_text_file` разрешать только Git root или текущий
+@@ -261,12 +263,13 @@
+ 
+ Traces: AC-004, AC-009
+ 
++Setup: два Qwen threads имеют разные external roots; active turn содержит две
++различные valid write/edit operations, а fixtures также содержат duplicate,
++stale, foreign-session, persistent-grant, ambiguous-path, workspace, sibling и
++link-escape requests. Action: policy обрабатывает requests на активном и закрытом
++turns. Expected result: обе различные корректные операции получают собственные
++одноразовые approvals; duplicate и все остальные невалидные requests отклонены и
++не расширяют последующие turns.
+-Setup: два Qwen threads имеют разные external roots; fixtures содержат valid,
+-duplicate, stale, foreign-session, persistent-grant, ambiguous-path,
+-workspace, sibling и link-escape requests. Action: policy обрабатывает requests
+-на активном и закрытом turns. Expected result: разрешён только первый exact
+-write/edit текущего turn в его root; все остальные requests отклонены и не
+-расширяют последующие turns.
+ 
+ ### Test scenario — Минимальная read posture не выдаётся за sandbox
+ 
+@@ -354,6 +357,19 @@
+ не отправляет четвёртый prompt, возвращает repair-exhausted protocol error и не
+ публикует ни один invalid payload.
+ 
++### Test scenario — Первый prompt фиксирует bootstrap и immutable schema
++
++Traces: REQ-008
++
++Setup: записывающий fake ACP agent сохраняет process-level system contract и все
++session prompts, а caller после `StartThread` мутирует исходный schema buffer.
++Action: thread выполняет первый ordinary prompt, repair prompt и следующий
++ordinary prompt. Expected result: process-level contract требует ровно один JSON
++object; только первый session prompt содержит exact role instructions, cloned
++исходную schema и session context; repair prompt содержит ту же exact schema;
++следующий ordinary prompt не повторяет bootstrap, а caller mutation не меняет ни
++один отправленный schema fragment.
++
+ ## TASK-005 — Собрать независимый multi-thread Qwen runtime
+ 
+ Traces: REQ-006, REQ-007, REQ-015, REQ-016, REQ-017, REQ-019, REQ-022, DEC-007, DEC-008
+@@ -447,6 +463,19 @@
+ повреждённый role handle удалён, второй возвращает valid envelope; diagnostics
+ различает protocol cause и не содержит raw bodies или secrets.
+ 
++### Test scenario — Все Qwen errors имеют безопасную классификацию
++
++Traces: AC-015
++
++Setup: diagnostic matrix создаёт отдельные fake fixtures для missing и
++non-regular executable, handshake/capability incompatibility, process exit,
++protocol violation, permission denial, repair exhaustion и operator cancellation;
++каждая fixture внедряет credential, environment secret, полный prompt/response и
++запрещённое file content. Action: runtime выполняет соответствующий failure path
++и сериализует user-facing error. Expected result: каждая ветка имеет различимый
++provider-neutral cause и только допустимый Qwen context — provider, выбранный
++executable либо capability name; ни одно запрещённое значение не присутствует.
++
+ ## TASK-006 — Подключить Qwen к CLI и runtime metadata
+ 
+ Traces: REQ-001, REQ-002, REQ-003, REQ-018, REQ-019, REQ-021, REQ-023, DEC-001, DEC-009, DEC-011
+@@ -653,8 +682,10 @@
+ 8. На физическом Apple Silicon Mac проверить отдельные process groups и те же
+    lifecycle assertions; Windows script отдельно подтверждает macOS/arm64
+    cross-compilation test target без объявления runtime success.
++9. Для exact explicit executable с нестандартным basename прогнать полный
++   `/feature` flow: author/reviewer dialogues, material decision, automatic
++   rework, approvals, close и fresh resume; сохранить только sanitized
++   machine-readable summary.
+-9. Прогнать минимальный resumable `/feature` path и safe diagnostic failures,
+-   сохраняя только sanitized machine-readable summary.
+ 10. Сделать scripts одинаковыми для официального и нестандартно названного
+     стороннего executable: различие определяется только startup/ACP/tool behavior.
+ 
+@@ -667,16 +698,19 @@
+ - Native-read result является наблюдением, а не sandbox PASS; pass/fail теста не
+   требует технического запрета нативного чтения вне roots.
+ 
++### Test scenario — Реальный сторонний CLI проходит contract и полный flow
+-### Test scenario — Реальный совместимый CLI проходит изолированный contract
+ 
++Traces: AC-003, AC-007, AC-008, AC-014
+-Traces: AC-007, AC-008, AC-014
+ 
++Setup: runner получает exact explicit official либо third-party Qwen-compatible
++executable; third-party fixture имеет нестандартный basename, а harness создаёт
++isolated test fixtures. Action: opt-in harness выполняет ACP, inventory,
++file-policy и native-read probes, затем проходит intent/spec/plan author и
++reviewer dialogues, material decision, automatic rework, approvals, close и
++fresh resume. Expected result: exact five-tool surface и startup contract
++подтверждены, запрещённые operations не исполняются, полный flow завершается с
++той же domain semantics, advisory read observation маркировано корректно, а имя
++executable не вызывает branding/version probe или provider fallback.
+-Setup: runner получает explicit official либо third-party Qwen-compatible
+-executable и создаёт isolated test fixtures. Action: opt-in harness выполняет ACP,
+-inventory, file-policy, native-read и diagnostic probes. Expected result: exact
+-five-tool surface и startup contract подтверждены, запрещённые operations не
+-исполняются, artifact write проходит, advisory read observation маркировано
+-корректно, а нестандартное имя executable не влияет на результат.
+ 
+ ### Test scenario — Windows native lifecycle закрывает нужные деревья
+
+## Entry 000159
+
+Stage: plan
+Role: plan-author
+Event: commit
+At: 2026-09-04T08:27:41.1874831+03:00
+Previous: 763b0e474ae3c9b840b8eb29d1458b031e1e2d233cc0a8ac544c7800ea13bac8
+State-Hash: 91fe69f544a062d9275bd4deefcca390829f5eb0fb544da1921d67b6ba9a034b
+Body-Length: 87
+Checksum: 4702d2d2202548f1753a5ebb378ebe7d0bc879ebd325bcb30d9e9e19c913028a
+
+checkpoint commit: feature(2026-09-01-qwen-code-support): checkpoint plan review-rework

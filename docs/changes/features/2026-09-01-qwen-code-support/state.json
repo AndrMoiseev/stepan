@@ -18,8 +18,8 @@
     },
     "plan": {
       "status": "published",
-      "review_status": "automatic_rework",
-      "current_hash": "a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0",
+      "review_status": "not_started",
+      "current_hash": "6bcfa19b628cb1a6515b7019a4c7f15e472ca10120a21b4430edcbe2576f7453",
       "upstream_hashes": [
         {
           "stage": "intent",
@@ -66,8 +66,8 @@
               }
             ]
           },
-          "attempts": 0,
-          "report_hash": "e0fa68a4e9922b45e07b4dacbe80adf9bbf2447ec63bb51c0598603fe4c1a38a"
+          "attempts": 1,
+          "report_hash": "1c29fdcd4750d4af4fbc4732f1bb8b19f3eec197df67eddb7e57bf845d66b019"
         }
       ]
     },

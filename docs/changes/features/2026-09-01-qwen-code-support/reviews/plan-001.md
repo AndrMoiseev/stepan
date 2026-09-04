@@ -3,7 +3,7 @@ review_id: PLAN-REVIEW-001
 stage: plan
 status: automatic_rework
 created_at: 2026-09-04T08:21:35.845293+03:00
-updated_at: 2026-09-04T08:26:51.2584582+03:00
+updated_at: 2026-09-04T08:26:52.0079935+03:00
 provider: "codex"
 model: "default"
 started_revision: a8e5e6b3d1c9526341fb1326919128260f7855d040a0a803ad2a349c5187a2b0
@@ -14,7 +14,7 @@ upstream_started:
 upstream_accepted:
   intent.md: c1d7f8ea58d29087964f985c726ec459860bc8566912cd901b3ec06bf25cd52c
   spec.md: 65134090cfb0d8d6321360b6207259ef9023081dae8088d7468e1da711c67327
-attempts: 0
+attempts: 1
 ---
 
 # Ревью плана реализации

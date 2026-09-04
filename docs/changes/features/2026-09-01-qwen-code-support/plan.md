@@ -208,9 +208,10 @@ Depends-on: TASK-002
 
 ### Outcome
 
-Qwen connection разрешает ровно одну корректно correlated write/edit operation
-внутри writable artifact root текущего turn и fail-closed отклоняет все остальные
-write и делегированные read requests.
+Qwen connection разрешает любое число различных корректно correlated write/edit
+requests внутри writable artifact root текущего turn, выдавая каждому отдельное
+одноразовое решение, и fail-closed отклоняет duplicate/stale/foreign либо иначе
+невалидные write и делегированные read requests.
 
 ### Область и ожидаемые файлы
 
@@ -238,8 +239,9 @@ write и делегированные read requests.
 3. Разрешать relative paths от Git `cwd`, канонизировать existing target либо
    ближайшего existing ancestor для нового target и проверять symlink/junction
    escape после canonicalization.
-4. Разрешать write/edit только внутри непустого artifact root текущего thread и
-   возвращать одноразовый turn-scoped approval без сохранения grant.
+4. Разрешать любое число различных write/edit requests только внутри непустого
+   artifact root текущего thread; для каждого request возвращать отдельный
+   одноразовый turn-scoped approval без сохранения grant.
 5. Отклонять Git workspace, sibling root, внешний path, stale/duplicate/foreign
    request, ambiguous fields и запрос расширения срока полномочий.
 6. Для делегированного `fs/read_text_file` разрешать только Git root или текущий
@@ -261,12 +263,13 @@ write и делегированные read requests.
 
 Traces: AC-004, AC-009
 
-Setup: два Qwen threads имеют разные external roots; fixtures содержат valid,
-duplicate, stale, foreign-session, persistent-grant, ambiguous-path,
-workspace, sibling и link-escape requests. Action: policy обрабатывает requests
-на активном и закрытом turns. Expected result: разрешён только первый exact
-write/edit текущего turn в его root; все остальные requests отклонены и не
-расширяют последующие turns.
+Setup: два Qwen threads имеют разные external roots; active turn содержит две
+различные valid write/edit operations, а fixtures также содержат duplicate,
+stale, foreign-session, persistent-grant, ambiguous-path, workspace, sibling и
+link-escape requests. Action: policy обрабатывает requests на активном и закрытом
+turns. Expected result: обе различные корректные операции получают собственные
+одноразовые approvals; duplicate и все остальные невалидные requests отклонены и
+не расширяют последующие turns.
 
 ### Test scenario — Минимальная read posture не выдаётся за sandbox
 
@@ -353,6 +356,19 @@ Setup: одна session последовательно отдаёт два inval
 Expected result: первая ветка возвращает valid envelope из третьего buffer; вторая
 не отправляет четвёртый prompt, возвращает repair-exhausted protocol error и не
 публикует ни один invalid payload.
+
+### Test scenario — Первый prompt фиксирует bootstrap и immutable schema
+
+Traces: REQ-008
+
+Setup: записывающий fake ACP agent сохраняет process-level system contract и все
+session prompts, а caller после `StartThread` мутирует исходный schema buffer.
+Action: thread выполняет первый ordinary prompt, repair prompt и следующий
+ordinary prompt. Expected result: process-level contract требует ровно один JSON
+object; только первый session prompt содержит exact role instructions, cloned
+исходную schema и session context; repair prompt содержит ту же exact schema;
+следующий ordinary prompt не повторяет bootstrap, а caller mutation не меняет ни
+один отправленный schema fragment.
 
 ## TASK-005 — Собрать независимый multi-thread Qwen runtime
 
@@ -446,6 +462,19 @@ Setup: два threads открыты, первый получает foreign/dupl
 registry запрашивает второй. Expected result: закрыт только первый process,
 повреждённый role handle удалён, второй возвращает valid envelope; diagnostics
 различает protocol cause и не содержит raw bodies или secrets.
+
+### Test scenario — Все Qwen errors имеют безопасную классификацию
+
+Traces: AC-015
+
+Setup: diagnostic matrix создаёт отдельные fake fixtures для missing и
+non-regular executable, handshake/capability incompatibility, process exit,
+protocol violation, permission denial, repair exhaustion и operator cancellation;
+каждая fixture внедряет credential, environment secret, полный prompt/response и
+запрещённое file content. Action: runtime выполняет соответствующий failure path
+и сериализует user-facing error. Expected result: каждая ветка имеет различимый
+provider-neutral cause и только допустимый Qwen context — provider, выбранный
+executable либо capability name; ни одно запрещённое значение не присутствует.
 
 ## TASK-006 — Подключить Qwen к CLI и runtime metadata
 
@@ -653,8 +682,10 @@ machine-readable result и не выполняются обычным test targe
 8. На физическом Apple Silicon Mac проверить отдельные process groups и те же
    lifecycle assertions; Windows script отдельно подтверждает macOS/arm64
    cross-compilation test target без объявления runtime success.
-9. Прогнать минимальный resumable `/feature` path и safe diagnostic failures,
-   сохраняя только sanitized machine-readable summary.
+9. Для exact explicit executable с нестандартным basename прогнать полный
+   `/feature` flow: author/reviewer dialogues, material decision, automatic
+   rework, approvals, close и fresh resume; сохранить только sanitized
+   machine-readable summary.
 10. Сделать scripts одинаковыми для официального и нестандартно названного
     стороннего executable: различие определяется только startup/ACP/tool behavior.
 
@@ -667,16 +698,19 @@ machine-readable result и не выполняются обычным test targe
 - Native-read result является наблюдением, а не sandbox PASS; pass/fail теста не
   требует технического запрета нативного чтения вне roots.
 
-### Test scenario — Реальный совместимый CLI проходит изолированный contract
+### Test scenario — Реальный сторонний CLI проходит contract и полный flow
 
-Traces: AC-007, AC-008, AC-014
+Traces: AC-003, AC-007, AC-008, AC-014
 
-Setup: runner получает explicit official либо third-party Qwen-compatible
-executable и создаёт isolated test fixtures. Action: opt-in harness выполняет ACP,
-inventory, file-policy, native-read и diagnostic probes. Expected result: exact
-five-tool surface и startup contract подтверждены, запрещённые operations не
-исполняются, artifact write проходит, advisory read observation маркировано
-корректно, а нестандартное имя executable не влияет на результат.
+Setup: runner получает exact explicit official либо third-party Qwen-compatible
+executable; third-party fixture имеет нестандартный basename, а harness создаёт
+isolated test fixtures. Action: opt-in harness выполняет ACP, inventory,
+file-policy и native-read probes, затем проходит intent/spec/plan author и
+reviewer dialogues, material decision, automatic rework, approvals, close и
+fresh resume. Expected result: exact five-tool surface и startup contract
+подтверждены, запрещённые operations не исполняются, полный flow завершается с
+той же domain semantics, advisory read observation маркировано корректно, а имя
+executable не вызывает branding/version probe или provider fallback.
 
 ### Test scenario — Windows native lifecycle закрывает нужные деревья
 
