@@ -30,6 +30,12 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
+        - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
+        - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/codexprobe$'
     shouldOnlyDependsOn:
       internal:

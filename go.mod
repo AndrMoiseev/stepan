@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/mattn/go-colorable v0.1.13
 	github.com/severity1/claude-agent-sdk-go v0.6.22
+	golang.org/x/sys v0.42.0
 )
 
 require (
@@ -37,7 +38,6 @@ require (
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/mod v0.22.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/tools v0.28.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
