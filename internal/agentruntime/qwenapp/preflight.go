@@ -13,21 +13,51 @@ import (
 // usable session. The Process must already be started and contained. Every
 // failure closes that process before this function returns.
 func OpenConnection(process *Process) (*Connection, error) {
-	if process == nil || process.Stdin() == nil || process.Stdout() == nil || process.WorkspaceRoot() == "" {
+	workspace, startupRoot, err := validateProcessStartupContract(process)
+	if err != nil {
 		if process != nil {
 			_ = process.Close()
 		}
-		return nil, fmt.Errorf("%w: contained process is not started", ErrIncompatible)
+		return nil, err
 	}
 	connection := newConnection(newTransport(process.Stdout(), process.Stdin()), process, connectionHandler{})
-	if err := connection.preflight(process.WorkspaceRoot()); err != nil {
+	if err := connection.preflight(workspace, startupRoot); err != nil {
 		connection.fail(err)
 		return nil, connection.Err()
 	}
 	return connection, nil
 }
 
-func (connection *Connection) preflight(workspace string) error {
+// validateProcessStartupContract proves the part of the startup-root contract
+// available without a model turn: the contained child was launched with the
+// canonical root in the exact fixed argv and with the canonical Git cwd. ACP
+// cannot prove that an arbitrary executable honors that argv. If an agent
+// voluntarily reports startupRoot in _meta, preflight validates it below;
+// otherwise behavioral proof remains the shared conformance/manual canary
+// required by REQ-018.
+func validateProcessStartupContract(process *Process) (string, string, error) {
+	if process == nil {
+		return "", "", fmt.Errorf("%w: contained process is not started", ErrIncompatible)
+	}
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	if !process.started || process.closed || process.stdin == nil || process.stdout == nil || process.command == nil ||
+		process.workspaceRoot == "" || process.artifactRoot == "" {
+		return "", "", fmt.Errorf("%w: contained process is not started", ErrIncompatible)
+	}
+	expectedArgs := qwenArgs(process.config.JSONContract, process.artifactRoot)
+	if process.command.Dir != process.workspaceRoot || len(process.command.Args) != len(expectedArgs)+1 {
+		return "", "", fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible)
+	}
+	for index := range expectedArgs {
+		if process.command.Args[index+1] != expectedArgs[index] {
+			return "", "", fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible)
+		}
+	}
+	return process.workspaceRoot, process.artifactRoot, nil
+}
+
+func (connection *Connection) preflight(workspace, startupRoot string) error {
 	var initialized initializeResponse
 	if err := connection.callAndCommit("initialize", initializeParams{
 		ProtocolVersion:    acpProtocolVersion,
@@ -39,16 +69,10 @@ func (connection *Connection) preflight(workspace string) error {
 		if initialized.ProtocolVersion != acpProtocolVersion {
 			return fmt.Errorf("%w: initialize protocolVersion", ErrIncompatible)
 		}
-		// ACP v1 defines session/new, session/prompt, session/cancel,
-		// session/update, and session/request_permission as baseline methods,
-		// not capability flags. Protocol-version agreement declares that
-		// baseline; the non-nil capabilities object proves the mandatory
-		// initialize shape, and session/new is exercised below. Optional
-		// content and additional-directory flags do not gate compatibility.
-		if initialized.AgentCapabilities == nil {
-			return fmt.Errorf("%w: initialize agentCapabilities", ErrIncompatible)
+		if err := validateMandatoryCapabilities(initialized.AgentCapabilities); err != nil {
+			return err
 		}
-		if inventory, present, err := toolInventoryFromMeta(initialized.Meta, initialized.AgentCapabilities.Meta); err != nil {
+		if inventory, present, err := preflightStatusFromMeta(startupRoot, initialized.Meta, initialized.AgentCapabilities.Meta); err != nil {
 			return err
 		} else if present {
 			if err := validateToolInventory(inventory); err != nil {
@@ -68,7 +92,7 @@ func (connection *Connection) preflight(workspace string) error {
 		if session.SessionID == "" {
 			return fmt.Errorf("%w: session/new sessionId", ErrIncompatible)
 		}
-		if inventory, present, err := toolInventoryFromMeta(session.Meta); err != nil {
+		if inventory, present, err := preflightStatusFromMeta(startupRoot, session.Meta); err != nil {
 			return err
 		} else if present {
 			if err := validateToolInventory(inventory); err != nil {
@@ -89,6 +113,26 @@ func (connection *Connection) preflight(workspace string) error {
 	return nil
 }
 
+// ACP v1 makes session/new, session/prompt, session/cancel, session/update and
+// session/request_permission baseline methods rather than individual boolean
+// flags. Stepan still requires explicit standard promptCapabilities and
+// sessionCapabilities objects so a defaulted/empty agentCapabilities response
+// is not accepted as evidence. session/new is exercised during preflight;
+// prompt/cancel/permission behavior is enforced by the strict dispatcher and
+// by the conformance scenarios because probing it would require a model turn.
+func validateMandatoryCapabilities(capabilities *agentCapabilities) error {
+	if capabilities == nil {
+		return fmt.Errorf("%w: missing agentCapabilities", ErrIncompatible)
+	}
+	if capabilities.PromptCapabilities == nil {
+		return fmt.Errorf("%w: missing promptCapabilities", ErrIncompatible)
+	}
+	if capabilities.SessionCapabilities == nil {
+		return fmt.Errorf("%w: missing sessionCapabilities", ErrIncompatible)
+	}
+	return nil
+}
+
 func incompatibleCall(method string, cause error) error {
 	if errors.Is(cause, ErrConnectionClosed) {
 		return cause
@@ -99,10 +143,12 @@ func incompatibleCall(method string, cause error) error {
 	return fmt.Errorf("%w: %s lifecycle", ErrIncompatible, safeMethod(method))
 }
 
-// toolInventoryFromMeta recognizes the narrow status extension used by fake
-// and compatible agents: {"toolInventory":["name", ...]}. Absence is allowed;
-// malformed or contradictory occurrences fail closed.
-func toolInventoryFromMeta(values ...json.RawMessage) ([]string, bool, error) {
+// preflightStatusFromMeta recognizes the narrow optional status keys used by
+// compatible agents: toolInventory and startupRoot. The local launcher proof
+// above is mandatory; wire status is not. Once either key is announced its
+// contents become authoritative and malformed or contradictory evidence fails
+// closed. This does not introduce an additionalDirectories dependency.
+func preflightStatusFromMeta(expectedStartupRoot string, values ...json.RawMessage) ([]string, bool, error) {
 	var found []string
 	present := false
 	for _, raw := range values {
@@ -112,6 +158,15 @@ func toolInventoryFromMeta(values ...json.RawMessage) ([]string, bool, error) {
 		var meta map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &meta); err != nil {
 			return nil, false, fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible)
+		}
+		if startupRaw, ok := meta["startupRoot"]; ok {
+			var startupRoot string
+			if json.Unmarshal(startupRaw, &startupRoot) != nil || startupRoot == "" {
+				return nil, false, fmt.Errorf("%w: malformed startup-root status", ErrIncompatible)
+			}
+			if startupRoot != expectedStartupRoot {
+				return nil, false, fmt.Errorf("%w: contradictory startup-root status", ErrIncompatible)
+			}
 		}
 		inventoryRaw, ok := meta["toolInventory"]
 		if !ok {

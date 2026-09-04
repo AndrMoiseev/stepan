@@ -20,6 +20,9 @@ var (
 	// ErrConnectionClosed is returned to every operation after the first fatal
 	// connection error.
 	ErrConnectionClosed = errors.New("agent connection closed")
+	// ErrTurnInProgress rejects a second prompt locally while the first prompt's
+	// terminal response is still being decoded and committed.
+	ErrTurnInProgress = errors.New("agent turn already in progress")
 )
 
 type messageKind uint8

@@ -39,9 +39,15 @@ func runQwenACPFake() int {
 		ClientName: initialized.ClientInfo.Name, ClientTitle: initialized.ClientInfo.Title,
 		ProtocolVersion: initialized.ProtocolVersion,
 	}
-	capabilities := any(map[string]any{"promptCapabilities": map[string]any{}})
-	if os.Getenv("STEPAN_QWEN_ACP_CASE") == "missing-capability" {
+	capabilities := any(map[string]any{
+		"promptCapabilities":  map[string]any{},
+		"sessionCapabilities": map[string]any{},
+	})
+	scenario := os.Getenv("STEPAN_QWEN_ACP_CASE")
+	if scenario == "missing-capability" {
 		capabilities = nil
+	} else if scenario == "empty-capabilities" {
+		capabilities = map[string]any{}
 	}
 	if err := transport.sendResult(initialize.id, map[string]any{
 		"protocolVersion":   acpProtocolVersion,
@@ -51,7 +57,7 @@ func runQwenACPFake() int {
 	}); err != nil {
 		return 63
 	}
-	if capabilities == nil {
+	if scenario == "missing-capability" || scenario == "empty-capabilities" {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		return 0
 	}
@@ -134,22 +140,47 @@ func TestOpenConnectionPreflightsWithoutAdditionalDirectories(t *testing.T) {
 }
 
 func TestOpenConnectionClosesProcessOnMissingCapability(t *testing.T) {
+	for _, scenario := range []string{"missing-capability", "empty-capabilities"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
+			t.Setenv("STEPAN_QWEN_ACP_CASE", scenario)
+			t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
+			process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+			if err := process.Start(); err != nil {
+				t.Fatal(err)
+			}
+			connection, err := OpenConnection(process)
+			if connection != nil || !errors.Is(err, ErrIncompatible) {
+				t.Fatalf("OpenConnection = %v, %v", connection, err)
+			}
+			if process.command == nil || process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
+				t.Fatal("incompatible ACP child was not closed and reaped")
+			}
+			if code := process.ExitCode(); code == nil {
+				t.Fatal("closed ACP child has no exit state")
+			}
+		})
+	}
+}
+
+func TestOpenConnectionRejectsMissingStartupRootEvidence(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
-	t.Setenv("STEPAN_QWEN_ACP_CASE", "missing-capability")
+	t.Setenv("STEPAN_QWEN_ACP_CASE", "success")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
 	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
+	process.mu.Lock()
+	process.command.Args = append([]string(nil), process.command.Args[:len(process.command.Args)-2]...)
+	process.command.Args = append(process.command.Args, "--acp")
+	process.mu.Unlock()
 	connection, err := OpenConnection(process)
-	if connection != nil || !errors.Is(err, ErrIncompatible) {
+	if connection != nil || !errors.Is(err, ErrIncompatible) || !strings.Contains(err.Error(), "startup-root contract") {
 		t.Fatalf("OpenConnection = %v, %v", connection, err)
 	}
-	if process.command == nil || process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
-		t.Fatal("incompatible ACP child was not closed and reaped")
-	}
-	if code := process.ExitCode(); code == nil {
-		t.Fatal("closed ACP child has no exit state")
+	if process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
+		t.Fatal("startup-contract failure did not close and reap child")
 	}
 }
 
@@ -188,8 +219,12 @@ func TestPreflightValidatesOptionalToolInventory(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			init := map[string]any{
-				"protocolVersion":   acpProtocolVersion,
-				"agentCapabilities": map[string]any{"_meta": map[string]any{"toolInventory": test.inventory}},
+				"protocolVersion": acpProtocolVersion,
+				"agentCapabilities": map[string]any{
+					"promptCapabilities":  map[string]any{},
+					"sessionCapabilities": map[string]any{},
+					"_meta":               map[string]any{"toolInventory": test.inventory},
+				},
 			}
 			connection, owner, _, raw, err := establishTestConnection(t, init, map[string]any{"sessionId": "s"}, connectionHandler{})
 			defer raw.Close()
@@ -208,6 +243,37 @@ func TestPreflightValidatesOptionalToolInventory(t *testing.T) {
 			}
 			if owner.closeCount.Load() != 1 {
 				t.Fatalf("owner close count = %d", owner.closeCount.Load())
+			}
+		})
+	}
+}
+
+func TestPreflightRejectsMissingMandatoryCapabilitiesAndContradictoryStartupStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialize map[string]any
+		want       string
+	}{
+		{name: "empty capabilities", initialize: map[string]any{"protocolVersion": acpProtocolVersion, "agentCapabilities": map[string]any{}}, want: "missing promptCapabilities"},
+		{name: "missing session lifecycle", initialize: map[string]any{"protocolVersion": acpProtocolVersion, "agentCapabilities": map[string]any{"promptCapabilities": map[string]any{}}}, want: "missing sessionCapabilities"},
+		{name: "contradictory startup root", initialize: map[string]any{
+			"protocolVersion": acpProtocolVersion,
+			"agentCapabilities": map[string]any{
+				"promptCapabilities":  map[string]any{},
+				"sessionCapabilities": map[string]any{},
+			},
+			"_meta": map[string]any{"startupRoot": filepath.Join(t.TempDir(), "foreign")},
+		}, want: "contradictory startup-root status"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			connection, owner, _, raw, err := establishTestConnection(t, test.initialize, map[string]any{"sessionId": "s"}, connectionHandler{})
+			defer raw.Close()
+			if err == nil || !errors.Is(err, ErrIncompatible) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("preflight error = %v, want %q", err, test.want)
+			}
+			if connection.Err() == nil || owner.closeCount.Load() != 1 {
+				t.Fatalf("connection error = %v, closes = %d", connection.Err(), owner.closeCount.Load())
 			}
 		})
 	}
@@ -324,6 +390,60 @@ func TestConnectionFailureUnblocksAllPendingCallsWithOneError(t *testing.T) {
 	}
 }
 
+func TestPromptTerminalBarrierRejectsConcurrentPromptWithoutWireSend(t *testing.T) {
+	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	defer connection.Close()
+	commitEntered := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	firstErr := make(chan error, 1)
+	go func() {
+		var result promptResponse
+		firstErr <- connection.callAndCommit("session/prompt", map[string]any{
+			"sessionId": "s", "prompt": []any{map[string]string{"type": "text", "text": "first"}},
+		}, &result, func() error {
+			close(commitEntered)
+			<-releaseCommit
+			return nil
+		})
+	}()
+	first, err := server.read()
+	if err != nil || first.method != "session/prompt" {
+		t.Fatalf("first prompt = %+v, %v", first, err)
+	}
+	if err := server.sendResult(first.id, map[string]string{"stopReason": "end_turn"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-commitEntered:
+	case <-time.After(time.Second):
+		t.Fatal("first prompt did not reach terminal commit barrier")
+	}
+	var second promptResponse
+	err = connection.call("session/prompt", map[string]any{
+		"sessionId": "s", "prompt": []any{map[string]string{"type": "text", "text": "second"}},
+	}, &second)
+	if !errors.Is(err, ErrTurnInProgress) {
+		t.Fatalf("second prompt error = %v", err)
+	}
+	if err := raw.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if unexpected, readErr := server.read(); readErr == nil {
+		t.Fatalf("second prompt reached wire: %+v", unexpected)
+	} else if timeout, ok := readErr.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatalf("checking second prompt wire send: %v", readErr)
+	}
+	_ = raw.SetReadDeadline(time.Time{})
+	close(releaseCommit)
+	if err := <-firstErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestConnectionRoutesUpdatesPermissionsAndCancelAcknowledgement(t *testing.T) {
 	updated := make(chan struct{}, 1)
 	permissionHandled := make(chan error, 1)
@@ -387,6 +507,88 @@ func TestConnectionRoutesUpdatesPermissionsAndCancelAcknowledgement(t *testing.T
 	_ = connection.Close()
 }
 
+func TestPermissionResponseWriteFormsTerminalBarrier(t *testing.T) {
+	responding := make(chan struct{})
+	responded := make(chan error, 1)
+	handler := connectionHandler{permission: func(connection *Connection, message message) error {
+		close(responding)
+		err := connection.respond(message.id, map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow-once"}})
+		responded <- err
+		return err
+	}}
+	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	defer connection.Close()
+	promptErr := startPrompt(t, connection, server)
+	if err := server.sendRequest(stringID("permission-barrier"), "session/request_permission", map[string]any{
+		"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-responding:
+	case <-time.After(time.Second):
+		t.Fatal("permission handler did not start response")
+	}
+	terminalSent := make(chan error, 1)
+	go func() {
+		terminalSent <- server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"})
+	}()
+	select {
+	case err := <-terminalSent:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal was not read while permission response write was blocked")
+	}
+	select {
+	case err := <-promptErr:
+		t.Fatalf("terminal crossed pending permission write barrier: %v", err)
+	case <-connection.Done():
+		t.Fatalf("connection failed during valid permission write: %v", connection.Err())
+	case <-time.After(100 * time.Millisecond):
+	}
+	permissionResponse, err := server.read()
+	if err != nil || permissionResponse.kind != responseMessage || permissionResponse.id.key != stringID("permission-barrier").key {
+		t.Fatalf("permission response = %+v, %v", permissionResponse, err)
+	}
+	if err := <-responded; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-promptErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionUpdateHandlerErrorIsSanitized(t *testing.T) {
+	const secret = "credential-body-handler-marker"
+	handler := connectionHandler{sessionUpdate: func(message) error { return errors.New(secret) }}
+	connection, owner, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	promptErr := startPrompt(t, connection, server)
+	if err := server.sendNotification("session/update", map[string]any{
+		"sessionId": "s", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": secret}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-promptErr
+	waitForDone(t, connection.Done())
+	got := connection.Err()
+	if !errors.Is(got, ErrProtocol) || !strings.Contains(got.Error(), "session/update handler failed") || strings.Contains(got.Error(), secret) {
+		t.Fatalf("unsafe handler error = %v", got)
+	}
+	if owner.closeCount.Load() != 1 {
+		t.Fatalf("owner close count = %d", owner.closeCount.Load())
+	}
+}
+
 func TestConnectionRejectsUnknownTerminalAndContentMessages(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -430,7 +632,10 @@ func (owner *pipeOwner) Close() error {
 }
 
 func validInitialize() map[string]any {
-	return map[string]any{"protocolVersion": acpProtocolVersion, "agentCapabilities": map[string]any{"promptCapabilities": map[string]any{}}}
+	return map[string]any{"protocolVersion": acpProtocolVersion, "agentCapabilities": map[string]any{
+		"promptCapabilities":  map[string]any{},
+		"sessionCapabilities": map[string]any{},
+	}}
 }
 
 func establishTestConnection(t *testing.T, initializeResult, sessionResult any, handler connectionHandler) (*Connection, *pipeOwner, *transport, net.Conn, error) {
@@ -476,7 +681,7 @@ func establishTestConnection(t *testing.T, initializeResult, sessionResult any, 
 		}
 		serverErr <- server.sendResult(session.id, sessionResult)
 	}()
-	err := connection.preflight(filepath.Clean(t.TempDir()))
+	err := connection.preflight(filepath.Clean(t.TempDir()), filepath.Clean(t.TempDir()))
 	if err != nil {
 		connection.fail(err)
 	}

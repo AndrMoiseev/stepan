@@ -24,6 +24,12 @@ type pendingCall struct {
 	resume   chan struct{}
 }
 
+type pendingPermission struct {
+	toolCallID string
+	responding bool
+	done       chan struct{}
+}
+
 // Connection owns one strict ACP stream and exactly one session. Its wire
 // types stay private to qwenapp and are never part of agentruntime.Runtime.
 type Connection struct {
@@ -34,7 +40,7 @@ type Connection struct {
 	mu                 sync.Mutex
 	nextID             int64
 	pending            map[string]*pendingCall
-	pendingPermissions map[string]string
+	pendingPermissions map[string]*pendingPermission
 	sessionID          string
 	activePrompt       string
 	initialized        bool
@@ -50,7 +56,7 @@ func newConnection(transport *transport, owner connectionOwner, handler connecti
 		handler:            handler,
 		nextID:             1,
 		pending:            make(map[string]*pendingCall),
-		pendingPermissions: make(map[string]string),
+		pendingPermissions: make(map[string]*pendingPermission),
 		done:               make(chan struct{}),
 	}
 	go connection.read()
@@ -120,11 +126,13 @@ func (connection *Connection) callAndCommit(method string, params, result any, c
 		if callErr == nil && commit != nil {
 			callErr = commit()
 		}
-		close(pending.resume)
 		if invalidResult {
 			connection.fail(fmt.Errorf("%w: invalid %s response", ErrProtocol, safeMethod(method)))
+			close(pending.resume)
 			return connection.Err()
 		}
+		connection.releasePrompt(id)
+		close(pending.resume)
 		return callErr
 	case <-connection.done:
 		return connection.Err()
@@ -146,7 +154,7 @@ func (connection *Connection) validateOutgoingCallLocked(method string, params a
 			return fmt.Errorf("%w: session/prompt before preflight", ErrProtocol)
 		}
 		if connection.activePrompt != "" {
-			return fmt.Errorf("%w: concurrent session/prompt", ErrProtocol)
+			return ErrTurnInProgress
 		}
 		if sessionIDFrom(params) != connection.sessionID {
 			return fmt.Errorf("%w: session/prompt sessionId", ErrProtocol)
@@ -208,17 +216,30 @@ func (connection *Connection) respond(id requestID, result any) error {
 		connection.mu.Unlock()
 		return err
 	}
-	if _, ok := connection.pendingPermissions[id.key]; !ok {
+	pending, ok := connection.pendingPermissions[id.key]
+	if !ok {
 		connection.mu.Unlock()
 		connection.fail(fmt.Errorf("%w: orphan permission response", ErrProtocol))
 		return connection.Err()
 	}
-	delete(connection.pendingPermissions, id.key)
+	if pending.responding {
+		connection.mu.Unlock()
+		connection.fail(fmt.Errorf("%w: duplicate permission response", ErrProtocol))
+		return connection.Err()
+	}
+	pending.responding = true
 	connection.mu.Unlock()
 	if err := connection.transport.sendResult(id, result); err != nil {
 		connection.fail(protocolError(err))
+		close(pending.done)
 		return connection.Err()
 	}
+	connection.mu.Lock()
+	if current := connection.pendingPermissions[id.key]; current == pending {
+		delete(connection.pendingPermissions, id.key)
+	}
+	connection.mu.Unlock()
+	close(pending.done)
 	return nil
 }
 
@@ -257,23 +278,20 @@ func (connection *Connection) deliverResponse(received message) bool {
 		return false
 	}
 	delete(connection.pending, received.id.key)
-	if pending.method == "session/prompt" {
-		if len(connection.pendingPermissions) != 0 {
-			connection.mu.Unlock()
-			connection.fail(fmt.Errorf("%w: session/prompt completed with pending permission", ErrProtocol))
+	isPrompt := pending.method == "session/prompt"
+	connection.mu.Unlock()
+	if isPrompt {
+		if !connection.waitForPermissionResponses() {
 			return false
 		}
 		if received.err == nil {
 			var terminal promptResponse
 			if decodeResult(received.result, &terminal) != nil || !knownStopReason(terminal.StopReason) {
-				connection.mu.Unlock()
 				connection.fail(fmt.Errorf("%w: unknown session/prompt terminal response", ErrProtocol))
 				return false
 			}
 		}
-		connection.activePrompt = ""
 	}
-	connection.mu.Unlock()
 	pending.response <- received
 	select {
 	case <-pending.resume:
@@ -281,6 +299,46 @@ func (connection *Connection) deliverResponse(received message) bool {
 	case <-connection.done:
 		return false
 	}
+}
+
+// waitForPermissionResponses preserves wire order without accepting a prompt
+// terminal while a permission response is only partially written. An
+// unresolved permission is a protocol violation; in-flight responses form a
+// short barrier and are rechecked after their serialized write completes.
+func (connection *Connection) waitForPermissionResponses() bool {
+	for {
+		connection.mu.Lock()
+		if connection.err != nil {
+			connection.mu.Unlock()
+			return false
+		}
+		var barrier <-chan struct{}
+		for _, pending := range connection.pendingPermissions {
+			if !pending.responding {
+				connection.mu.Unlock()
+				connection.fail(fmt.Errorf("%w: session/prompt completed with pending permission", ErrProtocol))
+				return false
+			}
+			barrier = pending.done
+		}
+		connection.mu.Unlock()
+		if barrier == nil {
+			return true
+		}
+		select {
+		case <-barrier:
+		case <-connection.done:
+			return false
+		}
+	}
+}
+
+func (connection *Connection) releasePrompt(id requestID) {
+	connection.mu.Lock()
+	if connection.activePrompt == id.key {
+		connection.activePrompt = ""
+	}
+	connection.mu.Unlock()
 }
 
 func (connection *Connection) dispatchNotification(received message) error {
@@ -292,7 +350,7 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.ready && params.SessionID == connection.sessionID && connection.activePrompt != ""
+	valid := connection.hasActivePromptLocked(params.SessionID)
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
@@ -301,7 +359,9 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return err
 	}
 	if connection.handler.sessionUpdate != nil {
-		return connection.handler.sessionUpdate(received)
+		if err := connection.handler.sessionUpdate(received); err != nil {
+			return safeHandlerError("session/update")
+		}
 	}
 	return nil
 }
@@ -326,9 +386,9 @@ func (connection *Connection) dispatchRequest(received message) error {
 		return fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.ready && params.SessionID == connection.sessionID && connection.activePrompt != ""
+	valid := connection.hasActivePromptLocked(params.SessionID)
 	if valid {
-		connection.pendingPermissions[received.id.key] = toolCall.ToolCallID
+		connection.pendingPermissions[received.id.key] = &pendingPermission{toolCallID: toolCall.ToolCallID, done: make(chan struct{})}
 	}
 	connection.mu.Unlock()
 	if !valid {
@@ -343,6 +403,10 @@ func (connection *Connection) dispatchRequest(received message) error {
 		}
 	}()
 	return nil
+}
+
+func (connection *Connection) hasActivePromptLocked(sessionID string) bool {
+	return connection.ready && sessionID == connection.sessionID && connection.activePrompt != ""
 }
 
 func (connection *Connection) fail(cause error) {

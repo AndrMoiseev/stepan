@@ -341,10 +341,11 @@ func (transport *transport) sendRequest(id requestID, method string, params any)
 		params = struct{}{}
 	}
 	transport.mu.Lock()
-	defer transport.mu.Unlock()
 	if err := transport.local.register(id); err != nil {
+		transport.mu.Unlock()
 		return err
 	}
+	transport.mu.Unlock()
 	return transport.writer.write(struct {
 		JSONRPC string    `json:"jsonrpc"`
 		ID      requestID `json:"id"`
@@ -369,10 +370,11 @@ func (transport *transport) sendNotification(method string, params any) error {
 
 func (transport *transport) sendResult(id requestID, result any) error {
 	transport.mu.Lock()
-	defer transport.mu.Unlock()
 	if err := transport.remote.resolve(id); err != nil {
+		transport.mu.Unlock()
 		return err
 	}
+	transport.mu.Unlock()
 	return transport.writer.write(struct {
 		JSONRPC string    `json:"jsonrpc"`
 		ID      requestID `json:"id"`
@@ -385,10 +387,11 @@ func (transport *transport) sendError(id requestID, code int64, text string) err
 		return fmt.Errorf("%w: empty error message", errInvalidEnvelope)
 	}
 	transport.mu.Lock()
-	defer transport.mu.Unlock()
 	if err := transport.remote.resolve(id); err != nil {
+		transport.mu.Unlock()
 		return err
 	}
+	transport.mu.Unlock()
 	return transport.writer.write(struct {
 		JSONRPC string    `json:"jsonrpc"`
 		ID      requestID `json:"id"`
