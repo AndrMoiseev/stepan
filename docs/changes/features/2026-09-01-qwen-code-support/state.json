@@ -17,9 +17,10 @@
       "reviews": null
     },
     "plan": {
-      "status": "published",
+      "status": "committed",
       "review_status": "not_started",
       "current_hash": "6bcfa19b628cb1a6515b7019a4c7f15e472ca10120a21b4430edcbe2576f7453",
+      "approved_hash": "6bcfa19b628cb1a6515b7019a4c7f15e472ca10120a21b4430edcbe2576f7453",
       "upstream_hashes": [
         {
           "stage": "intent",
