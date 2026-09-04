@@ -21,6 +21,7 @@ func OpenConnection(process *Process) (*Connection, error) {
 		return nil, err
 	}
 	connection := newConnection(newTransport(process.Stdout(), process.Stdin()), process, connectionHandler{})
+	connection.configureFilePolicy(workspace, process.WritableRoot())
 	if err := connection.preflight(workspace, startupRoot); err != nil {
 		connection.fail(err)
 		return nil, connection.Err()
@@ -61,7 +62,7 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 	var initialized initializeResponse
 	if err := connection.callAndCommit("initialize", initializeParams{
 		ProtocolVersion:    acpProtocolVersion,
-		ClientCapabilities: clientCapabilities{},
+		ClientCapabilities: clientCapabilities{FS: fileSystemCapabilities{ReadTextFile: true}},
 		ClientInfo: implementationInfo{
 			Name: "stepan", Title: "Stepan", Version: "0",
 		},

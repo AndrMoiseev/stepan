@@ -153,6 +153,9 @@ func TestLauncherPassesExactIsolatedContract(t *testing.T) {
 	if process.TransportRoot() != canonicalForTest(t, artifact) {
 		t.Fatalf("transport root = %q", process.TransportRoot())
 	}
+	if process.WritableRoot() != canonicalForTest(t, artifact) {
+		t.Fatalf("writable root = %q", process.WritableRoot())
+	}
 	if process.WorkspaceRoot() != canonicalForTest(t, workspace) {
 		t.Fatalf("workspace root = %q", process.WorkspaceRoot())
 	}
@@ -175,6 +178,9 @@ func TestReadOnlyProcessGetsEmptyOwnedRootAndRemovesIt(t *testing.T) {
 	root := process.TransportRoot()
 	if root == "" {
 		t.Fatal("read-only process has no transport root")
+	}
+	if process.WritableRoot() != "" {
+		t.Fatalf("read-only transport root became writable: %q", process.WritableRoot())
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 0 {

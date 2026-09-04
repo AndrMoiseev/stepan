@@ -22,6 +22,8 @@ type acpObservation struct {
 	CWD                      string `json:"cwd"`
 	MCPServerCount           int    `json:"mcpServerCount"`
 	HasAdditionalDirectories bool   `json:"hasAdditionalDirectories"`
+	CanReadTextFile          bool   `json:"canReadTextFile"`
+	CanWriteTextFile         bool   `json:"canWriteTextFile"`
 	ModelPromptSeen          bool   `json:"modelPromptSeen"`
 }
 
@@ -37,7 +39,9 @@ func runQwenACPFake() int {
 	}
 	observation := acpObservation{
 		ClientName: initialized.ClientInfo.Name, ClientTitle: initialized.ClientInfo.Title,
-		ProtocolVersion: initialized.ProtocolVersion,
+		ProtocolVersion:  initialized.ProtocolVersion,
+		CanReadTextFile:  initialized.ClientCapabilities.FS.ReadTextFile,
+		CanWriteTextFile: initialized.ClientCapabilities.FS.WriteTextFile,
 	}
 	capabilities := any(map[string]any{
 		"promptCapabilities":  map[string]any{},
@@ -130,6 +134,9 @@ func TestOpenConnectionPreflightsWithoutAdditionalDirectories(t *testing.T) {
 	}
 	if observation.CWD != process.WorkspaceRoot() || observation.MCPServerCount != 0 || observation.HasAdditionalDirectories {
 		t.Fatalf("session/new = %+v", observation)
+	}
+	if !observation.CanReadTextFile || observation.CanWriteTextFile {
+		t.Fatalf("client filesystem capabilities = %+v", observation)
 	}
 	if observation.ModelPromptSeen {
 		t.Fatal("model prompt ran during preflight")

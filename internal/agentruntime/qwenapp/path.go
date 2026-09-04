@@ -123,6 +123,75 @@ func pathWithin(root, candidate string) bool {
 	return true
 }
 
+// canonicalTarget resolves a path exactly as a filesystem operation rooted at
+// cwd would. Existing targets are resolved directly. For a target that does
+// not exist yet, its nearest existing ancestor is resolved first and the
+// missing suffix is appended to that canonical ancestor. This catches a
+// symlink or Windows junction in every existing component without requiring
+// the final file to exist.
+func canonicalTarget(cwd, supplied string) (string, error) {
+	if cwd == "" || !filepath.IsAbs(cwd) || supplied == "" {
+		return "", errors.New("filesystem target is invalid")
+	}
+	candidate := filepath.Clean(supplied)
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(cwd, candidate)
+	}
+	candidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", errors.New("filesystem target is invalid")
+	}
+	candidate = filepath.Clean(candidate)
+
+	existing := candidate
+	for {
+		info, statErr := os.Stat(existing)
+		if statErr == nil {
+			canonical, resolveErr := canonicalExistingPath(existing)
+			if resolveErr != nil {
+				return "", errors.New("filesystem target cannot be resolved")
+			}
+			relative, relErr := filepath.Rel(existing, candidate)
+			if relErr != nil || filepath.IsAbs(relative) {
+				return "", errors.New("filesystem target cannot be resolved")
+			}
+			if relative != "." && !info.IsDir() {
+				return "", errors.New("filesystem target has a non-directory ancestor")
+			}
+			return filepath.Clean(filepath.Join(canonical, relative)), nil
+		}
+		if !os.IsNotExist(statErr) {
+			return "", errors.New("filesystem target cannot be inspected")
+		}
+		// A dangling link is an existing, ambiguous boundary. Treat it as a
+		// denial rather than walking past it as though it were a new name.
+		if _, linkErr := os.Lstat(existing); linkErr == nil || !os.IsNotExist(linkErr) {
+			return "", errors.New("filesystem target contains an unresolved link")
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", errors.New("filesystem target has no existing ancestor")
+		}
+		existing = parent
+	}
+}
+
+func canonicalTargetWithin(cwd, root, supplied string) (string, error) {
+	if root == "" {
+		return "", ErrPermissionDenied
+	}
+	target, err := canonicalTarget(cwd, supplied)
+	if err != nil || target == root || !pathWithin(root, target) {
+		return "", ErrPermissionDenied
+	}
+	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {
+		return "", ErrPermissionDenied
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return "", ErrPermissionDenied
+	}
+	return target, nil
+}
+
 func validateDistinctRoots(workspace, artifact string) error {
 	if pathWithin(workspace, artifact) || pathWithin(artifact, workspace) {
 		return errors.New("Qwen artifact root must not overlap the Git workspace")

@@ -319,6 +319,17 @@ func (process *Process) TransportRoot() string {
 	return process.artifactRoot
 }
 
+// WritableRoot returns the configured artifact root. A runtime-owned
+// transport root keeps a read-only thread non-writable.
+func (process *Process) WritableRoot() string {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	if process.runtimeOwnedRoot != "" {
+		return ""
+	}
+	return process.artifactRoot
+}
+
 // WorkspaceRoot returns the canonical Git root used as the child working
 // directory. ACP session setup must use this exact value as its cwd.
 func (process *Process) WorkspaceRoot() string {

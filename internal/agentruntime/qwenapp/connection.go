@@ -25,7 +25,11 @@ type pendingCall struct {
 }
 
 type pendingPermission struct {
+	id         requestID
+	method     string
+	sessionID  string
 	toolCallID string
+	turnID     string
 	responding bool
 	done       chan struct{}
 }
@@ -41,6 +45,8 @@ type Connection struct {
 	nextID             int64
 	pending            map[string]*pendingCall
 	pendingPermissions map[string]*pendingPermission
+	filePolicy         filePolicy
+	activePermission   *permissionTurn
 	sessionID          string
 	activePrompt       string
 	initialized        bool
@@ -105,6 +111,7 @@ func (connection *Connection) callAndCommit(method string, params, result any, c
 	connection.pending[id.key] = pending
 	if method == "session/prompt" {
 		connection.activePrompt = id.key
+		connection.activePermission = newPermissionTurn(connection.filePolicy.context(connection.sessionID, id.key))
 	}
 	connection.mu.Unlock()
 
@@ -201,45 +208,36 @@ func (connection *Connection) sendNotification(method string, params any) error 
 		connection.mu.Unlock()
 		return fmt.Errorf("%w: invalid %s notification", ErrProtocol, safeMethod(method))
 	}
+	var cancellations []pendingCancellation
+	if method == "session/cancel" {
+		connection.activePermission = nil
+		cancellations = connection.claimPendingCancellationsLocked()
+	}
 	connection.mu.Unlock()
 	if err := connection.transport.sendNotification(method, params); err != nil {
 		connection.fail(protocolError(err))
 		return connection.Err()
 	}
+	if method == "session/cancel" {
+		if err := connection.cancelPendingPermissions(cancellations); err != nil {
+			connection.fail(protocolError(err))
+			return connection.Err()
+		}
+	}
 	return nil
 }
 
 func (connection *Connection) respond(id requestID, result any) error {
-	connection.mu.Lock()
-	if connection.err != nil {
-		err := connection.err
-		connection.mu.Unlock()
+	pending, err := connection.claimPendingResponse(id)
+	if err != nil {
 		return err
 	}
-	pending, ok := connection.pendingPermissions[id.key]
-	if !ok {
-		connection.mu.Unlock()
-		connection.fail(fmt.Errorf("%w: orphan permission response", ErrProtocol))
-		return connection.Err()
-	}
-	if pending.responding {
-		connection.mu.Unlock()
-		connection.fail(fmt.Errorf("%w: duplicate permission response", ErrProtocol))
-		return connection.Err()
-	}
-	pending.responding = true
-	connection.mu.Unlock()
 	if err := connection.transport.sendResult(id, result); err != nil {
 		connection.fail(protocolError(err))
-		close(pending.done)
+		connection.finishPendingResponse(id, pending)
 		return connection.Err()
 	}
-	connection.mu.Lock()
-	if current := connection.pendingPermissions[id.key]; current == pending {
-		delete(connection.pendingPermissions, id.key)
-	}
-	connection.mu.Unlock()
-	close(pending.done)
+	connection.finishPendingResponse(id, pending)
 	return nil
 }
 
@@ -337,6 +335,7 @@ func (connection *Connection) releasePrompt(id requestID) {
 	connection.mu.Lock()
 	if connection.activePrompt == id.key {
 		connection.activePrompt = ""
+		connection.activePermission = nil
 	}
 	connection.mu.Unlock()
 }
@@ -350,12 +349,15 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.hasActivePromptLocked(params.SessionID)
+	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
 	connection.mu.Unlock()
 	if !valid {
 		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
 	}
 	if err := validateSessionUpdate(params.Update); err != nil {
+		return err
+	}
+	if err := connection.observeToolCall(params.Update); err != nil {
 		return err
 	}
 	if connection.handler.sessionUpdate != nil {
@@ -367,6 +369,9 @@ func (connection *Connection) dispatchNotification(received message) error {
 }
 
 func (connection *Connection) dispatchRequest(received message) error {
+	if received.method == "fs/read_text_file" {
+		return connection.dispatchReadTextFile(received)
+	}
 	if received.method != "session/request_permission" {
 		return fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method))
 	}
@@ -386,9 +391,12 @@ func (connection *Connection) dispatchRequest(received message) error {
 		return fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol)
 	}
 	connection.mu.Lock()
-	valid := connection.hasActivePromptLocked(params.SessionID)
+	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
 	if valid {
-		connection.pendingPermissions[received.id.key] = &pendingPermission{toolCallID: toolCall.ToolCallID, done: make(chan struct{})}
+		connection.pendingPermissions[received.id.key] = &pendingPermission{
+			id: received.id, method: "session/request_permission", sessionID: params.SessionID, toolCallID: toolCall.ToolCallID,
+			turnID: connection.activePrompt, done: make(chan struct{}),
+		}
 	}
 	connection.mu.Unlock()
 	if !valid {
@@ -399,6 +407,9 @@ func (connection *Connection) dispatchRequest(received message) error {
 	}
 	go func() {
 		if err := connection.handler.permission(connection, received); err != nil {
+			if errors.Is(err, errPermissionAlreadyResolved) {
+				return
+			}
 			connection.fail(safeHandlerError("session/request_permission"))
 		}
 	}()
@@ -423,6 +434,7 @@ func (connection *Connection) fail(cause error) {
 	connection.pending = nil
 	connection.pendingPermissions = nil
 	connection.activePrompt = ""
+	connection.activePermission = nil
 	connection.ready = false
 	connection.initialized = false
 	owner := connection.owner
@@ -471,7 +483,7 @@ func safeHandlerError(method string) error {
 
 func safeMethod(method string) string {
 	switch method {
-	case "initialize", "session/new", "session/prompt", "session/cancel", "session/update", "session/request_permission":
+	case "initialize", "session/new", "session/prompt", "session/cancel", "session/update", "session/request_permission", "fs/read_text_file":
 		return method
 	default:
 		return "unknown method"

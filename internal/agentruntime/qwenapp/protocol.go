@@ -23,6 +23,9 @@ var (
 	// ErrTurnInProgress rejects a second prompt locally while the first prompt's
 	// terminal response is still being decoded and committed.
 	ErrTurnInProgress = errors.New("agent turn already in progress")
+	// ErrPermissionDenied classifies a filesystem operation rejected by the
+	// active-turn policy. It never includes the requested path or file content.
+	ErrPermissionDenied = errors.New("agent filesystem permission denied")
 )
 
 type messageKind uint8
@@ -78,7 +81,14 @@ type implementationInfo struct {
 	Version string `json:"version"`
 }
 
-type clientCapabilities struct{}
+type clientCapabilities struct {
+	FS fileSystemCapabilities `json:"fs"`
+}
+
+type fileSystemCapabilities struct {
+	ReadTextFile  bool `json:"readTextFile"`
+	WriteTextFile bool `json:"writeTextFile"`
+}
 
 type initializeParams struct {
 	ProtocolVersion    int                `json:"protocolVersion"`
