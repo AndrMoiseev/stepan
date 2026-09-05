@@ -60,8 +60,9 @@ Traces: REQ-002, REQ-003, REQ-004, REQ-007, REQ-011, REQ-012, REQ-015, REQ-018, 
 
 1. Ввести `qwenapp.Config` с executable, Git workspace, process-level JSON
    contract и factory seams для process/job tests.
-2. Разрешать PATH-name `qwen` и абсолютный regular-file executable, сохраняя
-   явный абсолютный path авторитетным и не выполняя version probe.
+2. Разрешать официальное PATH-name `qwen` и произвольное авторитетное simple
+   executable name без directory separators; отклонять пути, missing PATH entry
+   и non-regular resolved target без fallback или version probe.
 3. Канонизировать существующий Git root и thread artifact root до запуска;
    отклонять root внутри workspace, sibling roots и link-based escape.
 4. Для read-only thread с пустым `ThreadConfig.ArtifactRoot` создавать отдельный
@@ -498,27 +499,30 @@ model metadata `default`, не меняя Codex default или Claude behavior.
 ### Запрещённые области
 
 - Qwen как default или автоматическое provider detection;
-- обязательный `--agent-cli` для Qwen;
+- обязательный `--agent-cli-name` для любого provider;
+- абсолютный path или directory separators в `--agent-cli-name`;
 - model flag, picker или ACP model-switch request;
-- изменение Claude explicit-path requirement;
 - сохранение model/process/session metadata в durable state.
 
 ### Шаги реализации
 
 1. Добавить `agentQwen` в закрытый parser enum, usage и unknown-provider
    diagnostic; оставить `agentCodex` default.
-2. Для `--agent qwen` без `--agent-cli` передать PATH-name `qwen`; при explicit
-   path использовать существующую absolute regular-file validation.
-3. Сохранить отсутствие basename/branding/version проверки и не заменять
-   неподходящий executable другим provider-ом.
+2. Без `--agent-cli-name` передавать официальное PATH-name выбранного provider:
+   `codex`, `claude` или `qwen`; supplied value принимать только как simple
+   executable name без absolute path и directory separators.
+3. Разрешать точное имя через `PATH` в provider process/client layer, проверять
+   resolved regular file, сохранять отсутствие basename/branding/version gate и
+   не заменять missing или несовместимый executable другим provider-ом.
 4. Добавить отдельную ветку `runtimeFactory`, создающую Qwen runtime с workspace,
    common system contract и envelope schema.
 5. Передать `RuntimeIdentity{Provider: "qwen", Model: "default"}` в application;
    не добавлять model selection в CLI/UI и не включать metadata в fingerprints.
 6. Классифицировать Qwen startup/preflight errors до входа в flow, сохраняя
    provider/executable/capability names и redaction rules adapter-а.
-7. Оставить Codex и Claude branches без изменения observable argv, validation и
-   default-selection behavior.
+7. Оставить Codex default и observable provider argv без изменения; перевести
+   Claude на optional official/custom PATH-name с передачей SDK уже разрешённого
+   абсолютного executable и сохранить отсутствие provider fallback.
 
 ### Локальные технические детали
 
@@ -531,11 +535,12 @@ model metadata `default`, не меняя Codex default или Claude behavior.
 
 Traces: AC-001, AC-014
 
-Setup: composition tests предоставляют fake PATH executables и explicit files с
-нестандартным basename. Action: разбираются default, Qwen PATH, Qwen explicit,
-relative/missing explicit и unknown-agent invocations. Expected result: default
-создаёт Codex, два valid Qwen cases запускают exact selected executable, invalid
-cases возвращают usage/configuration error и ни один случай не запускает fallback.
+Setup: composition tests предоставляют official и compatible fake PATH
+executables с нестандартными именами. Action: разбираются defaults всех providers,
+Qwen custom name, absolute/separator/missing values и unknown-agent invocations.
+Expected result: default создаёт Codex, valid cases запускают exact selected
+PATH-name, invalid cases возвращают usage/configuration error и ни один случай не
+запускает fallback или version/branding probe.
 
 ### Test scenario — Qwen не добавляет model selection или durable identity
 
@@ -609,7 +614,8 @@ Setup: Codex, Claude и Qwen factories получают эквивалентны
 outcomes и external artifact roots. Action: shared suite выполняет author/reviewer
 dialogue, decision, artifact, rework, approval, close и resume. Expected result:
 все три adapters дают одинаковые domain transitions и command availability;
-default Codex и Claude explicit-path behavior остаются прежними.
+default Codex остаётся прежним, а Claude использует новый общий optional
+official/custom PATH-name contract.
 
 ### Test scenario — Qwen использует общие Git gates без rollback
 
@@ -663,8 +669,9 @@ machine-readable result и не выполняются обычным test targe
 
 ### Шаги реализации
 
-1. Требовать explicit absolute executable input и opt-in marker; без них test
-   binary завершает scenario как not selected, не разыскивая и не устанавливая CLI.
+1. Требовать explicit executable NAME, заранее установленное пользователем в
+   `PATH`, и opt-in marker; без них test binary завершает scenario как not selected,
+   не разыскивая и не устанавливая CLI. Пути и directory separators отклоняются.
 2. Создавать disposable Git workspace, два external artifact roots, read canary
    вне logical roots и machine-readable result location внутри test temp area.
 3. Проверять exact startup profile, ACP initialize/session/prompt/cancel,
@@ -682,7 +689,7 @@ machine-readable result и не выполняются обычным test targe
 8. На физическом Apple Silicon Mac проверить отдельные process groups и те же
    lifecycle assertions; Windows script отдельно подтверждает macOS/arm64
    cross-compilation test target без объявления runtime success.
-9. Для exact explicit executable с нестандартным basename прогнать полный
+9. Для exact explicit PATH-name с нестандартным именем прогнать полный
    `/feature` flow: author/reviewer dialogues, material decision, automatic
    rework, approvals, close и fresh resume; сохранить только sanitized
    machine-readable summary.
@@ -703,8 +710,9 @@ machine-readable result и не выполняются обычным test targe
 Traces: AC-003, AC-007, AC-008, AC-014
 
 Setup: runner получает exact explicit official либо third-party Qwen-compatible
-executable; third-party fixture имеет нестандартный basename, а harness создаёт
-isolated test fixtures. Action: opt-in harness выполняет ACP, inventory,
+executable NAME, уже доступное в `PATH`; third-party fixture имеет нестандартное
+имя, а harness создаёт isolated test fixtures. Action: opt-in harness выполняет
+ACP, inventory,
 file-policy и native-read probes, затем проходит intent/spec/plan author и
 reviewer dialogues, material decision, automatic rework, approvals, close и
 fresh resume. Expected result: exact five-tool surface и startup contract

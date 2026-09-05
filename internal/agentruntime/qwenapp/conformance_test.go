@@ -52,7 +52,7 @@ func qwenConformanceRuntime(t *testing.T, workspace string, script conformance.S
 	t.Setenv("STEPAN_QWEN_CONFORMANCE_SCRIPT", scriptPath)
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
 	runtime, err := StartRuntime(Config{
-		Executable:     absoluteTestExecutable(t),
+		Executable:     testExecutableName(t),
 		Workspace:      workspace,
 		JSONContract:   JSONContract,
 		EnvelopeSchema: specflow.FlowEnvelopeSchema(),

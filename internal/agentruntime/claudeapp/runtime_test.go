@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -54,10 +55,7 @@ func TestClaudeProviderParity(t *testing.T) {
 func TestClaudeApplicationParity(t *testing.T) {
 	conformance.ApplicationParity(t, specflow.RuntimeIdentity{Provider: "claude", Model: "default"}, func(t *testing.T, workspace string, script conformance.Script) conformance.ApplicationFixture {
 		t.Helper()
-		executable := filepath.Join(t.TempDir(), "explicit-claude-compatible")
-		if err := os.WriteFile(executable, []byte("fake"), 0o700); err != nil {
-			t.Fatal(err)
-		}
+		executable := installClaudeExecutable(t, "claude-compatible")
 		config := Config{Executable: executable, Workspace: workspace, EnvelopeSchema: specflow.FlowEnvelopeSchema()}
 		outputs := script.Outputs()
 		messages := make([]claudecode.Message, len(outputs))
@@ -76,6 +74,43 @@ func TestClaudeApplicationParity(t *testing.T) {
 		}
 		return conformance.ApplicationFixture{Runtime: conformance.ScriptedArtifacts(runtime, script)}
 	})
+}
+
+func TestClaudeExecutableResolutionUsesOnlyAuthoritativePATHNames(t *testing.T) {
+	config := testConfig(t)
+	validated, _, err := validateConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filepath.IsAbs(validated.Executable) || filepath.Base(validated.Executable) != config.Executable {
+		t.Fatalf("resolved Claude executable = %q from %q", validated.Executable, config.Executable)
+	}
+
+	official := installClaudeExecutable(t, "claude")
+	defaultConfig := config
+	defaultConfig.Executable = ""
+	validated, _, err = validateConfig(defaultConfig)
+	if err != nil || filepath.Base(validated.Executable) != official {
+		t.Fatalf("default Claude executable = %q, %v; want %q", validated.Executable, err, official)
+	}
+	for _, name := range []string{filepath.Join(t.TempDir(), "claude"), filepath.Join("directory", "claude"), `directory\claude`} {
+		invalid := config
+		invalid.Executable = name
+		if _, _, err := validateConfig(invalid); err == nil || !strings.Contains(err.Error(), "simple PATH name") {
+			t.Fatalf("invalid Claude executable %q error = %v", name, err)
+		}
+	}
+
+	missing := config
+	missing.Executable = "missing-claude-compatible-cli"
+	created := false
+	instance, err := startRuntime(context.Background(), missing, func(context.Context, ...claudecode.Option) client {
+		created = true
+		return &fakeClient{}
+	})
+	if instance != nil || created || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "configure Claude runtime") {
+		t.Fatalf("missing Claude executable = %#v, %v; client_created=%v", instance, err, created)
+	}
 }
 
 func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
@@ -401,11 +436,22 @@ func testConfig(t *testing.T) Config {
 	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: nowhere"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	executable := filepath.Join(root, "corporate claude")
-	if err := os.WriteFile(executable, []byte("fake"), 0o700); err != nil {
+	executable := installClaudeExecutable(t, "corporate-claude")
+	return Config{Executable: executable, Workspace: root, EnvelopeSchema: []byte(`{"type":"object"}`)}
+}
+
+func installClaudeExecutable(t *testing.T, base string) string {
+	t.Helper()
+	name := base
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, name), []byte("fake"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return Config{Executable: executable, Workspace: root, EnvelopeSchema: []byte(`{"type":"object"}`)}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return name
 }
 
 func testThreadConfig(config Config) agentruntime.ThreadConfig {

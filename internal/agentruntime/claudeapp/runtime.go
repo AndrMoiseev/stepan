@@ -78,7 +78,7 @@ func StartRuntime(ctx context.Context, config Config) (*Runtime, error) {
 func startRuntime(ctx context.Context, config Config, factory clientFactory) (*Runtime, error) {
 	validated, schema, err := validateConfig(config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("configure Claude runtime: %w", errors.Join(agentruntime.ErrRuntimeConfiguration, err))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, agentruntime.ErrRuntimeClosed

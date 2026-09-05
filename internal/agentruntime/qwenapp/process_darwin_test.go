@@ -17,7 +17,7 @@ func TestCloseKillsQwenProcessGroup(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pids.json")
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "tree")
 	t.Setenv("STEPAN_QWENAPP_PID_FILE", pidFile)
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}

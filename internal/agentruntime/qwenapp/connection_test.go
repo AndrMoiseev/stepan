@@ -242,7 +242,7 @@ func TestOpenConnectionPreflightsWithoutAdditionalDirectories(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "success")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", observationPath)
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestOpenConnectionClosesProcessOnMissingCapability(t *testing.T) {
 			t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
 			t.Setenv("STEPAN_QWEN_ACP_CASE", scenario)
 			t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
-			process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+			process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 			if err := process.Start(); err != nil {
 				t.Fatal(err)
 			}
@@ -300,7 +300,7 @@ func TestOpenConnectionRejectsMissingStartupRootEvidence(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "success")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +321,7 @@ func TestOpenConnectionClosesProcessOnSessionContractFailure(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "session-error")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}

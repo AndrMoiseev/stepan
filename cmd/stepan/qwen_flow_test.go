@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -237,7 +238,7 @@ func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
 	t.Setenv("STEPAN_MAIN_QWEN_FAKE", "1")
 	t.Setenv("STEPAN_MAIN_QWEN_OBSERVATIONS", observations)
 	t.Setenv("STEPAN_MAIN_QWEN_GENERATION", "before-resume")
-	config := agentConfig{kind: agentQwen, executable: absoluteCompositionExecutable(t)}
+	config := agentConfig{kind: agentQwen, executable: compositionExecutableName(t)}
 
 	application, registry, session := newQwenCompositionApplication(t, root, config)
 	t.Cleanup(func() {
@@ -396,7 +397,7 @@ func TestQwenCompositionCleanCreateGateDoesNotRollbackDirtyFiles(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("dirty create marker\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	config := agentConfig{kind: agentQwen, executable: absoluteCompositionExecutable(t)}
+	config := agentConfig{kind: agentQwen, executable: compositionExecutableName(t)}
 	application, registry, session := newQwenCompositionApplication(t, root, config)
 	t.Cleanup(func() { _ = registry.Close(); _ = session.Close() })
 	progress, err := application.StartFeature("must honor clean create")
@@ -440,13 +441,37 @@ func assertCompositionState(t *testing.T, progress specflow.Progress, stage spec
 	}
 }
 
-func absoluteCompositionExecutable(t *testing.T) string {
+func compositionExecutableName(t *testing.T) string {
 	t.Helper()
-	path, err := filepath.Abs(os.Args[0])
+	source, err := filepath.Abs(os.Args[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	return path
+	name := "stepan-qwen-composition"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	directory := t.TempDir()
+	destination := filepath.Join(directory, name)
+	if runtime.GOOS == "windows" {
+		data, readErr := os.ReadFile(source)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if writeErr := os.WriteFile(destination, data, 0o700); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	} else if linkErr := os.Link(source, destination); linkErr != nil {
+		data, readErr := os.ReadFile(source)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if writeErr := os.WriteFile(destination, data, 0o700); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return name
 }
 
 func readCompositionObservations(t *testing.T, directory string) map[string]compositionACPObservation {

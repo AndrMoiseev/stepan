@@ -9,24 +9,14 @@ import (
 	"strings"
 )
 
-// ResolveExecutable resolves a simple PATH name or validates an authoritative
-// absolute regular-file path without probing version, basename, or branding.
+// ResolveExecutable resolves the authoritative simple PATH name without
+// probing version, basename, or branding.
 func ResolveExecutable(name string) (string, error) {
 	if name == "" {
 		name = defaultExecutable
 	}
-	if filepath.IsAbs(name) {
-		info, err := os.Stat(name)
-		if err != nil {
-			return "", fmt.Errorf("stat Qwen executable: %w", err)
-		}
-		if !info.Mode().IsRegular() {
-			return "", withDiagnosticContext(errors.New("Qwen executable must be a regular file"), diagnosticRegularFile)
-		}
-		return filepath.Clean(name), nil
-	}
-	if name != defaultExecutable {
-		return "", errors.New(`Qwen executable must be an absolute path or the PATH name "qwen"`)
+	if !simpleExecutableName(name) {
+		return "", errors.New("Qwen executable must be a simple PATH name without directory separators")
 	}
 	resolved, err := exec.LookPath(name)
 	if err != nil {
@@ -41,6 +31,11 @@ func ResolveExecutable(name string) (string, error) {
 		return "", withDiagnosticContext(errors.New("resolved Qwen executable must be a regular file"), diagnosticRegularFile)
 	}
 	return filepath.Clean(resolved), nil
+}
+
+func simpleExecutableName(name string) bool {
+	return name != "" && strings.TrimSpace(name) == name && name != "." && name != ".." &&
+		!filepath.IsAbs(name) && filepath.VolumeName(name) == "" && filepath.Base(name) == name && !strings.ContainsAny(name, `/\`)
 }
 
 func canonicalDirectory(path, description string) (string, error) {

@@ -89,7 +89,7 @@ func TestLauncherPassesExactIsolatedContract(t *testing.T) {
 	t.Setenv("QWEN_API_KEY", "test-auth-value")
 	t.Setenv("QWEN_CODE_ENABLE_AGENT_TEAM", "1")
 
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, artifact)
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract}, artifact)
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestReadOnlyProcessGetsEmptyOwnedRootAndRemovesIt(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "contract")
 	t.Setenv("STEPAN_QWENAPP_METADATA", metadataPath)
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, "")
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, "")
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -210,12 +210,12 @@ func TestSeparateProcessesReceiveNoSiblingArtifactRoot(t *testing.T) {
 	secondMetadata := filepath.Join(t.TempDir(), "second.json")
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "contract")
 	t.Setenv("STEPAN_QWENAPP_METADATA", firstMetadata)
-	first := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, firstRoot)
+	first := NewProcess(Config{Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract}, firstRoot)
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("STEPAN_QWENAPP_METADATA", secondMetadata)
-	second := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, secondRoot)
+	second := NewProcess(Config{Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract}, secondRoot)
 	if err := second.Start(); err != nil {
 		_ = first.Close()
 		t.Fatal(err)
@@ -238,34 +238,36 @@ func TestSeparateProcessesReceiveNoSiblingArtifactRoot(t *testing.T) {
 	}
 }
 
-func TestExecutableResolutionAllowsPATHAndAuthoritativeNonstandardBasename(t *testing.T) {
+func TestExecutableResolutionAllowsAuthoritativePATHNamesAndRejectsPaths(t *testing.T) {
 	executable := absoluteTestExecutable(t)
-	if got, err := ResolveExecutable(executable); err != nil || got != filepath.Clean(executable) {
-		t.Fatalf("explicit resolution = %q, %v", got, err)
-	}
-
 	pathDir := t.TempDir()
 	pathName := "qwen"
+	compatibleName := "other-compatible-cli"
 	if runtime.GOOS == "windows" {
 		pathName += ".exe"
+		compatibleName += ".exe"
 	}
 	copyExecutable(t, executable, filepath.Join(pathDir, pathName))
+	copyExecutable(t, executable, filepath.Join(pathDir, compatibleName))
 	t.Setenv("PATH", pathDir)
-	resolved, err := ResolveExecutable("qwen")
-	if err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"qwen", "other-compatible-cli"} {
+		resolved, err := ResolveExecutable(name)
+		if err != nil || filepath.Dir(resolved) != pathDir {
+			t.Fatalf("PATH executable %q = %q, %v", name, resolved, err)
+		}
 	}
-	if filepath.Dir(resolved) != pathDir {
-		t.Fatalf("PATH executable = %q", resolved)
+	for _, name := range []string{executable, filepath.Join("directory", "qwen"), `directory\qwen`} {
+		if _, err := ResolveExecutable(name); err == nil || !strings.Contains(err.Error(), "simple PATH name") {
+			t.Fatalf("invalid executable name %q error = %v", name, err)
+		}
 	}
-	copyExecutable(t, executable, filepath.Join(pathDir, "other-cli.exe"))
-	if _, err := ResolveExecutable("other-cli"); err == nil || !strings.Contains(err.Error(), `PATH name "qwen"`) {
-		t.Fatalf("other PATH name error = %v", err)
+	if _, err := ResolveExecutable("missing-compatible-cli"); err == nil || !strings.Contains(err.Error(), "resolve Qwen executable") {
+		t.Fatalf("missing PATH name error = %v", err)
 	}
 }
 
 func TestInvalidRootsAndConfigAreRejectedBeforeLaunch(t *testing.T) {
-	executable := absoluteTestExecutable(t)
+	executable := testExecutableName(t)
 	workspace := makeGitRoot(t)
 	parentArtifact := filepath.Dir(workspace)
 	fakeGitRoot := t.TempDir()
@@ -281,8 +283,9 @@ func TestInvalidRootsAndConfigAreRejectedBeforeLaunch(t *testing.T) {
 		{name: "not git root", config: Config{Executable: executable, Workspace: t.TempDir(), JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "fake git metadata", config: Config{Executable: executable, Workspace: fakeGitRoot, JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "missing contract", config: Config{Executable: executable, Workspace: workspace}, artifact: t.TempDir()},
-		{name: "relative executable", config: Config{Executable: filepath.Join("dir", "qwen"), Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
-		{name: "other PATH executable", config: Config{Executable: "other-cli", Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
+		{name: "absolute executable", config: Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
+		{name: "directory executable", config: Config{Executable: filepath.Join("dir", "qwen"), Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
+		{name: "missing PATH executable", config: Config{Executable: "missing-compatible-cli", Workspace: workspace, JSONContract: testJSONContract}, artifact: t.TempDir()},
 		{name: "missing artifact", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: filepath.Join(t.TempDir(), "missing")},
 		{name: "artifact in workspace", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: filepath.Join(workspace, "artifact")},
 		{name: "artifact contains workspace", config: Config{Executable: executable, Workspace: workspace, JSONContract: testJSONContract}, artifact: parentArtifact},
@@ -334,7 +337,7 @@ func TestCanonicalRootsRejectLinkIntoWorkspace(t *testing.T) {
 	if err := makeDirectoryLink(link, workspace); err != nil {
 		t.Fatal(err)
 	}
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract}, link)
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract}, link)
 	if err := process.Start(); err == nil || !errors.Is(err, ErrConfiguration) {
 		t.Fatalf("Start error = %v", err)
 	}
@@ -386,7 +389,7 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 			}
 			deps.newJob = func() (processJob, error) { return job, nil }
 			test.configure(&deps, job)
-			process := newProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, "", deps)
+			process := newProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, "", deps)
 			err := process.Start()
 			if err == nil || !errors.Is(err, test.kind) {
 				t.Fatalf("Start error = %v", err)
@@ -432,7 +435,7 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 func TestWaitAndCloseAreIdempotent(t *testing.T) {
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "wait")
 	setDiagnosticSecrets(t)
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +472,7 @@ func TestWaitAndCloseAreIdempotent(t *testing.T) {
 }
 
 func TestProcessCannotRestartOrStartAfterClose(t *testing.T) {
-	process := NewProcess(Config{Executable: absoluteTestExecutable(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
+	process := NewProcess(Config{Executable: testExecutableName(t), Workspace: makeGitRoot(t), JSONContract: testJSONContract}, t.TempDir())
 	if err := process.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -575,6 +578,24 @@ func absoluteTestExecutable(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func testExecutableName(t *testing.T) string {
+	t.Helper()
+	directory := t.TempDir()
+	name := "stepan-qwen-test"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	source := absoluteTestExecutable(t)
+	destination := filepath.Join(directory, name)
+	if runtime.GOOS == "windows" {
+		copyExecutable(t, source, destination)
+	} else if linkErr := os.Link(source, destination); linkErr != nil {
+		copyExecutable(t, source, destination)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return name
 }
 
 func canonicalForTest(t *testing.T, path string) string {

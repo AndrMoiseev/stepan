@@ -19,8 +19,7 @@ Qwen Code в существующем `/feature` flow Stepan. Он не разб
 
 - `stepan` поддерживает `--agent codex|claude`; без флага используется Codex из
   `PATH`.
-- Claude требует явный абсолютный `--agent-cli` и работает через
-  `claude-agent-sdk-go`; Qwen как provider отсутствует.
+- Claude работает через `claude-agent-sdk-go`; Qwen как provider отсутствует.
 - `internal/agentruntime` предоставляет provider-neutral thread contract с
   immutable bootstrap, JSON Schema, Git workspace и одним внешним artifact
   root.
@@ -66,10 +65,13 @@ codex|claude|qwen`. Qwen используется только после явн
 
 ### REQ-002 — Выбор executable
 
-При `--agent qwen` без `--agent-cli` Stepan должен разрешить executable `qwen`
-через `PATH`. Переданный `--agent-cli` должен быть существующим regular file по
-абсолютному пути и является авторитетным: Stepan не заменяет его executable из
-`PATH` и не требует определённого basename или branding.
+Без `--agent-cli-name` Stepan должен разрешать официальное имя выбранного
+provider через `PATH`: `codex`, `claude` или `qwen`. Переданное значение должно
+быть простым именем executable без абсолютного пути и directory separators,
+разрешаться через `PATH` и быть авторитетным: Stepan не заменяет отсутствующее
+или несовместимое имя другим executable и не требует определённого basename или
+branding. Абсолютный путь или имя с separator завершается usage error, а
+отсутствующее в `PATH` имя — безопасной configuration/startup error.
 
 ### REQ-003 — Отсутствие version/vendor gate
 
@@ -378,7 +380,7 @@ provider.
 ### CLI
 
 ```text
-stepan [--agent codex|claude|qwen] [--agent-cli <absolute-path>]
+stepan [--agent codex|claude|qwen] [--agent-cli-name <name>]
 ```
 
 Наблюдаемая семантика:
@@ -386,9 +388,11 @@ stepan [--agent codex|claude|qwen] [--agent-cli <absolute-path>]
 | Вызов | Результат |
 |---|---|
 | `stepan` | существующий Codex из `PATH` |
+| `stepan --agent claude` | `claude` из `PATH` через SDK |
 | `stepan --agent qwen` | `qwen` из `PATH`, direct ACP |
-| `stepan --agent qwen --agent-cli <abs>` | exact explicit Qwen-compatible CLI |
-| `stepan --agent qwen --agent-cli <relative>` | usage error до runtime |
+| `stepan --agent qwen --agent-cli-name qwen-compatible` | exact named Qwen-compatible CLI из `PATH` |
+| `stepan --agent qwen --agent-cli-name <path>` | usage error до runtime |
+| `stepan --agent qwen --agent-cli-name missing-cli` | configuration/startup error без fallback |
 | неизвестный `--agent` | usage error со списком трёх значений |
 
 ### Provider-neutral runtime
@@ -448,7 +452,8 @@ capabilities и session IDs не выходят из adapter package.
 ## Безопасность
 
 - Selected executable запускается напрямую массивом аргументов.
-- Explicit path авторитетен и проверяется до запуска.
+- Явное simple executable name авторитетно, проверяется parser-ом и разрешается
+  через `PATH` до запуска child/client.
 - Safe/equivalent mode исключает ambient executable surfaces и project/user
   customizations, кроме необходимой пользовательской authentication выбранного
   CLI.
@@ -463,7 +468,8 @@ capabilities и session IDs не выходят из adapter package.
 
 ## Совместимость
 
-- Codex default и Claude explicit-path behavior сохраняются.
+- Codex остаётся default; Codex, Claude и Qwen используют официальные PATH-имена
+  по умолчанию и допускают авторитетное compatible executable name.
 - Официальный Qwen и сторонний CLI используют один ACP contract и один
   Qwen-compatible startup contract `--include-directories`.
 - Qwen использует один process на открытый logical thread; по сравнению с
@@ -481,9 +487,11 @@ capabilities и session IDs не выходят из adapter package.
 
 Traces: REQ-001, REQ-002, REQ-003
 
-Без флагов запускается Codex. `--agent qwen` запускает `qwen` из `PATH`; explicit
-absolute `--agent-cli` запускает ровно выбранный файл. Relative/missing path и
-unknown provider завершаются usage error без запуска другого CLI.
+Без флагов запускается Codex. `--agent claude` и `--agent qwen` разрешают
+соответственно `claude` и `qwen` из `PATH`; `--agent-cli-name` для любого provider
+запускает ровно выбранное simple PATH-name. Абсолютный путь, имя с directory
+separator и unknown provider завершаются usage error; отсутствующее PATH-name —
+configuration/startup error. Ни один случай не запускает другой CLI.
 
 ### AC-002 — ACP transport
 
@@ -597,8 +605,9 @@ state и не принимается новым runtime.
 
 Traces: REQ-002, REQ-003, REQ-018, REQ-019
 
-Executable с нестандартным basename и без ожидаемой branding/version строки
-проходит тот же Qwen-compatible startup/ACP conformance contract и полный flow.
+Executable с авторитетным нестандартным simple PATH-name и без ожидаемой
+branding/version строки проходит тот же Qwen-compatible startup/ACP conformance
+contract и полный flow.
 CLI без `--include-directories` behavior или required ACP capability получает
 точную incompatibility error без version probe или provider fallback.
 

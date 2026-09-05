@@ -256,7 +256,7 @@ func TestProcessCarriesExactContractAndImmutableSessionPrompts(t *testing.T) {
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "structured-turn")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", observationPath)
 	process := NewProcess(Config{
-		Executable:   absoluteTestExecutable(t),
+		Executable:   testExecutableName(t),
 		Workspace:    workspace,
 		JSONContract: JSONContract,
 	}, artifact)

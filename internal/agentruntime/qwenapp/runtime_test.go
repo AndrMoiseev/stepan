@@ -199,7 +199,7 @@ func TestRuntimeProductionFactoryUsesOneProcessAndSessionPerThread(t *testing.T)
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "structured-turn")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
 	runtime, err := StartRuntime(Config{
-		Executable:     absoluteTestExecutable(t),
+		Executable:     testExecutableName(t),
 		Workspace:      workspace,
 		JSONContract:   testJSONContract,
 		EnvelopeSchema: json.RawMessage(`{"type":"object"}`),

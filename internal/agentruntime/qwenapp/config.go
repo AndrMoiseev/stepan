@@ -26,8 +26,9 @@ var (
 )
 
 // Config is immutable input shared by the contained processes of one Qwen
-// runtime. An empty Executable selects the qwen PATH name. JSONContract is the
-// process-level instruction that requires one JSON object per completed turn.
+// runtime. Executable is a simple authoritative PATH name; an empty value
+// selects qwen. JSONContract is the process-level instruction that requires
+// one JSON object per completed turn.
 // EnvelopeSchema declares the common structured contract supplied by the
 // composition root; each thread still validates its narrower OutputSchema.
 type Config struct {

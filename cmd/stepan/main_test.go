@@ -33,12 +33,6 @@ func TestComposePlanningFlowBuildsDurableApplication(t *testing.T) {
 	}
 }
 
-func TestRunRejectsClaudeWithoutCLIPathBeforeTerminalPreflight(t *testing.T) {
-	if code := run(context.Background(), []string{"--agent", "claude"}); code != 2 {
-		t.Fatalf("exit code = %d", code)
-	}
-}
-
 func TestPreflightRejectsRedirectedInput(t *testing.T) {
 	file, err := os.CreateTemp(t.TempDir(), "redirected")
 	if err != nil {
@@ -77,28 +71,31 @@ func (*compositionRuntime) CloseThread(agentruntime.Thread) error { return nil }
 func (*compositionRuntime) Interrupt() error                      { return nil }
 func (*compositionRuntime) Close() error                          { return nil }
 
-func TestQwenCompositionUsesOnlySelectedExecutableAndEphemeralIdentity(t *testing.T) {
+func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.T) {
 	pathDirectory := t.TempDir()
 	pathName := "qwen"
+	compatiblePathName := "corporate-compatible-agent"
 	if runtime.GOOS == "windows" {
 		pathName += ".exe"
+		compatiblePathName += ".exe"
 	}
 	pathExecutable := filepath.Join(pathDirectory, pathName)
 	if err := os.WriteFile(pathExecutable, []byte("fake PATH executable"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", pathDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	explicit := filepath.Join(t.TempDir(), "corporate-compatible-agent.exe")
-	if err := os.WriteFile(explicit, []byte("fake"), 0o600); err != nil {
+	compatibleExecutable := filepath.Join(pathDirectory, compatiblePathName)
+	if err := os.WriteFile(compatibleExecutable, []byte("fake compatible PATH executable"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("PATH", pathDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 	tests := []struct {
 		name       string
 		args       []string
 		executable string
+		resolved   string
 	}{
-		{name: "PATH default", args: []string{"--agent", "qwen"}, executable: "qwen"},
-		{name: "explicit nonstandard basename", args: []string{"--agent", "qwen", "--agent-cli", explicit}, executable: explicit},
+		{name: "official PATH default", args: []string{"--agent", "qwen"}, executable: "qwen", resolved: pathExecutable},
+		{name: "authoritative compatible PATH name", args: []string{"--agent", "qwen", "--agent-cli-name", "corporate-compatible-agent"}, executable: "corporate-compatible-agent", resolved: compatibleExecutable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -147,12 +144,8 @@ func TestQwenCompositionUsesOnlySelectedExecutableAndEphemeralIdentity(t *testin
 			if err != nil {
 				t.Fatal(err)
 			}
-			wantResolved := explicit
-			if captured.Executable == "qwen" {
-				wantResolved = pathExecutable
-			}
-			if resolved != filepath.Clean(wantResolved) {
-				t.Fatalf("resolved selected executable = %q, want %q", resolved, wantResolved)
+			if resolved != filepath.Clean(test.resolved) {
+				t.Fatalf("resolved selected executable = %q, want %q", resolved, test.resolved)
 			}
 			if captured.JSONContract != qwenapp.JSONContract || string(captured.EnvelopeSchema) != string(specflow.FlowEnvelopeSchema()) {
 				t.Fatalf("Qwen structured contract = %#v", captured)
@@ -200,27 +193,37 @@ func TestRuntimeFactoryRejectsUnknownKindWithoutProviderFallback(t *testing.T) {
 }
 
 func TestQwenStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
-	root := initializeCompositionRepository(t)
-	t.Setenv("PATH", t.TempDir())
-	config, err := parseAgentConfig([]string{"--agent", "qwen"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := specflow.NewSession(runtimeFactory(config, root))
-	t.Cleanup(func() { _ = session.Close() })
-	application, registry, err := composePlanningFlow(root, session, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = registry.Close() })
+	for _, test := range []struct {
+		name string
+		args []string
+	}{
+		{name: "missing official name", args: []string{"--agent", "qwen"}},
+		{name: "missing supplied name", args: []string{"--agent", "qwen", "--agent-cli-name", "missing-qwen-compatible-cli"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := initializeCompositionRepository(t)
+			t.Setenv("PATH", t.TempDir())
+			config, err := parseAgentConfig(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session := specflow.NewSession(runtimeFactory(config, root))
+			t.Cleanup(func() { _ = session.Close() })
+			application, registry, err := composePlanningFlow(root, session, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = registry.Close() })
 
-	progress, err := application.StartFeature("Qwen must be available")
-	if err == nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "qwen start thread") {
-		t.Fatalf("Qwen startup result = %#v, %v", progress, err)
-	}
-	features := filepath.Join(root, "docs", "changes", "features")
-	if _, statErr := os.Stat(features); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("startup failure entered durable flow: %v", statErr)
+			progress, err := application.StartFeature("Qwen must be available")
+			if err == nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "qwen start thread") {
+				t.Fatalf("Qwen startup result = %#v, %v", progress, err)
+			}
+			features := filepath.Join(root, "docs", "changes", "features")
+			if _, statErr := os.Stat(features); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("startup failure entered durable flow: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -247,7 +250,7 @@ func TestRuntimeFactoryPreservesCodexAndClaudeComposition(t *testing.T) {
 	if err != nil || runtime != marker || codexExecutable != "codex" || codexWorkspace != root {
 		t.Fatalf("Codex composition = %#v, %v, executable=%q workspace=%q", runtime, err, codexExecutable, codexWorkspace)
 	}
-	claudeExecutable := filepath.Join(root, "corporate-claude")
+	claudeExecutable := "corporate-claude"
 	runtime, err = runtimeFactoryWithStarters(agentConfig{kind: agentClaude, executable: claudeExecutable}, root, starters)(context.Background())
 	if err != nil || runtime != marker || claudeConfig.Executable != claudeExecutable || claudeConfig.Workspace != root || string(claudeConfig.EnvelopeSchema) != string(specflow.FlowEnvelopeSchema()) {
 		t.Fatalf("Claude composition = %#v, %v, config=%#v", runtime, err, claudeConfig)
