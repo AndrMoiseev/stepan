@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
 )
 
 type acpObservation struct {
@@ -51,6 +53,13 @@ func runQwenACPFake() int {
 		"sessionCapabilities": map[string]any{},
 	})
 	scenario := os.Getenv("STEPAN_QWEN_ACP_CASE")
+	var sharedScript conformance.Script
+	if scenario == "conformance" {
+		data, readErr := os.ReadFile(os.Getenv("STEPAN_QWEN_CONFORMANCE_SCRIPT"))
+		if readErr != nil || json.Unmarshal(data, &sharedScript) != nil || len(sharedScript) == 0 {
+			return 60
+		}
+	}
 	if scenario == "missing-capability" {
 		capabilities = nil
 	} else if scenario == "empty-capabilities" {
@@ -99,6 +108,8 @@ func runQwenACPFake() int {
 	}
 	promptIndex := 0
 	var conformanceCandidate string
+	conformanceRole := ""
+	conformanceTurn := 0
 	for {
 		message, err := transport.read()
 		if err != nil {
@@ -132,7 +143,15 @@ func runQwenACPFake() int {
 					return 72
 				}
 			} else if scenario == "conformance" {
-				candidate, ok := conformanceResponse(prompt.Prompt[0].Text, conformanceCandidate)
+				text := prompt.Prompt[0].Text
+				repair := strings.Contains(text, "Your previous response could not be accepted")
+				if !repair {
+					if conformanceRole == "" {
+						conformanceRole = conformanceRoleFromPrompt(text)
+					}
+					conformanceTurn++
+				}
+				candidate, ok := conformanceResponse(sharedScript, text, conformanceRole, conformanceTurn, conformanceCandidate, conformanceArtifactRoot(os.Args[1:]))
 				if !ok {
 					return 73
 				}
@@ -154,31 +173,59 @@ func runQwenACPFake() int {
 	}
 }
 
-func conformanceResponse(prompt, previous string) (string, bool) {
+func conformanceResponse(script conformance.Script, prompt, role string, turn int, previous, artifactRoot string) (string, bool) {
 	if strings.Contains(prompt, "Your previous response could not be accepted") {
 		return previous, previous != ""
 	}
-	for request, response := range map[string]string{
-		"intent dialogue":     `{"kind":"message","message":"intent question","decisions":[{"author":"agent","decision":"record scope","rationale":"the intent establishes the durable boundary","alternatives":[],"supersedes":[]}]}`,
-		"publish intent":      `{"kind":"artifact","message":"","decisions":[]}`,
-		"spec dialogue":       `{"kind":"message","message":"spec question","decisions":[]}`,
-		"publish spec":        `{"kind":"artifact","message":"","decisions":[]}`,
-		"review spec":         `{"kind":"artifact","message":"","decisions":[]}`,
-		"material decision":   `{"kind":"message","message":"material decision recorded","decisions":[{"author":"user","decision":"fix review finding SPEC-F-1","rationale":"the durable contract requires the correction","alternatives":[],"supersedes":[]}]}`,
-		"automatic rework":    `{"kind":"artifact","message":"","decisions":[]}`,
-		"review approval":     `{"kind":"artifact","message":"","decisions":[]}`,
-		"publish plan":        `{"kind":"artifact","message":"","decisions":[]}`,
-		"review plan":         `{"kind":"artifact","message":"","decisions":[]}`,
-		"resume dialogue":     `{"kind":"message","message":"resume question","decisions":[]}`,
-		"resume publish":      `{"kind":"artifact","message":"","decisions":[]}`,
-		"path injection":      `{"kind":"artifact","message":"","decisions":[],"path":"intent.md"}`,
-		"missing placeholder": `{"kind":"artifact","decisions":[]}`,
-	} {
-		if strings.HasSuffix(prompt, "User request:\n"+request) || prompt == request {
-			return response, true
+	for _, step := range script {
+		promptMatch := step.Prompt != "" && (strings.HasSuffix(prompt, "User request:\n"+step.Prompt) || prompt == step.Prompt)
+		roleMatch := step.Role != "" && step.Role == role && step.Turn == turn
+		if !promptMatch && !roleMatch {
+			continue
 		}
+		if step.ArtifactName != "" {
+			if artifactRoot == "" || os.WriteFile(filepath.Join(artifactRoot, step.ArtifactName), []byte(step.ArtifactContent), 0o600) != nil {
+				return "", false
+			}
+		}
+		return string(step.Output), true
 	}
 	return "", false
+}
+
+func conformanceRoleFromPrompt(prompt string) string {
+	if strings.Contains(prompt, `"feature_id"`) {
+		return "feature-id"
+	}
+	for _, role := range []string{"intent-author", "spec-author", "spec-reviewer", "plan-author", "plan-reviewer"} {
+		if strings.Contains(prompt, "[roles/"+role+"]") {
+			return role
+		}
+	}
+	return "unknown"
+}
+
+func conformanceArtifactRoot(args []string) string {
+	for index, argument := range args {
+		if argument == "--include-directories" && index+1 < len(args) {
+			return args[index+1]
+		}
+	}
+	return ""
+}
+
+func TestConformanceResponseUsesSuppliedNamedScript(t *testing.T) {
+	script := conformance.Script{{
+		Name: "caller-owned outcome", Prompt: "unique caller prompt",
+		Output: json.RawMessage(`{"kind":"message","message":"caller-owned response","decisions":[]}`),
+	}}
+	got, ok := conformanceResponse(script, "unique caller prompt", "unknown", 1, "", "")
+	if !ok || got != string(script[0].Output) {
+		t.Fatalf("scripted response = %q, %t; want supplied %s", got, ok, script[0].Output)
+	}
+	if _, ok := conformanceResponse(script, "hardcoded legacy prompt", "unknown", 1, "", ""); ok {
+		t.Fatal("fake accepted an outcome absent from the supplied script")
+	}
 }
 
 func writeACPObservation(observation acpObservation) error {

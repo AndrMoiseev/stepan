@@ -23,11 +23,11 @@ func testThreadConfig(workspace string) agentruntime.ThreadConfig {
 }
 
 func TestCodexProviderParity(t *testing.T) {
-	conformance.ProviderParity(t, func(t *testing.T, outputs []json.RawMessage) conformance.Fixture {
+	conformance.ProviderParity(t, func(t *testing.T, script conformance.Script) conformance.Fixture {
 		t.Helper()
 		root := canonicalTempDir(t)
 		connection, server, serverErr := threadTestConnection(t)
-		go serveConformanceScript(server, outputs, serverErr)
+		go serveConformanceScript(server, script.Outputs(), serverErr)
 		return conformance.Fixture{
 			Runtime:      &connectionRuntime{connection: connection, workspace: root},
 			Workspace:    root,
@@ -46,6 +46,19 @@ func TestCodexProviderParity(t *testing.T) {
 				})
 				return err == nil && allowedRequestedPath(evaluator.policy, target, evaluator.policy.WritableRoots)
 			},
+		}
+	})
+}
+
+func TestCodexApplicationParity(t *testing.T) {
+	conformance.ApplicationParity(t, specflow.RuntimeIdentity{Provider: "codex", Model: "default"}, func(t *testing.T, workspace string, script conformance.Script) conformance.ApplicationFixture {
+		t.Helper()
+		connection, server, serverErr := threadTestConnection(t)
+		go serveConformanceScript(server, script.Outputs(), serverErr)
+		runtime := &connectionRuntime{connection: connection, workspace: workspace}
+		return conformance.ApplicationFixture{
+			Runtime: conformance.ScriptedArtifacts(runtime, script),
+			Wait:    func() error { return <-serverErr },
 		}
 	})
 }
@@ -81,7 +94,6 @@ func (runtime *connectionRuntime) Close() error     { return runtime.connection.
 func serveConformanceScript(server *Transport, outputs []json.RawMessage, result chan<- error) {
 	threadCount := 0
 	turnCount := 0
-	threadTurns := make(map[string]int)
 	for turnCount < len(outputs) {
 		request, err := server.Read()
 		if err != nil {
@@ -112,15 +124,6 @@ func serveConformanceScript(server *Transport, outputs []json.RawMessage, result
 			}
 			if err := validateCodexSchema(params.Schema); err != nil {
 				result <- err
-				return
-			}
-			threadTurns[params.ThreadID]++
-			if threadTurns[params.ThreadID] == 1 && !strings.Contains(params.Input[0]["text"], "effective ") {
-				result <- fmt.Errorf("first %s turn omitted effective prompt", params.ThreadID)
-				return
-			}
-			if threadTurns[params.ThreadID] > 1 && strings.Contains(params.Input[0]["text"], "effective ") {
-				result <- fmt.Errorf("subsequent %s turn repeated effective prompt", params.ThreadID)
 				return
 			}
 			turnCount++

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
@@ -28,14 +29,21 @@ type compositionACPRequest struct {
 }
 
 type compositionACPObservation struct {
-	PID        int      `json:"pid"`
-	SessionID  string   `json:"session_id"`
-	Generation string   `json:"generation"`
-	Role       string   `json:"role"`
-	Prompts    []string `json:"prompts"`
+	PID               int      `json:"pid"`
+	SessionID         string   `json:"session_id"`
+	Generation        string   `json:"generation"`
+	Role              string   `json:"role"`
+	Prompts           []string `json:"prompts"`
+	CapabilityPayload string   `json:"capability_payload"`
+	StatusPayload     string   `json:"status_payload"`
+	ReportedModel     string   `json:"reported_model"`
 }
 
 func runCompositionQwenFake() int {
+	generation := os.Getenv("STEPAN_MAIN_QWEN_GENERATION")
+	capabilityPayload := generation + "-ephemeral-capability-payload"
+	statusPayload := generation + "-ephemeral-status-payload"
+	reportedModel := generation + "-non-default-reported-model"
 	scanner := bufio.NewScanner(os.Stdin)
 	encoder := json.NewEncoder(os.Stdout)
 	read := func() (compositionACPRequest, bool) {
@@ -61,9 +69,14 @@ func runCompositionQwenFake() int {
 		"agentCapabilities": map[string]any{
 			"promptCapabilities":  map[string]any{},
 			"sessionCapabilities": map[string]any{},
+			"_meta":               map[string]string{"fixtureCapability": capabilityPayload},
 		},
 		"agentInfo":   map[string]string{"name": "task-seven-fake", "version": "test"},
 		"authMethods": []any{},
+		"_meta": map[string]string{
+			"fixtureStatus": statusPayload,
+			"activeModel":   reportedModel,
+		},
 	}) {
 		return 81
 	}
@@ -71,12 +84,20 @@ func runCompositionQwenFake() int {
 	if !ok || sessionRequest.Method != "session/new" {
 		return 82
 	}
-	generation := os.Getenv("STEPAN_MAIN_QWEN_GENERATION")
 	sessionID := fmt.Sprintf("%s-session-%d", generation, os.Getpid())
-	if !respond(sessionRequest.ID, map[string]string{"sessionId": sessionID}) {
+	if !respond(sessionRequest.ID, map[string]any{
+		"sessionId": sessionID,
+		"_meta": map[string]string{
+			"fixtureStatus": statusPayload,
+			"activeModel":   reportedModel,
+		},
+	}) {
 		return 83
 	}
-	observation := compositionACPObservation{PID: os.Getpid(), SessionID: sessionID, Generation: generation}
+	observation := compositionACPObservation{
+		PID: os.Getpid(), SessionID: sessionID, Generation: generation,
+		CapabilityPayload: capabilityPayload, StatusPayload: statusPayload, ReportedModel: reportedModel,
+	}
 	artifactRoot := compositionArtifactRoot(os.Args[1:])
 	turn := 0
 	for {
@@ -164,35 +185,35 @@ func compositionResponse(role string, turn int, artifactRoot string) (string, er
 		if turn == 1 {
 			return message("What durable outcome should the intent guarantee?")
 		}
-		return artifact("intent.md", qwenFlowIntent)
+		return artifact("intent.md", conformance.ApplicationIntent())
 	case "spec-author":
 		if turn == 1 {
 			return message("Which durable requirements should the specification cover?")
 		}
-		body := qwenFlowSpec
+		body := conformance.ApplicationSpec(false)
 		if turn > 2 {
-			body = strings.Replace(body, "survives restart.", "survives restart and explicit review recheck.", 1)
+			body = conformance.ApplicationSpec(true)
 		}
 		return artifact("spec.md", body)
 	case "spec-reviewer":
 		if turn == 1 {
-			return artifact("review.md", qwenPendingReview("SPEC-F-001"))
+			return artifact("review.md", conformance.ReviewArtifact("SPEC-F-001", false))
 		}
-		return artifact("review.md", qwenResolvedReview("SPEC-F-001"))
+		return artifact("review.md", conformance.ReviewArtifact("SPEC-F-001", true))
 	case "plan-author":
 		if turn == 1 {
 			return message("Which tasks prove the accepted specification?")
 		}
-		body := qwenFlowPlan
+		body := conformance.ApplicationPlan(false)
 		if turn > 2 {
-			body = strings.Replace(body, "completes the flow.", "completes the reviewed flow.", 1)
+			body = conformance.ApplicationPlan(true)
 		}
 		return artifact("plan.md", body)
 	case "plan-reviewer":
 		if turn == 1 {
-			return artifact("review.md", qwenPendingReview("PLAN-F-001"))
+			return artifact("review.md", conformance.ReviewArtifact("PLAN-F-001", false))
 		}
-		return artifact("review.md", qwenResolvedReview("PLAN-F-001"))
+		return artifact("review.md", conformance.ReviewArtifact("PLAN-F-001", true))
 	default:
 		return "", fmt.Errorf("unknown role %q", role)
 	}
@@ -208,66 +229,6 @@ func writeCompositionObservation(observation compositionACPObservation) bool {
 		return false
 	}
 	return os.WriteFile(filepath.Join(directory, fmt.Sprintf("%d.json", observation.PID)), data, 0o600) == nil
-}
-
-const qwenFlowIntent = `# Qwen provider parity
-
-## Scope
-
-Exercise the complete durable planning flow.
-
-## Open questions
-`
-
-const qwenFlowSpec = `# Specification
-
-## REQ-001 — Durable flow
-
-The provider-neutral flow persists its state.
-
-## DEC-001 — Durable context
-
-Use documents, reviews, state, and mem-log.
-
-## AC-001 — Resume
-
-Traces: REQ-001
-
-The state survives restart.
-
-## Open questions
-`
-
-const qwenFlowPlan = `# Plan
-
-## TASK-001 — Verify provider parity
-
-Traces: REQ-001, DEC-001
-
-### Test scenario — complete flow
-
-Traces: AC-001
-
-The automated suite completes the flow.
-
-## Open questions
-`
-
-func qwenPendingReview(id string) string {
-	return "# Review\n\n## " + id + " — Durable ambiguity\n\n" +
-		"Severity: major\nStatus: open\n" +
-		"Problem: The document leaves durable provider parity insufficiently explicit.\n" +
-		"Location: whole document\nRecommendation: Clarify durable provider parity.\n" +
-		"Decision: pending\nDecided-by: none\nRationale:\n"
-}
-
-func qwenResolvedReview(id string) string {
-	return "# Review\n\n## " + id + " — Durable ambiguity\n\n" +
-		"Severity: major\nStatus: resolved\n" +
-		"Problem: The document leaves durable provider parity insufficiently explicit.\n" +
-		"Location: whole document\nRecommendation: Clarify durable provider parity.\n" +
-		"Resolution: The revised document now makes durable provider parity explicit.\n" +
-		"Decision: fix\nDecided-by: user\nRationale: User accepted the pending recommendation with /apply.\n"
 }
 
 func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
@@ -321,6 +282,26 @@ func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
 	assertCompositionState(t, progress, specflow.StagePlan, specflow.StageDrafting, specflow.ReviewNotStarted)
 
 	before := readCompositionObservations(t, observations)
+	beforeModels := make(map[string]bool)
+	for _, observation := range before {
+		if observation.PID == 0 || observation.SessionID == "" || len(observation.Prompts) == 0 || observation.CapabilityPayload == "" || observation.StatusPayload == "" || observation.ReportedModel == "" || observation.ReportedModel == "default" {
+			t.Fatalf("incomplete pre-resume ephemeral observation: %#v", observation)
+		}
+		beforeModels[observation.ReportedModel] = true
+	}
+	featureRoot := filepath.Join(root, "docs", "changes", "features", featureID)
+	statePath := filepath.Join(featureRoot, "state.json")
+	beforeState, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeFingerprints := durableFingerprints(t, beforeState)
+	for _, relative := range []string{"intent.md", "spec.md", "state.json", "mem-log.md", "reviews/spec-001.md", "reviews/spec-002.md"} {
+		if _, err := os.Stat(filepath.Join(featureRoot, filepath.FromSlash(relative))); err != nil {
+			t.Fatalf("durable resume input %s: %v", relative, err)
+		}
+	}
+	assertNoEphemeralRuntimeData(t, beforeState, before)
 	if _, err := application.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -362,6 +343,9 @@ func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
 			if _, reused := before[observation.SessionID]; reused {
 				t.Fatalf("resume reused Qwen session %q", observation.SessionID)
 			}
+			if observation.PID == 0 || observation.CapabilityPayload == "" || observation.StatusPayload == "" || observation.ReportedModel == "" || observation.ReportedModel == "default" || beforeModels[observation.ReportedModel] {
+				t.Fatalf("resume did not use fresh ephemeral capability/status/model identity: %#v", observation)
+			}
 			if len(observation.Prompts) == 0 {
 				t.Fatalf("resumed plan author has no durable bootstrap prompt: %#v", observation)
 			}
@@ -375,15 +359,17 @@ func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
 	if !freshPlanAuthor {
 		t.Fatalf("resume did not start a fresh Qwen plan-author process: %#v", after)
 	}
-	statePath := filepath.Join(root, "docs", "changes", "features", featureID, "state.json")
 	state, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertProviderNeutralStateKeys(t, state)
-	for sessionID := range before {
-		if strings.Contains(string(state), sessionID) {
-			t.Fatalf("state retained ephemeral Qwen session %q", sessionID)
+	assertNoEphemeralRuntimeData(t, state, before)
+	assertNoEphemeralRuntimeData(t, state, after)
+	afterFingerprints := durableFingerprints(t, state)
+	for path, fingerprint := range beforeFingerprints {
+		if got, ok := afterFingerprints[path]; !ok || got != fingerprint {
+			t.Fatalf("durable fingerprint %s changed across runtime identity: got %q want %q", path, got, fingerprint)
 		}
 	}
 	reviews, err := filepath.Glob(filepath.Join(root, "docs", "changes", "features", featureID, "reviews", "*.md"))
@@ -395,6 +381,8 @@ func TestQwenCompositionFullFlowGitPolicyAndDurableResume(t *testing.T) {
 		if readErr != nil || !strings.Contains(string(data), `provider: "qwen"`) || !strings.Contains(string(data), `model: "default"`) {
 			t.Fatalf("review runtime front matter %s: %v\n%s", review, readErr, data)
 		}
+		assertNoEphemeralRuntimeData(t, data, before)
+		assertNoEphemeralRuntimeData(t, data, after)
 	}
 }
 
@@ -503,7 +491,86 @@ func assertProviderNeutralStateKeys(t *testing.T, state []byte) {
 			for _, child := range typed {
 				inspect(child)
 			}
+		case string:
+			if typed == "qwen" || typed == "default" {
+				t.Fatalf("state contains runtime identity value %q: %s", typed, state)
+			}
 		}
 	}
 	inspect(value)
+}
+
+func assertNoEphemeralRuntimeData(t *testing.T, data []byte, observations map[string]compositionACPObservation) {
+	t.Helper()
+	pids := make(map[int]bool)
+	for _, observation := range observations {
+		pids[observation.PID] = true
+		for _, forbidden := range append([]string{
+			observation.SessionID,
+			observation.CapabilityPayload,
+			observation.StatusPayload,
+			observation.ReportedModel,
+		}, observation.Prompts...) {
+			if forbidden != "" && strings.Contains(string(data), forbidden) {
+				t.Fatalf("durable data retained ephemeral runtime value %q", forbidden)
+			}
+		}
+	}
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return
+	}
+	var inspect func(any)
+	inspect = func(current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			for _, child := range typed {
+				inspect(child)
+			}
+		case []any:
+			for _, child := range typed {
+				inspect(child)
+			}
+		case float64:
+			if typed == float64(int(typed)) && pids[int(typed)] {
+				t.Fatalf("durable JSON retained ephemeral process ID %d", int(typed))
+			}
+		}
+	}
+	inspect(value)
+}
+
+func durableFingerprints(t *testing.T, state []byte) map[string]string {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(state, &value); err != nil {
+		t.Fatal(err)
+	}
+	result := make(map[string]string)
+	var inspect func(string, any)
+	inspect = func(path string, current any) {
+		switch typed := current.(type) {
+		case map[string]any:
+			for key, child := range typed {
+				childPath := path + "/" + key
+				if strings.Contains(strings.ToLower(key), "fingerprint") {
+					encoded, err := json.Marshal(child)
+					if err != nil {
+						t.Fatal(err)
+					}
+					result[childPath] = string(encoded)
+				}
+				inspect(childPath, child)
+			}
+		case []any:
+			for index, child := range typed {
+				inspect(fmt.Sprintf("%s/%d", path, index), child)
+			}
+		}
+	}
+	inspect("", value)
+	if len(result) == 0 {
+		t.Fatal("state contains no durable review fingerprints")
+	}
+	return result
 }

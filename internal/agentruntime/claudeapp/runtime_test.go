@@ -18,10 +18,11 @@ import (
 )
 
 func TestClaudeProviderParity(t *testing.T) {
-	conformance.ProviderParity(t, func(t *testing.T, outputs []json.RawMessage) conformance.Fixture {
+	conformance.ProviderParity(t, func(t *testing.T, script conformance.Script) conformance.Fixture {
 		t.Helper()
 		config := testConfig(t)
 		config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+		outputs := script.Outputs()
 		messages := make([]claudecode.Message, len(outputs))
 		for index, output := range outputs {
 			var structured map[string]any
@@ -47,6 +48,33 @@ func TestClaudeProviderParity(t *testing.T) {
 				return permitTool("Write", map[string]any{"file_path": target}, policy, threadConfig.Workspace) == nil
 			},
 		}
+	})
+}
+
+func TestClaudeApplicationParity(t *testing.T) {
+	conformance.ApplicationParity(t, specflow.RuntimeIdentity{Provider: "claude", Model: "default"}, func(t *testing.T, workspace string, script conformance.Script) conformance.ApplicationFixture {
+		t.Helper()
+		executable := filepath.Join(t.TempDir(), "explicit-claude-compatible")
+		if err := os.WriteFile(executable, []byte("fake"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		config := Config{Executable: executable, Workspace: workspace, EnvelopeSchema: specflow.FlowEnvelopeSchema()}
+		outputs := script.Outputs()
+		messages := make([]claudecode.Message, len(outputs))
+		for index, output := range outputs {
+			var structured map[string]any
+			if err := json.Unmarshal(output, &structured); err != nil {
+				t.Fatal(err)
+			}
+			messages[index] = &claudecode.ResultMessage{StructuredOutput: structured}
+		}
+		runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client {
+			return &fakeClient{messages: messages}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return conformance.ApplicationFixture{Runtime: conformance.ScriptedArtifacts(runtime, script)}
 	})
 }
 
