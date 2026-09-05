@@ -214,13 +214,18 @@ func (runtime *Runtime) CloseThread(handle agentruntime.Thread) error {
 		runtime.mu.Unlock()
 		return err
 	}
-	state.closed = true // close checkpoint precedes transport/process teardown
-	delete(runtime.threads, state.generation)
-	state.backend.BeginClose()
+	backend := runtime.detachThreadLocked(state, nil)
 	runtime.tearingDown.Add(1)
 	runtime.mu.Unlock()
 	defer runtime.tearingDown.Done()
-	return state.backend.Close()
+	if closeErr := backend.Close(); closeErr != nil {
+		failure := safeRuntimeError("close thread", errors.Join(agentruntime.ErrRuntimeCleanup, closeErr))
+		runtime.mu.Lock()
+		state.failure = failure
+		runtime.mu.Unlock()
+		return agentruntime.MarkThreadFailed(failure)
+	}
+	return nil
 }
 
 // Interrupt preserves the provider-neutral global semantics: cancel only the
@@ -256,11 +261,9 @@ func (runtime *Runtime) Close() error {
 		runtime.mu.Lock()
 		runtime.closing = true // global close checkpoint
 		threads := make([]*threadState, 0, len(runtime.threads))
-		for generation, state := range runtime.threads {
-			state.closed = true
-			state.backend.BeginClose()
+		for _, state := range runtime.threads {
+			runtime.detachThreadLocked(state, nil)
 			threads = append(threads, state)
-			delete(runtime.threads, generation)
 		}
 		runtime.mu.Unlock()
 
@@ -269,7 +272,9 @@ func (runtime *Runtime) Close() error {
 		runtime.starting.Wait()
 		runtime.tearingDown.Wait()
 		for _, state := range threads {
-			runtime.closeErr = errors.Join(runtime.closeErr, state.backend.Close())
+			if err := state.backend.Close(); err != nil {
+				runtime.closeErr = errors.Join(runtime.closeErr, safeRuntimeError("close runtime", errors.Join(agentruntime.ErrRuntimeCleanup, err)))
+			}
 		}
 		close(runtime.closeDone)
 	})
@@ -328,14 +333,25 @@ func (runtime *Runtime) failThread(state *threadState, failure error) {
 		runtime.mu.Unlock()
 		return
 	}
-	state.failure = failure
-	state.closed = true
-	delete(runtime.threads, state.generation)
-	state.backend.BeginClose()
+	backend := runtime.detachThreadLocked(state, failure)
 	runtime.tearingDown.Add(1)
 	runtime.mu.Unlock()
 	defer runtime.tearingDown.Done()
-	_ = state.backend.Close()
+	_ = backend.Close()
+}
+
+// detachThreadLocked establishes the close checkpoint shared by local close,
+// localized failure, and global Close (including Interrupt). Callers decide
+// whether teardown belongs to the global closer or an independently tracked
+// operation, but lock ordering and handle invalidation remain identical.
+func (runtime *Runtime) detachThreadLocked(state *threadState, failure error) runtimeThread {
+	if failure != nil {
+		state.failure = failure
+	}
+	state.closed = true
+	delete(runtime.threads, state.generation)
+	state.backend.BeginClose()
+	return state.backend
 }
 
 // safeRuntimeError retains only provider-neutral categories. Lower layers
@@ -353,6 +369,7 @@ func safeRuntimeError(action string, err error) error {
 		agentruntime.ErrRuntimeIncompatible,
 		agentruntime.ErrRuntimeProtocol,
 		agentruntime.ErrStructuredResponse,
+		agentruntime.ErrRuntimeCleanup,
 		agentruntime.ErrPermissionDenied,
 		agentruntime.ErrTurnInterrupted,
 		agentruntime.ErrTurnInProgress,
@@ -366,23 +383,8 @@ func safeRuntimeError(action string, err error) error {
 	if len(categories) == 0 {
 		categories = append(categories, agentruntime.ErrRuntimeExited)
 	}
-	if context := safeRuntimeContext(err); context != "" {
+	if context := errorDiagnosticContext(err); context != "" {
 		return fmt.Errorf("qwen %s (%s): %w", action, context, errors.Join(categories...))
 	}
 	return fmt.Errorf("qwen %s: %w", action, errors.Join(categories...))
-}
-
-func safeRuntimeContext(err error) string {
-	message := err.Error()
-	for _, context := range []string{
-		"agentCapabilities", "promptCapabilities", "sessionCapabilities", "protocolVersion",
-		"startup-root contract", "initialize lifecycle", "session/new lifecycle",
-		"read_file", "write_file", "edit", "glob", "grep_search", "shell", "web", "agent",
-		"regular file",
-	} {
-		if strings.Contains(message, context) {
-			return context
-		}
-	}
-	return ""
 }

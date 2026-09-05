@@ -110,7 +110,7 @@ func (process *Process) Start() error {
 
 	executable, workspace, artifact, owned, err := process.preflight()
 	if err != nil {
-		process.startErr = fmt.Errorf("%w: %v", ErrConfiguration, err)
+		process.startErr = fmt.Errorf("%w: %w", ErrConfiguration, err)
 		return process.startErr
 	}
 	if owned {

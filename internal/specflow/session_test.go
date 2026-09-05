@@ -278,6 +278,34 @@ func TestSessionKeepsRuntimeAfterLocalizedStartFailure(t *testing.T) {
 	_ = session.Close()
 }
 
+func TestSessionKeepsSiblingUsableAfterLocalizedCloseFailure(t *testing.T) {
+	runtime := &sessionLifecycleRuntime{closeThreadErr: agentruntime.MarkThreadFailed(agentruntime.ErrRuntimeCleanup)}
+	starts := 0
+	session := NewSession(func(context.Context) (agentruntime.Runtime, error) {
+		starts++
+		return runtime, nil
+	})
+	config := agentruntime.ThreadConfig{Workspace: t.TempDir(), OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	first, err := session.StartThread(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := session.StartThread(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CloseThread(first); !errors.Is(err, agentruntime.ErrThreadFailed) || !errors.Is(err, agentruntime.ErrRuntimeCleanup) {
+		t.Fatalf("localized close = %v", err)
+	}
+	if _, err := session.RunTurn(second, "continue"); err != nil {
+		t.Fatalf("sibling turn after close failure = %v", err)
+	}
+	if starts != 1 || runtime.closeCount != 0 {
+		t.Fatalf("localized close discarded runtime: starts=%d closes=%d", starts, runtime.closeCount)
+	}
+	_ = session.Close()
+}
+
 func TestSessionRegistryRemovesOnlyFailedRoleHandle(t *testing.T) {
 	root := initRepository(t)
 	repository := newTestFeatureRepository(t, root)
@@ -318,10 +346,11 @@ func TestSessionRegistryRemovesOnlyFailedRoleHandle(t *testing.T) {
 }
 
 type sessionLifecycleRuntime struct {
-	next       int
-	startErr   error
-	runErr     error
-	closeCount int
+	next           int
+	startErr       error
+	runErr         error
+	closeThreadErr error
+	closeCount     int
 }
 
 func (runtime *sessionLifecycleRuntime) StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error) {
@@ -339,8 +368,10 @@ func (runtime *sessionLifecycleRuntime) RunTurn(agentruntime.Thread, string) (js
 	return json.RawMessage(`{}`), nil
 }
 
-func (runtime *sessionLifecycleRuntime) CloseThread(agentruntime.Thread) error { return nil }
-func (runtime *sessionLifecycleRuntime) Interrupt() error                      { return runtime.Close() }
+func (runtime *sessionLifecycleRuntime) CloseThread(agentruntime.Thread) error {
+	return runtime.closeThreadErr
+}
+func (runtime *sessionLifecycleRuntime) Interrupt() error { return runtime.Close() }
 func (runtime *sessionLifecycleRuntime) Close() error {
 	runtime.closeCount++
 	return nil

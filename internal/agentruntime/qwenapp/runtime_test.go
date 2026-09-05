@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,9 @@ type fakeRuntimeThread struct {
 	closeGate  <-chan struct{}
 	closeStart chan struct{}
 	startOnce  sync.Once
+	closeErr   error
+	onClose    func()
+	closed     atomic.Bool
 	errMu      sync.Mutex
 	err        error
 }
@@ -63,7 +67,10 @@ func (thread *fakeRuntimeThread) fail(err error) {
 }
 
 func (thread *fakeRuntimeThread) Close() error {
-	thread.closeCount.Add(1)
+	first := thread.closed.CompareAndSwap(false, true)
+	if first {
+		thread.closeCount.Add(1)
+	}
 	if thread.closeStart != nil {
 		thread.startOnce.Do(func() { close(thread.closeStart) })
 	}
@@ -71,7 +78,10 @@ func (thread *fakeRuntimeThread) Close() error {
 		<-thread.closeGate
 	}
 	thread.doneOnce.Do(func() { close(thread.done) })
-	return nil
+	if first && thread.onClose != nil {
+		thread.onClose()
+	}
+	return thread.closeErr
 }
 
 type fakeRuntimeFactory struct {
@@ -81,6 +91,7 @@ type fakeRuntimeFactory struct {
 	configs   []agentruntime.ThreadConfig
 	started   int
 	startGate <-chan struct{}
+	onStart   func()
 }
 
 func (factory *fakeRuntimeFactory) start(_ Config, config agentruntime.ThreadConfig) (runtimeThread, error) {
@@ -105,6 +116,9 @@ func (factory *fakeRuntimeFactory) start(_ Config, config agentruntime.ThreadCon
 	}
 	if result == nil {
 		return nil, errors.New("unexpected fake thread start")
+	}
+	if factory.onStart != nil {
+		factory.onStart()
 	}
 	return result, nil
 }
@@ -325,6 +339,39 @@ func TestRuntimeLocalizesProtocolFailureAndPreservesSibling(t *testing.T) {
 	}
 }
 
+func TestRuntimeLocalizesThreadCleanupFailureAndPreservesSibling(t *testing.T) {
+	const secret = "cleanup-secret-do-not-echo"
+	first := newFakeRuntimeThread(`{}`)
+	first.closeErr = fmt.Errorf("remove root %s: access denied", secret)
+	second := newFakeRuntimeThread(`{"valid":true}`)
+	runtime := testRuntime(t, &fakeRuntimeFactory{threads: []*fakeRuntimeThread{first, second}})
+	firstHandle, _ := runtime.StartThread(testThreadConfig(runtime))
+	secondHandle, _ := runtime.StartThread(testThreadConfig(runtime))
+	if err := runtime.CloseThread(firstHandle); !errors.Is(err, agentruntime.ErrThreadFailed) || !errors.Is(err, agentruntime.ErrRuntimeCleanup) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("localized cleanup error = %v", err)
+	}
+	if output, err := runtime.RunTurn(secondHandle, "continue"); err != nil || string(output) != `{"valid":true}` {
+		t.Fatalf("sibling after cleanup error = %s, %v", output, err)
+	}
+}
+
+func TestRuntimeGlobalCloseSanitizesCleanupFailure(t *testing.T) {
+	const secret = "global-cleanup-secret"
+	thread := newFakeRuntimeThread(`{}`)
+	thread.closeErr = fmt.Errorf("job close leaked %s", secret)
+	runtime := testRuntime(t, &fakeRuntimeFactory{threads: []*fakeRuntimeThread{thread}})
+	if _, err := runtime.StartThread(testThreadConfig(runtime)); err != nil {
+		t.Fatal(err)
+	}
+	err := runtime.Close()
+	if !errors.Is(err, agentruntime.ErrRuntimeCleanup) || errors.Is(err, agentruntime.ErrThreadFailed) || strings.Contains(err.Error(), secret) {
+		t.Fatalf("global cleanup error = %v", err)
+	}
+	if again := runtime.Close(); again == nil || again.Error() != err.Error() {
+		t.Fatalf("idempotent close error = %v, want %v", again, err)
+	}
+}
+
 func TestRuntimeLocalizesEveryOwnedTurnFailure(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -476,6 +523,143 @@ func TestRuntimeRejectsForeignAndStaleHandlesAcrossGenerations(t *testing.T) {
 	}
 }
 
+func TestRuntimeRepeatedLifecycleStress(t *testing.T) {
+	const cycles = 40
+	for cycle := 0; cycle < cycles; cycle++ {
+		var live atomic.Int32
+		newTracked := func(output string) *fakeRuntimeThread {
+			thread := newFakeRuntimeThread(output)
+			thread.onClose = func() { live.Add(-1) }
+			return thread
+		}
+		first := newTracked(`{"slot":1}`)
+		second := newTracked(`{"slot":2}`)
+		third := newTracked(`{"slot":3}`)
+		gate := make(chan struct{})
+		closeStarted := make(chan struct{})
+		replacement := newTracked(`{"slot":4}`)
+		replacement.closeGate = gate
+		replacement.closeStart = closeStarted
+		factory := &fakeRuntimeFactory{
+			threads: []*fakeRuntimeThread{first, second, third, replacement},
+			onStart: func() { live.Add(1) },
+		}
+		workspace := t.TempDir()
+		runtime := newRuntime(Config{Executable: "qwen", Workspace: workspace, JSONContract: "one object"}, runtimeDependencies{
+			startThread: factory.start,
+			after:       time.After,
+		})
+		config := testThreadConfig(runtime)
+		handles := make([]agentruntime.Thread, 3)
+		for index := range handles {
+			var err error
+			handles[index], err = runtime.StartThread(config)
+			if err != nil {
+				t.Fatalf("cycle %d start %d: %v", cycle, index, err)
+			}
+			if _, err := runtime.RunTurn(handles[index], "turn"); err != nil {
+				t.Fatalf("cycle %d turn %d: %v", cycle, index, err)
+			}
+		}
+		if live.Load() != 3 || len(runtime.threads) != 3 {
+			t.Fatalf("cycle %d initial live = %d/%d", cycle, live.Load(), len(runtime.threads))
+		}
+
+		first.runErr = fmt.Errorf("%w: localized cycle %d", ErrProtocol, cycle)
+		if _, err := runtime.RunTurn(handles[0], "fail"); !errors.Is(err, agentruntime.ErrThreadFailed) {
+			t.Fatalf("cycle %d local failure: %v", cycle, err)
+		}
+		if live.Load() != 2 || len(runtime.threads) != 2 {
+			t.Fatalf("cycle %d after failure live = %d/%d", cycle, live.Load(), len(runtime.threads))
+		}
+		first.fail(fmt.Errorf("%w: late provider event", ErrProtocol))
+		if _, err := runtime.RunTurn(handles[2], "after late event"); err != nil {
+			t.Fatalf("cycle %d late event crossed thread: %v", cycle, err)
+		}
+
+		fresh, err := runtime.StartThread(config)
+		if err != nil {
+			t.Fatalf("cycle %d replacement: %v", cycle, err)
+		}
+		if fresh.(*threadHandle).generation <= handles[2].(*threadHandle).generation || live.Load() != 3 {
+			t.Fatalf("cycle %d generation/live invariant failed", cycle)
+		}
+		if err := runtime.CloseThread(handles[1]); err != nil {
+			t.Fatalf("cycle %d close second: %v", cycle, err)
+		}
+		if live.Load() != 2 || len(runtime.threads) != 2 {
+			t.Fatalf("cycle %d after independent close live = %d/%d", cycle, live.Load(), len(runtime.threads))
+		}
+		if _, err := runtime.RunTurn(handles[1], "stale"); err == nil {
+			t.Fatalf("cycle %d accepted stale handle", cycle)
+		}
+
+		foreignBackend := newFakeRuntimeThread(`{}`)
+		foreignRuntime := newRuntime(Config{Workspace: workspace}, runtimeDependencies{startThread: (&fakeRuntimeFactory{threads: []*fakeRuntimeThread{foreignBackend}}).start})
+		foreign, err := foreignRuntime.StartThread(config)
+		if err != nil {
+			t.Fatalf("cycle %d foreign start: %v", cycle, err)
+		}
+		if _, err := runtime.RunTurn(foreign, "foreign"); err == nil {
+			t.Fatalf("cycle %d accepted foreign handle", cycle)
+		}
+		if err := foreignRuntime.Close(); err != nil {
+			t.Fatalf("cycle %d foreign close: %v", cycle, err)
+		}
+
+		threadClose := make(chan error, 1)
+		go func() { threadClose <- runtime.CloseThread(fresh) }()
+		select {
+		case <-closeStarted:
+		case <-time.After(time.Second):
+			t.Fatalf("cycle %d thread close did not reach teardown", cycle)
+		}
+		runtimeClose := make(chan error, 1)
+		go func() { runtimeClose <- runtime.Close() }()
+		deadline := time.Now().Add(time.Second)
+		for {
+			runtime.mu.Lock()
+			closing := runtime.closing
+			runtime.mu.Unlock()
+			if closing {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("cycle %d runtime close did not reach checkpoint", cycle)
+			}
+			goruntime.Gosched()
+		}
+		select {
+		case err := <-runtimeClose:
+			t.Fatalf("cycle %d close bypassed in-flight teardown: %v", cycle, err)
+		default:
+		}
+		close(gate)
+		select {
+		case err := <-threadClose:
+			if err != nil {
+				t.Fatalf("cycle %d thread close: %v", cycle, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("cycle %d thread teardown timed out", cycle)
+		}
+		select {
+		case err := <-runtimeClose:
+			if err != nil {
+				t.Fatalf("cycle %d runtime close: %v", cycle, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("cycle %d runtime teardown timed out", cycle)
+		}
+		if live.Load() != 0 || len(runtime.threads) != 0 {
+			t.Fatalf("cycle %d final live = %d/%d", cycle, live.Load(), len(runtime.threads))
+		}
+		if err := runtime.Close(); err != nil {
+			t.Fatalf("cycle %d idempotent close: %v", cycle, err)
+		}
+	}
+}
+
 func TestQwenSafeErrorClassificationMatrix(t *testing.T) {
 	const secret = "credential-env-prompt-response-file-content"
 	tests := []struct {
@@ -508,8 +692,12 @@ func TestQwenSafeErrorClassificationMatrix(t *testing.T) {
 
 func TestQwenSafeErrorRetainsOnlyAllowlistedCapabilityContext(t *testing.T) {
 	const secret = "credential-body-do-not-echo"
-	err := safeRuntimeError("start thread", fmt.Errorf("%w: missing promptCapabilities: %s", ErrIncompatible, secret))
+	err := safeRuntimeError("start thread", withDiagnosticContext(fmt.Errorf("%w: missing promptCapabilities: %s", ErrIncompatible, secret), diagnosticPromptCapabilities))
 	if !errors.Is(err, agentruntime.ErrRuntimeIncompatible) || !strings.Contains(err.Error(), "promptCapabilities") || strings.Contains(err.Error(), secret) {
 		t.Fatalf("capability diagnostic = %q", err)
+	}
+	raw := safeRuntimeError("start thread", fmt.Errorf("%w: agent %s", ErrIncompatible, secret))
+	if strings.Contains(raw.Error(), "(agent)") || strings.Contains(raw.Error(), secret) {
+		t.Fatalf("untyped provider text escaped diagnostic boundary = %q", raw)
 	}
 }

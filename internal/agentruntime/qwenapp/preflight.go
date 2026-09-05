@@ -48,11 +48,11 @@ func validateProcessStartupContract(process *Process) (string, string, error) {
 	}
 	expectedArgs := qwenArgs(process.config.JSONContract, process.artifactRoot)
 	if process.command.Dir != process.workspaceRoot || len(process.command.Args) != len(expectedArgs)+1 {
-		return "", "", fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible)
+		return "", "", withDiagnosticContext(fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible), diagnosticStartupRoot)
 	}
 	for index := range expectedArgs {
 		if process.command.Args[index+1] != expectedArgs[index] {
-			return "", "", fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible)
+			return "", "", withDiagnosticContext(fmt.Errorf("%w: Qwen startup-root contract", ErrIncompatible), diagnosticStartupRoot)
 		}
 	}
 	return process.workspaceRoot, process.artifactRoot, nil
@@ -68,7 +68,7 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 		},
 	}, &initialized, func() error {
 		if initialized.ProtocolVersion != acpProtocolVersion {
-			return fmt.Errorf("%w: initialize protocolVersion", ErrIncompatible)
+			return withDiagnosticContext(fmt.Errorf("%w: initialize protocolVersion", ErrIncompatible), diagnosticProtocolVersion)
 		}
 		if err := validateMandatoryCapabilities(initialized.AgentCapabilities); err != nil {
 			return err
@@ -91,7 +91,7 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 	var session newSessionResponse
 	if err := connection.callAndCommit("session/new", newSessionParams{CWD: workspace, MCPServers: []any{}}, &session, func() error {
 		if session.SessionID == "" {
-			return fmt.Errorf("%w: session/new sessionId", ErrIncompatible)
+			return withDiagnosticContext(fmt.Errorf("%w: session/new sessionId", ErrIncompatible), diagnosticSessionLifecycle)
 		}
 		if inventory, present, err := preflightStatusFromMeta(startupRoot, session.Meta); err != nil {
 			return err
@@ -123,13 +123,13 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 // by the conformance scenarios because probing it would require a model turn.
 func validateMandatoryCapabilities(capabilities *agentCapabilities) error {
 	if capabilities == nil {
-		return fmt.Errorf("%w: missing agentCapabilities", ErrIncompatible)
+		return withDiagnosticContext(fmt.Errorf("%w: missing agentCapabilities", ErrIncompatible), diagnosticAgentCapabilities)
 	}
 	if capabilities.PromptCapabilities == nil {
-		return fmt.Errorf("%w: missing promptCapabilities", ErrIncompatible)
+		return withDiagnosticContext(fmt.Errorf("%w: missing promptCapabilities", ErrIncompatible), diagnosticPromptCapabilities)
 	}
 	if capabilities.SessionCapabilities == nil {
-		return fmt.Errorf("%w: missing sessionCapabilities", ErrIncompatible)
+		return withDiagnosticContext(fmt.Errorf("%w: missing sessionCapabilities", ErrIncompatible), diagnosticSessionCapabilities)
 	}
 	return nil
 }
@@ -141,7 +141,13 @@ func incompatibleCall(method string, cause error) error {
 	if errors.Is(cause, ErrIncompatible) {
 		return cause
 	}
-	return fmt.Errorf("%w: %s lifecycle", ErrIncompatible, safeMethod(method))
+	context := diagnosticNone
+	if method == "initialize" {
+		context = diagnosticInitializeLifecycle
+	} else if method == "session/new" {
+		context = diagnosticSessionLifecycle
+	}
+	return withDiagnosticContext(fmt.Errorf("%w: %s lifecycle", ErrIncompatible, safeMethod(method)), context)
 }
 
 // preflightStatusFromMeta recognizes the narrow optional status keys used by
@@ -158,15 +164,15 @@ func preflightStatusFromMeta(expectedStartupRoot string, values ...json.RawMessa
 		}
 		var meta map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &meta); err != nil {
-			return nil, false, fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible)
+			return nil, false, withDiagnosticContext(fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible), diagnosticToolInventory)
 		}
 		if startupRaw, ok := meta["startupRoot"]; ok {
 			var startupRoot string
 			if json.Unmarshal(startupRaw, &startupRoot) != nil || startupRoot == "" {
-				return nil, false, fmt.Errorf("%w: malformed startup-root status", ErrIncompatible)
+				return nil, false, withDiagnosticContext(fmt.Errorf("%w: malformed startup-root status", ErrIncompatible), diagnosticStartupRoot)
 			}
 			if startupRoot != expectedStartupRoot {
-				return nil, false, fmt.Errorf("%w: contradictory startup-root status", ErrIncompatible)
+				return nil, false, withDiagnosticContext(fmt.Errorf("%w: contradictory startup-root status", ErrIncompatible), diagnosticStartupRoot)
 			}
 		}
 		inventoryRaw, ok := meta["toolInventory"]
@@ -177,14 +183,14 @@ func preflightStatusFromMeta(expectedStartupRoot string, values ...json.RawMessa
 		decoder := json.NewDecoder(bytes.NewReader(inventoryRaw))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&inventory); err != nil {
-			return nil, false, fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible)
+			return nil, false, withDiagnosticContext(fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible), diagnosticToolInventory)
 		}
 		if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-			return nil, false, fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible)
+			return nil, false, withDiagnosticContext(fmt.Errorf("%w: malformed tool inventory status", ErrIncompatible), diagnosticToolInventory)
 		}
 		sort.Strings(inventory)
 		if present && !equalStrings(found, inventory) {
-			return nil, false, fmt.Errorf("%w: contradictory tool inventory status", ErrIncompatible)
+			return nil, false, withDiagnosticContext(fmt.Errorf("%w: contradictory tool inventory status", ErrIncompatible), diagnosticToolInventory)
 		}
 		found, present = inventory, true
 	}

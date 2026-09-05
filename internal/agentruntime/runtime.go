@@ -32,6 +32,7 @@ var (
 	ErrRuntimeIncompatible  = errors.New("agent runtime is incompatible")
 	ErrRuntimeProtocol      = errors.New("agent runtime protocol violation")
 	ErrStructuredResponse   = errors.New("agent structured response is invalid")
+	ErrRuntimeCleanup       = errors.New("agent thread cleanup failed")
 	// ErrPermissionDenied reports that an adapter rejected a filesystem
 	// operation under the immutable turn policy. The error is deliberately
 	// provider-neutral and contains no requested path or file content.

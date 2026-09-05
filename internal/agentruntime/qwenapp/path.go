@@ -21,7 +21,7 @@ func ResolveExecutable(name string) (string, error) {
 			return "", fmt.Errorf("stat Qwen executable: %w", err)
 		}
 		if !info.Mode().IsRegular() {
-			return "", errors.New("Qwen executable must be a regular file")
+			return "", withDiagnosticContext(errors.New("Qwen executable must be a regular file"), diagnosticRegularFile)
 		}
 		return filepath.Clean(name), nil
 	}
@@ -38,7 +38,7 @@ func ResolveExecutable(name string) (string, error) {
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", errors.New("resolved Qwen executable must be a regular file")
+		return "", withDiagnosticContext(errors.New("resolved Qwen executable must be a regular file"), diagnosticRegularFile)
 	}
 	return filepath.Clean(resolved), nil
 }

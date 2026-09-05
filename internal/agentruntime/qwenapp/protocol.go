@@ -155,7 +155,7 @@ func validateToolInventory(names []string) error {
 	want := allowedToolNames[:]
 	for index := 1; index < len(got); index++ {
 		if got[index] == got[index-1] {
-			return fmt.Errorf("%w: duplicate tool %s", ErrIncompatible, safeToolName(got[index]))
+			return withDiagnosticContext(fmt.Errorf("%w: duplicate tool %s", ErrIncompatible, safeToolName(got[index])), toolDiagnosticContext(got[index]))
 		}
 	}
 	wanted := make(map[string]struct{}, len(want))
@@ -166,12 +166,12 @@ func validateToolInventory(names []string) error {
 	for _, name := range got {
 		seen[name] = struct{}{}
 		if _, ok := wanted[name]; !ok {
-			return fmt.Errorf("%w: unexpected tool %s", ErrIncompatible, safeToolName(name))
+			return withDiagnosticContext(fmt.Errorf("%w: unexpected tool %s", ErrIncompatible, safeToolName(name)), toolDiagnosticContext(name))
 		}
 	}
 	for _, name := range want {
 		if _, ok := seen[name]; !ok {
-			return fmt.Errorf("%w: missing required tool %s", ErrIncompatible, name)
+			return withDiagnosticContext(fmt.Errorf("%w: missing required tool %s", ErrIncompatible, name), toolDiagnosticContext(name))
 		}
 	}
 	return nil
