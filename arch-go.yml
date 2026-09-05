@@ -14,6 +14,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
+        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/specflow$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'

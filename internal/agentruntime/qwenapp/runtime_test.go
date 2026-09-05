@@ -138,6 +138,26 @@ func testThreadConfig(runtime *Runtime) agentruntime.ThreadConfig {
 	return agentruntime.ThreadConfig{Workspace: runtime.config.Workspace, OutputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 
+func TestStartRuntimeRequiresAndClonesEnvelopeSchema(t *testing.T) {
+	for _, schema := range []json.RawMessage{nil, json.RawMessage(`[]`), json.RawMessage(`{"type":"object"} trailing`)} {
+		runtime, err := StartRuntime(Config{EnvelopeSchema: schema})
+		if runtime != nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "qwen configure runtime") {
+			t.Fatalf("StartRuntime(%s) = %#v, %v", schema, runtime, err)
+		}
+	}
+
+	schema := json.RawMessage(`{"type":"object"}`)
+	runtime, err := StartRuntime(Config{EnvelopeSchema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	schema[0] = '['
+	if got := string(runtime.config.EnvelopeSchema); got != `{"type":"object"}` {
+		t.Fatalf("runtime retained mutable envelope schema: %s", got)
+	}
+}
+
 func TestRuntimeOwnsIndependentContainedThreads(t *testing.T) {
 	first := newFakeRuntimeThread(`{"thread":1}`)
 	second := newFakeRuntimeThread(`{"thread":2}`)
@@ -178,7 +198,12 @@ func TestRuntimeProductionFactoryUsesOneProcessAndSessionPerThread(t *testing.T)
 	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
 	t.Setenv("STEPAN_QWEN_ACP_CASE", "structured-turn")
 	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
-	runtime, err := StartRuntime(Config{Executable: absoluteTestExecutable(t), Workspace: workspace, JSONContract: testJSONContract})
+	runtime, err := StartRuntime(Config{
+		Executable:     absoluteTestExecutable(t),
+		Workspace:      workspace,
+		JSONContract:   testJSONContract,
+		EnvelopeSchema: json.RawMessage(`{"type":"object"}`),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

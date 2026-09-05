@@ -71,6 +71,7 @@ func NewProcess(config Config, artifactRoot string) *Process {
 
 func newProcess(config Config, artifactRoot string, deps processDependencies) *Process {
 	config.JSONContract = strings.Clone(config.JSONContract)
+	config.EnvelopeSchema = append([]byte(nil), config.EnvelopeSchema...)
 	return &Process{
 		config:       config,
 		artifactRoot: artifactRoot,

@@ -67,6 +67,9 @@ type Runtime struct {
 // StartRuntime creates a lazy Qwen runtime. Executable resolution, process
 // containment, ACP initialization, and session preflight happen per thread.
 func StartRuntime(config Config) (*Runtime, error) {
+	if err := validateSchemaObject(config.EnvelopeSchema); err != nil {
+		return nil, safeRuntimeError("configure runtime", errors.Join(ErrConfiguration, err))
+	}
 	return newRuntime(config, runtimeDependencies{
 		startThread: startQwenThread,
 		after:       time.After,
@@ -77,6 +80,7 @@ func newRuntime(config Config, deps runtimeDependencies) *Runtime {
 	config.Executable = strings.Clone(config.Executable)
 	config.Workspace = strings.Clone(config.Workspace)
 	config.JSONContract = strings.Clone(config.JSONContract)
+	config.EnvelopeSchema = append(json.RawMessage(nil), config.EnvelopeSchema...)
 	if deps.startThread == nil {
 		deps.startThread = startQwenThread
 	}

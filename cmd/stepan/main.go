@@ -11,6 +11,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
@@ -90,26 +91,67 @@ func composePlanningFlow(root string, session *specflow.Session, config agentCon
 	if err != nil {
 		return nil, nil, err
 	}
-	application, err := specflow.NewApplicationController(root, session, manager, flow, specflow.RuntimeIdentity{Provider: string(config.kind), Model: "default"})
+	application, err := specflow.NewApplicationController(root, session, manager, flow, runtimeIdentity(config))
 	if err != nil {
 		return nil, nil, err
 	}
 	return application, registry, nil
 }
 
+func runtimeIdentity(config agentConfig) specflow.RuntimeIdentity {
+	return specflow.RuntimeIdentity{Provider: string(config.kind), Model: "default"}
+}
+
 func runtimeFactory(config agentConfig, root string) func(context.Context) (agentruntime.Runtime, error) {
+	return runtimeFactoryWithStarters(config, root, defaultRuntimeStarters())
+}
+
+type runtimeStarters struct {
+	codex  func(string, string) (agentruntime.Runtime, error)
+	claude func(context.Context, claudeapp.Config) (agentruntime.Runtime, error)
+	qwen   func(qwenapp.Config) (agentruntime.Runtime, error)
+}
+
+func defaultRuntimeStarters() runtimeStarters {
+	return runtimeStarters{
+		codex: func(executable, workspace string) (agentruntime.Runtime, error) {
+			return codexapp.StartRuntime(executable, workspace)
+		},
+		claude: func(ctx context.Context, config claudeapp.Config) (agentruntime.Runtime, error) {
+			return claudeapp.StartRuntime(ctx, config)
+		},
+		qwen: func(config qwenapp.Config) (agentruntime.Runtime, error) {
+			return qwenapp.StartRuntime(config)
+		},
+	}
+}
+
+func runtimeFactoryWithStarters(config agentConfig, root string, starters runtimeStarters) func(context.Context) (agentruntime.Runtime, error) {
 	switch config.kind {
 	case agentClaude:
 		return func(ctx context.Context) (agentruntime.Runtime, error) {
-			return claudeapp.StartRuntime(ctx, claudeapp.Config{
+			return starters.claude(ctx, claudeapp.Config{
 				Executable:     config.executable,
 				Workspace:      root,
 				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
 			})
 		}
+	case agentQwen:
+		return func(context.Context) (agentruntime.Runtime, error) {
+			return starters.qwen(qwenapp.Config{
+				Executable:     config.executable,
+				Workspace:      root,
+				JSONContract:   qwenapp.JSONContract,
+				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
+			})
+		}
+	case agentCodex:
+		return func(context.Context) (agentruntime.Runtime, error) {
+			return starters.codex(config.executable, root)
+		}
 	default:
 		return func(context.Context) (agentruntime.Runtime, error) {
-			return codexapp.StartRuntime(config.executable, root)
+			return nil, fmt.Errorf("unknown agent %q: %w", config.kind, agentruntime.ErrRuntimeConfiguration)
 		}
 	}
 }
