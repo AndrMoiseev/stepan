@@ -2,9 +2,10 @@
 package qwenapp
 
 import (
-	"errors"
 	"os"
 	"os/exec"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 const (
@@ -15,12 +16,12 @@ const (
 var (
 	// ErrConfiguration classifies executable, workspace, contract, and root
 	// validation failures that happen before a child is started.
-	ErrConfiguration = errors.New("Qwen process configuration is invalid")
+	ErrConfiguration = agentruntime.ErrRuntimeConfiguration
 	// ErrStartup classifies failures to start the selected executable.
-	ErrStartup = errors.New("Qwen process failed to start")
+	ErrStartup = agentruntime.ErrRuntimeStartup
 	// ErrContainment classifies failures to create, prepare, or assign the
 	// process-tree supervisor.
-	ErrContainment = errors.New("Qwen process containment failed")
+	ErrContainment = agentruntime.ErrRuntimeContainment
 )
 
 // Config is immutable input shared by the contained processes of one Qwen

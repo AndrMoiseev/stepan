@@ -10,7 +10,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-var ErrRepairExhausted = errors.New("structured response repair exhausted")
+var ErrRepairExhausted = agentruntime.ErrStructuredResponse
 
 type turnRunner struct {
 	connection   *Connection

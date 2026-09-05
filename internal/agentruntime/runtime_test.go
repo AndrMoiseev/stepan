@@ -2,6 +2,8 @@ package agentruntime
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -37,5 +39,19 @@ func TestValidateOutputUsesImmutableThreadSchema(t *testing.T) {
 		if err := ValidateOutput(schema, output); err == nil {
 			t.Errorf("invalid output accepted: %s", output)
 		}
+	}
+}
+
+func TestMarkThreadFailedPreservesScopeAndCause(t *testing.T) {
+	cause := fmt.Errorf("decode: %w", ErrRuntimeProtocol)
+	err := MarkThreadFailed(cause)
+	if !errors.Is(err, ErrThreadFailed) || !errors.Is(err, ErrRuntimeProtocol) {
+		t.Fatalf("thread failure = %v", err)
+	}
+	if again := MarkThreadFailed(err); again != err {
+		t.Fatal("thread failure wrapping is not idempotent")
+	}
+	if MarkThreadFailed(nil) != nil {
+		t.Fatal("nil cause became a failure")
 	}
 }

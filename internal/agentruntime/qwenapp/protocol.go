@@ -15,16 +15,16 @@ const acpProtocolVersion = 1
 var (
 	// ErrProtocol classifies an ambiguous or corrupt ACP stream. It deliberately
 	// carries no wire payload; callers may safely show the error to users.
-	ErrProtocol = errors.New("agent protocol violation")
+	ErrProtocol = agentruntime.ErrRuntimeProtocol
 	// ErrIncompatible classifies a well-formed ACP peer that cannot satisfy the
 	// mandatory Stepan contract.
-	ErrIncompatible = errors.New("agent is incompatible")
+	ErrIncompatible = agentruntime.ErrRuntimeIncompatible
 	// ErrConnectionClosed is returned to every operation after the first fatal
 	// connection error.
 	ErrConnectionClosed = errors.New("agent connection closed")
 	// ErrTurnInProgress rejects a second prompt locally while the first prompt's
 	// terminal response is still being decoded and committed.
-	ErrTurnInProgress = errors.New("agent turn already in progress")
+	ErrTurnInProgress = agentruntime.ErrTurnInProgress
 	// ErrPermissionDenied classifies a filesystem operation rejected by the
 	// active-turn policy. It aliases the provider-neutral runtime category and
 	// never includes the requested path or file content.

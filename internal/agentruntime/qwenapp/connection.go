@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 type connectionOwner interface {
@@ -44,6 +46,7 @@ type Connection struct {
 	transport *transport
 	owner     connectionOwner
 	handler   connectionHandler
+	dispatch  sync.Mutex
 
 	mu               sync.Mutex
 	nextID           int64
@@ -92,6 +95,27 @@ func (connection *Connection) Err() error {
 func (connection *Connection) Close() error {
 	connection.fail(ErrConnectionClosed)
 	return nil
+}
+
+// checkpointClose fences the reader before process teardown. It waits for an
+// already-dispatched frame to finish, then invalidates all wire state without
+// waiting on the child; the owning thread closes the contained process next.
+func (connection *Connection) checkpointClose() {
+	connection.dispatch.Lock()
+	defer connection.dispatch.Unlock()
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.err != nil {
+		return
+	}
+	connection.err = ErrConnectionClosed
+	connection.pending = nil
+	connection.inboundCalls = nil
+	connection.activePrompt = ""
+	connection.activePermission = nil
+	connection.ready = false
+	connection.initialized = false
+	close(connection.done)
 }
 
 func (connection *Connection) call(method string, params, result any) error {
@@ -270,25 +294,32 @@ func (connection *Connection) respond(id requestID, result any) error {
 func (connection *Connection) read() {
 	for {
 		received, err := connection.transport.read()
+		connection.dispatch.Lock()
 		if err != nil {
 			connection.fail(protocolError(err))
+			connection.dispatch.Unlock()
 			return
 		}
+		keepReading := true
 		switch received.kind {
 		case responseMessage:
 			if !connection.deliverResponse(received) {
-				return
+				keepReading = false
 			}
 		case notificationMessage:
 			if err := connection.dispatchNotification(received); err != nil {
 				connection.fail(err)
-				return
+				keepReading = false
 			}
 		case requestMessage:
 			if err := connection.dispatchRequest(received); err != nil {
 				connection.fail(err)
-				return
+				keepReading = false
 			}
+		}
+		connection.dispatch.Unlock()
+		if !keepReading {
+			return
 		}
 	}
 }
@@ -561,6 +592,9 @@ func (err connectionError) Unwrap() []error {
 }
 
 func protocolError(cause error) error {
+	if errors.Is(cause, io.EOF) && !errors.Is(cause, errTruncatedNDJSON) {
+		return agentruntime.ErrRuntimeExited
+	}
 	category := "transport failure"
 	switch {
 	case errors.Is(cause, errInvalidNDJSON):
@@ -577,8 +611,6 @@ func protocolError(cause error) error {
 		category = "orphan response"
 	case errors.Is(cause, errDuplicateResponse):
 		category = "duplicate response"
-	case errors.Is(cause, io.EOF):
-		category = "unexpected transport close"
 	}
 	return fmt.Errorf("%w: %s", ErrProtocol, category)
 }

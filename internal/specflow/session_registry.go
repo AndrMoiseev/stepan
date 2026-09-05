@@ -156,7 +156,11 @@ func (r *SessionRegistry) StartThread(config agentruntime.ThreadConfig) (agentru
 }
 
 func (r *SessionRegistry) RunTurn(thread agentruntime.Thread, prompt string) (json.RawMessage, error) {
-	return r.runner.RunTurn(thread, prompt)
+	output, err := r.runner.RunTurn(thread, prompt)
+	if err != nil && errors.Is(err, agentruntime.ErrThreadFailed) {
+		err = errors.Join(err, r.CloseThread(thread))
+	}
+	return output, err
 }
 
 // CloseThread is the hard-close failure path used after a failed turn. Normal

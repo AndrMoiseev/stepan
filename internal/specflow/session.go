@@ -46,7 +46,7 @@ func (session *Session) StartThread(config agentruntime.ThreadConfig) (agentrunt
 		return nil, err
 	}
 	thread, err := slot.runtime.StartThread(config)
-	if err != nil {
+	if err != nil && !errors.Is(err, agentruntime.ErrThreadFailed) {
 		session.discard(slot)
 	}
 	return thread, err
@@ -60,7 +60,7 @@ func (session *Session) RunTurn(thread agentruntime.Thread, prompt string) (json
 		return nil, agentruntime.ErrRuntimeClosed
 	}
 	output, err := slot.runtime.RunTurn(thread, prompt)
-	if err != nil {
+	if err != nil && !errors.Is(err, agentruntime.ErrThreadFailed) {
 		session.discard(slot)
 	}
 	return output, err
@@ -74,6 +74,9 @@ func (session *Session) CloseThread(thread agentruntime.Thread) error {
 		return agentruntime.ErrRuntimeClosed
 	}
 	if err := slot.runtime.CloseThread(thread); err != nil {
+		if errors.Is(err, agentruntime.ErrThreadFailed) {
+			return err
+		}
 		session.discard(slot)
 		return err
 	}

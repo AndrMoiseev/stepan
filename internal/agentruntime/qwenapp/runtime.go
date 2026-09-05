@@ -1,0 +1,388 @@
+package qwenapp
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+)
+
+const interruptGracePeriod = 3 * time.Second
+
+// The non-zero-sized token makes pointer identity stable even under the Go
+// implementation's permitted coalescing of zero-sized allocations.
+type runtimeIdentity struct{ token byte }
+
+// threadHandle contains only process-local ownership data. ACP process,
+// session, and request identities never cross the adapter boundary.
+type threadHandle struct {
+	identity   *runtimeIdentity
+	generation uint64
+	state      *threadState
+}
+
+type threadState struct {
+	generation uint64
+	backend    runtimeThread
+	closed     bool
+	failure    error
+}
+
+type activeTurn struct {
+	thread *threadState
+	done   chan struct{}
+}
+
+type runtimeDependencies struct {
+	startThread func(Config, agentruntime.ThreadConfig) (runtimeThread, error)
+	after       func(time.Duration) <-chan time.Time
+}
+
+// Runtime owns a set of independent contained Qwen processes. Processes are
+// created lazily by StartThread and are never shared between logical threads.
+type Runtime struct {
+	config   Config
+	identity *runtimeIdentity
+	deps     runtimeDependencies
+	grace    time.Duration
+
+	mu          sync.Mutex
+	threads     map[uint64]*threadState
+	next        uint64
+	active      *activeTurn
+	closing     bool
+	interrupted bool
+	starting    sync.WaitGroup
+	tearingDown sync.WaitGroup
+	turnMu      sync.Mutex
+	closeOnce   sync.Once
+	closeDone   chan struct{}
+	closeErr    error
+}
+
+// StartRuntime creates a lazy Qwen runtime. Executable resolution, process
+// containment, ACP initialization, and session preflight happen per thread.
+func StartRuntime(config Config) (*Runtime, error) {
+	return newRuntime(config, runtimeDependencies{
+		startThread: startQwenThread,
+		after:       time.After,
+	}), nil
+}
+
+func newRuntime(config Config, deps runtimeDependencies) *Runtime {
+	config.Executable = strings.Clone(config.Executable)
+	config.Workspace = strings.Clone(config.Workspace)
+	config.JSONContract = strings.Clone(config.JSONContract)
+	if deps.startThread == nil {
+		deps.startThread = startQwenThread
+	}
+	if deps.after == nil {
+		deps.after = time.After
+	}
+	return &Runtime{
+		config: config, identity: &runtimeIdentity{}, deps: deps,
+		grace: interruptGracePeriod, threads: make(map[uint64]*threadState), closeDone: make(chan struct{}),
+	}
+}
+
+var _ agentruntime.Runtime = (*Runtime)(nil)
+
+func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	config = config.Clone()
+	config.BootstrapInstructions = strings.Clone(config.BootstrapInstructions)
+	if err := config.Validate(); err != nil {
+		return nil, agentruntime.MarkThreadFailed(safeRuntimeError("start thread", errors.Join(ErrConfiguration, err)))
+	}
+	if config.Workspace != runtime.config.Workspace {
+		return nil, agentruntime.MarkThreadFailed(safeRuntimeError("start thread", ErrConfiguration))
+	}
+
+	runtime.mu.Lock()
+	if err := runtime.stateErrorLocked(); err != nil {
+		runtime.mu.Unlock()
+		return nil, err
+	}
+	runtime.starting.Add(1)
+	runtime.mu.Unlock()
+	defer runtime.starting.Done()
+
+	backend, err := runtime.deps.startThread(runtime.config, config)
+	if err != nil {
+		if backend != nil {
+			backend.BeginClose()
+			_ = backend.Close()
+		}
+		runtime.mu.Lock()
+		stateErr := runtime.stateErrorLocked()
+		runtime.mu.Unlock()
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		return nil, agentruntime.MarkThreadFailed(safeRuntimeError("start thread", err))
+	}
+	if backend == nil {
+		runtime.mu.Lock()
+		stateErr := runtime.stateErrorLocked()
+		runtime.mu.Unlock()
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		return nil, agentruntime.MarkThreadFailed(safeRuntimeError("start thread", agentruntime.ErrRuntimeExited))
+	}
+
+	runtime.mu.Lock()
+	if stateErr := runtime.stateErrorLocked(); stateErr != nil {
+		runtime.mu.Unlock()
+		backend.BeginClose()
+		_ = backend.Close()
+		return nil, stateErr
+	}
+	select {
+	case <-backend.Done():
+		failure := backend.Err()
+		runtime.mu.Unlock()
+		_ = backend.Close()
+		return nil, agentruntime.MarkThreadFailed(safeRuntimeError("start thread", failure))
+	default:
+	}
+	runtime.next++
+	state := &threadState{generation: runtime.next, backend: backend}
+	runtime.threads[state.generation] = state
+	handle := &threadHandle{identity: runtime.identity, generation: state.generation, state: state}
+	runtime.mu.Unlock()
+
+	go runtime.monitor(state)
+	return handle, nil
+}
+
+func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json.RawMessage, error) {
+	state, err := runtime.lookup(handle)
+	if err != nil {
+		return nil, err
+	}
+	if !runtime.turnMu.TryLock() {
+		return nil, agentruntime.ErrTurnInProgress
+	}
+	defer runtime.turnMu.Unlock()
+
+	runtime.mu.Lock()
+	if err := runtime.validateStateLocked(state); err != nil {
+		runtime.mu.Unlock()
+		return nil, err
+	}
+	active := &activeTurn{thread: state, done: make(chan struct{})}
+	runtime.active = active
+	runtime.mu.Unlock()
+	defer func() {
+		close(active.done)
+		runtime.mu.Lock()
+		if runtime.active == active {
+			runtime.active = nil
+		}
+		runtime.mu.Unlock()
+	}()
+
+	output, runErr := state.backend.RunTurn(prompt)
+	if runErr == nil {
+		return append(json.RawMessage(nil), output...), nil
+	}
+	runtime.mu.Lock()
+	interrupted := runtime.interrupted
+	runtime.mu.Unlock()
+	if interrupted {
+		return nil, agentruntime.ErrTurnInterrupted
+	}
+	if errors.Is(runErr, agentruntime.ErrTurnInProgress) {
+		return nil, agentruntime.ErrTurnInProgress
+	}
+	classified := safeRuntimeError("run turn", runErr)
+	runtime.failThread(state, classified)
+	return nil, agentruntime.MarkThreadFailed(classified)
+}
+
+func (runtime *Runtime) CloseThread(handle agentruntime.Thread) error {
+	state, err := runtime.lookup(handle)
+	if err != nil {
+		return err
+	}
+	runtime.mu.Lock()
+	if err := runtime.validateStateLocked(state); err != nil {
+		runtime.mu.Unlock()
+		return err
+	}
+	state.closed = true // close checkpoint precedes transport/process teardown
+	delete(runtime.threads, state.generation)
+	state.backend.BeginClose()
+	runtime.tearingDown.Add(1)
+	runtime.mu.Unlock()
+	defer runtime.tearingDown.Done()
+	return state.backend.Close()
+}
+
+// Interrupt preserves the provider-neutral global semantics: cancel only the
+// active session, close its pending approvals, wait at most three seconds, and
+// then tear down every process tree and invalidate every handle.
+func (runtime *Runtime) Interrupt() error {
+	runtime.mu.Lock()
+	if runtime.closing {
+		runtime.mu.Unlock()
+		<-runtime.closeDone
+		return runtime.closeErr
+	}
+	runtime.interrupted = true
+	active := runtime.active
+	runtime.mu.Unlock()
+
+	if active != nil {
+		go func() { _ = active.thread.backend.Cancel() }()
+		grace := runtime.grace
+		if grace > interruptGracePeriod {
+			grace = interruptGracePeriod
+		}
+		select {
+		case <-active.done:
+		case <-runtime.deps.after(grace):
+		}
+	}
+	return runtime.Close()
+}
+
+func (runtime *Runtime) Close() error {
+	runtime.closeOnce.Do(func() {
+		runtime.mu.Lock()
+		runtime.closing = true // global close checkpoint
+		threads := make([]*threadState, 0, len(runtime.threads))
+		for generation, state := range runtime.threads {
+			state.closed = true
+			state.backend.BeginClose()
+			threads = append(threads, state)
+			delete(runtime.threads, generation)
+		}
+		runtime.mu.Unlock()
+
+		// A start that crossed the checkpoint observes closing before publish and
+		// closes its freshly-created process itself.
+		runtime.starting.Wait()
+		runtime.tearingDown.Wait()
+		for _, state := range threads {
+			runtime.closeErr = errors.Join(runtime.closeErr, state.backend.Close())
+		}
+		close(runtime.closeDone)
+	})
+	<-runtime.closeDone
+	return runtime.closeErr
+}
+
+func (runtime *Runtime) lookup(value agentruntime.Thread) (*threadState, error) {
+	handle, ok := value.(*threadHandle)
+	if !ok || handle == nil || handle.identity != runtime.identity || handle.state == nil || handle.generation == 0 {
+		return nil, errors.New("invalid Qwen thread handle")
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if err := runtime.stateErrorLocked(); err != nil {
+		return nil, err
+	}
+	state := runtime.threads[handle.generation]
+	if state != handle.state || state.generation != handle.generation || state.closed {
+		if handle.state.failure != nil {
+			return nil, agentruntime.MarkThreadFailed(handle.state.failure)
+		}
+		return nil, errors.New("invalid Qwen thread handle")
+	}
+	return state, nil
+}
+
+func (runtime *Runtime) validateStateLocked(state *threadState) error {
+	if err := runtime.stateErrorLocked(); err != nil {
+		return err
+	}
+	if state == nil || state.closed || runtime.threads[state.generation] != state {
+		return errors.New("invalid Qwen thread handle")
+	}
+	return nil
+}
+
+func (runtime *Runtime) stateErrorLocked() error {
+	if runtime.interrupted {
+		return agentruntime.ErrTurnInterrupted
+	}
+	if runtime.closing {
+		return agentruntime.ErrRuntimeClosed
+	}
+	return nil
+}
+
+func (runtime *Runtime) monitor(state *threadState) {
+	<-state.backend.Done()
+	runtime.failThread(state, safeRuntimeError("connection", state.backend.Err()))
+}
+
+func (runtime *Runtime) failThread(state *threadState, failure error) {
+	runtime.mu.Lock()
+	if runtime.threads[state.generation] != state || state.closed || runtime.closing {
+		runtime.mu.Unlock()
+		return
+	}
+	state.failure = failure
+	state.closed = true
+	delete(runtime.threads, state.generation)
+	state.backend.BeginClose()
+	runtime.tearingDown.Add(1)
+	runtime.mu.Unlock()
+	defer runtime.tearingDown.Done()
+	_ = state.backend.Close()
+}
+
+// safeRuntimeError retains only provider-neutral categories. Lower layers
+// already keep method/capability names bounded, but runtime errors are the
+// user-facing boundary and therefore never forward arbitrary child text.
+func safeRuntimeError(action string, err error) error {
+	if err == nil {
+		err = agentruntime.ErrRuntimeExited
+	}
+	categories := make([]error, 0, 3)
+	for _, category := range []error{
+		agentruntime.ErrRuntimeConfiguration,
+		agentruntime.ErrRuntimeStartup,
+		agentruntime.ErrRuntimeContainment,
+		agentruntime.ErrRuntimeIncompatible,
+		agentruntime.ErrRuntimeProtocol,
+		agentruntime.ErrStructuredResponse,
+		agentruntime.ErrPermissionDenied,
+		agentruntime.ErrTurnInterrupted,
+		agentruntime.ErrTurnInProgress,
+		agentruntime.ErrRuntimeClosed,
+		agentruntime.ErrRuntimeExited,
+	} {
+		if errors.Is(err, category) {
+			categories = append(categories, category)
+		}
+	}
+	if len(categories) == 0 {
+		categories = append(categories, agentruntime.ErrRuntimeExited)
+	}
+	if context := safeRuntimeContext(err); context != "" {
+		return fmt.Errorf("qwen %s (%s): %w", action, context, errors.Join(categories...))
+	}
+	return fmt.Errorf("qwen %s: %w", action, errors.Join(categories...))
+}
+
+func safeRuntimeContext(err error) string {
+	message := err.Error()
+	for _, context := range []string{
+		"agentCapabilities", "promptCapabilities", "sessionCapabilities", "protocolVersion",
+		"startup-root contract", "initialize lifecycle", "session/new lifecycle",
+		"read_file", "write_file", "edit", "glob", "grep_search", "shell", "web", "agent",
+		"regular file",
+	} {
+		if strings.Contains(message, context) {
+			return context
+		}
+	}
+	return ""
+}
