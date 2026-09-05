@@ -87,68 +87,72 @@ func ClosedThread(t *testing.T, factory Factory) {
 	}
 }
 
-// ProviderParity exercises the complete contract shared by Codex and Claude:
-// author and reviewer messages/artifacts, independent logical sessions,
-// closing one role without affecting another, a fresh resume thread, and
-// rejection of provider output that tries to smuggle an artifact path or omit
-// a required transport placeholder.
+// ProviderParity exercises the complete provider-neutral planning contract:
+// intent/spec/plan author and reviewer dialogue, decisions, publication,
+// automatic rework, approval, independent logical sessions, and close. It then
+// starts a second runtime generation for durable resume and verifies that no
+// provider thread identity is needed to continue the flow.
 func ProviderParity(t *testing.T, factory ScriptFactory) {
 	t.Helper()
 	outputs := []json.RawMessage{
-		json.RawMessage(`{"kind":"message","message":"author question","decisions":[]}`),
+		json.RawMessage(`{"kind":"message","message":"intent question","decisions":[{"author":"agent","decision":"record scope","rationale":"the intent establishes the durable boundary","alternatives":[],"supersedes":[]}]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
+		json.RawMessage(`{"kind":"message","message":"spec question","decisions":[]}`),
 		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
 		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
-		json.RawMessage(`{"kind":"message","message":"review complete","decisions":[]}`),
+		json.RawMessage(`{"kind":"message","message":"material decision recorded","decisions":[{"author":"user","decision":"fix review finding SPEC-F-1","rationale":"the durable contract requires the correction","alternatives":[],"supersedes":[]}]}`),
 		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
-		json.RawMessage(`{"kind":"artifact","message":"","decisions":[],"path":"intent.md"}`),
-		json.RawMessage(`{"kind":"artifact","decisions":[]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
 	}
 	fixture := factory(t, outputs)
-	if fixture.Runtime == nil || fixture.Workspace == "" || len(fixture.OutputSchema) == 0 || fixture.Decode == nil {
-		t.Fatal("provider fixture is incomplete")
-	}
+	assertFixture(t, fixture)
 	t.Cleanup(func() { _ = fixture.Runtime.Close() })
 
-	authorRoot := externalArtifactRoot(t, fixture.Workspace)
+	intentRoot := externalArtifactRoot(t, fixture.Workspace)
+	intentConfig := roleConfig(fixture, "effective intent-author prompt", intentRoot)
+	assertWorkspacePolicy(t, fixture, intentConfig)
+	intentAuthor := startRole(t, fixture, intentConfig)
+	assertEnvelope(t, fixture, intentAuthor, "intent dialogue", "message", "intent question", 1)
+	writeArtifact(t, intentRoot, "intent.md", "# Intent\n")
+	assertEnvelope(t, fixture, intentAuthor, "publish intent", "artifact", "", 0)
+	assertArtifact(t, intentRoot, "intent.md", "# Intent\n")
+
+	specRoot := externalArtifactRoot(t, fixture.Workspace)
+	specAuthor := startRole(t, fixture, roleConfig(fixture, "effective spec-author prompt", specRoot))
+	assertEnvelope(t, fixture, specAuthor, "spec dialogue", "message", "spec question", 0)
+	writeArtifact(t, specRoot, "spec.md", "# Specification\n")
+	assertEnvelope(t, fixture, specAuthor, "publish spec", "artifact", "", 0)
+
 	reviewerRoot := externalArtifactRoot(t, fixture.Workspace)
-	authorConfig := roleConfig(fixture, "effective intent-author prompt", authorRoot)
-	assertWorkspacePolicy(t, fixture, authorConfig)
-	author := startRole(t, fixture, authorConfig)
 	reviewer := startRole(t, fixture, roleConfig(fixture, "effective spec-reviewer prompt", reviewerRoot))
-
-	assertEnvelope(t, fixture, author, "ask", "message", "author question")
-	writeArtifact(t, authorRoot, "intent.md", "# Intent\n")
-	assertEnvelope(t, fixture, author, "write", "artifact", "")
-	assertArtifact(t, authorRoot, "intent.md", "# Intent\n")
-
 	writeArtifact(t, reviewerRoot, "review.md", "# Review\n")
-	assertEnvelope(t, fixture, reviewer, "review", "artifact", "")
-	assertArtifact(t, reviewerRoot, "review.md", "# Review\n")
+	assertEnvelope(t, fixture, reviewer, "review spec", "artifact", "", 0)
+	assertEnvelope(t, fixture, reviewer, "material decision", "message", "material decision recorded", 1)
+	writeArtifact(t, specRoot, "spec.md", "# Revised specification\n")
+	assertEnvelope(t, fixture, specAuthor, "automatic rework", "artifact", "", 0)
+	writeArtifact(t, reviewerRoot, "review.md", "# Approved review\n")
+	assertEnvelope(t, fixture, reviewer, "review approval", "artifact", "", 0)
 
-	if err := fixture.Runtime.CloseThread(author); err != nil {
-		t.Fatalf("close author thread: %v", err)
+	if err := fixture.Runtime.CloseThread(specAuthor); err != nil {
+		t.Fatalf("close spec author thread: %v", err)
 	}
-	if _, err := fixture.Runtime.RunTurn(author, "closed"); err == nil {
+	if _, err := fixture.Runtime.RunTurn(specAuthor, "closed"); err == nil {
 		t.Fatal("closed author thread accepted a turn")
 	}
-	assertEnvelope(t, fixture, reviewer, "continue reviewer", "message", "review complete")
 	if err := fixture.Runtime.CloseThread(reviewer); err != nil {
 		t.Fatalf("close reviewer thread: %v", err)
 	}
 
-	resumeRoot := externalArtifactRoot(t, fixture.Workspace)
-	resume := startRole(t, fixture, roleConfig(fixture, "effective plan-author prompt\ndurable resume context", resumeRoot))
-	writeArtifact(t, resumeRoot, "plan.md", "# Plan\n")
-	assertEnvelope(t, fixture, resume, "resume", "artifact", "")
-
-	invalidRoot := externalArtifactRoot(t, fixture.Workspace)
-	invalid := startRole(t, fixture, roleConfig(fixture, "effective intent-author prompt", invalidRoot))
-	if _, err := fixture.Runtime.RunTurn(invalid, "path injection"); err == nil {
-		t.Fatal("adapter accepted artifact path in provider output")
-	}
-	if _, err := fixture.Runtime.RunTurn(invalid, "missing placeholder"); err == nil {
-		t.Fatal("adapter accepted artifact without required message placeholder")
-	}
+	planRoot := externalArtifactRoot(t, fixture.Workspace)
+	planAuthor := startRole(t, fixture, roleConfig(fixture, "effective plan-author prompt", planRoot))
+	writeArtifact(t, planRoot, "plan.md", "# Plan\n")
+	assertEnvelope(t, fixture, planAuthor, "publish plan", "artifact", "", 0)
+	planReviewerRoot := externalArtifactRoot(t, fixture.Workspace)
+	planReviewer := startRole(t, fixture, roleConfig(fixture, "effective plan-reviewer prompt", planReviewerRoot))
+	writeArtifact(t, planReviewerRoot, "review.md", "# Plan review\n")
+	assertEnvelope(t, fixture, planReviewer, "review plan", "artifact", "", 0)
 
 	if err := fixture.Runtime.Close(); err != nil {
 		t.Fatalf("close runtime: %v", err)
@@ -157,6 +161,45 @@ func ProviderParity(t *testing.T, factory ScriptFactory) {
 		if err := fixture.Wait(); err != nil {
 			t.Fatalf("provider fixture: %v", err)
 		}
+	}
+
+	resumeOutputs := []json.RawMessage{
+		json.RawMessage(`{"kind":"message","message":"resume question","decisions":[]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[]}`),
+		json.RawMessage(`{"kind":"artifact","message":"","decisions":[],"path":"intent.md"}`),
+		json.RawMessage(`{"kind":"artifact","decisions":[]}`),
+	}
+	resumedFixture := factory(t, resumeOutputs)
+	assertFixture(t, resumedFixture)
+	t.Cleanup(func() { _ = resumedFixture.Runtime.Close() })
+	resumeRoot := externalArtifactRoot(t, resumedFixture.Workspace)
+	resume := startRole(t, resumedFixture, roleConfig(resumedFixture, "effective plan-author prompt\ndurable documents, reviews, state, and mem-log", resumeRoot))
+	assertEnvelope(t, resumedFixture, resume, "resume dialogue", "message", "resume question", 0)
+	writeArtifact(t, resumeRoot, "plan.md", "# Resumed plan\n")
+	assertEnvelope(t, resumedFixture, resume, "resume publish", "artifact", "", 0)
+
+	invalidRoot := externalArtifactRoot(t, resumedFixture.Workspace)
+	invalid := startRole(t, resumedFixture, roleConfig(resumedFixture, "effective intent-author prompt", invalidRoot))
+	if _, err := resumedFixture.Runtime.RunTurn(invalid, "path injection"); err == nil {
+		t.Fatal("adapter accepted artifact path in provider output")
+	}
+	if _, err := resumedFixture.Runtime.RunTurn(invalid, "missing placeholder"); err == nil {
+		t.Fatal("adapter accepted artifact without required message placeholder")
+	}
+	if err := resumedFixture.Runtime.Close(); err != nil {
+		t.Fatalf("close resumed runtime: %v", err)
+	}
+	if resumedFixture.Wait != nil {
+		if err := resumedFixture.Wait(); err != nil {
+			t.Fatalf("resumed provider fixture: %v", err)
+		}
+	}
+}
+
+func assertFixture(t *testing.T, fixture Fixture) {
+	t.Helper()
+	if fixture.Runtime == nil || fixture.Workspace == "" || len(fixture.OutputSchema) == 0 || fixture.Decode == nil {
+		t.Fatal("provider fixture is incomplete")
 	}
 }
 
@@ -194,7 +237,7 @@ func assertWorkspacePolicy(t *testing.T, fixture Fixture, config agentruntime.Th
 	}
 }
 
-func assertEnvelope(t *testing.T, fixture Fixture, thread agentruntime.Thread, prompt, kind, message string) {
+func assertEnvelope(t *testing.T, fixture Fixture, thread agentruntime.Thread, prompt, kind, message string, decisionCount int) {
 	t.Helper()
 	raw, err := fixture.Runtime.RunTurn(thread, prompt)
 	if err != nil {
@@ -204,8 +247,8 @@ func assertEnvelope(t *testing.T, fixture Fixture, thread agentruntime.Thread, p
 	if err != nil {
 		t.Fatalf("decode %s turn: %v", kind, err)
 	}
-	if envelope.Kind != kind || envelope.Message != message || envelope.DecisionCount != 0 {
-		t.Fatalf("domain envelope = %#v, want kind %q message %q", envelope, kind, message)
+	if envelope.Kind != kind || envelope.Message != message || envelope.DecisionCount != decisionCount {
+		t.Fatalf("domain envelope = %#v, want kind %q message %q decisions %d", envelope, kind, message, decisionCount)
 	}
 }
 

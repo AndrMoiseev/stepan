@@ -90,10 +90,15 @@ func runQwenACPFake() int {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		return 0
 	}
-	if err := transport.sendResult(session.id, map[string]any{"sessionId": "session-one"}); err != nil {
+	sessionID := "session-one"
+	if scenario == "conformance" {
+		sessionID = fmt.Sprintf("session-%d", os.Getpid())
+	}
+	if err := transport.sendResult(session.id, map[string]any{"sessionId": sessionID}); err != nil {
 		return 67
 	}
 	promptIndex := 0
+	var conformanceCandidate string
 	for {
 		message, err := transport.read()
 		if err != nil {
@@ -102,7 +107,7 @@ func runQwenACPFake() int {
 		if message.method == "session/prompt" {
 			observation.ModelPromptSeen = true
 			var prompt sessionPromptParams
-			if json.Unmarshal(message.params, &prompt) != nil || prompt.SessionID != "session-one" || len(prompt.Prompt) != 1 {
+			if json.Unmarshal(message.params, &prompt) != nil || prompt.SessionID != sessionID || len(prompt.Prompt) != 1 {
 				return 69
 			}
 			observation.Prompts = append(observation.Prompts, prompt.Prompt[0].Text)
@@ -126,9 +131,54 @@ func runQwenACPFake() int {
 				if err := transport.sendResult(message.id, map[string]string{"stopReason": "end_turn"}); err != nil {
 					return 72
 				}
+			} else if scenario == "conformance" {
+				candidate, ok := conformanceResponse(prompt.Prompt[0].Text, conformanceCandidate)
+				if !ok {
+					return 73
+				}
+				conformanceCandidate = candidate
+				if err := transport.sendNotification("session/update", map[string]any{
+					"sessionId": sessionID,
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk", "messageId": fmt.Sprintf("answer-%d", promptIndex),
+						"content": map[string]any{"type": "text", "text": candidate},
+					},
+				}); err != nil {
+					return 74
+				}
+				if err := transport.sendResult(message.id, map[string]string{"stopReason": "end_turn"}); err != nil {
+					return 75
+				}
 			}
 		}
 	}
+}
+
+func conformanceResponse(prompt, previous string) (string, bool) {
+	if strings.Contains(prompt, "Your previous response could not be accepted") {
+		return previous, previous != ""
+	}
+	for request, response := range map[string]string{
+		"intent dialogue":     `{"kind":"message","message":"intent question","decisions":[{"author":"agent","decision":"record scope","rationale":"the intent establishes the durable boundary","alternatives":[],"supersedes":[]}]}`,
+		"publish intent":      `{"kind":"artifact","message":"","decisions":[]}`,
+		"spec dialogue":       `{"kind":"message","message":"spec question","decisions":[]}`,
+		"publish spec":        `{"kind":"artifact","message":"","decisions":[]}`,
+		"review spec":         `{"kind":"artifact","message":"","decisions":[]}`,
+		"material decision":   `{"kind":"message","message":"material decision recorded","decisions":[{"author":"user","decision":"fix review finding SPEC-F-1","rationale":"the durable contract requires the correction","alternatives":[],"supersedes":[]}]}`,
+		"automatic rework":    `{"kind":"artifact","message":"","decisions":[]}`,
+		"review approval":     `{"kind":"artifact","message":"","decisions":[]}`,
+		"publish plan":        `{"kind":"artifact","message":"","decisions":[]}`,
+		"review plan":         `{"kind":"artifact","message":"","decisions":[]}`,
+		"resume dialogue":     `{"kind":"message","message":"resume question","decisions":[]}`,
+		"resume publish":      `{"kind":"artifact","message":"","decisions":[]}`,
+		"path injection":      `{"kind":"artifact","message":"","decisions":[],"path":"intent.md"}`,
+		"missing placeholder": `{"kind":"artifact","decisions":[]}`,
+	} {
+		if strings.HasSuffix(prompt, "User request:\n"+request) || prompt == request {
+			return response, true
+		}
+	}
+	return "", false
 }
 
 func writeACPObservation(observation acpObservation) error {
