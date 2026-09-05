@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 // ResolveExecutable resolves the authoritative simple PATH name without
@@ -15,27 +17,19 @@ func ResolveExecutable(name string) (string, error) {
 	if name == "" {
 		name = defaultExecutable
 	}
-	if !simpleExecutableName(name) {
-		return "", errors.New("Qwen executable must be a simple PATH name without directory separators")
-	}
-	resolved, err := exec.LookPath(name)
+	executableName, err := agentruntime.ParseExecutableName(name)
 	if err != nil {
-		return "", fmt.Errorf("resolve Qwen executable %q: %w", name, err)
+		return "", fmt.Errorf("Qwen executable: %w", err)
 	}
-	resolved, err = filepath.Abs(resolved)
+	resolved, err := executableName.Resolve()
 	if err != nil {
-		return "", fmt.Errorf("make Qwen executable absolute: %w", err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
-		return "", withDiagnosticContext(errors.New("resolved Qwen executable must be a regular file"), diagnosticRegularFile)
+		failure := fmt.Errorf("resolve Qwen executable %q: %w", name, err)
+		if errors.Is(err, agentruntime.ErrResolvedExecutableNotRegular) {
+			return "", withDiagnosticContext(failure, diagnosticRegularFile)
+		}
+		return "", failure
 	}
 	return filepath.Clean(resolved), nil
-}
-
-func simpleExecutableName(name string) bool {
-	return name != "" && strings.TrimSpace(name) == name && name != "." && name != ".." &&
-		!filepath.IsAbs(name) && filepath.VolumeName(name) == "" && filepath.Base(name) == name && !strings.ContainsAny(name, `/\`)
 }
 
 func canonicalDirectory(path, description string) (string, error) {

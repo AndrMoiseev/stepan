@@ -10,10 +10,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
@@ -34,20 +33,13 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	if name == "" {
 		name = "claude"
 	}
-	if !simpleExecutableName(name) {
-		return Config{}, nil, errors.New("Claude executable must be a simple PATH name without directory separators")
+	executableName, err := agentruntime.ParseExecutableName(name)
+	if err != nil {
+		return Config{}, nil, fmt.Errorf("Claude executable: %w", err)
 	}
-	executable, err := exec.LookPath(name)
+	executable, err := executableName.Resolve()
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("resolve Claude executable %q: %w", name, err)
-	}
-	executable, err = filepath.Abs(executable)
-	if err != nil {
-		return Config{}, nil, errors.New("make Claude executable absolute")
-	}
-	info, err := os.Stat(executable)
-	if err != nil || !info.Mode().IsRegular() {
-		return Config{}, nil, errors.New("resolved Claude executable must be a regular file")
 	}
 	workspace, err := canonicalDirectory(config.Workspace)
 	if err != nil {
@@ -69,11 +61,6 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	config.Workspace = workspace
 	config.EnvelopeSchema = append(json.RawMessage(nil), config.EnvelopeSchema...)
 	return config, schema, nil
-}
-
-func simpleExecutableName(name string) bool {
-	return name != "" && strings.TrimSpace(name) == name && name != "." && name != ".." &&
-		!filepath.IsAbs(name) && filepath.VolumeName(name) == "" && filepath.Base(name) == name && !strings.ContainsAny(name, `/\`)
 }
 
 func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback) []claudecode.Option {

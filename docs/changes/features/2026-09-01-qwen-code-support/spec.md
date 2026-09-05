@@ -70,8 +70,9 @@ provider через `PATH`: `codex`, `claude` или `qwen`. Переданно�
 быть простым именем executable без абсолютного пути и directory separators,
 разрешаться через `PATH` и быть авторитетным: Stepan не заменяет отсутствующее
 или несовместимое имя другим executable и не требует определённого basename или
-branding. Абсолютный путь или имя с separator завершается usage error, а
-отсутствующее в `PATH` имя — безопасной configuration/startup error.
+branding. Явно переданное пустое или whitespace-only значение, абсолютный путь
+или имя с separator завершается usage error, а отсутствующее в `PATH` имя —
+безопасной configuration/startup error.
 
 ### REQ-003 — Отсутствие version/vendor gate
 
@@ -392,6 +393,7 @@ stepan [--agent codex|claude|qwen] [--agent-cli-name <name>]
 | `stepan --agent qwen` | `qwen` из `PATH`, direct ACP |
 | `stepan --agent qwen --agent-cli-name qwen-compatible` | exact named Qwen-compatible CLI из `PATH` |
 | `stepan --agent qwen --agent-cli-name <path>` | usage error до runtime |
+| `stepan --agent qwen --agent-cli-name=` | usage error без default fallback |
 | `stepan --agent qwen --agent-cli-name missing-cli` | configuration/startup error без fallback |
 | неизвестный `--agent` | usage error со списком трёх значений |
 

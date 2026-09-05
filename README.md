@@ -6,14 +6,24 @@ Vendor agnostic AI SDLC Orchestrator
 
 ## Agent CLI
 
-По умолчанию Stepan запускает `codex` из `PATH`. Claude Code-совместимый CLI
-запускается только с явно заданным абсолютным путём:
+По умолчанию Stepan запускает `codex` из `PATH`. Другой provider выбирается
+явно; без настройки executable используются официальные имена `claude` и
+`qwen` из `PATH`:
 
 ```text
-stepan --agent claude --agent-cli <absolute-path-to-corporate-cli>
+stepan --agent claude
+stepan --agent qwen
 ```
 
-Путь может указывать на корпоративный fork и не обязан называться `claude`.
+Совместимый корпоративный fork выбирается необязательным
+`--agent-cli-name <name>`. Значение должно быть простым именем executable,
+доступным в `PATH`; абсолютные пути и directory separators запрещены. Переданное
+имя авторитетно и не обязано совпадать с официальным именем provider:
+
+```text
+stepan --agent claude --agent-cli-name corporate-claude
+```
+
 Совместимость конкретного build пока требует ручной приёмки по
 [плану Claude CLI](docs/changes/features/claude-cli-support/manual-test-plan.md); на
 текущей машине она имеет статус `BLOCKED`.

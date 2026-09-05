@@ -20,7 +20,7 @@ func TestParseAgentConfig(t *testing.T) {
 		{name: "qwen PATH", args: []string{"--agent", "qwen"}, want: agentConfig{kind: agentQwen, executable: "qwen"}},
 		{name: "qwen named compatible CLI", args: []string{"--agent", "qwen", "--agent-cli-name", "qwen-compatible"}, want: agentConfig{kind: agentQwen, executable: "qwen-compatible"}},
 		{name: "unknown provider", args: []string{"--agent", "other"}, err: "expected codex, claude, or qwen"},
-		{name: "absolute path", args: []string{"--agent-cli-name", filepath.Join(t.TempDir(), "cli")}, err: "simple executable name"},
+		{name: "absolute path", args: []string{"--agent-cli-name", filepath.Join(t.TempDir(), "cli")}, err: "simple PATH name"},
 		{name: "forward separator", args: []string{"--agent", "qwen", "--agent-cli-name", "directory/cli"}, err: "directory separators"},
 		{name: "back separator", args: []string{"--agent", "claude", "--agent-cli-name", `directory\cli`}, err: "directory separators"},
 		{name: "old flag rejected", args: []string{"--agent-cli", "qwen"}, err: "flag provided but not defined"},
@@ -43,6 +43,31 @@ func TestParseAgentConfig(t *testing.T) {
 				t.Fatalf("config = %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestParseAgentConfigRejectsExplicitEmptyOrWhitespaceNameForEveryProvider(t *testing.T) {
+	for _, provider := range []string{"codex", "claude", "qwen"} {
+		for _, supplied := range []struct {
+			name string
+			args []string
+		}{
+			{name: "equals empty", args: []string{"--agent-cli-name="}},
+			{name: "separate empty", args: []string{"--agent-cli-name", ""}},
+			{name: "equals whitespace", args: []string{"--agent-cli-name= "}},
+			{name: "separate whitespace", args: []string{"--agent-cli-name", " "}},
+		} {
+			t.Run(provider+"/"+supplied.name, func(t *testing.T) {
+				args := append([]string{"--agent", provider}, supplied.args...)
+				config, err := parseAgentConfig(args)
+				if err == nil || !strings.Contains(err.Error(), "simple PATH name") {
+					t.Fatalf("config = %#v, error = %v", config, err)
+				}
+				if config != (agentConfig{}) {
+					t.Fatalf("invalid explicit value fell back to %#v", config)
+				}
+			})
+		}
 	}
 }
 

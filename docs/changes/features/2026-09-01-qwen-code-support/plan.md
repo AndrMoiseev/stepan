@@ -487,12 +487,14 @@ Depends-on: TASK-005
 
 `cmd/stepan` явно выбирает Qwen через закрытый enum, разрешает правильный
 executable, создаёт `qwenapp.Runtime` без fallback и передаёт provider `qwen` с
-model metadata `default`, не меняя Codex default или Claude behavior.
+model metadata `default`, сохраняя Codex default и переводя Claude на общий
+optional official/custom PATH-name contract.
 
 ### Область и ожидаемые файлы
 
 - `cmd/stepan/agent_config.go` и `agent_config_test.go`;
 - `cmd/stepan/main.go` и `main_test.go`;
+- `internal/agentruntime` — shared executable name validation/PATH resolution;
 - `internal/agentruntime/qwenapp` public constructor/config seam;
 - `arch-go.yml` — dependency rule composition root → `qwenapp`.
 
@@ -510,7 +512,8 @@ model metadata `default`, не меняя Codex default или Claude behavior.
    diagnostic; оставить `agentCodex` default.
 2. Без `--agent-cli-name` передавать официальное PATH-name выбранного provider:
    `codex`, `claude` или `qwen`; supplied value принимать только как simple
-   executable name без absolute path и directory separators.
+   non-empty executable name без surrounding whitespace, absolute path и directory separators;
+   отличать omitted flag от явно пустого значения, которое является usage error.
 3. Разрешать точное имя через `PATH` в provider process/client layer, проверять
    resolved regular file, сохранять отсутствие basename/branding/version gate и
    не заменять missing или несовместимый executable другим provider-ом.
@@ -537,7 +540,8 @@ Traces: AC-001, AC-014
 
 Setup: composition tests предоставляют official и compatible fake PATH
 executables с нестандартными именами. Action: разбираются defaults всех providers,
-Qwen custom name, absolute/separator/missing values и unknown-agent invocations.
+Qwen custom name, explicit empty/whitespace, absolute/separator/missing values и
+unknown-agent invocations.
 Expected result: default создаёт Codex, valid cases запускают exact selected
 PATH-name, invalid cases возвращают usage/configuration error и ни один случай не
 запускает fallback или version/branding probe.

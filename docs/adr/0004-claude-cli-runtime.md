@@ -16,13 +16,15 @@ Claude Code с другим basename и branding. Прикладной `/feature
 `cmd/stepan` выбирает provider только явными flags:
 
 ```text
---agent codex|claude
---agent-cli <absolute-path>
+--agent codex|claude|qwen
+--agent-cli-name <name>
 ```
 
-Без flags сохраняется Codex из `PATH`. Claude требует существующий абсолютный
-regular-file path; Stepan передаёт этот exact path в SDK и не вызывает
-`--version` как vendor gate.
+Без flags сохраняется Codex из `PATH`. Для Claude flag executable опционален:
+официальное имя `claude` либо exact supplied simple name разрешается через
+`PATH`, затем Stepan передаёт найденный абсолютный regular-file path в SDK и не
+вызывает `--version` как vendor gate. Пути, directory separators и явно пустое
+значение отклоняются без fallback.
 
 Введён минимальный внутренний контракт `internal/agentruntime`:
 

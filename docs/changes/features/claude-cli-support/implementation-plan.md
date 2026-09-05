@@ -3,7 +3,7 @@
 Статус: черновик для ревью  
 Основание: [спецификация](specification.md)  
 Целевая среда: Windows native/amd64 и macOS native/arm64  
-Live-среда: корпоративный Claude Code-совместимый CLI по абсолютному пути
+Live-среда: корпоративный Claude Code-совместимый CLI под simple name в `PATH`
 
 ## 1. Правила декомпозиции
 
@@ -34,7 +34,7 @@ Live-среда: корпоративный Claude Code-совместимый C
 | CC-01 | Provider-neutral runtime contract и policy | — |
 | CC-02 | Codex реализует новый contract без регрессии | CC-01 |
 | CC-03 | `specflow` полностью отвязан от `codexapp` | CC-02 |
-| CC-04 | Явный выбор provider и абсолютного executable | CC-03 |
+| CC-04 | Явный выбор provider и PATH-name executable | CC-03 |
 | CC-05 | Закреплён SDK и введён тестируемый Claude client seam | CC-01 |
 | CC-06 | Общий flow envelope schema для Claude | CC-03, CC-05 |
 | CC-07 | Безопасная конфигурация SDK и corporate CLI preflight | CC-04–CC-06 |
@@ -154,10 +154,10 @@ aliases только там, где они нужны для безопасно�
 **Проверка:** `go test ./internal/specflow ./internal/agentruntime/codexapp ./cmd/stepan` и
 `go test ./...`.
 
-### CC-04. Явный выбор provider и абсолютного executable
+### CC-04. Явный выбор provider и PATH-name executable
 
-**Результат:** `cmd/stepan` принимает `--agent` и `--agent-cli`, однозначно
-валидирует конфигурацию и сохраняет старый default.
+**Результат:** `cmd/stepan` принимает `--agent` и optional `--agent-cli-name`,
+однозначно валидирует конфигурацию и сохраняет Codex default.
 
 **Граница commit:** небольшой config package либо testable parsing function в
 `cmd/stepan`, tests и usage text. Claude runtime ещё не запускается.
@@ -165,11 +165,9 @@ aliases только там, где они нужны для безопасно�
 **Критерии приёмки:**
 
 - Без flags получается `{agent: codex, executable: codex}`.
-- `--agent claude` без `--agent-cli` отклоняется с exit code `2`.
-- Явный executable должен быть абсолютным существующим regular file.
-- Путь с пробелами принимается как одно значение без shell parsing.
-- Явный путь не проходит через `exec.LookPath` и не подменяется basename из
-  `PATH`.
+- `--agent claude` без `--agent-cli-name` выбирает `claude` из `PATH`.
+- Явный executable должен быть simple non-empty name без directory separators.
+- Явное имя разрешается через `PATH` и остаётся авторитетным без fallback.
 - Неизвестный agent и лишние positional arguments отклоняются.
 - Ошибка config происходит до поиска Git root, запуска UI и запуска агента.
 
@@ -178,9 +176,9 @@ aliases только там, где они нужны для безопасно�
 - [ ] Использовать стандартный `flag.FlagSet` с контролируемым writer, а не
   добавлять CLI framework.
 - [ ] Ввести закрытый enum `codex|claude`.
-- [ ] Отделить parsing от filesystem validation для table tests.
-- [ ] Для явного path применить `filepath.Clean`, `filepath.IsAbs` и `os.Stat`;
-  не выполнять CLI `--version` как vendor gate.
+- [ ] Отделить parsing/name validation от PATH resolution для table tests.
+- [ ] Отклонять absolute path и directory separators; PATH result проверять как
+  regular file и не выполнять CLI `--version` как vendor gate.
 - [ ] Не вводить environment/project config fallback.
 - [ ] Обновить help с примером корпоративного пути Windows и macOS.
 - [ ] Проверить, что invalid flags не запускают lazy runtime.
@@ -263,7 +261,7 @@ validated executable, workspace и envelope schema.
 
 **Критерии приёмки:**
 
-- `WithCLIPath` получает именно validated абсолютный путь.
+- `WithCLIPath` получает именно разрешённый validated абсолютный путь.
 - `WithCwd` получает canonical Git root; additional directories отсутствуют.
 - `WithTools` содержит ровно `Read`, `Write`, `Edit`, `Glob`, `Grep`.
 - Full Claude Code preset, allowed-all и bypass permission mode отсутствуют.
@@ -276,8 +274,8 @@ validated executable, workspace и envelope schema.
 
 - [ ] Создать immutable `Config` с executable, workspace, envelope schema и
   диагностическим stderr limit.
-- [ ] Повторно проверить абсолютность и regular-file executable на package
-  boundary; не искать fallback в `PATH`.
+- [ ] Повторно проверить simple executable name, разрешить его через `PATH` и
+  проверить regular-file result на package boundary; не искать fallback.
 - [ ] Канонизировать workspace и проверить Git root до `Connect`.
 - [ ] Настроить `PermissionModeDefault` и `WithCanUseTool`.
 - [ ] Вызвать `WithSettingSources()` с пустым набором и
@@ -399,7 +397,7 @@ provider-neutral JSON object либо классифицированную ош�
 
 ### CC-11. Composition root и полный `/idea` через Claude
 
-**Результат:** `cmd/stepan --agent claude --agent-cli <absolute-path>` лениво
+**Результат:** `cmd/stepan --agent claude [--agent-cli-name <name>]` лениво
 создаёт Claude runtime и проводит существующий flow без provider branches в
 controller.
 
@@ -500,7 +498,7 @@ lifecycle tests.
 - [ ] Использовать temp Git repos и synthetic dirty baseline.
 - [ ] Проверять фактический Git diff независимо от fake terminal result.
 - [ ] Добавить regression, где fake `claude` в `PATH` не выбран при явном
-  corporate path.
+  corporate PATH-name.
 - [ ] Запустить lifecycle packages с `-count=20` и `-race` там, где доступно.
 - [ ] Проверить `go vet` и `git diff --check`.
 
@@ -521,7 +519,7 @@ lifecycle tests.
 - Новый ADR фиксирует agent runtime boundary, неофициальный SDK, tool model и
   осознанное отсутствие Claude process containment.
 - ADR 0002 обновлён или помечен superseded в изменившихся разделах.
-- README/help описывает `--agent claude --agent-cli <absolute-path>` и статус
+- README/help описывает `--agent claude [--agent-cli-name <name>]` и статус
   ручной совместимости.
 - Windows/amd64 build и tests проходят с Go `1.26.5`.
 - Darwin/arm64 cross-build проходит с `CGO_ENABLED=0`.
@@ -560,9 +558,9 @@ git diff --check
 Live-приёмка не входит в implementation commit и выполняется на машине с
 доступом к корпоративному CLI.
 
-- [ ] Зафиксировать Stepan commit, SDK version, OS/arch, абсолютный CLI path,
-  corporate version и build ID.
-- [ ] Выполнить `CLAUDE-M01`: authoritative path и decoy `claude` в `PATH`.
+- [ ] Зафиксировать Stepan commit, SDK version, OS/arch, CLI name и разрешённый
+  абсолютный path, corporate version и build ID.
+- [ ] Выполнить `CLAUDE-M01`: authoritative PATH-name и decoy `claude`.
 - [ ] Выполнить `CLAUDE-M02`: пять файловых tools, запрет shell/MCP/network и
   Git write boundary.
 - [ ] Выполнить `CLAUDE-M03`: normal close, cancel, process inventory и
@@ -599,8 +597,8 @@ launcher/custom transport containment до выпуска Claude runtime.
 - Все CC-01–CC-14 приняты последовательно.
 - `specflow` не зависит от provider-specific packages.
 - Default Codex flow не изменился и сохраняет process containment.
-- Claude runtime использует exact SDK version, authoritative absolute CLI path,
-  общий envelope и только пять файловых tools.
+- Claude runtime использует exact SDK version, authoritative CLI PATH-name,
+  разрешённый absolute path внутри SDK, общий envelope и пять файловых tools.
 - Автоматические tests, vet, Windows build и Darwin cross-build проходят без
   настоящего Claude.
 - Документация честно показывает live acceptance как `BLOCKED`, если она ещё не

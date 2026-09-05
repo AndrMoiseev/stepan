@@ -4,8 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"path/filepath"
-	"strings"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 type agentKind string
@@ -32,11 +32,17 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 	if flags.NArg() != 0 {
 		return agentConfig{}, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
 	}
+	cliSupplied := false
+	flags.Visit(func(item *flag.Flag) {
+		if item.Name == "agent-cli-name" {
+			cliSupplied = true
+		}
+	})
 	config := agentConfig{kind: agentKind(*agent), executable: *cli}
 	if config.kind != agentCodex && config.kind != agentClaude && config.kind != agentQwen {
 		return agentConfig{}, fmt.Errorf("unknown agent %q (expected codex, claude, or qwen)", *agent)
 	}
-	if config.executable == "" {
+	if !cliSupplied {
 		switch config.kind {
 		case agentClaude:
 			config.executable = "claude"
@@ -47,14 +53,11 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 		}
 		return config, nil
 	}
-	return validateCLIName(config)
-}
-
-func validateCLIName(config agentConfig) (agentConfig, error) {
-	name := config.executable
-	if strings.TrimSpace(name) != name || name == "." || name == ".." || filepath.IsAbs(name) || filepath.VolumeName(name) != "" || filepath.Base(name) != name || strings.ContainsAny(name, `/\`) {
-		return agentConfig{}, fmt.Errorf("--agent-cli-name %q must be a simple executable name without directory separators", name)
+	name, err := agentruntime.ParseExecutableName(config.executable)
+	if err != nil {
+		return agentConfig{}, fmt.Errorf("--agent-cli-name %q: %w", config.executable, err)
 	}
+	config.executable = name.String()
 	return config, nil
 }
 

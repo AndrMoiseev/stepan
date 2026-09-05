@@ -29,9 +29,9 @@ Codex-типов в `internal/specflow` и без универсального p
 
 ### US-2. Указать корпоративный executable
 
-Как корпоративный пользователь, я хочу передать абсолютный путь к разрешённому
-форку Claude CLI, чтобы Stepan запускал именно его независимо от содержимого
-`PATH`, имени файла и официального branding.
+Как корпоративный пользователь, я хочу передать простое имя разрешённого форка
+Claude CLI из `PATH`, чтобы Stepan запускал именно его без fallback на
+официальное имя и без branding gate.
 
 ### US-3. Сохранить поведение workflow
 
@@ -69,9 +69,9 @@ Stepan, не открывая Claude CLI отдельно.
 
 - выбор `codex` или `claude` при запуске `cmd/stepan`;
 - сохранение `codex` как значения по умолчанию;
-- обязательный абсолютный путь к executable для Claude;
-- возможность передать абсолютный путь и для Codex;
-- поддержка пути с пробелами и basename, отличным от `claude`;
+- optional simple executable name из `PATH` для каждого provider;
+- official PATH defaults `codex`, `claude` и `qwen`;
+- поддержка имени, отличного от официального provider name;
 - прямой запуск без shell-интерполяции;
 - provider-neutral runtime contract, достаточный текущему `specflow`;
 - адаптация существующего Codex runtime к этому контракту без изменения его
@@ -113,26 +113,28 @@ Stepan, не открывая Claude CLI отдельно.
 `cmd/stepan` получает два аргумента:
 
 ```text
---agent codex|claude
---agent-cli <absolute-path>
+--agent codex|claude|qwen
+--agent-cli-name <name>
 ```
 
 Правила:
 
 1. Без аргументов сохраняется текущее поведение: `--agent codex`, executable
    `codex` разрешается существующим способом через `PATH`.
-2. Для `--agent claude` аргумент `--agent-cli` обязателен.
-3. Если `--agent-cli` передан для любого provider, его значение должно быть
-   абсолютным путём к существующему regular file. Относительный путь и каталог
-   отклоняются до запуска runtime.
-4. Явный путь авторитетен: Stepan не вызывает `exec.LookPath`, не подставляет
-   `claude` или `codex` и не выбирает другой executable после ошибки.
+2. Для `--agent claude` без `--agent-cli-name` разрешается официальное имя
+   `claude` через `PATH`.
+3. Если `--agent-cli-name` передан для любого provider, его значение должно быть
+   непустым simple executable name без surrounding whitespace и directory
+   separators. Пути отклоняются до запуска runtime.
+4. Явное имя авторитетно: Stepan разрешает exact name через `PATH` и не выбирает
+   другой executable после ошибки.
 5. Basename, расширение файла и текст `--version` не используются как
    идентификатор provider. Совместимость Claude подтверждается успешным SDK
    handshake и conformance-сценариями.
-6. Путь передаётся SDK через `WithCLIPath` без shell и строковой сборки команды.
-7. Неизвестный provider, пропущенный путь Claude и невалидный путь завершают
-   запуск с кодом `2` и понятной ошибкой.
+6. Разрешённый абсолютный путь передаётся SDK через `WithCLIPath` без shell и
+   строковой сборки команды.
+7. Неизвестный provider, явно пустое имя, путь или имя с separator завершают
+   parsing с кодом `2`; missing PATH entry даёт понятную configuration error.
 8. В диагностике можно показывать нормализованный путь к executable, но нельзя
    печатать environment, токены, prompts или содержимое файлов.
 
@@ -300,7 +302,7 @@ workspace, поддержка получает статус `FAIL`, а containme
 |---|---|
 | Stepan | commit/build |
 | Go SDK | точная версия из `go.mod` |
-| CLI | абсолютный путь, версия и корпоративный build ID |
+| CLI | переданное имя, разрешённый абсолютный путь, версия и corporate build ID |
 | Платформа | OS/architecture |
 | Проверка | результаты `CLAUDE-M01`–`CLAUDE-M03` |
 
@@ -317,7 +319,7 @@ Live-проверка требуется на каждой платформе, �
 
 Пользователь должен различать как минимум:
 
-- отсутствующий или невалидный абсолютный путь;
+- невалидное имя или отсутствующий PATH entry;
 - невозможность запустить executable;
 - несовместимый protocol/handshake;
 - ошибку авторизации корпоративного CLI;
@@ -336,10 +338,11 @@ Live-проверка требуется на каждой платформе, �
 ## 11. Критерии приёмки
 
 1. Запуск `stepan` без новых аргументов сохраняет текущий Codex flow и тесты.
-2. `--agent claude` без `--agent-cli` завершается кодом `2` до запуска runtime.
-3. Claude принимает абсолютный путь с пробелами и basename, отличным от
-   `claude`; executable `claude` из `PATH` при этом не используется.
-4. Несуществующий, относительный путь или каталог отклоняются понятной ошибкой.
+2. `--agent claude` без `--agent-cli-name` разрешает `claude` через `PATH`.
+3. Claude принимает авторитетное simple PATH-name, отличное от `claude`, и не
+   запускает `claude` как fallback.
+4. Явно пустое имя, absolute/directory path и missing PATH entry отклоняются
+   понятной ошибкой до создания SDK client.
 5. `specflow` не импортирует `codexapp`, `claudeapp` или SDK types.
 6. Codex и Claude реализуют один минимальный runtime contract.
 7. Все существующие Codex acceptance tests проходят без изменения наблюдаемого
