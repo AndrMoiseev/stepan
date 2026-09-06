@@ -1,6 +1,7 @@
 package claudeapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -110,6 +111,30 @@ func TestClaudeExecutableResolutionUsesOnlyAuthoritativePATHNames(t *testing.T) 
 	})
 	if instance != nil || created || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "configure Claude runtime") {
 		t.Fatalf("missing Claude executable = %#v, %v; client_created=%v", instance, err, created)
+	}
+}
+
+func TestClaudeTransportSchemaOmitsDialectDeclarations(t *testing.T) {
+	config := testConfig(t)
+	config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+	validated, schema, err := validateConfig(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := claudecode.NewOptions(claudeOptions(validated, schema, nil, func(string) {})...)
+	if options.OutputFormat == nil {
+		t.Fatal("Claude transport schema is missing")
+	}
+
+	encoded, err := json.Marshal(options.OutputFormat.Schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"$schema"`)) {
+		t.Fatalf("Claude transport schema contains unsupported dialect declaration: %s", encoded)
+	}
+	if string(validated.EnvelopeSchema) != string(config.EnvelopeSchema) {
+		t.Fatal("transport normalization changed the domain schema")
 	}
 }
 

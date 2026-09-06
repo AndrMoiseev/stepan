@@ -57,10 +57,30 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return Config{}, nil, errors.New("Claude envelope schema has trailing JSON")
 	}
+	omitSchemaDialectDeclarations(schema)
 	config.Executable = executable
 	config.Workspace = workspace
 	config.EnvelopeSchema = append(json.RawMessage(nil), config.EnvelopeSchema...)
 	return config, schema, nil
+}
+
+// omitSchemaDialectDeclarations removes only JSON Schema dialect annotations
+// from the copy sent to Claude CLI. Some compatible corporate CLIs validate
+// schemas without registering the Draft 2020-12 metaschema and reject its URI,
+// even though they support the validation keywords used by Stepan. The original
+// domain schema remains unchanged and is still used for local strict decoding.
+func omitSchemaDialectDeclarations(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		delete(typed, "$schema")
+		for _, nested := range typed {
+			omitSchemaDialectDeclarations(nested)
+		}
+	case []any:
+		for _, nested := range typed {
+			omitSchemaDialectDeclarations(nested)
+		}
+	}
 }
 
 func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback, stderr func(string)) []claudecode.Option {
