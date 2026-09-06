@@ -247,6 +247,77 @@ func TestRuntimeProductionFactoryUsesOneProcessAndSessionPerThread(t *testing.T)
 	}
 }
 
+func TestRuntimeProductionStartupReportsSafeExitDiagnostic(t *testing.T) {
+	workspace := makeGitRoot(t)
+	executable := testExecutableName(t)
+	const secret = "credential-body-do-not-echo"
+	t.Setenv("GO_WANT_QWENAPP_FAKE", "startup-diagnostic")
+	t.Setenv("STEPAN_QWENAPP_DIAGNOSTIC_SECRET", secret)
+	runtime, err := StartRuntime(Config{
+		Executable:     executable,
+		Workspace:      workspace,
+		JSONContract:   testJSONContract,
+		EnvelopeSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	_, err = runtime.StartThread(agentruntime.ThreadConfig{
+		Workspace:    workspace,
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if !errors.Is(err, agentruntime.ErrThreadFailed) || !errors.Is(err, agentruntime.ErrRuntimeExited) {
+		t.Fatalf("startup error = %v", err)
+	}
+	for _, want := range []string{`executable "` + executable + `"`, "exit code 23", "during initialize lifecycle", "authentication"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup diagnostic %q does not contain %q", err, want)
+		}
+	}
+	for _, forbidden := range []string{secret, workspace, testJSONContract, "Authentication required while loading"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("startup diagnostic leaked %q: %v", forbidden, err)
+		}
+	}
+}
+
+func TestRuntimeProductionStartupReportsSafeRPCDiagnostic(t *testing.T) {
+	workspace := makeGitRoot(t)
+	t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
+	t.Setenv("STEPAN_QWEN_ACP_CASE", "session-auth-error")
+	t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", filepath.Join(t.TempDir(), "observation.json"))
+	runtime, err := StartRuntime(Config{
+		Executable:     testExecutableName(t),
+		Workspace:      workspace,
+		JSONContract:   testJSONContract,
+		EnvelopeSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	_, err = runtime.StartThread(agentruntime.ThreadConfig{
+		Workspace:    workspace,
+		OutputSchema: json.RawMessage(`{"type":"object"}`),
+	})
+	if !errors.Is(err, agentruntime.ErrThreadFailed) || !errors.Is(err, agentruntime.ErrRuntimeIncompatible) {
+		t.Fatalf("startup error = %v", err)
+	}
+	for _, want := range []string{"session/new lifecycle", "ACP error code -32000", "provider error class authentication"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("startup diagnostic %q does not contain %q", err, want)
+		}
+	}
+	for _, forbidden := range []string{"credential-body-do-not-echo", workspace, "Authentication required"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("startup diagnostic leaked %q: %v", forbidden, err)
+		}
+	}
+}
+
 func TestRuntimeDoesNotPublishThreadBeforePreflightOrAfterClose(t *testing.T) {
 	gate := make(chan struct{})
 	created := newFakeRuntimeThread(`{}`)

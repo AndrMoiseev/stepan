@@ -103,8 +103,12 @@ func runQwenACPFake() int {
 		_, _ = io.Copy(io.Discard, os.Stdin)
 		return 0
 	}
-	if os.Getenv("STEPAN_QWEN_ACP_CASE") == "session-error" {
-		if err := transport.sendError(session.id, -32602, "credential-body startup root refused"); err != nil {
+	if scenario == "session-error" || scenario == "session-auth-error" {
+		code, message := int64(-32602), "credential-body startup root refused"
+		if scenario == "session-auth-error" {
+			code, message = -32000, "Authentication required: credential-body-do-not-echo"
+		}
+		if err := transport.sendError(session.id, code, message); err != nil {
 			return 68
 		}
 		_, _ = io.Copy(io.Discard, os.Stdin)

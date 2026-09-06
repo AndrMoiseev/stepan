@@ -53,6 +53,9 @@ func runQwenFake(scenario string) int {
 	case "wait":
 		fmt.Fprintln(os.Stderr, "natural exit", diagnosticSecretValues())
 		return 17
+	case "startup-diagnostic":
+		fmt.Fprintln(os.Stderr, "Authentication required while loading", os.Getenv("STEPAN_QWENAPP_DIAGNOSTIC_SECRET"))
+		return 23
 	case "assignment-failure":
 		fmt.Fprintln(os.Stderr, diagnosticSecretValues())
 		fmt.Fprintln(os.Stderr, testJSONContract)

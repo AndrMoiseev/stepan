@@ -232,7 +232,11 @@ func (connection *Connection) callAndCommitResponse(method string, params, resul
 		var callErr error
 		invalidResult := false
 		if received.err != nil {
-			callErr = fmt.Errorf("qwen ACP %s failed with JSON-RPC code %d", safeMethod(method), received.err.Code)
+			callErr = withRPCDiagnostic(
+				fmt.Errorf("qwen ACP %s failed with JSON-RPC code %d", safeMethod(method), received.err.Code),
+				received.err.Code,
+				received.err.Message,
+			)
 		} else if result != nil {
 			callErr = decodeResult(received.result, result)
 			invalidResult = callErr != nil
@@ -643,6 +647,7 @@ func (connection *Connection) fail(cause error) {
 	} else {
 		connection.err = connectionError{cause: cause}
 	}
+	phase := connection.pendingDiagnosticContextLocked()
 	connection.pending = nil
 	connection.inboundCalls = nil
 	connection.activePrompt = ""
@@ -654,7 +659,34 @@ func (connection *Connection) fail(cause error) {
 	if owner != nil {
 		_ = owner.Close()
 	}
+	if errors.Is(cause, agentruntime.ErrRuntimeExited) {
+		if source, ok := owner.(interface{ failureDiagnostic() processExitDiagnostic }); ok {
+			diagnostic := source.failureDiagnostic()
+			diagnostic.phase = phase
+			cause = withProcessExitDiagnostic(cause, diagnostic)
+			connection.mu.Lock()
+			connection.err = connectionError{cause: cause}
+			connection.mu.Unlock()
+		}
+	}
 	close(connection.done)
+}
+
+func (connection *Connection) pendingDiagnosticContextLocked() diagnosticContext {
+	if len(connection.pending) != 1 {
+		return diagnosticNone
+	}
+	for _, pending := range connection.pending {
+		switch pending.method {
+		case "initialize":
+			return diagnosticInitializeLifecycle
+		case "session/new":
+			return diagnosticSessionLifecycle
+		case "session/prompt":
+			return diagnosticPromptLifecycle
+		}
+	}
+	return diagnosticNone
 }
 
 type connectionError struct{ cause error }

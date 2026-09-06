@@ -153,7 +153,7 @@ func incompatibleCall(method string, cause error) error {
 	} else if method == "session/new" {
 		context = diagnosticSessionLifecycle
 	}
-	return withDiagnosticContext(fmt.Errorf("%w: %s lifecycle", ErrIncompatible, safeMethod(method)), context)
+	return withDiagnosticContext(fmt.Errorf("%w: %s lifecycle: %w", ErrIncompatible, safeMethod(method), cause), context)
 }
 
 // preflightStatusFromMeta recognizes the narrow optional status keys used by

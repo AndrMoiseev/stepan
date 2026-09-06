@@ -330,6 +330,25 @@ func (process *Process) WorkspaceRoot() string {
 // Diagnostic returns bounded, redacted stderr collected from the child.
 func (process *Process) Diagnostic() string { return process.diagnostic.String() }
 
+func (process *Process) failureDiagnostic() processExitDiagnostic {
+	process.mu.Lock()
+	executable := process.config.Executable
+	if executable == "" {
+		executable = defaultExecutable
+	}
+	var exitCode *int
+	if process.exitCode != nil {
+		code := *process.exitCode
+		exitCode = &code
+	}
+	process.mu.Unlock()
+	return processExitDiagnostic{
+		executable: executable,
+		exitCode:   exitCode,
+		stderr:     process.diagnostic.Class(),
+	}
+}
+
 func (process *Process) ExitCode() *int {
 	process.mu.Lock()
 	defer process.mu.Unlock()
@@ -510,6 +529,12 @@ func (diagnostic *limitedDiagnostic) String() string {
 		value += marker
 	}
 	return value
+}
+
+func (diagnostic *limitedDiagnostic) Class() processDiagnosticClass {
+	diagnostic.mu.Lock()
+	defer diagnostic.mu.Unlock()
+	return classifyProcessDiagnostic(diagnostic.buffer.String())
 }
 
 // environmentValuesForRedaction deliberately does not classify values by

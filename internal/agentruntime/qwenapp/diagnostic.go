@@ -1,6 +1,13 @@
 package qwenapp
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+)
 
 // diagnosticContext is a closed set of non-sensitive adapter facts that may
 // cross the user-facing runtime boundary. It cannot carry provider text,
@@ -17,6 +24,7 @@ const (
 	diagnosticToolInventory
 	diagnosticInitializeLifecycle
 	diagnosticSessionLifecycle
+	diagnosticPromptLifecycle
 	diagnosticToolReadFile
 	diagnosticToolWriteFile
 	diagnosticToolEdit
@@ -46,6 +54,8 @@ func (context diagnosticContext) String() string {
 		return "initialize lifecycle"
 	case diagnosticSessionLifecycle:
 		return "session/new lifecycle"
+	case diagnosticPromptLifecycle:
+		return "session/prompt lifecycle"
 	case diagnosticToolReadFile:
 		return "read_file"
 	case diagnosticToolWriteFile:
@@ -72,6 +82,139 @@ func (context diagnosticContext) String() string {
 type contextualError struct {
 	cause   error
 	context diagnosticContext
+}
+
+type processDiagnosticClass uint8
+
+const (
+	processDiagnosticUnclassified processDiagnosticClass = iota
+	processDiagnosticEmpty
+	processDiagnosticAuthentication
+	processDiagnosticLaunchDenied
+	processDiagnosticUnsupportedOption
+	processDiagnosticMissingDependency
+)
+
+func (class processDiagnosticClass) String() string {
+	switch class {
+	case processDiagnosticEmpty:
+		return "empty"
+	case processDiagnosticAuthentication:
+		return "authentication"
+	case processDiagnosticLaunchDenied:
+		return "process launch denied"
+	case processDiagnosticUnsupportedOption:
+		return "unsupported startup option"
+	case processDiagnosticMissingDependency:
+		return "missing runtime dependency"
+	default:
+		return "unclassified"
+	}
+}
+
+type processExitDiagnostic struct {
+	executable string
+	exitCode   *int
+	stderr     processDiagnosticClass
+	phase      diagnosticContext
+}
+
+type processExitError struct {
+	cause      error
+	diagnostic processExitDiagnostic
+}
+
+func (err processExitError) Error() string { return err.cause.Error() }
+func (err processExitError) Unwrap() error { return err.cause }
+
+func withProcessExitDiagnostic(cause error, diagnostic processExitDiagnostic) error {
+	if cause == nil || !errors.Is(cause, agentruntime.ErrRuntimeExited) {
+		return cause
+	}
+	return processExitError{cause: cause, diagnostic: diagnostic}
+}
+
+type rpcDiagnosticError struct {
+	cause error
+	code  int64
+	class processDiagnosticClass
+}
+
+func (err rpcDiagnosticError) Error() string { return err.cause.Error() }
+func (err rpcDiagnosticError) Unwrap() error { return err.cause }
+
+func withRPCDiagnostic(cause error, code int64, message string) error {
+	if cause == nil {
+		return nil
+	}
+	return rpcDiagnosticError{cause: cause, code: code, class: classifyProcessDiagnostic(message)}
+}
+
+func errorRPCDiagnostic(err error) string {
+	var rpcErr rpcDiagnosticError
+	if !errors.As(err, &rpcErr) {
+		return ""
+	}
+	return fmt.Sprintf("ACP error code %d, provider error class %s", rpcErr.code, rpcErr.class.String())
+}
+
+func errorProcessExitDiagnostic(err error) string {
+	var processErr processExitError
+	if !errors.As(err, &processErr) {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if executable := safeExecutableDiagnostic(processErr.diagnostic.executable); executable != "" {
+		parts = append(parts, "executable "+strconv.Quote(executable))
+	}
+	if processErr.diagnostic.exitCode != nil {
+		parts = append(parts, fmt.Sprintf("exit code %d", *processErr.diagnostic.exitCode))
+	}
+	if phase := processErr.diagnostic.phase.String(); phase != "" {
+		parts = append(parts, "during "+phase)
+	}
+	parts = append(parts, "stderr class "+processErr.diagnostic.stderr.String())
+	return strings.Join(parts, ", ")
+}
+
+func safeExecutableDiagnostic(value string) string {
+	if len(value) == 0 || len(value) > 255 {
+		return ""
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return ""
+		}
+	}
+	return value
+}
+
+func classifyProcessDiagnostic(value string) processDiagnosticClass {
+	normalized := strings.ToLower(value)
+	if strings.TrimSpace(normalized) == "" {
+		return processDiagnosticEmpty
+	}
+	for _, signal := range []string{"authentication required", "authenticate first", "not authenticated", "not logged in", "unauthorized", "api key"} {
+		if strings.Contains(normalized, signal) {
+			return processDiagnosticAuthentication
+		}
+	}
+	for _, signal := range []string{"spawn eperm", "failed to relaunch", "permission denied", "access is denied"} {
+		if strings.Contains(normalized, signal) {
+			return processDiagnosticLaunchDenied
+		}
+	}
+	for _, signal := range []string{"unknown option", "unknown argument", "unrecognized option", "unrecognized argument", "invalid option"} {
+		if strings.Contains(normalized, signal) {
+			return processDiagnosticUnsupportedOption
+		}
+	}
+	for _, signal := range []string{"cannot find module", "module not found", "missing module", "no such file or directory"} {
+		if strings.Contains(normalized, signal) {
+			return processDiagnosticMissingDependency
+		}
+	}
+	return processDiagnosticUnclassified
 }
 
 func (err contextualError) Error() string { return err.cause.Error() }

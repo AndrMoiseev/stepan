@@ -428,8 +428,18 @@ func safeRuntimeError(action string, err error) error {
 	if len(categories) == 0 {
 		categories = append(categories, agentruntime.ErrRuntimeExited)
 	}
+	contexts := make([]string, 0, 2)
 	if context := errorDiagnosticContext(err); context != "" {
-		return fmt.Errorf("qwen %s (%s): %w", action, context, errors.Join(categories...))
+		contexts = append(contexts, context)
+	}
+	if context := errorProcessExitDiagnostic(err); context != "" {
+		contexts = append(contexts, context)
+	}
+	if context := errorRPCDiagnostic(err); context != "" {
+		contexts = append(contexts, context)
+	}
+	if len(contexts) > 0 {
+		return fmt.Errorf("qwen %s (%s): %w", action, strings.Join(contexts, "; "), errors.Join(categories...))
 	}
 	return fmt.Errorf("qwen %s: %w", action, errors.Join(categories...))
 }
