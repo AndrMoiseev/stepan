@@ -94,7 +94,23 @@ func describeTerminalResultError(result *claudecode.ResultMessage) error {
 	if len(details) == 0 {
 		return errors.New("Claude terminal result reports an error without details")
 	}
-	return fmt.Errorf("Claude terminal result reports an error: %s", strings.Join(details, "; "))
+	diagnostic := fmt.Sprintf("Claude terminal result reports an error: %s", strings.Join(details, "; "))
+	if terminalResultReportsMissingAuthentication(result) {
+		return fmt.Errorf("Claude CLI authentication failed: complete CLI login or ensure its access-key environment variable is exported to the Stepan process; %s", diagnostic)
+	}
+	return errors.New(diagnostic)
+}
+
+func terminalResultReportsMissingAuthentication(result *claudecode.ResultMessage) bool {
+	if result.Result != nil && strings.Contains(strings.ToLower(*result.Result), "not logged in") {
+		return true
+	}
+	for _, message := range result.Errors {
+		if strings.Contains(strings.ToLower(message), "not logged in") {
+			return true
+		}
+	}
+	return false
 }
 
 func quoteDiagnosticText(text string) string {

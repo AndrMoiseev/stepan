@@ -240,6 +240,34 @@ func TestClaudeRuntimeIncludesTerminalErrorDetails(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeExplainsAccessKeyAuthenticationFailure(t *testing.T) {
+	config := testConfig(t)
+	resultText := "Not logged in · Please run /login"
+	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{
+		Subtype: "success",
+		IsError: true,
+		Result:  &resultText,
+	}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	handle, err := runtime.StartThread(testThreadConfig(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.RunTurn(handle, "turn")
+	if !errors.Is(err, agentruntime.ErrRuntimeExited) {
+		t.Fatalf("authentication error = %v", err)
+	}
+	for _, detail := range []string{"authentication failed", "access-key environment variable", "Not logged in"} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("authentication error %q does not contain %q", err, detail)
+		}
+	}
+}
+
 func TestClaudeRuntimeAcceptsProviderAssignedTerminalSession(t *testing.T) {
 	config := testConfig(t)
 	fake := &fakeClient{batches: [][]claudecode.Message{{
