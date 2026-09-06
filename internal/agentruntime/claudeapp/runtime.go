@@ -297,7 +297,7 @@ func (runtime *Runtime) receiveResult(result *claudecode.ResultMessage) {
 		return
 	}
 	if result.IsError {
-		query.err = errors.New("Claude terminal result reports an error")
+		query.err = describeTerminalResultError(result)
 	} else if result.StructuredOutput == nil {
 		query.err = errors.New("Claude terminal result has no structured output")
 	} else {
@@ -426,7 +426,7 @@ func collectStructuredOutput(ctx context.Context, iterator claudecode.MessageIte
 			continue
 		}
 		if result.IsError {
-			return nil, errors.New("Claude terminal result reports an error")
+			return nil, describeTerminalResultError(result)
 		}
 		if result.StructuredOutput == nil {
 			return nil, errors.New("Claude terminal result has no structured output")

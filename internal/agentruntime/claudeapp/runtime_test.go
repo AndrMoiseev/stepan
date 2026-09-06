@@ -213,6 +213,33 @@ func TestClaudeRuntimeRejectsForeignThreadAndBadTerminalOutput(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeIncludesTerminalErrorDetails(t *testing.T) {
+	config := testConfig(t)
+	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{
+		Subtype: "error_during_execution",
+		IsError: true,
+		Errors:  []string{"output schema rejected: oneOf is unsupported"},
+	}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	handle, err := runtime.StartThread(testThreadConfig(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.RunTurn(handle, "turn")
+	if !errors.Is(err, agentruntime.ErrRuntimeExited) {
+		t.Fatalf("terminal error = %v", err)
+	}
+	for _, detail := range []string{"error_during_execution", "output schema rejected: oneOf is unsupported"} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("terminal error %q does not contain %q", err, detail)
+		}
+	}
+}
+
 func TestClaudeRuntimeAcceptsProviderAssignedTerminalSession(t *testing.T) {
 	config := testConfig(t)
 	fake := &fakeClient{batches: [][]claudecode.Message{{

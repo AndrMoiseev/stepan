@@ -1,13 +1,17 @@
 package claudeapp
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
-const maxCapturedStderrRunes = 4096
+const maxDiagnosticRunes = 4096
 
 // stderrCapture retains only a small tail of pre-prompt CLI stderr. The SDK
 // otherwise discards this output, including actionable flag and authentication
@@ -26,8 +30,8 @@ func (capture *stderrCapture) Add(line string) {
 	}
 	characters := []rune(line)
 	lineTruncated := false
-	if len(characters) > maxCapturedStderrRunes {
-		characters = characters[len(characters)-maxCapturedStderrRunes:]
+	if len(characters) > maxDiagnosticRunes {
+		characters = characters[len(characters)-maxDiagnosticRunes:]
 		line = string(characters)
 		lineTruncated = true
 	}
@@ -37,7 +41,7 @@ func (capture *stderrCapture) Add(line string) {
 	capture.truncated = capture.truncated || lineTruncated
 	capture.lines = append(capture.lines, line)
 	capture.runes += len(characters)
-	for capture.runes > maxCapturedStderrRunes && len(capture.lines) > 1 {
+	for capture.runes > maxDiagnosticRunes && len(capture.lines) > 1 {
 		capture.runes -= len([]rune(capture.lines[0]))
 		capture.lines = capture.lines[1:]
 		capture.truncated = true
@@ -52,8 +56,8 @@ func (capture *stderrCapture) String() string {
 	}
 	text := strings.Join(capture.lines, "\n")
 	characters := []rune(text)
-	if len(characters) > maxCapturedStderrRunes {
-		text = string(characters[len(characters)-maxCapturedStderrRunes:])
+	if len(characters) > maxDiagnosticRunes {
+		text = string(characters[len(characters)-maxDiagnosticRunes:])
 		capture.truncated = true
 	}
 	if capture.truncated {
@@ -74,4 +78,34 @@ func describeConnectFailure(err error, elapsed time.Duration, stderr string) str
 		details = append(details, fmt.Sprintf("CLI stderr before failure: %q", stderr))
 	}
 	return strings.Join(details, "; ")
+}
+
+func describeTerminalResultError(result *claudecode.ResultMessage) error {
+	details := make([]string, 0, 3)
+	if result.Subtype != "" {
+		details = append(details, "subtype="+quoteDiagnosticText(result.Subtype))
+	}
+	if len(result.Errors) != 0 {
+		details = append(details, "errors="+quoteDiagnosticText(strings.Join(result.Errors, "; ")))
+	}
+	if result.Result != nil && strings.TrimSpace(*result.Result) != "" {
+		details = append(details, "result="+quoteDiagnosticText(*result.Result))
+	}
+	if len(details) == 0 {
+		return errors.New("Claude terminal result reports an error without details")
+	}
+	return fmt.Errorf("Claude terminal result reports an error: %s", strings.Join(details, "; "))
+}
+
+func quoteDiagnosticText(text string) string {
+	text = strings.TrimSpace(text)
+	characters := []rune(text)
+	if len(characters) > maxDiagnosticRunes {
+		const marker = " … [diagnostic truncated] … "
+		available := maxDiagnosticRunes - len([]rune(marker))
+		left := available / 2
+		right := available - left
+		text = string(characters[:left]) + marker + string(characters[len(characters)-right:])
+	}
+	return strconv.Quote(text)
 }
