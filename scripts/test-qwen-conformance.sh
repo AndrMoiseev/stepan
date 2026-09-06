@@ -6,7 +6,7 @@ timeout_seconds=900
 
 write_failure_result() {
   failure_class=$1
-  printf '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","assertions":{},"native_read":{"outcome":"not_observed","os_isolation_guaranteed":false},"failure_class":"%s"}\n' "$failure_class"
+  printf '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","assertions":{},"tool_inventory":{"requested_exact":[],"behavior_observed":[],"preflight_present":false},"forbidden_capabilities":{"outcomes":{},"acp_tool_events":0,"canaries_found":0},"native_read":{"outcome":"not_observed","os_isolation_guaranteed":false},"failure_class":"%s"}\n' "$failure_class"
 }
 
 while (($# > 0)); do
@@ -72,7 +72,7 @@ test_log=$run_root/go-test.log
 cleanup() {
   case "$run_root" in
     "${TMPDIR:-/tmp}"/stepan-qwen-conformance.*) rm -rf -- "$run_root" ;;
-    *) printf '%s\n' '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","failure_class":"unsafe_cleanup_target"}' >&2 ;;
+    *) printf '%s\n' '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","tool_inventory":{"requested_exact":[],"behavior_observed":[],"preflight_present":false},"forbidden_capabilities":{"outcomes":{},"acp_tool_events":0,"canaries_found":0},"failure_class":"unsafe_cleanup_target"}' >&2 ;;
   esac
 }
 trap cleanup EXIT HUP INT TERM
@@ -91,7 +91,7 @@ set -e
 if [[ -f $result_path ]]; then
   cat -- "$result_path"
 else
-  printf '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"test_harness_failed","test_exit_code":%d}\n' \
+  printf '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","tool_inventory":{"requested_exact":[],"behavior_observed":[],"preflight_present":false},"forbidden_capabilities":{"outcomes":{},"acp_tool_events":0,"canaries_found":0},"failure_class":"test_harness_failed","test_exit_code":%d}\n' \
     "$test_exit"
 fi
 exit "$test_exit"

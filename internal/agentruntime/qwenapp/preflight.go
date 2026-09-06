@@ -79,6 +79,9 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 			if err := validateToolInventory(inventory); err != nil {
 				return err
 			}
+			if err := connection.recordPreflightInventory(inventory); err != nil {
+				return err
+			}
 		}
 		connection.mu.Lock()
 		connection.initialized = true
@@ -90,13 +93,16 @@ func (connection *Connection) preflight(workspace, startupRoot string) error {
 
 	var session newSessionResponse
 	if err := connection.callAndCommit("session/new", newSessionParams{CWD: workspace, MCPServers: []any{}}, &session, func() error {
-		if session.SessionID == "" {
+		if !validAgentIdentity(session.SessionID) {
 			return withDiagnosticContext(fmt.Errorf("%w: session/new sessionId", ErrIncompatible), diagnosticSessionLifecycle)
 		}
 		if inventory, present, err := preflightStatusFromMeta(startupRoot, session.Meta); err != nil {
 			return err
 		} else if present {
 			if err := validateToolInventory(inventory); err != nil {
+				return err
+			}
+			if err := connection.recordPreflightInventory(inventory); err != nil {
 				return err
 			}
 		}

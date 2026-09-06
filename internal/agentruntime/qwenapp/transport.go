@@ -13,7 +13,12 @@ import (
 	"unicode/utf8"
 )
 
-const maxACPMessageBytes = 16 << 20
+const (
+	maxACPMessageBytes       = 16 << 20
+	maxCorrelationIDBytes    = 256
+	maxOutstandingACPCalls   = 256
+	maxCorrelationTombstones = 512
+)
 
 var (
 	errInvalidNDJSON      = errors.New("invalid ACP NDJSON")
@@ -23,6 +28,8 @@ var (
 	errDuplicateRequestID = errors.New("duplicate request ID")
 	errOrphanResponse     = errors.New("response has no pending request")
 	errDuplicateResponse  = errors.New("request already has a response")
+	errRequestIDTooLong   = errors.New("request ID exceeds 256 bytes")
+	errTooManyRequests    = errors.New("too many outstanding ACP requests")
 )
 
 type lineDecoder struct {
@@ -229,8 +236,11 @@ func parseRequestID(raw json.RawMessage) (requestID, error) {
 	}
 	if raw[0] == '"' {
 		var value string
-		if json.Unmarshal(raw, &value) != nil {
+		if json.Unmarshal(raw, &value) != nil || value == "" {
 			return requestID{}, fmt.Errorf("%w: invalid string request ID", errInvalidEnvelope)
+		}
+		if len(value) > maxCorrelationIDBytes {
+			return requestID{}, fmt.Errorf("%w: %w", errInvalidEnvelope, errRequestIDTooLong)
 		}
 		return stringID(value), nil
 	}
@@ -275,29 +285,57 @@ func (writer *lineWriter) write(value any) error {
 }
 
 type correlationTable struct {
-	entries map[string]bool
+	pending       map[string]struct{}
+	resolved      map[string]struct{}
+	resolvedOrder []string
 }
 
 func (table *correlationTable) register(id requestID) error {
-	if table.entries == nil {
-		table.entries = make(map[string]bool)
+	if err := validateCorrelationID(id); err != nil {
+		return err
 	}
-	if _, exists := table.entries[id.key]; exists {
+	if table.pending == nil {
+		table.pending = make(map[string]struct{})
+		table.resolved = make(map[string]struct{})
+	}
+	if _, exists := table.pending[id.key]; exists {
 		return errDuplicateRequestID
 	}
-	table.entries[id.key] = false
+	if _, exists := table.resolved[id.key]; exists {
+		return errDuplicateRequestID
+	}
+	if len(table.pending) >= maxOutstandingACPCalls {
+		return errTooManyRequests
+	}
+	table.pending[id.key] = struct{}{}
 	return nil
 }
 
 func (table *correlationTable) resolve(id requestID) error {
-	done, exists := table.entries[id.key]
-	if !exists {
-		return errOrphanResponse
+	if err := validateCorrelationID(id); err != nil {
+		return err
 	}
-	if done {
+	if _, done := table.resolved[id.key]; done {
 		return errDuplicateResponse
 	}
-	table.entries[id.key] = true
+	if _, exists := table.pending[id.key]; !exists {
+		return errOrphanResponse
+	}
+	delete(table.pending, id.key)
+	table.resolved[id.key] = struct{}{}
+	table.resolvedOrder = append(table.resolvedOrder, id.key)
+	if len(table.resolvedOrder) > maxCorrelationTombstones {
+		oldest := table.resolvedOrder[0]
+		table.resolvedOrder = table.resolvedOrder[1:]
+		delete(table.resolved, oldest)
+	}
+	return nil
+}
+
+func validateCorrelationID(id requestID) error {
+	if len(id.key) < 3 || len(id.key)-2 > maxCorrelationIDBytes {
+		return errRequestIDTooLong
+	}
 	return nil
 }
 

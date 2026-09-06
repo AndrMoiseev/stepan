@@ -1,6 +1,7 @@
 package qwenapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,7 +95,7 @@ type fakeRuntimeFactory struct {
 	onStart   func()
 }
 
-func (factory *fakeRuntimeFactory) start(_ Config, config agentruntime.ThreadConfig) (runtimeThread, error) {
+func (factory *fakeRuntimeFactory) start(ctx context.Context, _ Config, config agentruntime.ThreadConfig) (runtimeThread, error) {
 	factory.mu.Lock()
 	index := factory.started
 	factory.started++
@@ -109,7 +110,14 @@ func (factory *fakeRuntimeFactory) start(_ Config, config agentruntime.ThreadCon
 	}
 	factory.mu.Unlock()
 	if factory.startGate != nil {
-		<-factory.startGate
+		select {
+		case <-factory.startGate:
+		case <-ctx.Done():
+			if result != nil {
+				_ = result.Close()
+			}
+			return nil, ctx.Err()
+		}
 	}
 	if resultErr != nil {
 		return nil, resultErr
@@ -283,6 +291,193 @@ func TestRuntimeDoesNotPublishThreadBeforePreflightOrAfterClose(t *testing.T) {
 	}
 	if created.closeCount.Load() != 1 || len(runtime.threads) != 0 {
 		t.Fatalf("unpublished process cleanup = %d, live=%d", created.closeCount.Load(), len(runtime.threads))
+	}
+}
+
+func TestRuntimeCloseAndInterruptCancelHungStartup(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		interrupt bool
+		want      error
+	}{
+		{name: "close", want: agentruntime.ErrRuntimeClosed},
+		{name: "interrupt", interrupt: true, want: agentruntime.ErrTurnInterrupted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gate := make(chan struct{})
+			backend := newFakeRuntimeThread(`{}`)
+			factory := &fakeRuntimeFactory{threads: []*fakeRuntimeThread{backend}, startGate: gate}
+			runtime := testRuntime(t, factory)
+			started := make(chan error, 1)
+			go func() {
+				_, err := runtime.StartThread(testThreadConfig(runtime))
+				started <- err
+			}()
+			waitForRuntimeFactoryStart(t, factory)
+
+			closed := make(chan error, 1)
+			if test.interrupt {
+				go func() { closed <- runtime.Interrupt() }()
+			} else {
+				go func() { closed <- runtime.Close() }()
+			}
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("lifecycle hung behind synchronous startup")
+			}
+			select {
+			case err := <-started:
+				if !errors.Is(err, test.want) {
+					t.Fatalf("cancelled startup = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancelled startup goroutine leaked")
+			}
+			runtime.mu.Lock()
+			starting := len(runtime.starting)
+			runtime.mu.Unlock()
+			if starting != 0 || backend.closeCount.Load() != 1 {
+				t.Fatalf("startup owners after checkpoint = %d, closes=%d", starting, backend.closeCount.Load())
+			}
+		})
+	}
+}
+
+func TestRuntimeProductionStartupCancellationClosesHungACPProcess(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		scenario string
+	}{
+		{name: "initialize", scenario: "hang-initialize"},
+		{name: "session new", scenario: "hang-session"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := makeGitRoot(t)
+			observation := filepath.Join(t.TempDir(), "started.json")
+			t.Setenv("GO_WANT_QWENAPP_FAKE", "acp")
+			t.Setenv("STEPAN_QWEN_ACP_CASE", test.scenario)
+			t.Setenv("STEPAN_QWEN_ACP_OBSERVATION", observation)
+			runtime, err := StartRuntime(Config{
+				Executable: testExecutableName(t), Workspace: workspace, JSONContract: testJSONContract,
+				EnvelopeSchema: json.RawMessage(`{"type":"object"}`),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan error, 1)
+			go func() {
+				_, err := runtime.StartThread(agentruntime.ThreadConfig{Workspace: workspace, OutputSchema: json.RawMessage(`{"type":"object"}`)})
+				started <- err
+			}()
+			waitForFile(t, observation)
+			closed := make(chan error, 1)
+			go func() { closed <- runtime.Close() }()
+			select {
+			case err := <-closed:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("runtime close did not tear down hung ACP startup")
+			}
+			select {
+			case err := <-started:
+				if !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+					t.Fatalf("hung production startup = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("production startup goroutine leaked")
+			}
+			runtime.mu.Lock()
+			starting := len(runtime.starting)
+			runtime.mu.Unlock()
+			if starting != 0 {
+				t.Fatalf("runtime retained %d startup owners", starting)
+			}
+		})
+	}
+}
+
+func TestRuntimeUsesOneGlobalDeadlineForUncooperativeStartups(t *testing.T) {
+	const count = 4
+	workspace := t.TempDir()
+	gate := make(chan struct{})
+	var entered atomic.Int32
+	backends := make([]*fakeRuntimeThread, count)
+	for index := range backends {
+		backends[index] = newFakeRuntimeThread(`{}`)
+	}
+	start := func(_ context.Context, _ Config, _ agentruntime.ThreadConfig) (runtimeThread, error) {
+		index := int(entered.Add(1)) - 1
+		<-gate // deliberately ignores cancellation to exercise the global bound
+		return backends[index], nil
+	}
+	var deadlines atomic.Int32
+	runtime := newRuntime(Config{Workspace: workspace}, runtimeDependencies{
+		startThread: start,
+		after: func(time.Duration) <-chan time.Time {
+			deadlines.Add(1)
+			ready := make(chan time.Time, 1)
+			ready <- time.Now()
+			return ready
+		},
+	})
+	results := make(chan error, count)
+	for range count {
+		go func() {
+			_, err := runtime.StartThread(testThreadConfig(runtime))
+			results <- err
+		}()
+	}
+	deadline := time.Now().Add(time.Second)
+	for entered.Load() != count {
+		if time.Now().After(deadline) {
+			t.Fatal("concurrent startups did not enter")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := runtime.Close(); !errors.Is(err, agentruntime.ErrRuntimeCleanup) {
+		t.Fatalf("bounded close error = %v", err)
+	}
+	if deadlines.Load() != 1 {
+		t.Fatalf("startup grace timers = %d, want one global budget", deadlines.Load())
+	}
+	close(gate)
+	for range count {
+		select {
+		case err := <-results:
+			if !errors.Is(err, agentruntime.ErrRuntimeClosed) {
+				t.Fatalf("late startup = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("late startup goroutine leaked")
+		}
+	}
+	for index, backend := range backends {
+		if backend.closeCount.Load() != 1 {
+			t.Fatalf("late backend %d closes = %d", index, backend.closeCount.Load())
+		}
+	}
+}
+
+func waitForRuntimeFactoryStart(t *testing.T, factory *fakeRuntimeFactory) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for {
+		factory.mu.Lock()
+		started := factory.started > 0
+		factory.mu.Unlock()
+		if started {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startup did not begin")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

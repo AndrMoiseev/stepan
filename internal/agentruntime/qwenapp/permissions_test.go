@@ -1,8 +1,10 @@
 package qwenapp
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -282,6 +284,125 @@ func TestDelegatedReadAllowsOnlyLogicalRootsAndNativeReadIsAdvisory(t *testing.T
 	finishPromptDenied(t, server, promptErr, outsideFile, "forbidden-marker")
 	if connection.Err() != nil {
 		t.Fatalf("native read status corrupted connection: %v", connection.Err())
+	}
+}
+
+func TestReadTextFileSelectionIsStreamingBoundedAndStrictUTF8(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "source.txt")
+	if err := os.WriteFile(file, []byte("one\ntwø\nthree"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name        string
+		line, limit *uint32
+		want        string
+	}{
+		{name: "all", want: "one\ntwø\nthree"},
+		{name: "middle", line: uint32Pointer(2), limit: uint32Pointer(1), want: "twø\n"},
+		{name: "past end", line: uint32Pointer(9), want: ""},
+		{name: "zero lines", line: uint32Pointer(1), limit: uint32Pointer(0), want: ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := readTextFileSelection(file, test.line, test.limit)
+			if err != nil || got != test.want {
+				t.Fatalf("selection = %q, %v", got, err)
+			}
+		})
+	}
+
+	huge := filepath.Join(t.TempDir(), "huge.txt")
+	if err := os.WriteFile(huge, bytes.Repeat([]byte{'x'}, maxDelegatedReadContentBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := readTextFileSelection(huge, nil, nil); content != "" || !errors.Is(err, errDelegatedReadTooLarge) {
+		t.Fatalf("huge selection = %d bytes, %v", len(content), err)
+	}
+
+	invalid := filepath.Join(t.TempDir(), "invalid.txt")
+	if err := os.WriteFile(invalid, append([]byte("selected\n"), 0xff), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := readTextFileSelection(invalid, uint32Pointer(1), uint32Pointer(1)); content != "" || err == nil {
+		t.Fatalf("invalid UTF-8 selection = %q, %v", content, err)
+	}
+
+	maximal, err := readTextFileSelection(huge, nil, uint32Pointer(0))
+	if err != nil || maximal != "" {
+		t.Fatalf("zero-limit huge selection = %d bytes, %v", len(maximal), err)
+	}
+	encoded, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": strings.Repeat("i", maxCorrelationIDBytes), "result": map[string]string{"content": strings.Repeat("\x00", maxDelegatedReadContentBytes)}})
+	if err != nil || len(encoded) > maxACPMessageBytes {
+		t.Fatalf("bounded delegated response size = %d, %v", len(encoded), err)
+	}
+}
+
+func TestToolCallsWithoutIdentifiableMetadataFailClosed(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind string
+		meta any
+	}{
+		{name: "execute missing meta", kind: "execute"},
+		{name: "shell empty meta", kind: "shell", meta: map[string]any{}},
+		{name: "read malformed meta", kind: "read", meta: []string{"read_file"}},
+		{name: "search non-string tool name", kind: "search", meta: map[string]any{"toolName": 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			connection := &Connection{
+				activePermission: newPermissionTurn(permissionContext{sessionID: "s", turnID: "t"}),
+				audit:            connectionAudit{tools: make(map[string]int)},
+			}
+			update := map[string]any{"sessionUpdate": "tool_call", "toolCallId": "tool", "kind": test.kind, "status": "pending"}
+			if test.meta != nil {
+				update["_meta"] = test.meta
+			}
+			raw, _ := json.Marshal(update)
+			if err := connection.observeToolCall(raw); !errors.Is(err, ErrProtocol) {
+				t.Fatalf("unidentifiable tool call error = %v", err)
+			}
+		})
+	}
+}
+
+func TestToolAndSessionIdentityMapsAreBounded(t *testing.T) {
+	turn := newPermissionTurn(permissionContext{sessionID: "s", turnID: "t"})
+	connection := &Connection{activePermission: turn, audit: connectionAudit{tools: make(map[string]int)}}
+	for index := range maxActiveToolCalls {
+		raw, _ := json.Marshal(map[string]any{
+			"sessionUpdate": "tool_call", "toolCallId": fmt.Sprintf("tool-%d", index),
+			"kind": "read", "status": "completed", "_meta": map[string]any{"toolName": "read_file"},
+		})
+		if err := connection.observeToolCall(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	overflow, _ := json.Marshal(map[string]any{
+		"sessionUpdate": "tool_call", "toolCallId": "overflow", "kind": "read", "status": "completed",
+		"_meta": map[string]any{"toolName": "read_file"},
+	})
+	if err := connection.observeToolCall(overflow); !errors.Is(err, ErrProtocol) {
+		t.Fatalf("tool identity flood = %v", err)
+	}
+	if len(turn.tools) != maxActiveToolCalls || len(turn.consumed) != 0 {
+		t.Fatalf("bounded tool maps = %d/%d", len(turn.tools), len(turn.consumed))
+	}
+
+	oversized := strings.Repeat("s", maxCorrelationIDBytes+1)
+	params, _ := json.Marshal(map[string]any{
+		"sessionId": oversized,
+		"toolCall":  map[string]any{"toolCallId": "tool"},
+		"options":   standardPermissionOptions(),
+	})
+	if _, err := decodePermissionRequest(params); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("oversized permission session identity = %v", err)
+	}
+	params, _ = json.Marshal(map[string]any{
+		"sessionId": "s",
+		"toolCall":  map[string]any{"toolCallId": strings.Repeat("t", maxCorrelationIDBytes+1)},
+		"options":   standardPermissionOptions(),
+	})
+	if _, err := decodePermissionRequest(params); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("oversized tool identity = %v", err)
 	}
 }
 
@@ -618,6 +739,13 @@ func TestClaimPermissionCorrelationIsSingleUseAndIdentityBound(t *testing.T) {
 				t.Fatalf("correlation = %v", err)
 			}
 		})
+	}
+	tooManyOptions := make([]permissionOption, 17)
+	for index := range tooManyOptions {
+		tooManyOptions[index] = permissionOption{OptionID: fmt.Sprintf("option-%d", index), Name: "choice", Kind: "reject_once"}
+	}
+	if _, err := allowOnceOption(tooManyOptions); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("unbounded permission option identities = %v", err)
 	}
 }
 

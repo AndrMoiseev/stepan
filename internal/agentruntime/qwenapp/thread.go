@@ -1,6 +1,7 @@
 package qwenapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -29,14 +30,36 @@ type qwenThread struct {
 	closeErr  error
 }
 
-func startQwenThread(config Config, threadConfig agentruntime.ThreadConfig) (runtimeThread, error) {
+func startQwenThread(ctx context.Context, config Config, threadConfig agentruntime.ThreadConfig) (runtimeThread, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	process := NewProcess(config, threadConfig.ArtifactRoot)
 	if err := process.Start(); err != nil {
 		_ = process.Close()
 		return nil, err
 	}
+	stopCancellation := make(chan struct{})
+	cancellationDone := make(chan struct{})
+	go func() {
+		defer close(cancellationDone)
+		select {
+		case <-ctx.Done():
+			_ = process.Close()
+		case <-stopCancellation:
+		}
+	}()
+	defer func() {
+		close(stopCancellation)
+		<-cancellationDone
+	}()
 	connection, err := OpenConnection(process)
 	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = connection.Close()
+		_ = process.Close()
 		return nil, err
 	}
 	canonicalConfig := threadConfig.Clone()
@@ -44,6 +67,11 @@ func startQwenThread(config Config, threadConfig agentruntime.ThreadConfig) (run
 	canonicalConfig.ArtifactRoot = process.WritableRoot()
 	runner, err := newTurnRunner(connection, canonicalConfig)
 	if err != nil {
+		_ = connection.Close()
+		_ = process.Close()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		_ = connection.Close()
 		_ = process.Close()
 		return nil, err

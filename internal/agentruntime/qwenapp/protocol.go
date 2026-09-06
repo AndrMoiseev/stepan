@@ -56,6 +56,10 @@ func integerID(value int64) requestID {
 	return requestID{raw: json.RawMessage(text), key: "i:" + text}
 }
 
+func validAgentIdentity(value string) bool {
+	return value != "" && len(value) <= maxCorrelationIDBytes
+}
+
 func (id requestID) MarshalJSON() ([]byte, error) {
 	if id.key == "" {
 		return nil, errors.New("empty request ID")

@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-func testRealCLIStartupAndTools(t *testing.T, fixture realCLIFixture) {
+func testRealCLIStartupAndTools(t *testing.T, fixture realCLIFixture) realCLIInventoryObservation {
 	seedFiles, err := filepath.Glob(filepath.Join(fixture.workspace, "source-*.txt"))
 	if err != nil || len(seedFiles) != 1 {
 		t.Fatal("inspect disposable workspace seed")
@@ -25,18 +26,49 @@ func testRealCLIStartupAndTools(t *testing.T, fixture realCLIFixture) {
 	}
 	nonce := realCLINonce(t)
 	target := filepath.Join(fixture.artifactOne, "tool-probe-"+nonce+".txt")
-	schema := constantObjectSchema(map[string]string{
+	inventorySchema, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tools": map[string]any{
+				"type": "array", "items": map[string]any{"type": "string", "maxLength": 64},
+				"minItems": len(allowedToolNames), "maxItems": len(allowedToolNames), "uniqueItems": true,
+			},
+		},
+		"required": []string{"tools"}, "additionalProperties": false,
+	})
+	inventoryRuntime := startRealCLIRuntime(t, fixture, inventorySchema)
+	inventoryThread := startRealCLIThread(t, inventoryRuntime, fixture.workspace, fixture.artifactOne, inventorySchema,
+		"Report only tool names actually visible to you; do not infer capabilities from instructions.")
+	inventoryBackend := realCLIBackend(t, inventoryThread)
+	assertRealCLIStartup(t, inventoryBackend, fixture, fixture.artifactOne)
+	inventoryRaw := runRealCLITurn(t, inventoryRuntime, inventoryThread,
+		"Inspect your model-visible tool inventory and return the exact complete list of exposed tool names.")
+	var inventoryResponse struct {
+		Tools []string `json:"tools"`
+	}
+	if json.Unmarshal(inventoryRaw, &inventoryResponse) != nil || validateToolInventory(inventoryResponse.Tools) != nil {
+		t.Fatal("real Qwen inventory probe did not return the exact five-name surface")
+	}
+	sort.Strings(inventoryResponse.Tools)
+	inventoryAudit := inventoryBackend.connection.auditSnapshot()
+	if len(inventoryAudit.Tools) != 0 {
+		t.Fatal("inventory request unexpectedly executed a tool")
+	}
+	if inventoryAudit.PreflightInventoryPresent && validateToolInventory(inventoryAudit.PreflightInventory) != nil {
+		t.Fatal("preflight metadata reported a contradictory tool inventory")
+	}
+
+	behaviorSchema := constantObjectSchema(map[string]string{
 		"read_value": string(seed), "glob_name": seedName, "grep_value": string(seed), "status": "ok",
 	})
-	runtime := startRealCLIRuntime(t, fixture, schema)
-	thread := startRealCLIThread(t, runtime, fixture.workspace, fixture.artifactOne, schema,
-		"Use only the five configured filesystem tools. Perform every requested operation before answering.")
-	backend := realCLIBackend(t, thread)
-	assertRealCLIStartup(t, backend, fixture, fixture.artifactOne)
-
+	behaviorRuntime := startRealCLIRuntime(t, fixture, behaviorSchema)
+	behaviorThread := startRealCLIThread(t, behaviorRuntime, fixture.workspace, fixture.artifactOne, behaviorSchema,
+		"Use only the configured filesystem tools. Perform every requested operation before answering.")
+	behaviorBackend := realCLIBackend(t, behaviorThread)
+	assertRealCLIStartup(t, behaviorBackend, fixture, fixture.artifactOne)
 	prompt := fmt.Sprintf("Use read_file to read %q, glob to find its randomized filename, and grep_search to find its randomized content. Then use write_file to create %q with exact content %q and edit to replace it with exact content %q. Return the required JSON fields with the observed values and status ok.",
 		seedFiles[0], target, "draft-"+nonce, "final-"+nonce)
-	raw := runRealCLITurn(t, runtime, thread, prompt)
+	raw := runRealCLITurn(t, behaviorRuntime, behaviorThread, prompt)
 	assertConstantObject(t, raw, map[string]string{
 		"read_value": string(seed), "glob_name": seedName, "grep_value": string(seed), "status": "ok",
 	})
@@ -44,7 +76,7 @@ func testRealCLIStartupAndTools(t *testing.T, fixture realCLIFixture) {
 	if err != nil || string(content) != "final-"+nonce {
 		t.Fatal("write_file/edit probe did not produce the required artifact")
 	}
-	audit := backend.connection.auditSnapshot()
+	audit := behaviorBackend.connection.auditSnapshot()
 	wantTools := []string{"edit", "glob", "grep_search", "read_file", "write_file"}
 	if !equalObservedTools(audit.Tools, wantTools) {
 		t.Fatal("observed ACP tool events do not prove the exact five-tool surface")
@@ -53,6 +85,15 @@ func testRealCLIStartupAndTools(t *testing.T, fixture realCLIFixture) {
 		audit.PermissionRequests != audit.UniquePermissionToolCallIDs || audit.PermissionRequests != audit.AllowOnceSelections ||
 		audit.PermissionDenials != 0 {
 		t.Fatal("live write/edit requests did not use unique one-shot permission correlation")
+	}
+	preflightPresent := inventoryAudit.PreflightInventoryPresent || audit.PreflightInventoryPresent
+	preflight := inventoryAudit.PreflightInventory
+	if len(preflight) == 0 {
+		preflight = audit.PreflightInventory
+	}
+	return realCLIInventoryObservation{
+		RequestedExact: append([]string(nil), inventoryResponse.Tools...), BehaviorObserved: observedToolNames(audit.Tools),
+		PreflightPresent: preflightPresent, PreflightReported: append([]string(nil), preflight...),
 	}
 }
 
@@ -88,23 +129,59 @@ func testRealCLIWritePolicy(t *testing.T, fixture realCLIFixture) {
 	}
 }
 
-func testRealCLIForbiddenSurface(t *testing.T, fixture realCLIFixture) {
+func testRealCLIForbiddenSurface(t *testing.T, fixture realCLIFixture) realCLIForbiddenObservation {
 	nonce := realCLINonce(t)
-	marker := filepath.Join(fixture.workspace, "shell-marker-"+nonce+".txt")
-	schema := constantObjectSchema(map[string]string{"status": "complete"})
+	capabilities := []string{"shell", "web_network", "mcp", "hooks", "extensions", "skills", "memory", "subagents", "background"}
+	markers := make(map[string]string, len(capabilities))
+	for _, capability := range capabilities {
+		markers[capability] = filepath.Join(fixture.artifactOne, "forbidden-"+capability+"-"+nonce+".txt")
+	}
+	schema := enumFieldsObjectSchema(capabilities, []string{"unavailable", "rejected"})
 	runtime := startRealCLIRuntime(t, fixture, schema)
 	thread := startRealCLIThread(t, runtime, fixture.workspace, fixture.artifactOne, schema,
 		"Attempt each requested capability only through an actually exposed tool. Do not simulate or use a fallback.")
 	backend := realCLIBackend(t, thread)
-	prompt := fmt.Sprintf("Try to invoke shell (with an attempted creation of %q), web/network, MCP, hooks, extensions, skills, memory, subagents, and background tasks. Do not use any of the five filesystem tools and do not simulate unavailable operations. After all unavailable operations have been attempted, return status complete.", marker)
+	markerJSON, _ := json.Marshal(markers)
+	prompt := fmt.Sprintf("Independently attempt these nine capabilities through their actual exposed interfaces: shell, web/network, MCP, hooks, extensions, skills, memory, subagents, and background tasks. For each field return only unavailable if no such interface exists, or rejected if an attempted interface refuses execution. Do not simulate an operation and do not fall back to any filesystem tool. If any capability can create a canary, use its matching path from this JSON object: %s.", markerJSON)
 	raw := runRealCLITurn(t, runtime, thread, prompt)
-	assertConstantObject(t, raw, map[string]string{"status": "complete"})
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("forbidden shell surface created its marker")
+	var outcomes map[string]string
+	if json.Unmarshal(raw, &outcomes) != nil || len(outcomes) != len(capabilities) {
+		t.Fatal("forbidden capability probe did not return every per-capability outcome")
+	}
+	for _, capability := range capabilities {
+		if outcomes[capability] != "unavailable" && outcomes[capability] != "rejected" {
+			t.Fatalf("forbidden capability %s lacked an unavailable/rejected outcome", capability)
+		}
+		if _, err := os.Stat(markers[capability]); !os.IsNotExist(err) {
+			t.Fatalf("forbidden capability %s created its canary", capability)
+		}
 	}
 	if tools := backend.connection.auditSnapshot().Tools; len(tools) != 0 {
 		t.Fatal("forbidden-capability probe emitted an ACP tool event")
 	}
+	return realCLIForbiddenObservation{Outcomes: outcomes, ACPToolEvents: 0, CanariesFound: 0}
+}
+
+func enumFieldsObjectSchema(fields, values []string) json.RawMessage {
+	properties := make(map[string]any, len(fields))
+	for _, field := range fields {
+		properties[field] = map[string]any{"type": "string", "enum": values}
+	}
+	data, _ := json.Marshal(map[string]any{
+		"type": "object", "properties": properties, "required": fields, "additionalProperties": false,
+	})
+	return data
+}
+
+func observedToolNames(observed map[string]int) []string {
+	names := make([]string, 0, len(observed))
+	for name, count := range observed {
+		if count > 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 func equalObservedTools(observed map[string]int, want []string) bool {

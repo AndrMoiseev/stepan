@@ -29,6 +29,7 @@ type acpObservation struct {
 	CanReadTextFile          bool     `json:"canReadTextFile"`
 	CanWriteTextFile         bool     `json:"canWriteTextFile"`
 	ModelPromptSeen          bool     `json:"modelPromptSeen"`
+	PID                      int      `json:"pid"`
 }
 
 func runQwenACPFake() int {
@@ -47,6 +48,7 @@ func runQwenACPFake() int {
 		ProtocolVersion:  initialized.ProtocolVersion,
 		CanReadTextFile:  initialized.ClientCapabilities.FS.ReadTextFile,
 		CanWriteTextFile: initialized.ClientCapabilities.FS.WriteTextFile,
+		PID:              os.Getpid(),
 	}
 	capabilities := any(map[string]any{
 		"promptCapabilities":  map[string]any{},
@@ -64,6 +66,11 @@ func runQwenACPFake() int {
 		capabilities = nil
 	} else if scenario == "empty-capabilities" {
 		capabilities = map[string]any{}
+	}
+	if scenario == "hang-initialize" {
+		_ = writeACPObservation(observation)
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		return 0
 	}
 	if err := transport.sendResult(initialize.id, map[string]any{
 		"protocolVersion":   acpProtocolVersion,
@@ -91,6 +98,10 @@ func runQwenACPFake() int {
 	_, observation.HasAdditionalDirectories = fields["additionalDirectories"]
 	if err := writeACPObservation(observation); err != nil {
 		return 66
+	}
+	if scenario == "hang-session" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		return 0
 	}
 	if os.Getenv("STEPAN_QWEN_ACP_CASE") == "session-error" {
 		if err := transport.sendError(session.id, -32602, "credential-body startup root refused"); err != nil {
@@ -368,6 +379,10 @@ func TestPreflightValidatesOptionalToolInventory(t *testing.T) {
 				if owner.closeCount.Load() != 0 {
 					t.Fatal("accepted inventory closed owner")
 				}
+				audit := connection.auditSnapshot()
+				if !audit.PreflightInventoryPresent || !equalStrings(audit.PreflightInventory, allowedToolNames[:]) {
+					t.Fatalf("recorded preflight inventory = %#v, present=%t", audit.PreflightInventory, audit.PreflightInventoryPresent)
+				}
 				_ = connection.Close()
 				return
 			}
@@ -409,6 +424,19 @@ func TestPreflightRejectsMissingMandatoryCapabilitiesAndContradictoryStartupStat
 				t.Fatalf("connection error = %v, closes = %d", connection.Err(), owner.closeCount.Load())
 			}
 		})
+	}
+}
+
+func TestPreflightRejectsOversizedSessionIdentity(t *testing.T) {
+	connection, owner, _, raw, err := establishTestConnection(t, validInitialize(), map[string]any{
+		"sessionId": strings.Repeat("s", maxCorrelationIDBytes+1),
+	}, connectionHandler{})
+	defer raw.Close()
+	if err == nil || !errors.Is(err, ErrIncompatible) || !strings.Contains(err.Error(), "session/new sessionId") {
+		t.Fatalf("oversized session identity = %v", err)
+	}
+	if connection.Err() == nil || owner.closeCount.Load() != 1 {
+		t.Fatalf("oversized session cleanup error=%v closes=%d", connection.Err(), owner.closeCount.Load())
 	}
 }
 

@@ -35,6 +35,19 @@ type realCLIReadObservation struct {
 	OSIsolationGuaranteed bool   `json:"os_isolation_guaranteed"`
 }
 
+type realCLIInventoryObservation struct {
+	RequestedExact    []string `json:"requested_exact"`
+	BehaviorObserved  []string `json:"behavior_observed"`
+	PreflightPresent  bool     `json:"preflight_present"`
+	PreflightReported []string `json:"preflight_reported,omitempty"`
+}
+
+type realCLIForbiddenObservation struct {
+	Outcomes      map[string]string `json:"outcomes"`
+	ACPToolEvents int               `json:"acp_tool_events"`
+	CanariesFound int               `json:"canaries_found"`
+}
+
 type realCLIResult struct {
 	SchemaVersion  int                         `json:"schema_version"`
 	Selected       bool                        `json:"selected"`
@@ -45,6 +58,8 @@ type realCLIResult struct {
 	Arch           string                      `json:"arch"`
 	Assertions     map[string]realCLIAssertion `json:"assertions"`
 	NativeRead     realCLIReadObservation      `json:"native_read"`
+	ToolInventory  realCLIInventoryObservation `json:"tool_inventory"`
+	Forbidden      realCLIForbiddenObservation `json:"forbidden_capabilities"`
 	DurationMS     int64                       `json:"duration_ms"`
 	FailureClass   string                      `json:"failure_class,omitempty"`
 }
@@ -104,7 +119,7 @@ func TestQwenRealCLIConformance(t *testing.T) {
 	fixture := makeRealCLIFixture(t, name, resolved)
 
 	runRealCLIAssertion(t, result, "startup_acp_and_five_tool_surface", func(t *testing.T) {
-		testRealCLIStartupAndTools(t, fixture)
+		result.ToolInventory = testRealCLIStartupAndTools(t, fixture)
 	})
 	runRealCLIAssertion(t, result, "write_policy_and_live_allow_once_correlation", func(t *testing.T) {
 		testRealCLIWritePolicy(t, fixture)
@@ -113,7 +128,7 @@ func TestQwenRealCLIConformance(t *testing.T) {
 		testPermissionAdversarialMatrix(t, fixture)
 	})
 	runRealCLIAssertion(t, result, "forbidden_capability_surface", func(t *testing.T) {
-		testRealCLIForbiddenSurface(t, fixture)
+		result.Forbidden = testRealCLIForbiddenSurface(t, fixture)
 	})
 	runRealCLIAssertion(t, result, "delegated_external_read_denied", func(t *testing.T) {
 		context := newFilePolicy(fixture.workspace, fixture.artifactOne).context("session", "turn")
@@ -129,6 +144,9 @@ func TestQwenRealCLIConformance(t *testing.T) {
 	})
 	runRealCLIAssertion(t, result, realCLIPlatformAssertionName(), func(t *testing.T) {
 		testRealCLIPlatformLifecycle(t, fixture)
+	})
+	runRealCLIAssertion(t, result, "localized_live_protocol_failure", func(t *testing.T) {
+		testRealCLIProtocolFailureLocalization(t, fixture)
 	})
 }
 

@@ -26,6 +26,12 @@ function Write-FailureResult {
         os = "windows"
         arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString().ToLowerInvariant()
         assertions = @{}
+        tool_inventory = @{
+            requested_exact = @()
+            behavior_observed = @()
+            preflight_present = $false
+        }
+        forbidden_capabilities = @{ outcomes = @{}; acp_tool_events = 0; canaries_found = 0 }
         native_read = @{
             outcome = "not_observed"
             os_isolation_guaranteed = $false
@@ -117,6 +123,8 @@ try {
             os = "windows"
             arch = "amd64"
             assertions = @{}
+            tool_inventory = [pscustomobject]@{ requested_exact = @(); behavior_observed = @(); preflight_present = $false }
+            forbidden_capabilities = [pscustomobject]@{ outcomes = [pscustomobject]@{}; acp_tool_events = 0; canaries_found = 0 }
             native_read = [pscustomobject]@{ outcome = "not_observed"; os_isolation_guaranteed = $false }
             failure_class = "test_harness_failed"
         }

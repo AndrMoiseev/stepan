@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
@@ -61,6 +62,8 @@ type connectionAuditSnapshot struct {
 	UniquePermissionToolCallIDs int
 	AllowOnceSelections         int
 	PermissionDenials           int
+	PreflightInventory          []string
+	PreflightInventoryPresent   bool
 }
 
 // Connection owns one strict ACP stream and exactly one session. Its wire
@@ -84,6 +87,8 @@ type Connection struct {
 	err              error
 	done             chan struct{}
 	audit            connectionAudit
+	preflightTools   []string
+	preflightPresent bool
 }
 
 func newConnection(transport *transport, owner connectionOwner, handler connectionHandler) *Connection {
@@ -117,7 +122,22 @@ func (connection *Connection) auditSnapshot() connectionAuditSnapshot {
 		UniquePermissionToolCallIDs: len(connection.audit.permissionToolCallIDs),
 		AllowOnceSelections:         connection.audit.allowOnceSelections,
 		PermissionDenials:           connection.audit.permissionDenials,
+		PreflightInventory:          append([]string(nil), connection.preflightTools...),
+		PreflightInventoryPresent:   connection.preflightPresent,
 	}
+}
+
+func (connection *Connection) recordPreflightInventory(inventory []string) error {
+	copyOfInventory := append([]string(nil), inventory...)
+	sort.Strings(copyOfInventory)
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	if connection.preflightPresent && !equalStrings(connection.preflightTools, copyOfInventory) {
+		return withDiagnosticContext(fmt.Errorf("%w: contradictory tool inventory status", ErrIncompatible), diagnosticToolInventory)
+	}
+	connection.preflightTools = copyOfInventory
+	connection.preflightPresent = true
+	return nil
 }
 
 // SessionID returns the process-local session identity after successful
@@ -511,7 +531,7 @@ func (connection *Connection) dispatchNotification(received message) error {
 		return fmt.Errorf("%w: unexpected notification %s", ErrProtocol, safeMethod(received.method))
 	}
 	var params sessionUpdateParams
-	if err := decodeResult(received.params, &params); err != nil || params.SessionID == "" || len(params.Update) == 0 {
+	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.Update) == 0 {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
 	connection.mu.Lock()
@@ -557,19 +577,23 @@ func (connection *Connection) dispatchRequest(received message) error {
 		Options   json.RawMessage `json:"options"`
 		Meta      json.RawMessage `json:"_meta,omitempty"`
 	}
-	if err := decodeResult(received.params, &params); err != nil || params.SessionID == "" || len(params.ToolCall) == 0 || len(params.Options) == 0 {
+	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.ToolCall) == 0 || len(params.Options) == 0 {
 		return fmt.Errorf("%w: malformed session/request_permission", ErrProtocol)
 	}
 	var toolCall struct {
 		ToolCallID string `json:"toolCallId"`
 	}
-	if json.Unmarshal(params.ToolCall, &toolCall) != nil || toolCall.ToolCallID == "" {
+	if json.Unmarshal(params.ToolCall, &toolCall) != nil || !validToolCallID(toolCall.ToolCallID) {
 		return fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol)
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
 	accepting := valid && connection.activePermission.accepting
 	if valid {
+		if len(connection.inboundCalls) >= maxOutstandingACPCalls {
+			connection.mu.Unlock()
+			return fmt.Errorf("%w: too many active inbound requests", ErrProtocol)
+		}
 		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "session/request_permission", sessionID: params.SessionID, toolCallID: toolCall.ToolCallID,
 			turnID: connection.activePrompt, done: make(chan struct{}),
@@ -662,6 +686,10 @@ func protocolError(cause error) error {
 		category = "orphan response"
 	case errors.Is(cause, errDuplicateResponse):
 		category = "duplicate response"
+	case errors.Is(cause, errRequestIDTooLong):
+		category = "oversized request ID"
+	case errors.Is(cause, errTooManyRequests):
+		category = "too many outstanding requests"
 	}
 	return fmt.Errorf("%w: %s", ErrProtocol, category)
 }

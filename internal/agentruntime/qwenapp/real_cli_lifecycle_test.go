@@ -5,6 +5,7 @@ package qwenapp
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,6 +120,52 @@ func testRealCLIGlobalClose(t *testing.T, fixture realCLIFixture, schema json.Ra
 	if !equalRealCLISnapshot(beforeOne, realCLIDirectorySnapshot(t, fixture.artifactOne)) ||
 		!equalRealCLISnapshot(beforeTwo, realCLIDirectorySnapshot(t, fixture.artifactTwo)) {
 		t.Fatal("global close checkpoint was followed by a late artifact write")
+	}
+}
+
+func testRealCLIProtocolFailureLocalization(t *testing.T, fixture realCLIFixture) {
+	schema := constantObjectSchema(map[string]string{"status": "ok"})
+	runtime := startRealCLIRuntime(t, fixture, schema)
+	first := startRealCLIThread(t, runtime, fixture.workspace, fixture.artifactOne, schema, "Return status ok when asked.")
+	second := startRealCLIThread(t, runtime, fixture.workspace, fixture.artifactTwo, schema, "Return status ok when asked.")
+	firstBackend, secondBackend := realCLIBackend(t, first), realCLIBackend(t, second)
+	firstSet := realCLIPlatformProcessSet(t, firstBackend.process)
+	secondSet := realCLIPlatformProcessSet(t, secondBackend.process)
+	stopFirstMonitor := startRealCLIPlatformMonitor(t, firstBackend.process)
+	beforeFirst := realCLIDirectorySnapshot(t, fixture.artifactOne)
+
+	// Inject at the live protocol boundary after both real processes completed
+	// ACP preflight. Connection.fail owns the same path as a deterministic wire
+	// protocol error and closes only its contained process owner.
+	firstBackend.connection.fail(fmt.Errorf("%w: deterministic integration injection", ErrProtocol))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runtime.mu.Lock()
+		_, stillPublished := runtime.threads[first.(*threadHandle).generation]
+		runtime.mu.Unlock()
+		if !stillPublished {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("localized protocol failure did not detach its thread")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	firstSet = mergeProcessSets(firstSet, stopFirstMonitor())
+	waitRealCLIPlatformStopped(t, firstSet, 5*time.Second)
+	assertRealCLIPlatformRunning(t, secondSet)
+	if _, err := runtime.RunTurn(first, "late"); !errors.Is(err, agentruntime.ErrThreadFailed) || !errors.Is(err, agentruntime.ErrRuntimeProtocol) {
+		t.Fatal("failed real-CLI handle did not retain localized protocol classification")
+	}
+	raw := runRealCLITurn(t, runtime, second, "Return status ok now.")
+	assertConstantObject(t, raw, map[string]string{"status": "ok"})
+	assertRealCLIPlatformRunning(t, secondSet)
+	time.Sleep(500 * time.Millisecond)
+	if !equalRealCLISnapshot(beforeFirst, realCLIDirectorySnapshot(t, fixture.artifactOne)) {
+		t.Fatal("failed real-CLI process produced a late artifact write")
+	}
+	if err := closeRealCLIRuntimeBounded(runtime); err != nil {
+		t.Fatal("close surviving real-CLI thread after localized failure")
 	}
 }
 

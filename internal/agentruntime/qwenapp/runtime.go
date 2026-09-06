@@ -1,6 +1,7 @@
 package qwenapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,8 +38,13 @@ type activeTurn struct {
 	done   chan struct{}
 }
 
+type startupState struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type runtimeDependencies struct {
-	startThread func(Config, agentruntime.ThreadConfig) (runtimeThread, error)
+	startThread func(context.Context, Config, agentruntime.ThreadConfig) (runtimeThread, error)
 	after       func(time.Duration) <-chan time.Time
 }
 
@@ -53,10 +59,11 @@ type Runtime struct {
 	mu          sync.Mutex
 	threads     map[uint64]*threadState
 	next        uint64
+	nextStart   uint64
 	active      *activeTurn
 	closing     bool
 	interrupted bool
-	starting    sync.WaitGroup
+	starting    map[uint64]*startupState
 	tearingDown sync.WaitGroup
 	turnMu      sync.Mutex
 	closeOnce   sync.Once
@@ -89,7 +96,7 @@ func newRuntime(config Config, deps runtimeDependencies) *Runtime {
 	}
 	return &Runtime{
 		config: config, identity: &runtimeIdentity{}, deps: deps,
-		grace: interruptGracePeriod, threads: make(map[uint64]*threadState), closeDone: make(chan struct{}),
+		grace: interruptGracePeriod, threads: make(map[uint64]*threadState), starting: make(map[uint64]*startupState), closeDone: make(chan struct{}),
 	}
 }
 
@@ -110,11 +117,23 @@ func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentrunt
 		runtime.mu.Unlock()
 		return nil, err
 	}
-	runtime.starting.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime.nextStart++
+	startID := runtime.nextStart
+	startup := &startupState{cancel: cancel, done: make(chan struct{})}
+	runtime.starting[startID] = startup
 	runtime.mu.Unlock()
-	defer runtime.starting.Done()
+	defer func() {
+		cancel()
+		runtime.mu.Lock()
+		if runtime.starting[startID] == startup {
+			delete(runtime.starting, startID)
+		}
+		close(startup.done)
+		runtime.mu.Unlock()
+	}()
 
-	backend, err := runtime.deps.startThread(runtime.config, config)
+	backend, err := runtime.deps.startThread(ctx, runtime.config, config)
 	if err != nil {
 		if backend != nil {
 			backend.BeginClose()
@@ -269,11 +288,33 @@ func (runtime *Runtime) Close() error {
 			runtime.detachThreadLocked(state, nil)
 			threads = append(threads, state)
 		}
+		startups := make([]*startupState, 0, len(runtime.starting))
+		for _, startup := range runtime.starting {
+			startup.cancel()
+			startups = append(startups, startup)
+		}
 		runtime.mu.Unlock()
 
-		// A start that crossed the checkpoint observes closing before publish and
-		// closes its freshly-created process itself.
-		runtime.starting.Wait()
+		// Starting processes are cancelled at the checkpoint. Production startup
+		// owns a cancellation watcher that closes its connection/process, while
+		// this bounded wait prevents an uncooperative dependency from hanging the
+		// global lifecycle forever.
+		if len(startups) > 0 {
+			grace := runtime.grace
+			if grace <= 0 || grace > interruptGracePeriod {
+				grace = interruptGracePeriod
+			}
+			startupDeadline := runtime.deps.after(grace)
+		startupWait:
+			for _, startup := range startups {
+				select {
+				case <-startup.done:
+				case <-startupDeadline:
+					runtime.closeErr = errors.Join(runtime.closeErr, safeRuntimeError("close startup", agentruntime.ErrRuntimeCleanup))
+					break startupWait
+				}
+			}
+		}
 		runtime.tearingDown.Wait()
 		for _, state := range threads {
 			if err := state.backend.Close(); err != nil {

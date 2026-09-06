@@ -1,6 +1,7 @@
 package qwenapp
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,15 @@ import (
 )
 
 const invalidParamsCode int64 = -32602
+
+const maxActiveToolCalls = 256
+
+// JSON string escaping can expand one input byte to six output bytes. Keeping
+// delegated content below this bound guarantees the complete JSON-RPC response
+// stays below the transport's 16 MiB frame limit, including a maximal ID.
+const maxDelegatedReadContentBytes = (maxACPMessageBytes - 4096) / 6
+
+var errDelegatedReadTooLarge = errors.New("delegated file read exceeds response limit")
 
 var errPermissionAlreadyResolved = errors.New("ACP permission request already resolved")
 
@@ -123,27 +133,19 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 		return nil
 	}
 	var call toolCallWire
-	if json.Unmarshal(raw, &call) != nil || call.ToolCallID == "" {
+	if json.Unmarshal(raw, &call) != nil || !validToolCallID(call.ToolCallID) {
 		return fmt.Errorf("%w: malformed tool_call correlation", ErrProtocol)
 	}
 	name := toolNameFromMeta(call.Meta)
 	if name == "" {
-		if call.Kind == "edit" {
-			return fmt.Errorf("%w: unidentifiable edit tool_call", ErrProtocol)
-		}
-		return nil
+		return fmt.Errorf("%w: unidentifiable tool_call", ErrProtocol)
+	}
+	if !isAllowedTool(name) {
+		return fmt.Errorf("%w: unexpected tool_call", ErrProtocol)
 	}
 	connection.mu.Lock()
 	connection.audit.tools[name]++
 	connection.mu.Unlock()
-	if !isAllowedTool(name) {
-		return fmt.Errorf("%w: unexpected tool_call", ErrProtocol)
-	}
-	if name != "write_file" && name != "edit" {
-		// Native read/search events are evidence, not an OS-level boundary.
-		return nil
-	}
-
 	connection.mu.Lock()
 	turn := connection.activePermission
 	if turn == nil {
@@ -154,6 +156,17 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 	if _, duplicate := turn.tools[call.ToolCallID]; duplicate {
 		connection.mu.Unlock()
 		return fmt.Errorf("%w: duplicate tool_call ID", ErrProtocol)
+	}
+	if len(turn.tools) >= maxActiveToolCalls {
+		connection.mu.Unlock()
+		return fmt.Errorf("%w: too many active tool calls", ErrProtocol)
+	}
+	if name != "write_file" && name != "edit" {
+		// Native read/search events are evidence, not an OS-level boundary,
+		// but their identities remain bounded and unique within the turn.
+		turn.tools[call.ToolCallID] = announcedTool{name: name, valid: true}
+		connection.mu.Unlock()
+		return nil
 	}
 	connection.mu.Unlock()
 
@@ -187,6 +200,10 @@ func isAllowedTool(name string) bool {
 		}
 	}
 	return false
+}
+
+func validToolCallID(value string) bool {
+	return value != "" && len(value) <= maxCorrelationIDBytes
 }
 
 func toolPathFromInput(raw json.RawMessage) (string, error) {
@@ -232,17 +249,20 @@ type permissionRequest struct {
 
 func decodePermissionRequest(raw json.RawMessage) (permissionRequest, error) {
 	var request permissionRequest
-	if err := decodeStrict(raw, &request); err != nil || request.SessionID == "" || request.ToolCall.ToolCallID == "" || len(request.Options) == 0 {
+	if err := decodeStrict(raw, &request); err != nil || !validAgentIdentity(request.SessionID) || !validToolCallID(request.ToolCall.ToolCallID) || len(request.Options) == 0 {
 		return permissionRequest{}, ErrPermissionDenied
 	}
 	return request, nil
 }
 
 func allowOnceOption(options []permissionOption) (string, error) {
+	if len(options) == 0 || len(options) > 16 {
+		return "", ErrPermissionDenied
+	}
 	seen := make(map[string]struct{}, len(options))
 	allowOnce := ""
 	for _, option := range options {
-		if option.OptionID == "" || option.Name == "" {
+		if !validAgentIdentity(option.OptionID) || option.Name == "" || len(option.Name) > maxCorrelationIDBytes {
 			return "", ErrPermissionDenied
 		}
 		if _, duplicate := seen[option.OptionID]; duplicate {
@@ -392,13 +412,17 @@ type readTextFileRequest struct {
 
 func (connection *Connection) dispatchReadTextFile(received message) error {
 	var request readTextFileRequest
-	if err := decodeStrict(received.params, &request); err != nil || request.SessionID == "" || request.Path == "" || request.Line != nil && *request.Line == 0 {
+	if err := decodeStrict(received.params, &request); err != nil || !validAgentIdentity(request.SessionID) || request.Path == "" || request.Line != nil && *request.Line == 0 {
 		return fmt.Errorf("%w: malformed fs/read_text_file", ErrProtocol)
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(request.SessionID) && connection.activePermission != nil
 	accepting := valid && connection.activePermission.accepting
 	if valid {
+		if len(connection.inboundCalls) >= maxOutstandingACPCalls {
+			connection.mu.Unlock()
+			return fmt.Errorf("%w: too many active inbound requests", ErrProtocol)
+		}
 		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "fs/read_text_file", sessionID: request.SessionID,
 			turnID: connection.activePrompt, done: make(chan struct{}),
@@ -437,15 +461,58 @@ func (connection *Connection) readTextFile(id requestID, request readTextFileReq
 		_ = connection.respondError(id, invalidParamsCode, "filesystem read denied")
 		return
 	}
-	content, err := os.ReadFile(target)
-	if err != nil || !utf8.Valid(content) {
+	text, err := readTextFileSelection(target, request.Line, request.Limit)
+	if err != nil {
 		_ = connection.respondError(id, invalidParamsCode, "filesystem read unavailable")
 		return
 	}
-	text := selectLines(string(content), request.Line, request.Limit)
 	if err := connection.respond(id, map[string]string{"content": text}); err != nil && !errors.Is(err, errPermissionAlreadyResolved) {
 		connection.fail(safeHandlerError("fs/read_text_file"))
 	}
+}
+
+func readTextFileSelection(path string, line, limit *uint32) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	startLine := uint64(1)
+	if line != nil {
+		startLine = uint64(*line)
+	}
+	lineLimit := ^uint64(0)
+	if limit != nil {
+		lineLimit = uint64(*limit)
+	}
+	currentLine := uint64(1)
+	selected := make([]byte, 0, min(maxDelegatedReadContentBytes, 64<<10))
+	reader := bufio.NewReaderSize(file, 64<<10)
+	for {
+		runeValue, size, readErr := reader.ReadRune()
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return "", readErr
+		}
+		if runeValue == utf8.RuneError && size == 1 {
+			return "", errors.New("delegated file is not UTF-8")
+		}
+		include := currentLine >= startLine && currentLine-startLine < lineLimit
+		if include {
+			encodedSize := utf8.RuneLen(runeValue)
+			if len(selected)+encodedSize > maxDelegatedReadContentBytes {
+				return "", errDelegatedReadTooLarge
+			}
+			selected = utf8.AppendRune(selected, runeValue)
+		}
+		if runeValue == '\n' {
+			currentLine++
+		}
+	}
+	return string(selected), nil
 }
 
 func canonicalReadableTarget(context permissionContext, supplied string) (string, error) {
@@ -468,25 +535,6 @@ func canonicalReadableTarget(context permissionContext, supplied string) (string
 		return "", ErrPermissionDenied
 	}
 	return target, nil
-}
-
-func selectLines(content string, line, limit *uint32) string {
-	if line == nil && limit == nil {
-		return content
-	}
-	lines := strings.SplitAfter(content, "\n")
-	start := 0
-	if line != nil {
-		start = int(*line - 1)
-	}
-	if start >= len(lines) {
-		return ""
-	}
-	end := len(lines)
-	if limit != nil && uint64(start)+uint64(*limit) < uint64(end) {
-		end = start + int(*limit)
-	}
-	return strings.Join(lines[start:end], "")
 }
 
 func decodeStrict(raw json.RawMessage, target any) error {

@@ -130,6 +130,51 @@ func TestTransportRejectsDuplicateAndOrphanCorrelation(t *testing.T) {
 	})
 }
 
+func TestTransportBoundsCorrelationIdentityAndHistory(t *testing.T) {
+	oversized := strings.Repeat("x", maxCorrelationIDBytes+1)
+	line, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": oversized, "result": map[string]any{}})
+	line = append(line, '\n')
+	if _, err := newTransport(bytes.NewReader(line), io.Discard).read(); !errors.Is(err, errRequestIDTooLong) {
+		t.Fatalf("oversized inbound ID = %v", err)
+	}
+	if err := newTransport(strings.NewReader(""), io.Discard).sendRequest(stringID(oversized), "x", struct{}{}); !errors.Is(err, errRequestIDTooLong) {
+		t.Fatalf("oversized outbound ID = %v", err)
+	}
+
+	var table correlationTable
+	for index := range maxOutstandingACPCalls {
+		if err := table.register(integerID(int64(index + 1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := table.register(integerID(maxOutstandingACPCalls + 1)); !errors.Is(err, errTooManyRequests) {
+		t.Fatalf("outstanding flood = %v", err)
+	}
+	for index := range maxOutstandingACPCalls {
+		if err := table.resolve(integerID(int64(index + 1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := 0; index < maxCorrelationTombstones+1; index++ {
+		id := integerID(int64(10_000 + index))
+		if err := table.register(id); err != nil {
+			t.Fatal(err)
+		}
+		if err := table.resolve(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(table.pending) != 0 || len(table.resolved) != maxCorrelationTombstones || len(table.resolvedOrder) != maxCorrelationTombstones {
+		t.Fatalf("bounded table sizes pending=%d resolved=%d order=%d", len(table.pending), len(table.resolved), len(table.resolvedOrder))
+	}
+	if err := table.resolve(integerID(int64(10_000 + maxCorrelationTombstones))); !errors.Is(err, errDuplicateResponse) {
+		t.Fatalf("recent replay classification = %v", err)
+	}
+	if err := table.resolve(integerID(10_000)); !errors.Is(err, errOrphanResponse) {
+		t.Fatalf("evicted replay classification = %v", err)
+	}
+}
+
 func TestLineWriterSerializesConcurrentMessages(t *testing.T) {
 	var output bytes.Buffer
 	writer := &lineWriter{writer: &output}

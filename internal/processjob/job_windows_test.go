@@ -22,8 +22,17 @@ func TestCloseKillsProcessTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer job.Close()
+	if err := job.Prepare(cmd); err != nil {
+		t.Fatal(err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		t.Fatalf("suspended child ran before Job assignment: %v", err)
 	}
 	if err := job.Assign(cmd.Process); err != nil {
 		_ = cmd.Process.Kill()
@@ -72,6 +81,35 @@ func TestCloseKillsProcessTree(t *testing.T) {
 	}
 }
 
+func TestAssignFailureLeavesSuspendedChildSafeToKill(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "started")
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), "GO_WANT_PROCESSJOB_HELPER=write-marker", "STEPAN_HELPER_MARKER="+marker)
+	job, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Prepare(cmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := job.Assign(cmd.Process); err == nil {
+		t.Fatal("assign to closed Job unexpectedly succeeded")
+	}
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatal(err)
+	}
+	_ = cmd.Wait()
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("suspended child ran during failed assignment cleanup: %v", err)
+	}
+}
+
 func TestMain(m *testing.M) {
 	switch os.Getenv("GO_WANT_PROCESSJOB_HELPER") {
 	case "":
@@ -107,6 +145,10 @@ func TestMain(m *testing.M) {
 		time.Sleep(30 * time.Second)
 	case "tree-grandchild":
 		time.Sleep(30 * time.Second)
+	case "write-marker":
+		if err := os.WriteFile(os.Getenv("STEPAN_HELPER_MARKER"), []byte("started"), 0o600); err != nil {
+			os.Exit(15)
+		}
 	default:
 		os.Exit(8)
 	}
