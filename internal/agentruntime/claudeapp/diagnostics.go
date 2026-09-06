@@ -96,7 +96,7 @@ func describeTerminalResultError(result *claudecode.ResultMessage) error {
 	}
 	diagnostic := fmt.Sprintf("Claude terminal result reports an error: %s", strings.Join(details, "; "))
 	if terminalResultReportsMissingAuthentication(result) {
-		return fmt.Errorf("Claude CLI authentication failed: complete CLI login or ensure its access-key environment variable is exported to the Stepan process; %s", diagnostic)
+		return fmt.Errorf("Claude CLI authentication failed: verify credentials in the user settings (for example ~/.claude/settings.json) or complete CLI login; %s", diagnostic)
 	}
 	return errors.New(diagnostic)
 }

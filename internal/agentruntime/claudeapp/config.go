@@ -84,14 +84,13 @@ func omitSchemaDialectDeclarations(value any) {
 }
 
 func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback, stderr func(string)) []claudecode.Option {
-	settingSources := make([]claudecode.SettingSource, 0)
 	return []claudecode.Option{
 		claudecode.WithCLIPath(config.Executable),
 		claudecode.WithCwd(config.Workspace),
 		claudecode.WithTools("Read", "Write", "Edit", "Glob", "Grep"),
 		claudecode.WithPermissionMode(claudecode.PermissionModeDefault),
 		claudecode.WithCanUseTool(canUse),
-		claudecode.WithSettingSources(settingSources...),
+		claudecode.WithSettingSources(claudecode.SettingSourceUser),
 		claudecode.WithSkillsDisabled(),
 		claudecode.WithEnv(map[string]string{backgroundTasksEnv: "1", agentViewEnv: "1"}),
 		claudecode.WithJSONSchema(schema),

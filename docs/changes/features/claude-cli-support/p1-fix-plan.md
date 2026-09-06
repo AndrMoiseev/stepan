@@ -22,29 +22,28 @@
 
 | ID | Результат | Зависит от |
 |---|---|---|
-| P1-01 | Claude CLI получает действительно пустой набор setting sources | — |
+| P1-01 | Claude CLI получает только доверенный user setting source | — |
 | P1-02 | Относительные пути файловых tools проверяются от workspace | — |
 | P1-03 | Запуск runtime отменяем и очищает partial initialization | P1-01 |
 | P1-04 | Поток ответов строго изолирован по turn/session | P1-03 |
 
 ## 3. Задачи
 
-### P1-01. Зафиксировать пустой набор Claude setting sources
+### P1-01. Зафиксировать только user setting source Claude
 
-**Проблема:** `WithSettingSources()` без аргументов записывает `nil`. В
-закреплённом SDK сочетание `SettingSources == nil` и непустого значения поля
-`Skills` включает источники `user,project` при построении CLI arguments, даже
-если skills заданы пустым списком.
+**Проблема:** пустой набор setting sources запрещает корпоративному CLI читать
+credentials из `~/.claude/settings.json`. `nil` использовать также нельзя: в
+закреплённом SDK он может включить sources по умолчанию при обработке skills.
 
-**Результат:** effective SDK options однозначно отключают user, project и local
-setting sources. Конфигурация не зависит от SDK defaults и не позволяет вернуть
-hooks, MCP, plugins или дополнительные tools через локальные настройки.
+**Результат:** effective SDK options однозначно включают только user setting
+source для доверенной пользовательской конфигурации, credentials, сессий и
+оперативных данных из `~/.claude`. Project и local sources остаются выключены,
+а `~/.claude` не добавляется в доступные агентским tools directories.
 
 **Изменения:**
 
-- Передавать в `WithSettingSources` non-nil slice нулевой
-  длины либо применить эквивалентный способ, при котором итоговое поле
-  `SettingSources` не равно `nil` и имеет длину `0`.
+- Передавать в `WithSettingSources` ровно `SettingSourceUser`; не использовать
+  `nil`, пустой набор или SDK defaults.
 - Создавать проверяемые options тем же публичным `claudecode.NewOptions`, который
   использует production factory. Не эмулировать применение option-функций на
   вручную созданном `&claudecode.Options{}`.
@@ -53,16 +52,16 @@ hooks, MCP, plugins или дополнительные tools через лок�
 
 **Критерии приёмки автотестами:**
 
-- Тест production options builder проверяет одновременно
-  `SettingSources != nil` и `len(SettingSources) == 0`.
+- Тест production options builder проверяет точное равенство
+  `SettingSources == []{SettingSourceUser}`.
 - Тест строит options через `claudecode.NewOptions(claudeOptions(...)...)` и
   поэтому воспроизводит реальные SDK defaults.
 - Тест подтверждает, что `Skills` является non-nil пустым
   списком, а не `nil` и не значением `all`.
 - Тест подтверждает точный порядок и состав `Read`, `Write`, `Edit`, `Glob`,
   `Grep` и отсутствие MCP, hooks, plugins, agents и additional directories.
-- Regression case с прежним `nil`-значением setting sources должен падать на
-  новой проверке.
+- Regression cases с прежним `nil` или пустым значением setting sources должны
+  падать на новой проверке; project/local sources также отклоняются.
 
 **Автоматическая проверка:**
 

@@ -40,8 +40,11 @@ group. Claude использует `github.com/severity1/claude-agent-sdk-go v0.
 его штатный subprocess transport без fork, launcher shim или custom transport.
 
 Claude SDK получает ровно `Read`, `Write`, `Edit`, `Glob`, `Grep`, default
-permission mode, пустые setting sources и выключенные skills. MCP, Bash, hooks,
-plugins, agents, additional directories и sandbox auto-allow не настраиваются.
+permission mode, только user setting source и выключенные skills. Это позволяет
+CLI использовать доверенные credentials, сессии и оперативные данные из
+`~/.claude`; project/local setting sources не загружаются. MCP, Bash, hooks,
+plugins, agents, additional directories и sandbox auto-allow не настраиваются
+Stepan.
 Thread-safe callback дополнительно проверяет workspace и turn-scoped write root.
 Внешние инструменты в эту версию не входят.
 

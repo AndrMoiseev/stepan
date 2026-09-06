@@ -261,7 +261,7 @@ func TestClaudeRuntimeExplainsAccessKeyAuthenticationFailure(t *testing.T) {
 	if !errors.Is(err, agentruntime.ErrRuntimeExited) {
 		t.Fatalf("authentication error = %v", err)
 	}
-	for _, detail := range []string{"authentication failed", "access-key environment variable", "Not logged in"} {
+	for _, detail := range []string{"authentication failed", "user settings", "~/.claude/settings.json", "Not logged in"} {
 		if !strings.Contains(err.Error(), detail) {
 			t.Fatalf("authentication error %q does not contain %q", err, detail)
 		}
@@ -585,7 +585,7 @@ func assertLockedOptions(t *testing.T, options *claudecode.Options, config Confi
 	if !reflect.DeepEqual(options.Tools, []string{"Read", "Write", "Edit", "Glob", "Grep"}) || options.PermissionMode == nil || *options.PermissionMode != claudecode.PermissionModeDefault {
 		t.Fatalf("tools or permission mode = %#v", options)
 	}
-	if options.SettingSources == nil || len(options.SettingSources) != 0 || !reflect.DeepEqual(options.Skills, []string{}) || len(options.AddDirs) != 0 || len(options.McpServers) != 0 || len(options.Plugins) != 0 || len(options.Agents) != 0 {
+	if !reflect.DeepEqual(options.SettingSources, []claudecode.SettingSource{claudecode.SettingSourceUser}) || !reflect.DeepEqual(options.Skills, []string{}) || len(options.AddDirs) != 0 || len(options.McpServers) != 0 || len(options.Plugins) != 0 || len(options.Agents) != 0 {
 		t.Fatalf("unsafe SDK options = %#v", options)
 	}
 	if options.ExtraEnv[backgroundTasksEnv] != "1" || options.ExtraEnv[agentViewEnv] != "1" || options.OutputFormat == nil || options.CanUseTool == nil || options.StderrCallback == nil {

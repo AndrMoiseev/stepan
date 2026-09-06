@@ -259,19 +259,21 @@ Git snapshot/post-check после write-turn. Любое новое измен�
 ### 7.4. Изоляция конфигурации
 
 Stepan не передаёт SDK MCP servers, hooks, plugins, agents или дополнительные
-directories. Skills явно отключаются. User/project/local setting sources не
-подключаются через SDK; настройки, необходимые корпоративному executable для
-собственной авторизации, остаются ответственностью этого executable и не
-расширяют tool allowlist Stepan.
+directories. Skills явно отключаются. Через SDK подключается только user
+setting source, чтобы CLI мог использовать доверенную пользовательскую
+конфигурацию, credentials, сессии и остальные оперативные данные из
+`~/.claude`. Project и local setting sources не подключаются, поэтому
+репозиторий не может подменить эту конфигурацию. `~/.claude` не передаётся как
+additional directory и не становится доступным агентским файловым tools.
 
 В environment Claude subprocess явно устанавливаются поддерживаемые CLI
 переключатели отключения background tasks и agent view. Точные имена
 переменных закрепляются тестом для выбранной версии SDK/совместимого CLI.
 
-Если корпоративный форк не может пройти авторизацию без загрузки setting source,
-который одновременно включает hooks, MCP или дополнительные tools, он не
-считается совместимым с первой версией. Такое расхождение требует пересмотра
-спецификации, а не скрытого ослабления policy.
+User settings считаются доверенной операторской конфигурацией и могут влиять на
+внутреннее поведение CLI. При этом exact tool allowlist, permission callback и
+независимый Git post-check Stepan остаются обязательными; credentials и
+содержимое user settings не попадают в диагностику.
 
 ## 8. Process lifecycle и принятый риск
 

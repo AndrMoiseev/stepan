@@ -266,7 +266,8 @@ validated executable, workspace и envelope schema.
 - `WithTools` содержит ровно `Read`, `Write`, `Edit`, `Glob`, `Grep`.
 - Full Claude Code preset, allowed-all и bypass permission mode отсутствуют.
 - MCP maps, hooks, plugins и agents пусты; skills отключены.
-- User/project/local setting sources не подключены.
+- Подключён только user setting source для credentials, сессий и оперативных
+  данных из `~/.claude`; project/local sources не подключены.
 - Background tasks и agent view отключаются зафиксированными environment flags.
 - Envelope передаётся через `WithJSONSchema`.
 
@@ -278,8 +279,9 @@ validated executable, workspace и envelope schema.
   проверить regular-file result на package boundary; не искать fallback.
 - [ ] Канонизировать workspace и проверить Git root до `Connect`.
 - [ ] Настроить `PermissionModeDefault` и `WithCanUseTool`.
-- [ ] Вызвать `WithSettingSources()` с пустым набором и
-  `WithSkillsDisabled()`; не полагаться на SDK defaults.
+- [ ] Вызвать `WithSettingSources(SettingSourceUser)` и
+  `WithSkillsDisabled()`; не полагаться на SDK defaults и не подключать
+  project/local sources.
 - [ ] Не передавать `WithMcpServers`, `WithHooks`, `WithPlugins`,
   `WithAgents`, sandbox auto-allow или `WithAddDirs`.
 - [ ] Использовать bounded stderr callback/writer без записи prompts и env.
