@@ -63,7 +63,7 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	return config, schema, nil
 }
 
-func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback) []claudecode.Option {
+func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback, stderr func(string)) []claudecode.Option {
 	settingSources := make([]claudecode.SettingSource, 0)
 	return []claudecode.Option{
 		claudecode.WithCLIPath(config.Executable),
@@ -75,6 +75,6 @@ func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUs
 		claudecode.WithSkillsDisabled(),
 		claudecode.WithEnv(map[string]string{backgroundTasksEnv: "1", agentViewEnv: "1"}),
 		claudecode.WithJSONSchema(schema),
-		claudecode.WithDebugDisabled(),
+		claudecode.WithStderrCallback(stderr),
 	}
 }

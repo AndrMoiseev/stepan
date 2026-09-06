@@ -303,12 +303,28 @@ func TestStartRuntimeDoesNotCreateClientForCanceledContext(t *testing.T) {
 }
 
 func TestStartRuntimeCleansUpPartialConnect(t *testing.T) {
-	connectErr := errors.New("connect failed")
+	connectErr := errors.New("failed to initialize control protocol: initialize failed: control request timeout: context deadline exceeded")
 	cleanupErr := errors.New("cleanup failed")
 	fake := &fakeClient{connectErr: connectErr, disconnectErr: cleanupErr}
-	_, err := startRuntime(context.Background(), testConfig(t), func(context.Context, ...claudecode.Option) client { return fake })
+	_, err := startRuntime(context.Background(), testConfig(t), func(_ context.Context, items ...claudecode.Option) client {
+		options := claudecode.NewOptions(items...)
+		fake.connectHook = func() {
+			if options.StderrCallback != nil {
+				options.StderrCallback("tclaude: unknown option --permission-prompt-tool")
+			}
+		}
+		return fake
+	})
 	if !errors.Is(err, connectErr) || !errors.Is(err, cleanupErr) {
 		t.Fatalf("start error does not retain both causes: %v", err)
+	}
+	for _, detail := range []string{
+		"CLI did not answer the Claude Agent SDK initialize request",
+		"tclaude: unknown option --permission-prompt-tool",
+	} {
+		if !strings.Contains(err.Error(), detail) {
+			t.Fatalf("start error %q does not contain diagnostic %q", err, detail)
+		}
 	}
 	if fake.disconnects != 1 {
 		t.Fatalf("disconnects = %d", fake.disconnects)
@@ -469,7 +485,7 @@ func assertLockedOptions(t *testing.T, options *claudecode.Options, config Confi
 	if options.SettingSources == nil || len(options.SettingSources) != 0 || !reflect.DeepEqual(options.Skills, []string{}) || len(options.AddDirs) != 0 || len(options.McpServers) != 0 || len(options.Plugins) != 0 || len(options.Agents) != 0 {
 		t.Fatalf("unsafe SDK options = %#v", options)
 	}
-	if options.ExtraEnv[backgroundTasksEnv] != "1" || options.ExtraEnv[agentViewEnv] != "1" || options.OutputFormat == nil || options.CanUseTool == nil {
+	if options.ExtraEnv[backgroundTasksEnv] != "1" || options.ExtraEnv[agentViewEnv] != "1" || options.OutputFormat == nil || options.CanUseTool == nil || options.StderrCallback == nil {
 		t.Fatalf("required SDK options missing = %#v", options)
 	}
 }
@@ -482,6 +498,7 @@ type fakeClient struct {
 	disconnects   int
 	interrupts    int
 	connectErr    error
+	connectHook   func()
 	disconnectErr error
 	responses     chan claudecode.Message
 	received      chan struct{}
@@ -495,6 +512,9 @@ func (client *fakeClient) Connect(context.Context, ...claudecode.StreamMessage) 
 	if client.responses == nil {
 		client.responses = make(chan claudecode.Message, 32)
 		client.received = make(chan struct{}, 32)
+	}
+	if client.connectHook != nil {
+		client.connectHook()
 	}
 	return client.connectErr
 }

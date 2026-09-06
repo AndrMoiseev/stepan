@@ -85,15 +85,18 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 	}
 	lifecycle, cancel := context.WithCancel(ctx)
 	runtime := &Runtime{workspace: validated.Workspace, ctx: lifecycle, cancel: cancel}
-	runtime.client = factory(lifecycle, claudeOptions(validated, schema, runtime.canUseTool)...)
+	stderr := &stderrCapture{}
+	runtime.client = factory(lifecycle, claudeOptions(validated, schema, runtime.canUseTool, stderr.Add)...)
 	if runtime.client == nil {
 		cancel()
 		return nil, errors.New("Claude client factory returned nil")
 	}
+	connectStarted := time.Now()
 	if err := runtime.client.Connect(lifecycle); err != nil {
 		cancel()
 		cleanupErr := runtime.client.Disconnect()
-		return nil, fmt.Errorf("connect Claude CLI %q: %w", validated.Executable, errors.Join(err, cleanupErr))
+		diagnostic := describeConnectFailure(err, time.Since(connectStarted), stderr.String())
+		return nil, fmt.Errorf("connect Claude CLI %q: %s: %w", validated.Executable, diagnostic, errors.Join(err, cleanupErr))
 	}
 	if err := lifecycle.Err(); err != nil {
 		_ = runtime.client.Disconnect()
