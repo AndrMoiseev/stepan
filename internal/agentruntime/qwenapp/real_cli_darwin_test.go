@@ -29,6 +29,12 @@ func realCLIPlatformProcessSet(t *testing.T, process *Process) []int {
 	return []int{group}
 }
 
+func startRealCLIPlatformMonitor(t *testing.T, process *Process) func() []int {
+	t.Helper()
+	groups := realCLIPlatformProcessSet(t, process)
+	return func() []int { return append([]int(nil), groups...) }
+}
+
 func waitRealCLIPlatformStopped(t *testing.T, groups []int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

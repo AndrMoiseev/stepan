@@ -15,6 +15,8 @@ type connectionOwner interface {
 	Close() error
 }
 
+const maxConnectionAuditIdentities = 256
+
 type connectionHandler struct {
 	sessionUpdate func(message) error
 	permission    func(*Connection, message) error
@@ -40,6 +42,27 @@ type inboundCall struct {
 	done       chan struct{}
 }
 
+// connectionAudit is bounded process-local evidence used by the opt-in
+// conformance harness. It contains method/tool names and counters only: wire
+// payloads, prompts, paths, content, and provider identifiers are excluded.
+type connectionAudit struct {
+	tools                 map[string]int
+	permissionRequestIDs  map[string]struct{}
+	permissionToolCallIDs map[string]struct{}
+	permissionRequests    int
+	allowOnceSelections   int
+	permissionDenials     int
+}
+
+type connectionAuditSnapshot struct {
+	Tools                       map[string]int
+	PermissionRequests          int
+	UniquePermissionRequestIDs  int
+	UniquePermissionToolCallIDs int
+	AllowOnceSelections         int
+	PermissionDenials           int
+}
+
 // Connection owns one strict ACP stream and exactly one session. Its wire
 // types stay private to qwenapp and are never part of agentruntime.Runtime.
 type Connection struct {
@@ -60,6 +83,7 @@ type Connection struct {
 	ready            bool
 	err              error
 	done             chan struct{}
+	audit            connectionAudit
 }
 
 func newConnection(transport *transport, owner connectionOwner, handler connectionHandler) *Connection {
@@ -71,9 +95,29 @@ func newConnection(transport *transport, owner connectionOwner, handler connecti
 		pending:      make(map[string]*pendingCall),
 		inboundCalls: make(map[string]*inboundCall),
 		done:         make(chan struct{}),
+		audit: connectionAudit{
+			tools: make(map[string]int), permissionRequestIDs: make(map[string]struct{}),
+			permissionToolCallIDs: make(map[string]struct{}),
+		},
 	}
 	go connection.read()
 	return connection
+}
+
+func (connection *Connection) auditSnapshot() connectionAuditSnapshot {
+	connection.mu.Lock()
+	defer connection.mu.Unlock()
+	tools := make(map[string]int, len(connection.audit.tools))
+	for name, count := range connection.audit.tools {
+		tools[name] = count
+	}
+	return connectionAuditSnapshot{
+		Tools: tools, PermissionRequests: connection.audit.permissionRequests,
+		UniquePermissionRequestIDs:  len(connection.audit.permissionRequestIDs),
+		UniquePermissionToolCallIDs: len(connection.audit.permissionToolCallIDs),
+		AllowOnceSelections:         connection.audit.allowOnceSelections,
+		PermissionDenials:           connection.audit.permissionDenials,
+	}
 }
 
 // SessionID returns the process-local session identity after successful
@@ -529,6 +573,13 @@ func (connection *Connection) dispatchRequest(received message) error {
 		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "session/request_permission", sessionID: params.SessionID, toolCallID: toolCall.ToolCallID,
 			turnID: connection.activePrompt, done: make(chan struct{}),
+		}
+		connection.audit.permissionRequests++
+		if len(connection.audit.permissionRequestIDs) < maxConnectionAuditIdentities {
+			connection.audit.permissionRequestIDs[received.id.key] = struct{}{}
+		}
+		if len(connection.audit.permissionToolCallIDs) < maxConnectionAuditIdentities {
+			connection.audit.permissionToolCallIDs[toolCall.ToolCallID] = struct{}{}
 		}
 	}
 	connection.mu.Unlock()

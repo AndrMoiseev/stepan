@@ -4,11 +4,16 @@ set -eu
 agent_cli_name=""
 timeout_seconds=900
 
+write_failure_result() {
+  failure_class=$1
+  printf '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","assertions":{},"native_read":{"outcome":"not_observed","os_isolation_guaranteed":false},"failure_class":"%s"}\n' "$failure_class"
+}
+
 while (($# > 0)); do
   case "$1" in
     --agent-cli-name)
       if (($# < 2)); then
-        printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_executable_name"}'
+        write_failure_result invalid_executable_name
         exit 2
       fi
       agent_cli_name=$2
@@ -16,14 +21,14 @@ while (($# > 0)); do
       ;;
     --timeout-seconds)
       if (($# < 2)); then
-        printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+        write_failure_result invalid_timeout
         exit 2
       fi
       timeout_seconds=$2
       shift 2
       ;;
     *)
-      printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"unknown_argument"}'
+      write_failure_result unknown_argument
       exit 2
       ;;
   esac
@@ -31,30 +36,30 @@ done
 
 case "$agent_cli_name" in
   ""|.|..|*/*|*\\*|[[:space:]]*|*[[:space:]])
-    printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_executable_name"}'
+    write_failure_result invalid_executable_name
     exit 2
     ;;
 esac
 case "$timeout_seconds" in
   ''|*[!0-9]*)
-    printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+    write_failure_result invalid_timeout
     exit 2
     ;;
 esac
 if ((timeout_seconds < 60 || timeout_seconds > 3600)); then
-  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+  write_failure_result invalid_timeout
   exit 2
 fi
 if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
-  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"unsupported_host"}'
+  write_failure_result unsupported_host
   exit 2
 fi
 if ! command -v -- "$agent_cli_name" >/dev/null 2>&1; then
-  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"executable_not_found"}'
+  write_failure_result executable_not_found
   exit 2
 fi
 if ! command -v go >/dev/null 2>&1; then
-  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"go_not_found"}'
+  write_failure_result go_not_found
   exit 2
 fi
 

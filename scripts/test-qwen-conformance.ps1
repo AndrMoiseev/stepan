@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
+    [Alias("agent-cli-name")]
     [string]$AgentCliName,
 
     [ValidateRange(60, 3600)]

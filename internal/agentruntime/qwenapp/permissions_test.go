@@ -577,3 +577,63 @@ func finishPromptResult(t *testing.T, server *transport, promptErr <-chan error,
 }
 
 func uint32Pointer(value uint32) *uint32 { return &value }
+
+func TestClaimPermissionCorrelationIsSingleUseAndIdentityBound(t *testing.T) {
+	newFixture := func() (*inboundCall, *permissionTurn, permissionRequest) {
+		turn := newPermissionTurn(permissionContext{sessionID: "session-a", turnID: "turn-a"})
+		turn.tools["tool-a"] = announcedTool{name: "write_file", target: "target", valid: true}
+		pending := &inboundCall{sessionID: "session-a", turnID: "turn-a", toolCallID: "tool-a"}
+		request := permissionRequest{SessionID: "session-a", ToolCall: toolCallWire{ToolCallID: "tool-a"}}
+		return pending, turn, request
+	}
+	pending, turn, request := newFixture()
+	if got, err := claimPermissionCorrelation(pending, turn, request, nil); err != nil || got.name != "write_file" {
+		t.Fatalf("valid correlation = %#v, %v", got, err)
+	}
+	if _, err := claimPermissionCorrelation(pending, turn, request, nil); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("replay = %v", err)
+	}
+	pending, turn, request = newFixture()
+	if _, err := claimPermissionCorrelation(pending, turn, permissionRequest{}, errors.New("malformed request")); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("malformed claim = %v", err)
+	}
+	if _, err := claimPermissionCorrelation(pending, turn, request, nil); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("valid request after malformed claim was not rejected as replay: %v", err)
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*inboundCall, *permissionTurn, *permissionRequest)
+	}{
+		{"foreign pending session", func(p *inboundCall, _ *permissionTurn, _ *permissionRequest) { p.sessionID = "foreign" }},
+		{"stale turn", func(p *inboundCall, _ *permissionTurn, _ *permissionRequest) { p.turnID = "stale" }},
+		{"foreign pending tool", func(p *inboundCall, _ *permissionTurn, _ *permissionRequest) { p.toolCallID = "foreign" }},
+		{"foreign request session", func(_ *inboundCall, _ *permissionTurn, r *permissionRequest) { r.SessionID = "foreign" }},
+		{"foreign request tool", func(_ *inboundCall, _ *permissionTurn, r *permissionRequest) { r.ToolCall.ToolCallID = "foreign" }},
+		{"closed turn", func(_ *inboundCall, turn *permissionTurn, _ *permissionRequest) { turn.accepting = false }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pending, turn, request := newFixture()
+			test.mutate(pending, turn, &request)
+			if _, err := claimPermissionCorrelation(pending, turn, request, nil); !errors.Is(err, ErrPermissionDenied) {
+				t.Fatalf("correlation = %v", err)
+			}
+		})
+	}
+}
+
+func TestConnectionAuditSnapshotIsBoundedAndDetached(t *testing.T) {
+	connection := &Connection{audit: connectionAudit{
+		tools: map[string]int{"read_file": 2}, permissionRequestIDs: map[string]struct{}{"1": {}},
+		permissionToolCallIDs: map[string]struct{}{"tool": {}}, permissionRequests: 1,
+		allowOnceSelections: 1,
+	}}
+	snapshot := connection.auditSnapshot()
+	if snapshot.Tools["read_file"] != 2 || snapshot.PermissionRequests != 1 || snapshot.UniquePermissionRequestIDs != 1 ||
+		snapshot.UniquePermissionToolCallIDs != 1 || snapshot.AllowOnceSelections != 1 || snapshot.PermissionDenials != 0 {
+		t.Fatalf("audit snapshot = %#v", snapshot)
+	}
+	snapshot.Tools["read_file"] = 99
+	if connection.audit.tools["read_file"] != 2 {
+		t.Fatal("audit snapshot aliases live state")
+	}
+}

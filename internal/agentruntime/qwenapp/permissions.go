@@ -133,6 +133,9 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 		}
 		return nil
 	}
+	connection.mu.Lock()
+	connection.audit.tools[name]++
+	connection.mu.Unlock()
 	if !isAllowedTool(name) {
 		return fmt.Errorf("%w: unexpected tool_call", ErrProtocol)
 	}
@@ -276,24 +279,7 @@ func (connection *Connection) mediatePermission(received message) error {
 	connection.mu.Lock()
 	pending := connection.inboundCalls[received.id.key]
 	turn := connection.activePermission
-	requestErr := decodeErr
-	correlated := pending != nil && turn != nil && turn.accepting && pending.turnID == turn.context.turnID && pending.sessionID == turn.context.sessionID
-	if !correlated || (decodeErr == nil && (request.SessionID != pending.sessionID || pending.toolCallID != request.ToolCall.ToolCallID)) {
-		requestErr = ErrPermissionDenied
-	}
-	var announced announcedTool
-	if correlated {
-		var ok bool
-		announced, ok = turn.tools[pending.toolCallID]
-		if !ok {
-			requestErr = ErrPermissionDenied
-		} else if _, used := turn.consumed[pending.toolCallID]; used {
-			requestErr = ErrPermissionDenied
-		} else {
-			// A tool call gets one decision regardless of allow or deny.
-			turn.consumed[pending.toolCallID] = struct{}{}
-		}
-	}
+	announced, requestErr := claimPermissionCorrelation(pending, turn, request, decodeErr)
 	if requestErr == nil && grantErr != nil {
 		requestErr = grantErr
 	}
@@ -326,9 +312,38 @@ func (connection *Connection) mediatePermission(received message) error {
 
 	if requestErr != nil {
 		connection.recordPermissionDenial(turn)
+		connection.mu.Lock()
+		connection.audit.permissionDenials++
+		connection.mu.Unlock()
 		return connection.respond(received.id, cancelledPermissionResult())
 	}
+	connection.mu.Lock()
+	connection.audit.allowOnceSelections++
+	connection.mu.Unlock()
 	return connection.respond(received.id, selectedPermissionResult(allowOption))
+}
+
+// claimPermissionCorrelation is the single state transition for one-shot
+// permission ownership. The caller holds Connection.mu, which makes consuming
+// a tool ID atomic with checking request/session/turn identity.
+func claimPermissionCorrelation(pending *inboundCall, turn *permissionTurn, request permissionRequest, decodeErr error) (announcedTool, error) {
+	if pending == nil || turn == nil || !turn.accepting || pending.turnID != turn.context.turnID ||
+		pending.sessionID != turn.context.sessionID {
+		return announcedTool{}, ErrPermissionDenied
+	}
+	announced, ok := turn.tools[pending.toolCallID]
+	if !ok {
+		return announcedTool{}, ErrPermissionDenied
+	}
+	if _, used := turn.consumed[pending.toolCallID]; used {
+		return announcedTool{}, ErrPermissionDenied
+	}
+	// A tool call gets one decision regardless of allow or deny.
+	turn.consumed[pending.toolCallID] = struct{}{}
+	if decodeErr != nil || request.SessionID != pending.sessionID || pending.toolCallID != request.ToolCall.ToolCallID {
+		return announced, ErrPermissionDenied
+	}
+	return announced, nil
 }
 
 func selectedPermissionResult(optionID string) any {
