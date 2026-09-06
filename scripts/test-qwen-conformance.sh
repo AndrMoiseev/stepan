@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -eu
+
+agent_cli_name=""
+timeout_seconds=900
+
+while (($# > 0)); do
+  case "$1" in
+    --agent-cli-name)
+      if (($# < 2)); then
+        printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_executable_name"}'
+        exit 2
+      fi
+      agent_cli_name=$2
+      shift 2
+      ;;
+    --timeout-seconds)
+      if (($# < 2)); then
+        printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+        exit 2
+      fi
+      timeout_seconds=$2
+      shift 2
+      ;;
+    *)
+      printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"unknown_argument"}'
+      exit 2
+      ;;
+  esac
+done
+
+case "$agent_cli_name" in
+  ""|.|..|*/*|*\\*|[[:space:]]*|*[[:space:]])
+    printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_executable_name"}'
+    exit 2
+    ;;
+esac
+case "$timeout_seconds" in
+  ''|*[!0-9]*)
+    printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+    exit 2
+    ;;
+esac
+if ((timeout_seconds < 60 || timeout_seconds > 3600)); then
+  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","failure_class":"invalid_timeout"}'
+  exit 2
+fi
+if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
+  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"unsupported_host"}'
+  exit 2
+fi
+if ! command -v -- "$agent_cli_name" >/dev/null 2>&1; then
+  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"executable_not_found"}'
+  exit 2
+fi
+if ! command -v go >/dev/null 2>&1; then
+  printf '%s\n' '{"schema_version":1,"selected":false,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"go_not_found"}'
+  exit 2
+fi
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+run_root=$(mktemp -d "${TMPDIR:-/tmp}/stepan-qwen-conformance.XXXXXXXX")
+result_path=$run_root/result.json
+test_log=$run_root/go-test.log
+
+cleanup() {
+  case "$run_root" in
+    "${TMPDIR:-/tmp}"/stepan-qwen-conformance.*) rm -rf -- "$run_root" ;;
+    *) printf '%s\n' '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","failure_class":"unsafe_cleanup_target"}' >&2 ;;
+  esac
+}
+trap cleanup EXIT HUP INT TERM
+
+cd -- "$repo_root" || exit 2
+export STEPAN_QWEN_REAL_CLI=1
+export STEPAN_QWEN_AGENT_CLI_NAME=$agent_cli_name
+export STEPAN_QWEN_RESULT=$result_path
+
+set +e
+go test -tags qwen_real_cli -run '^TestQwenRealCLIConformance$' \
+  ./internal/agentruntime/qwenapp -count=1 -timeout "${timeout_seconds}s" >"$test_log" 2>&1
+test_exit=$?
+set -e
+
+if [[ -f $result_path ]]; then
+  cat -- "$result_path"
+else
+  printf '{"schema_version":1,"selected":true,"passed":false,"provider":"qwen","os":"darwin","arch":"arm64","failure_class":"test_harness_failed","test_exit_code":%d}\n' \
+    "$test_exit"
+fi
+exit "$test_exit"
