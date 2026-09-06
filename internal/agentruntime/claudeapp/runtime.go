@@ -120,9 +120,14 @@ func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentrunt
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if config.Workspace != runtime.workspace {
+	workspace, err := canonicalDirectory(config.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("thread workspace: %w", err)
+	}
+	if workspace != runtime.workspace {
 		return nil, errors.New("thread workspace does not match runtime workspace")
 	}
+	config.Workspace = workspace
 	if config.ArtifactRoot != "" {
 		artifact, err := canonicalDirectory(config.ArtifactRoot)
 		if err != nil {
@@ -346,6 +351,22 @@ func permitTool(name string, input map[string]any, policy activePolicy, workspac
 	path, err := toolPath(name, input)
 	if err != nil {
 		return err
+	}
+	workspace, err = canonicalDirectory(workspace)
+	if err != nil {
+		return err
+	}
+	if policy.artifactRoot != "" {
+		policy.artifactRoot, err = canonicalDirectory(policy.artifactRoot)
+		if err != nil {
+			return err
+		}
+	}
+	if policy.writableRoot != "" {
+		policy.writableRoot, err = canonicalDirectory(policy.writableRoot)
+		if err != nil {
+			return err
+		}
 	}
 	candidate, err := resolveAllowedPath(workspace, policy.artifactRoot, path)
 	if err != nil {

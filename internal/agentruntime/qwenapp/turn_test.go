@@ -318,8 +318,8 @@ func TestProcessCarriesExactContractAndImmutableSessionPrompts(t *testing.T) {
 	if contractCount != 1 {
 		t.Fatalf("process JSON contract occurrences = %d in %#v", contractCount, observation.Args)
 	}
-	encodedWorkspace, _ := json.Marshal(workspace)
-	encodedArtifact, _ := json.Marshal(artifact)
+	encodedWorkspace, _ := json.Marshal(process.WorkspaceRoot())
+	encodedArtifact, _ := json.Marshal(process.WritableRoot())
 	if !strings.Contains(observation.Prompts[0], "process integration role") || !strings.Contains(observation.Prompts[0], turnTestSchema) ||
 		!strings.Contains(observation.Prompts[0], string(encodedWorkspace)) || !strings.Contains(observation.Prompts[0], string(encodedArtifact)) {
 		t.Fatalf("first process prompt lacks immutable bootstrap context: %q", observation.Prompts[0])

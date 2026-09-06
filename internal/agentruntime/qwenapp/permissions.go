@@ -522,7 +522,11 @@ func canonicalReadableTarget(context permissionContext, supplied string) (string
 	}
 	allowed := false
 	for _, root := range context.readRoots {
-		if root != "" && target != root && pathWithin(root, target) {
+		if root == "" {
+			continue
+		}
+		canonicalRoot, rootErr := canonicalDirectory(root, "filesystem read root")
+		if rootErr == nil && target != canonicalRoot && pathWithin(canonicalRoot, target) {
 			allowed = true
 			break
 		}

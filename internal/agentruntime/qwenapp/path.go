@@ -169,8 +169,12 @@ func canonicalTargetWithin(cwd, root, supplied string) (string, error) {
 	if root == "" {
 		return "", ErrPermissionDenied
 	}
+	canonicalRoot, err := canonicalDirectory(root, "filesystem permission root")
+	if err != nil {
+		return "", ErrPermissionDenied
+	}
 	target, err := canonicalTarget(cwd, supplied)
-	if err != nil || target == root || !pathWithin(root, target) {
+	if err != nil || target == canonicalRoot || !pathWithin(canonicalRoot, target) {
 		return "", ErrPermissionDenied
 	}
 	if info, statErr := os.Stat(target); statErr == nil && info.IsDir() {

@@ -60,12 +60,28 @@ func TestFindGitRootOutsideWorkingTree(t *testing.T) {
 	}
 }
 
+func TestInitRepositoryConfiguresLocalCommitIdentity(t *testing.T) {
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	root := initRepository(t)
+	writeGitTestFile(t, root, "tracked.txt", "initial\n")
+	gitRun(t, root, "add", "--", "tracked.txt")
+	gitRun(t, root, "commit", "--quiet", "-m", "initial")
+}
+
 func initRepository(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
 	command := exec.Command("git", "init", "--quiet", repo)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, output)
+	}
+	for _, setting := range [][]string{
+		{"config", "user.name", "Stepan Tests"},
+		{"config", "user.email", "stepan-tests@example.invalid"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		gitRun(t, repo, setting...)
 	}
 	canonical, err := filepath.EvalSymlinks(repo)
 	if err != nil {

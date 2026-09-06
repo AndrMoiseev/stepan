@@ -30,42 +30,65 @@ func pathWithin(root, candidate string) bool {
 	return !filepath.IsAbs(relative)
 }
 
+// canonicalTarget resolves an existing target, or the nearest existing
+// ancestor plus the missing suffix. Comparing this result with canonical
+// roots makes Windows 8.3 aliases and filesystem links unambiguous.
+func canonicalTarget(cwd, supplied string) (string, error) {
+	if cwd == "" || !filepath.IsAbs(cwd) || supplied == "" {
+		return "", fmt.Errorf("path is invalid")
+	}
+	candidate := filepath.Clean(supplied)
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(cwd, candidate)
+	}
+	candidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", err
+	}
+	candidate = filepath.Clean(candidate)
+
+	existing := candidate
+	for {
+		info, statErr := os.Stat(existing)
+		if statErr == nil {
+			canonical, resolveErr := filepath.EvalSymlinks(existing)
+			if resolveErr != nil {
+				return "", resolveErr
+			}
+			relative, relErr := filepath.Rel(existing, candidate)
+			if relErr != nil || filepath.IsAbs(relative) {
+				return "", fmt.Errorf("path cannot be resolved")
+			}
+			if relative != "." && !info.IsDir() {
+				return "", fmt.Errorf("path has a non-directory ancestor")
+			}
+			return filepath.Clean(filepath.Join(canonical, relative)), nil
+		}
+		if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if _, linkErr := os.Lstat(existing); linkErr == nil || !os.IsNotExist(linkErr) {
+			return "", fmt.Errorf("path contains an unresolved link")
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return "", fmt.Errorf("path has no existing ancestor")
+		}
+		existing = parent
+	}
+}
+
 // resolveWorkspacePath resolves supplied relative paths from the canonical
 // workspace and rejects lexical and link-based escapes. The returned absolute
 // path is consequently the same path the CLI uses with WithCwd(workspace).
 func resolveWorkspacePath(workspace, supplied string) (string, error) {
-	if supplied == "" {
-		return "", fmt.Errorf("path is required")
+	canonicalWorkspace, err := canonicalDirectory(workspace)
+	if err != nil {
+		return "", err
 	}
-	candidate := filepath.Clean(supplied)
-	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(workspace, candidate)
-	}
-	if !pathWithin(workspace, candidate) {
-		return "", fmt.Errorf("path is outside workspace")
-	}
-	existing := candidate
-	for {
-		if _, err := os.Lstat(existing); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("no existing path ancestor")
-		}
-		existing = parent
-	}
-	canonicalExisting, err := filepath.EvalSymlinks(existing)
-	if err != nil || canonicalExisting != existing || !pathWithin(workspace, canonicalExisting) {
-		return "", fmt.Errorf("path escapes workspace through a link")
-	}
-	if _, err := os.Lstat(candidate); err == nil {
-		canonicalCandidate, err := filepath.EvalSymlinks(candidate)
-		if err != nil || canonicalCandidate != candidate || !pathWithin(workspace, canonicalCandidate) {
-			return "", fmt.Errorf("path escapes workspace through a link")
-		}
+	candidate, err := canonicalTarget(canonicalWorkspace, supplied)
+	if err != nil || !pathWithin(canonicalWorkspace, candidate) {
+		return "", fmt.Errorf("path is outside workspace or escapes through a link")
 	}
 	return candidate, nil
 }
@@ -74,41 +97,15 @@ func resolveWorkspacePath(workspace, supplied string) (string, error) {
 // and permits the one separately configured artifact root. It deliberately
 // does not treat the system temp parent as allowed.
 func resolveAllowedPath(workspace, artifactRoot, supplied string) (string, error) {
-	if supplied == "" {
-		return "", fmt.Errorf("path is required")
+	candidate, err := canonicalTarget(workspace, supplied)
+	if err != nil {
+		return "", err
 	}
-	candidate := filepath.Clean(supplied)
-	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(workspace, candidate)
-	}
-	root := workspace
 	if artifactRoot != "" && pathWithin(artifactRoot, candidate) {
-		root = artifactRoot
-	} else if !pathWithin(workspace, candidate) {
+		return candidate, nil
+	}
+	if !pathWithin(workspace, candidate) {
 		return "", fmt.Errorf("path is outside allowed roots")
-	}
-	existing := candidate
-	for {
-		if _, err := os.Lstat(existing); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(existing)
-		if parent == existing {
-			return "", fmt.Errorf("no existing path ancestor")
-		}
-		existing = parent
-	}
-	canonicalExisting, err := filepath.EvalSymlinks(existing)
-	if err != nil || !pathWithin(root, canonicalExisting) {
-		return "", fmt.Errorf("path escapes allowed root through a link")
-	}
-	if _, err := os.Lstat(candidate); err == nil {
-		canonicalCandidate, err := filepath.EvalSymlinks(candidate)
-		if err != nil || !pathWithin(root, canonicalCandidate) {
-			return "", fmt.Errorf("path escapes allowed root through a link")
-		}
 	}
 	return candidate, nil
 }

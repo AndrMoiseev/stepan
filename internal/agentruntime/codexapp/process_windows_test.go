@@ -10,7 +10,47 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
+
+func TestRuntimeAcceptsEquivalentShortWorkspacePath(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace directory requiring short alias")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shortWorkspace := shortPathForTest(t, workspace)
+	t.Setenv("GO_WANT_CODEXAPP_FAKE", "runtime-interrupt-ignore")
+	runtime, err := StartRuntime(os.Args[0], workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.StartThread(testThreadConfig(shortWorkspace)); err != nil {
+		t.Fatalf("start thread with equivalent short workspace path: %v", err)
+	}
+}
+
+func shortPathForTest(t *testing.T, path string) string {
+	t.Helper()
+	longPath, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]uint16, 32768)
+	length, err := windows.GetShortPathName(longPath, &buffer[0], uint32(len(buffer)))
+	if err != nil {
+		t.Skipf("Windows short path is unavailable: %v", err)
+	}
+	if length == 0 || length >= uint32(len(buffer)) {
+		t.Fatalf("invalid Windows short path length %d", length)
+	}
+	shortPath := filepath.Clean(windows.UTF16ToString(buffer[:length]))
+	if shortPath == filepath.Clean(path) {
+		t.Skip("Windows 8.3 aliases are disabled on this volume")
+	}
+	return shortPath
+}
 
 func TestProcessCloseKillsTree(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pids.json")

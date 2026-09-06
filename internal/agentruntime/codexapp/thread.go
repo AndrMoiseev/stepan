@@ -70,9 +70,14 @@ func (connection *Connection) StartThread(cwd string, config agentruntime.Thread
 	if err := validateCodexSchema(config.OutputSchema); err != nil {
 		return nil, err
 	}
-	if config.Workspace != cwd {
+	workspace, err := canonicalPath(config.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize thread workspace: %w", err)
+	}
+	if workspace != cwd {
 		return nil, errors.New("thread workspace does not match connection workspace")
 	}
+	config.Workspace = workspace
 	if config.ArtifactRoot != "" {
 		artifact, err := canonicalPath(config.ArtifactRoot)
 		if err != nil {

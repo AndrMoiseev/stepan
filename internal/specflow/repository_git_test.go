@@ -466,8 +466,6 @@ func TestRepositoryFailedSupersessionRestoresOldFlowAndRemovesNewFlow(t *testing
 func initializedCommitRepository(t *testing.T) string {
 	t.Helper()
 	root := initRepository(t)
-	gitRun(t, root, "config", "user.email", "stepan-tests@example.invalid")
-	gitRun(t, root, "config", "user.name", "Stepan Tests")
 	writeGitTestFile(t, root, "tracked.txt", "initial\n")
 	gitRun(t, root, "add", "--", "tracked.txt")
 	gitRun(t, root, "commit", "-q", "-m", "initial")

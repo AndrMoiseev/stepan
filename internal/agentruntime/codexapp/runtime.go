@@ -69,10 +69,19 @@ func (runtime *Runtime) StartThread(config agentruntime.ThreadConfig) (agentrunt
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	if config.Workspace != runtime.workspace {
+	workspace, err := canonicalPath(config.Workspace)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize thread workspace: %w", err)
+	}
+	runtimeWorkspace, err := canonicalPath(runtime.workspace)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize runtime workspace: %w", err)
+	}
+	if workspace != runtimeWorkspace {
 		return nil, errors.New("thread workspace does not match runtime workspace")
 	}
-	thread, err := runtime.connection.StartThread(runtime.workspace, config)
+	config.Workspace = workspace
+	thread, err := runtime.connection.StartThread(runtimeWorkspace, config)
 	return thread, runtime.classify(err)
 }
 

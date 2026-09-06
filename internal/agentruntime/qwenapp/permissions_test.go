@@ -32,6 +32,10 @@ func TestCanonicalTargetResolvesExistingAndNewTargetsWithoutLinkEscape(t *testin
 	}
 	link := filepath.Join(artifact, "linked")
 	linkErr := makeDirectoryLink(link, external)
+	canonicalArtifact, err := canonicalDirectory(artifact, "test artifact root")
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := conformance.WritePathCases(conformance.PathRoots{
 		WorkspaceRoot: workspace,
 		ArtifactRoot:  artifact,
@@ -46,7 +50,7 @@ func TestCanonicalTargetResolvesExistingAndNewTargetsWithoutLinkEscape(t *testin
 			}
 			target, err := canonicalTargetWithin(workspace, artifact, test.Target)
 			if test.WantAllowed {
-				if err != nil || !pathWithin(artifact, target) {
+				if err != nil || !pathWithin(canonicalArtifact, target) {
 					t.Fatalf("canonical target = %q, %v", target, err)
 				}
 				return
