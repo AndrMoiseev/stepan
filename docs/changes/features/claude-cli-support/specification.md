@@ -199,12 +199,14 @@ SDK Client принимает output format при создании, тогда 
 закрытый **flow envelope schema**, являющийся объединением всех допустимых
 ответов текущего `/idea` flow.
 
-Claude adapter передаёт SDK отдельную transport-копию этой schema: удаляет
-необязательные `$schema` dialect annotations и явно добавляет верхнеуровневый
-`"type":"object"`. Обе ветки union уже являются object, поэтому это не меняет
-семантику envelope, но удовлетворяет Claude-compatible API, требующим
-`input_schema.type` у custom tool. Исходная schema остаётся неизменной для
-локальной строгой валидации.
+Claude adapter передаёт SDK отдельную permissive transport-копию этой schema.
+Она объединяет properties корневых `oneOf`-веток в один flat object без общего
+`required`, удаляет необязательные `$schema` dialect annotations и ограничения,
+не поддерживаемые Claude structured outputs (`minLength`, `maxLength`,
+`minimum`). Это удовлетворяет Claude-compatible custom-tool API, запрещающим
+корневые `oneOf`/`allOf`/`anyOf`. Исходная schema остаётся неизменной, а более
+широкий transport envelope всегда проходит локальную строгую stage-валидацию
+до изменения flow state.
 
 Envelope допускает только существующие варианты:
 

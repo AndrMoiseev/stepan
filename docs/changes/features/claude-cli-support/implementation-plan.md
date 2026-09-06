@@ -269,8 +269,9 @@ validated executable, workspace и envelope schema.
 - Подключён только user setting source для credentials, сессий и оперативных
   данных из `~/.claude`; project/local sources не подключены.
 - Background tasks и agent view отключаются зафиксированными environment flags.
-- Envelope передаётся через `WithJSONSchema`; transport-копия имеет явный
-  верхнеуровневый `type: object` и не содержит `$schema` annotations.
+- Envelope передаётся через `WithJSONSchema`; transport-копия является flat
+  object без корневых union keywords, `$schema` annotations и неподдерживаемых
+  строковых/числовых ограничений.
 
 **Чек-лист реализации:**
 
@@ -286,8 +287,9 @@ validated executable, workspace и envelope schema.
 - [ ] Не передавать `WithMcpServers`, `WithHooks`, `WithPlugins`,
   `WithAgents`, sandbox auto-allow или `WithAddDirs`.
 - [ ] Использовать bounded stderr callback/writer без записи prompts и env.
-- [ ] Нормализовать только transport-копию envelope для custom-tool API, не
-  изменяя исходную доменную schema.
+- [ ] Нормализовать только transport-копию envelope для custom-tool API:
+  объединить properties корневых `oneOf`-веток без общего `required`, удалить
+  неподдерживаемые annotations/constraints и не изменять доменную schema.
 - [ ] Проверить созданный `Options` field-by-field в test.
 
 **Проверка:** `go test ./internal/agentruntime/claudeapp` и `go test ./...`.

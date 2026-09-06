@@ -128,6 +128,20 @@ func TestClaudeTransportSchemaNormalizesCompatibleCustomToolInput(t *testing.T) 
 	if schemaType, ok := options.OutputFormat.Schema["type"].(string); !ok || schemaType != "object" {
 		t.Fatalf("Claude transport schema type = %#v, want object for custom input_schema", options.OutputFormat.Schema["type"])
 	}
+	for _, keyword := range []string{"oneOf", "allOf", "anyOf"} {
+		if _, present := options.OutputFormat.Schema[keyword]; present {
+			t.Fatalf("Claude transport schema contains unsupported top-level %s", keyword)
+		}
+	}
+	properties, ok := options.OutputFormat.Schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("Claude transport properties = %#v", options.OutputFormat.Schema["properties"])
+	}
+	for _, property := range []string{"feature_id", "kind", "message", "decisions"} {
+		if _, present := properties[property]; !present {
+			t.Fatalf("Claude transport schema is missing merged property %q", property)
+		}
+	}
 
 	encoded, err := json.Marshal(options.OutputFormat.Schema)
 	if err != nil {
@@ -135,6 +149,11 @@ func TestClaudeTransportSchemaNormalizesCompatibleCustomToolInput(t *testing.T) 
 	}
 	if bytes.Contains(encoded, []byte(`"$schema"`)) {
 		t.Fatalf("Claude transport schema contains unsupported dialect declaration: %s", encoded)
+	}
+	for _, keyword := range []string{`"minLength"`, `"maxLength"`, `"minimum"`} {
+		if bytes.Contains(encoded, []byte(keyword)) {
+			t.Fatalf("Claude transport schema contains unsupported constraint %s: %s", keyword, encoded)
+		}
 	}
 	if string(validated.EnvelopeSchema) != string(config.EnvelopeSchema) {
 		t.Fatal("transport normalization changed the domain schema")
