@@ -271,7 +271,9 @@ validated executable, workspace и envelope schema.
 - Background tasks и agent view отключаются зафиксированными environment flags.
 - Envelope передаётся через `WithJSONSchema`; transport-копия является flat
   object без корневых union keywords, `$schema` annotations и неподдерживаемых
-  строковых/числовых ограничений.
+  строковых/числовых ограничений. Перед строгой thread-валидацией известные
+  properties других веток envelope удаляются из transport result; неизвестные
+  properties не удаляются.
 
 **Чек-лист реализации:**
 
@@ -290,6 +292,8 @@ validated executable, workspace и envelope schema.
 - [ ] Нормализовать только transport-копию envelope для custom-tool API:
   объединить properties корневых `oneOf`-веток без общего `required`, удалить
   неподдерживаемые annotations/constraints и не изменять доменную schema.
+- [ ] Перед domain validation проецировать transport result на properties
+  узкой thread schema, удаляя только известные sibling properties envelope.
 - [ ] Проверить созданный `Options` field-by-field в test.
 
 **Проверка:** `go test ./internal/agentruntime/claudeapp` и `go test ./...`.

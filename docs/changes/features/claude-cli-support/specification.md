@@ -205,8 +205,10 @@ Claude adapter передаёт SDK отдельную permissive transport-ко
 не поддерживаемые Claude structured outputs (`minLength`, `maxLength`,
 `minimum`). Это удовлетворяет Claude-compatible custom-tool API, запрещающим
 корневые `oneOf`/`allOf`/`anyOf`. Исходная schema остаётся неизменной, а более
-широкий transport envelope всегда проходит локальную строгую stage-валидацию
-до изменения flow state.
+широкий transport envelope перед локальной stage-валидацией проецируется на
+properties узкой schema текущего thread. Удаляются только известные properties
+других веток envelope; неизвестные поля сохраняются, поэтому строгая валидация
+по-прежнему отклоняет protocol drift до изменения flow state.
 
 Envelope допускает только существующие варианты:
 

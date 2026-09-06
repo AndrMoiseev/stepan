@@ -160,6 +160,86 @@ func TestClaudeTransportSchemaNormalizesCompatibleCustomToolInput(t *testing.T) 
 	}
 }
 
+func TestClaudeRuntimeProjectsTransportEnvelopeToFeatureIDSchema(t *testing.T) {
+	config := testConfig(t)
+	config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{StructuredOutput: map[string]any{
+		"feature_id": "claude-transport-placeholders",
+		"kind":       "message",
+	}}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	threadConfig := testThreadConfig(config)
+	threadConfig.OutputSchema = specflow.FeatureIDSchema()
+	handle, err := runtime.StartThread(threadConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.RunTurn(handle, "generate feature ID")
+	if err != nil {
+		t.Fatalf("feature ID transport placeholders were rejected: %v", err)
+	}
+	if string(output) != `{"feature_id":"claude-transport-placeholders"}` {
+		t.Fatalf("normalized feature ID output = %s", output)
+	}
+}
+
+func TestClaudeRuntimeProjectsTransportEnvelopeToDialogueSchema(t *testing.T) {
+	config := testConfig(t)
+	config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{StructuredOutput: map[string]any{
+		"feature_id": "transport-placeholder",
+		"kind":       "message",
+		"message":    "Which audience should the feature serve?",
+		"decisions":  []any{},
+	}}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	threadConfig := testThreadConfig(config)
+	threadConfig.OutputSchema = specflow.DialogueSchema()
+	handle, err := runtime.StartThread(threadConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := runtime.RunTurn(handle, "ask a question")
+	if err != nil {
+		t.Fatalf("dialogue transport placeholder was rejected: %v", err)
+	}
+	if _, err := specflow.DecodeEnvelope(output); err != nil {
+		t.Fatalf("projected dialogue output is invalid: %v; output=%s", err, output)
+	}
+}
+
+func TestClaudeRuntimeDoesNotProjectUnknownStructuredOutputProperties(t *testing.T) {
+	config := testConfig(t)
+	config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
+	fake := &fakeClient{messages: []claudecode.Message{&claudecode.ResultMessage{StructuredOutput: map[string]any{
+		"feature_id": "keep-rejecting-protocol-drift",
+		"unexpected": "must not be hidden",
+	}}}}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	threadConfig := testThreadConfig(config)
+	threadConfig.OutputSchema = specflow.FeatureIDSchema()
+	handle, err := runtime.StartThread(threadConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.RunTurn(handle, "generate feature ID")
+	if err == nil || !strings.Contains(err.Error(), "$.unexpected is not allowed") {
+		t.Fatalf("unknown structured output property error = %v", err)
+	}
+}
+
 func TestClaudeRuntimeRoutesTurnsToFreshSessionsAndClosesOnce(t *testing.T) {
 	config := testConfig(t)
 	validated, _, err := validateConfig(config)

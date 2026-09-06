@@ -36,13 +36,14 @@ type thread struct {
 // Runtime has no process-tree containment in v1. It deliberately uses the
 // SDK's standard subprocess transport; direct CLI close is manually tested.
 type Runtime struct {
-	client        client
-	workspace     string
-	ctx           context.Context
-	cancel        context.CancelFunc
-	responses     claudecode.MessageIterator
-	receiverDone  chan struct{}
-	receiverClose sync.Once
+	client              client
+	workspace           string
+	transportProperties map[string]struct{}
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	responses           claudecode.MessageIterator
+	receiverDone        chan struct{}
+	receiverClose       sync.Once
 
 	turnMu       sync.Mutex
 	stateMu      sync.Mutex
@@ -83,7 +84,12 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 		return nil, agentruntime.ErrRuntimeClosed
 	}
 	lifecycle, cancel := context.WithCancel(ctx)
-	runtime := &Runtime{workspace: validated.Workspace, ctx: lifecycle, cancel: cancel}
+	runtime := &Runtime{
+		workspace:           validated.Workspace,
+		transportProperties: schemaPropertyNames(schema),
+		ctx:                 lifecycle,
+		cancel:              cancel,
+	}
 	stderr := &stderrCapture{}
 	runtime.client = factory(lifecycle, claudeOptions(validated, schema, runtime.canUseTool, stderr.Add)...)
 	if runtime.client == nil {
@@ -204,10 +210,64 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json
 	if err != nil {
 		return nil, runtime.runtimeError("receive turn", err)
 	}
+	output, err = projectTransportOutput(output, runtime.transportProperties, item.config.OutputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("Claude structured output: %w", err)
+	}
 	if err := agentruntime.ValidateOutput(item.config.OutputSchema, output); err != nil {
 		return nil, fmt.Errorf("Claude structured output: %w", err)
 	}
 	return output, nil
+}
+
+// projectTransportOutput removes only properties that belong to another
+// branch of the connection-level transport envelope. Unknown properties stay
+// in the object so the narrow thread schema can still reject protocol drift.
+func projectTransportOutput(output json.RawMessage, transportProperties map[string]struct{}, targetSchema json.RawMessage) (json.RawMessage, error) {
+	var target map[string]json.RawMessage
+	if err := json.Unmarshal(targetSchema, &target); err != nil || target == nil {
+		return nil, errors.New("thread output schema must be a JSON object")
+	}
+	var targetProperties map[string]json.RawMessage
+	if raw, present := target["properties"]; present {
+		if err := json.Unmarshal(raw, &targetProperties); err != nil || targetProperties == nil {
+			return nil, errors.New("thread output schema properties must be a JSON object")
+		}
+	}
+	if targetProperties == nil {
+		return output, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(output, &object); err != nil || object == nil {
+		return nil, errors.New("structured output must be a JSON object")
+	}
+	changed := false
+	for name := range object {
+		if _, allowed := targetProperties[name]; allowed {
+			continue
+		}
+		if _, knownTransportProperty := transportProperties[name]; knownTransportProperty {
+			delete(object, name)
+			changed = true
+		}
+	}
+	if !changed {
+		return output, nil
+	}
+	projected, err := json.Marshal(object)
+	if err != nil {
+		return nil, fmt.Errorf("marshal projected structured output: %w", err)
+	}
+	return projected, nil
+}
+
+func schemaPropertyNames(schema map[string]any) map[string]struct{} {
+	properties, _ := schema["properties"].(map[string]any)
+	names := make(map[string]struct{}, len(properties))
+	for name := range properties {
+		names[name] = struct{}{}
+	}
+	return names
 }
 
 // CloseThread invalidates the logical session handle. The Claude SDK has no
