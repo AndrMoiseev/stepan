@@ -179,6 +179,8 @@ workspace writable root отклоняется до обращения к аге
 - Runtime создаётся лениво при первом `/idea`, как текущий Codex runtime.
 - `claudeapp` создаёт один SDK Client и вызывает `Connect` один раз.
 - Каждый `StartThread` создаёт новый непустой локально уникальный session ID.
+  Это outbound transport marker: Claude CLI назначает собственный provider
+  session ID результату, поэтому эти два значения не обязаны совпадать.
 - Ходы выполняются через `QueryWithSession` с ID соответствующего handle.
 - Только один ход может быть активен в runtime; конкурентный вызов
   завершается provider-neutral `ErrTurnInProgress`.

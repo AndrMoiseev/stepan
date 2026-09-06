@@ -213,10 +213,10 @@ func TestClaudeRuntimeRejectsForeignThreadAndBadTerminalOutput(t *testing.T) {
 	}
 }
 
-func TestClaudeRuntimeRejectsTerminalResultForAnotherSession(t *testing.T) {
+func TestClaudeRuntimeAcceptsProviderAssignedTerminalSession(t *testing.T) {
 	config := testConfig(t)
 	fake := &fakeClient{batches: [][]claudecode.Message{{
-		&claudecode.ResultMessage{SessionID: "foreign", StructuredOutput: map[string]any{"status": "READY_TO_WRITE"}},
+		&claudecode.ResultMessage{SessionID: "provider-generated-uuid", StructuredOutput: map[string]any{"status": "READY_TO_WRITE"}},
 	}}}
 	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
 	if err != nil {
@@ -227,8 +227,31 @@ func TestClaudeRuntimeRejectsTerminalResultForAnotherSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.RunTurn(handle, "turn"); !errors.Is(err, agentruntime.ErrRuntimeExited) {
-		t.Fatalf("foreign result error = %v", err)
+	if _, err := runtime.RunTurn(handle, "turn"); err != nil {
+		t.Fatalf("provider-assigned result session was rejected: %v", err)
+	}
+	if sent := fake.session(0); sent == "" || sent == "provider-generated-uuid" {
+		t.Fatalf("local query session = %q", sent)
+	}
+}
+
+func TestClaudeRuntimeRejectsEmptyProviderSession(t *testing.T) {
+	config := testConfig(t)
+	fake := &fakeClient{
+		keepEmptySession: true,
+		messages:         []claudecode.Message{&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "READY_TO_WRITE"}}},
+	}
+	runtime, err := startRuntime(context.Background(), config, func(context.Context, ...claudecode.Option) client { return fake })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	handle, err := runtime.StartThread(testThreadConfig(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.RunTurn(handle, "turn"); !errors.Is(err, agentruntime.ErrRuntimeExited) || !strings.Contains(err.Error(), "has no provider session") {
+		t.Fatalf("empty provider session error = %v", err)
 	}
 }
 
@@ -516,19 +539,20 @@ func assertLockedOptions(t *testing.T, options *claudecode.Options, config Confi
 }
 
 type fakeClient struct {
-	mu            sync.Mutex
-	messages      []claudecode.Message
-	sessions      []string
-	prompts       []string
-	disconnects   int
-	interrupts    int
-	connectErr    error
-	connectHook   func()
-	disconnectErr error
-	responses     chan claudecode.Message
-	received      chan struct{}
-	batches       [][]claudecode.Message
-	queries       int
+	mu               sync.Mutex
+	messages         []claudecode.Message
+	sessions         []string
+	prompts          []string
+	disconnects      int
+	interrupts       int
+	connectErr       error
+	connectHook      func()
+	disconnectErr    error
+	responses        chan claudecode.Message
+	received         chan struct{}
+	batches          [][]claudecode.Message
+	queries          int
+	keepEmptySession bool
 }
 
 func (client *fakeClient) Connect(context.Context, ...claudecode.StreamMessage) error {
@@ -562,7 +586,7 @@ func (client *fakeClient) QueryWithSession(_ context.Context, prompt string, ses
 	}
 	client.queries++
 	for index, message := range messages {
-		if result, ok := message.(*claudecode.ResultMessage); ok && result.SessionID == "" {
+		if result, ok := message.(*claudecode.ResultMessage); ok && result.SessionID == "" && !client.keepEmptySession {
 			copy := *result
 			copy.SessionID = session
 			messages[index] = &copy

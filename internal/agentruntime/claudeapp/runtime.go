@@ -56,11 +56,10 @@ type Runtime struct {
 }
 
 type responseQuery struct {
-	sessionID string
-	done      chan struct{}
-	output    json.RawMessage
-	err       error
-	terminal  bool
+	done     chan struct{}
+	output   json.RawMessage
+	err      error
+	terminal bool
 }
 
 type activePolicy struct {
@@ -171,7 +170,7 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json
 		return nil, agentruntime.ErrRuntimeExited
 	}
 	runtime.activePolicy = &policy
-	query := &responseQuery{sessionID: item.sessionID, done: make(chan struct{})}
+	query := &responseQuery{done: make(chan struct{})}
 	runtime.activeQuery = query
 	runtime.stateMu.Unlock()
 	defer func() {
@@ -289,10 +288,10 @@ func (runtime *Runtime) receiveResult(result *claudecode.ResultMessage) {
 	runtime.stateMu.Lock()
 	defer runtime.stateMu.Unlock()
 	query := runtime.activeQuery
-	if query == nil || query.terminal || result.SessionID == "" || result.SessionID != query.sessionID {
+	if query == nil || query.terminal || result.SessionID == "" {
 		runtime.unhealthy = true
 		if query != nil && !query.terminal {
-			query.err = errors.New("Claude terminal result has an unexpected session")
+			query.err = errors.New("Claude terminal result has no provider session")
 			close(query.done)
 		}
 		return

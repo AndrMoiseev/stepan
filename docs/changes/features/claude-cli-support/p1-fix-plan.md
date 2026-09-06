@@ -197,8 +197,10 @@ duplicate или conflicting terminal result попасть в следующи�
   состоянии Claude runtime.
 - Использовать один контролируемый receive path на Client вместо независимых
   короткоживущих collectors над общим message channel.
-- Проверять session ID terminal result до публикации результата вызывающему
-  `RunTurn`.
+- Требовать непустой provider session ID terminal result до публикации
+  результата вызывающему `RunTurn`, но не сравнивать его с outbound transport
+  marker: Claude CLI назначает результату собственный session ID. Корреляция
+  опирается на единственный активный последовательный query.
 - Первый корректный terminal result завершает логический query. Любое следующее
   сообщение до регистрации нового query считается stale protocol data;
   duplicate/conflicting result переводит runtime в unhealthy state и никогда
@@ -215,7 +217,8 @@ duplicate или conflicting terminal result попасть в следующи�
 
 - Assistant/thinking/tool messages перед terminal result игнорируются как
   output, а один корректный result возвращает defensive-copy JSON object.
-- Result с чужим или пустым session ID отклоняется до изменения flow state.
+- Result с пустым provider session ID отклоняется до изменения flow state;
+  provider-assigned ID может отличаться от outbound transport marker.
 - Два terminal results одного query не дают два успешных ответа.
 - Duplicate, уже находящийся в fake stream, завершает текущий ход ошибкой.
 - Delayed duplicate после первого terminal result делает runtime unhealthy;
