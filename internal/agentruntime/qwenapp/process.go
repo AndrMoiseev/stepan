@@ -49,9 +49,7 @@ type Process struct {
 	command          *exec.Cmd
 	stdin            io.WriteCloser
 	stdout           io.ReadCloser
-	stderr           io.ReadCloser
 	job              processJob
-	stderrDone       chan error
 	runtimeOwnedRoot string
 	diagnostic       limitedDiagnostic
 
@@ -145,25 +143,20 @@ func (process *Process) Start() error {
 		process.closePartial()
 		return process.startErr
 	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		_ = stdin.Close()
-		_ = stdout.Close()
-		process.startErr = fmt.Errorf("%w: create stderr: %v", ErrStartup, err)
-		process.closePartial()
-		return process.startErr
-	}
+	// Let os/exec own the stderr pipe and its copier. Cmd.Wait then waits for
+	// diagnostic capture before closing the pipe, avoiding the documented race
+	// between StderrPipe readers and Wait on fast-exiting children.
+	command.Stderr = &process.diagnostic
 	job, err := process.deps.newJob()
 	if err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		_ = stderr.Close()
 		process.startErr = fmt.Errorf("%w: create supervisor: %v", ErrContainment, err)
 		process.closePartial()
 		return process.startErr
 	}
 
-	process.command, process.stdin, process.stdout, process.stderr, process.job = command, stdin, stdout, stderr, job
+	process.command, process.stdin, process.stdout, process.job = command, stdin, stdout, job
 	if err := job.Prepare(command); err != nil {
 		process.startErr = fmt.Errorf("%w: prepare supervisor: %v", ErrContainment, err)
 		process.closePartial()
@@ -174,11 +167,6 @@ func (process *Process) Start() error {
 		process.closePartial()
 		return process.startErr
 	}
-	process.stderrDone = make(chan error, 1)
-	go func() {
-		_, copyErr := io.Copy(&process.diagnostic, stderr)
-		process.stderrDone <- copyErr
-	}()
 	if err := job.Assign(command.Process); err != nil {
 		process.closePartial()
 		process.startErr = fmt.Errorf("%w: assign child: %v%s", ErrContainment, err, process.diagnosticSuffix())
@@ -363,10 +351,6 @@ func (process *Process) Wait() error {
 	process.waitOnce.Do(func() {
 		commandErr := command.Wait()
 		containmentErr := closeUnlessClosed(process.job)
-		var stderrErr error
-		if process.stderrDone != nil {
-			stderrErr = <-process.stderrDone
-		}
 		if command.ProcessState != nil {
 			code := command.ProcessState.ExitCode()
 			process.mu.Lock()
@@ -375,8 +359,6 @@ func (process *Process) Wait() error {
 		}
 		if commandErr != nil {
 			process.waitErr = fmt.Errorf("Qwen process exited: %w%s", commandErr, process.diagnosticSuffix())
-		} else if stderrErr != nil {
-			process.waitErr = fmt.Errorf("read Qwen diagnostic: %w", stderrErr)
 		}
 		process.waitErr = errors.Join(process.waitErr, containmentErr)
 		close(process.waitDone)
@@ -396,7 +378,6 @@ func (process *Process) Close() error {
 		if started {
 			process.closeErr = errors.Join(closeUnlessClosed(process.job), closeUnlessClosed(process.stdin), closeUnlessClosed(process.stdout))
 			_ = process.Wait()
-			process.closeErr = errors.Join(process.closeErr, closeUnlessClosed(process.stderr))
 		}
 		process.closeErr = errors.Join(process.closeErr, process.removeRuntimeRoot())
 	})
@@ -411,12 +392,8 @@ func (process *Process) closePartial() {
 		_ = process.command.Process.Kill()
 		_ = process.command.Wait()
 	}
-	if process.stderrDone != nil {
-		<-process.stderrDone
-	}
-	_ = closeUnlessClosed(process.stderr)
 	_ = process.removeRuntimeRoot()
-	process.stdin, process.stdout, process.stderr = nil, nil, nil
+	process.stdin, process.stdout = nil, nil
 	process.command, process.job = nil, nil
 }
 

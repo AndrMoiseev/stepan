@@ -297,9 +297,7 @@ func TestOpenConnectionClosesProcessOnMissingCapability(t *testing.T) {
 			if connection != nil || !errors.Is(err, ErrIncompatible) {
 				t.Fatalf("OpenConnection = %v, %v", connection, err)
 			}
-			if process.command == nil || process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
-				t.Fatal("incompatible ACP child was not closed and reaped")
-			}
+			assertProcessReaped(t, process.command, "incompatible ACP child was not closed and reaped")
 			if code := process.ExitCode(); code == nil {
 				t.Fatal("closed ACP child has no exit state")
 			}
@@ -323,9 +321,7 @@ func TestOpenConnectionRejectsMissingStartupRootEvidence(t *testing.T) {
 	if connection != nil || !errors.Is(err, ErrIncompatible) || !strings.Contains(err.Error(), "startup-root contract") {
 		t.Fatalf("OpenConnection = %v, %v", connection, err)
 	}
-	if process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
-		t.Fatal("startup-contract failure did not close and reap child")
-	}
+	assertProcessReaped(t, process.command, "startup-contract failure did not close and reap child")
 }
 
 func TestOpenConnectionClosesProcessOnSessionContractFailure(t *testing.T) {
@@ -343,9 +339,7 @@ func TestOpenConnectionClosesProcessOnSessionContractFailure(t *testing.T) {
 	if strings.Contains(err.Error(), "credential-body") {
 		t.Fatalf("provider response leaked: %v", err)
 	}
-	if process.command == nil || process.command.ProcessState == nil || !process.command.ProcessState.Exited() {
-		t.Fatal("incompatible ACP child was not closed and reaped")
-	}
+	assertProcessReaped(t, process.command, "incompatible ACP child was not closed and reaped")
 }
 
 func TestPreflightValidatesOptionalToolInventory(t *testing.T) {

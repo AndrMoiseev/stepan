@@ -409,9 +409,7 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 				t.Fatal("partial supervisor was not closed")
 			}
 			if test.name == "job assignment" {
-				if command == nil || command.ProcessState == nil || !command.ProcessState.Exited() {
-					t.Fatal("partially started child was not reaped")
-				}
+				assertProcessReaped(t, command, "partially started child was not reaped")
 				diagnostic := process.Diagnostic()
 				if strings.Contains(diagnostic, testJSONContract) || !strings.Contains(diagnostic, "[REDACTED]") {
 					t.Fatalf("unsafe diagnostic: %q", diagnostic)
@@ -429,6 +427,15 @@ func TestStartupFailuresAreClassifiedAndCleanOwnedRoot(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func assertProcessReaped(t *testing.T, command *exec.Cmd, message string) {
+	t.Helper()
+	// Wait populates ProcessState after reaping the child. Exited is not a
+	// portable reaping check: on Unix it is false when SIGKILL ended the child.
+	if command == nil || command.ProcessState == nil {
+		t.Fatal(message)
 	}
 }
 
