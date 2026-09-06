@@ -114,7 +114,7 @@ func TestClaudeExecutableResolutionUsesOnlyAuthoritativePATHNames(t *testing.T) 
 	}
 }
 
-func TestClaudeTransportSchemaOmitsDialectDeclarations(t *testing.T) {
+func TestClaudeTransportSchemaNormalizesCompatibleCustomToolInput(t *testing.T) {
 	config := testConfig(t)
 	config.EnvelopeSchema = specflow.FlowEnvelopeSchema()
 	validated, schema, err := validateConfig(config)
@@ -124,6 +124,9 @@ func TestClaudeTransportSchemaOmitsDialectDeclarations(t *testing.T) {
 	options := claudecode.NewOptions(claudeOptions(validated, schema, nil, func(string) {})...)
 	if options.OutputFormat == nil {
 		t.Fatal("Claude transport schema is missing")
+	}
+	if schemaType, ok := options.OutputFormat.Schema["type"].(string); !ok || schemaType != "object" {
+		t.Fatalf("Claude transport schema type = %#v, want object for custom input_schema", options.OutputFormat.Schema["type"])
 	}
 
 	encoded, err := json.Marshal(options.OutputFormat.Schema)

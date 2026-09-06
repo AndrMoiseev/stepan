@@ -51,6 +51,9 @@ Thread-safe callback дополнительно проверяет workspace и 
 SDK output schema задаётся при создании Client, поэтому ему передаётся закрытый
 union всех `/feature` terminal envelopes. `specflow` всё равно валидирует более
 узкую schema текущего этапа и не меняет state от свободного текста.
+Transport-копия union получает явный верхнеуровневый `type: object` и не
+содержит `$schema` dialect annotations для совместимости с custom-tool schema
+корпоративных API; доменная schema при этом не изменяется.
 
 ## Принятый риск
 
