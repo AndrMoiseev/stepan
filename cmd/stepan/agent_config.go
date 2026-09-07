@@ -66,4 +66,6 @@ const usageText = `Usage: stepan [--agent codex|claude|qwen] [--agent-cli-name <
 Without --agent-cli-name, Stepan resolves the official provider name (codex,
 claude, or qwen) through PATH. A supplied name may select a compatible fork in
 PATH; paths and names containing directory separators are rejected.
+When the selected Qwen-compatible name is nessy, Stepan first runs nessy with
+the terminal attached. Complete authentication and exit Nessy CLI to continue.
 Example: stepan --agent qwen --agent-cli-name qwen-compatible`

@@ -56,6 +56,31 @@ func runQwenFake(scenario string) int {
 	case "startup-diagnostic":
 		fmt.Fprintln(os.Stderr, "Authentication required while loading", os.Getenv("STEPAN_QWENAPP_DIAGNOSTIC_SECRET"))
 		return 23
+	case "interactive-login":
+		workingDir, err := os.Getwd()
+		if err != nil || len(os.Args) != 1 {
+			return 26
+		}
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil || line != "complete-login\n" {
+			return 27
+		}
+		metadata := fakeMetadata{Args: os.Args[1:], Environment: os.Environ(), WorkingDir: workingDir, PID: os.Getpid()}
+		data, err := json.Marshal(metadata)
+		if err != nil || os.WriteFile(os.Getenv("STEPAN_QWENAPP_METADATA"), data, 0o600) != nil {
+			return 28
+		}
+		fmt.Fprintln(os.Stdout, "login stdout")
+		fmt.Fprintln(os.Stderr, "login stderr")
+		return 0
+	case "interactive-login-failure":
+		return 29
+	case "interactive-login-wait":
+		if err := os.WriteFile(os.Getenv("STEPAN_QWENAPP_READY"), []byte("ready"), 0o600); err != nil {
+			return 30
+		}
+		time.Sleep(30 * time.Second)
+		return 0
 	case "assignment-failure":
 		fmt.Fprintln(os.Stderr, diagnosticSecretValues())
 		fmt.Fprintln(os.Stderr, testJSONContract)

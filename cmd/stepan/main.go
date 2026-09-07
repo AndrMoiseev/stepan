@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
@@ -43,6 +44,13 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if err := prepareAgentLogin(ctx, config, root, os.Stdin, os.Stdout, os.Stderr, qwenapp.RunInteractiveLogin); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 130
+		}
+		fmt.Fprintln(os.Stderr, "start Stepan:", err)
+		return 2
+	}
 
 	session := specflow.NewSession(runtimeFactory(config, root))
 	defer session.Close()
@@ -63,6 +71,24 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	return 0
+}
+
+type interactiveLoginFunc func(context.Context, string, string, io.Reader, io.Writer, io.Writer) error
+
+func prepareAgentLogin(ctx context.Context, config agentConfig, workspace string, stdin io.Reader, stdout, stderr io.Writer, login interactiveLoginFunc) error {
+	if config.kind != agentQwen || config.executable != "nessy" {
+		return nil
+	}
+	if login == nil {
+		return errors.New("Nessy interactive login is unavailable")
+	}
+	_, _ = fmt.Fprintln(stdout, "\nStepan > Завершите аутентификацию в Nessy, затем выйдите из Nessy CLI для продолжения.")
+	if err := login(ctx, config.executable, workspace, stdin, stdout, stderr); err != nil {
+		return fmt.Errorf("authenticate agent CLI %q: %w", config.executable, err)
+	}
+	_, _ = fmt.Fprintln(stdout, "Stepan > Аутентификация Nessy завершена.")
+	_, _ = fmt.Fprintln(stdout)
+	return nil
 }
 
 func composePlanningFlow(root string, session *specflow.Session, config agentConfig) (*specflow.ApplicationController, *specflow.SessionRegistry, error) {
