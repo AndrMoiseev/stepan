@@ -499,16 +499,43 @@ func TestConnectionRejectsTurnContentBetweenSessionAndFirstPrompt(t *testing.T) 
 	}
 }
 
+func TestConnectionProtocolFailureReportsSafeUpdateCategory(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	callErr := startPrompt(t, connection, server)
+	if err := server.sendNotification("session/update", map[string]any{
+		"sessionId": "s",
+		"update": map[string]any{
+			"sessionUpdate": secret,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-callErr
+	diagnostic := safeRuntimeError("run turn", connection.Err()).Error()
+	if !strings.Contains(diagnostic, "session/update kind") {
+		t.Fatalf("protocol diagnostic = %q", diagnostic)
+	}
+	if strings.Contains(diagnostic, secret) {
+		t.Fatalf("protocol diagnostic leaked provider data: %q", diagnostic)
+	}
+}
+
 func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 	tests := []struct {
-		name string
-		run  func(*testing.T, *Connection, *transport, net.Conn)
-		want string
+		name    string
+		run     func(*testing.T, *Connection, *transport, net.Conn)
+		want    string
+		context diagnosticContext
 	}{
-		{name: "orphan response", want: "orphan response", run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
+		{name: "orphan response", want: "orphan response", context: diagnosticJSONRPCCorrelation, run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
 			writeRaw(t, raw, `{"jsonrpc":"2.0","id":99,"result":{}}`+"\n")
 		}},
-		{name: "duplicate terminal response", want: "duplicate response", run: func(t *testing.T, connection *Connection, server *transport, raw net.Conn) {
+		{name: "duplicate terminal response", want: "duplicate response", context: diagnosticJSONRPCCorrelation, run: func(t *testing.T, connection *Connection, server *transport, raw net.Conn) {
 			callErr := startPrompt(t, connection, server)
 			if err := server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"}); err != nil {
 				t.Fatal(err)
@@ -518,7 +545,7 @@ func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 			}
 			writeRaw(t, raw, `{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}`+"\n")
 		}},
-		{name: "foreign session update", want: "foreign or late session/update", run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
+		{name: "foreign session update", want: "foreign or late session/update", context: diagnosticSessionUpdateLifecycle, run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
 			callErr := startPrompt(t, connection, server)
 			if err := server.sendNotification("session/update", map[string]any{
 				"sessionId": "foreign", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]any{"type": "text", "text": "secret-response"}},
@@ -527,7 +554,7 @@ func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 			}
 			<-callErr
 		}},
-		{name: "terminal with pending permission", want: "pending inbound request", run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
+		{name: "terminal with pending permission", want: "pending inbound request", context: diagnosticAgentRequest, run: func(t *testing.T, connection *Connection, server *transport, _ net.Conn) {
 			callErr := startPrompt(t, connection, server)
 			if err := server.sendRequest(stringID("permission"), "session/request_permission", map[string]any{
 				"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "reject", "kind": "reject_once", "name": "Reject"}},
@@ -539,12 +566,12 @@ func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 			}
 			<-callErr
 		}},
-		{name: "malformed UTF-8", want: "invalid NDJSON", run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
+		{name: "malformed UTF-8", want: "invalid NDJSON", context: diagnosticACPTransport, run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
 			if _, err := raw.Write([]byte{0xff, '\n'}); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{name: "truncated NDJSON", want: "truncated NDJSON", run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
+		{name: "truncated NDJSON", want: "truncated NDJSON", context: diagnosticACPTransport, run: func(t *testing.T, _ *Connection, _ *transport, raw net.Conn) {
 			writeRaw(t, raw, `{"jsonrpc":"2.0"}`)
 			_ = raw.Close()
 		}},
@@ -569,6 +596,10 @@ func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 			}
 			if strings.Contains(got.Error(), "secret-response") {
 				t.Fatalf("wire body leaked: %v", got)
+			}
+			diagnostic := safeRuntimeError("connection", got).Error()
+			if !strings.Contains(diagnostic, test.context.String()) || strings.Contains(diagnostic, "secret-response") {
+				t.Fatalf("safe diagnostic = %q", diagnostic)
 			}
 			if owner.closeCount.Load() != 1 {
 				t.Fatalf("owner close count = %d", owner.closeCount.Load())

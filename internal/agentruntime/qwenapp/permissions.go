@@ -467,7 +467,7 @@ func (connection *Connection) readTextFile(id requestID, request readTextFileReq
 		return
 	}
 	if err := connection.respond(id, map[string]string{"content": text}); err != nil && !errors.Is(err, errPermissionAlreadyResolved) {
-		connection.fail(safeHandlerError("fs/read_text_file"))
+		connection.fail(withDiagnosticContext(safeHandlerError("fs/read_text_file"), diagnosticAgentRequest))
 	}
 }
 

@@ -34,6 +34,19 @@ const (
 	diagnosticToolWeb
 	diagnosticToolAgent
 	diagnosticRegularFile
+	diagnosticACPTransport
+	diagnosticJSONRPCEnvelope
+	diagnosticJSONRPCCorrelation
+	diagnosticPromptTerminal
+	diagnosticNotificationMethod
+	diagnosticSessionUpdateEnvelope
+	diagnosticSessionUpdatePayload
+	diagnosticSessionUpdateKind
+	diagnosticSessionUpdateContent
+	diagnosticSessionUpdateLifecycle
+	diagnosticToolCallUpdate
+	diagnosticAssistantContent
+	diagnosticAgentRequest
 )
 
 func (context diagnosticContext) String() string {
@@ -74,6 +87,32 @@ func (context diagnosticContext) String() string {
 		return "agent"
 	case diagnosticRegularFile:
 		return "regular file"
+	case diagnosticACPTransport:
+		return "ACP transport"
+	case diagnosticJSONRPCEnvelope:
+		return "JSON-RPC envelope"
+	case diagnosticJSONRPCCorrelation:
+		return "JSON-RPC correlation"
+	case diagnosticPromptTerminal:
+		return "session/prompt terminal"
+	case diagnosticNotificationMethod:
+		return "notification method"
+	case diagnosticSessionUpdateEnvelope:
+		return "session/update envelope"
+	case diagnosticSessionUpdatePayload:
+		return "session/update payload"
+	case diagnosticSessionUpdateKind:
+		return "session/update kind"
+	case diagnosticSessionUpdateContent:
+		return "session/update content"
+	case diagnosticSessionUpdateLifecycle:
+		return "session/update lifecycle"
+	case diagnosticToolCallUpdate:
+		return "tool-call update"
+	case diagnosticAssistantContent:
+		return "assistant content"
+	case diagnosticAgentRequest:
+		return "agent request"
 	default:
 		return ""
 	}

@@ -397,7 +397,7 @@ func (connection *Connection) deliverResponse(received message) bool {
 	pending := connection.pending[received.id.key]
 	if pending == nil {
 		connection.mu.Unlock()
-		connection.fail(fmt.Errorf("%w: orphan response", ErrProtocol))
+		connection.fail(withDiagnosticContext(fmt.Errorf("%w: orphan response", ErrProtocol), diagnosticJSONRPCCorrelation))
 		return false
 	}
 	isPrompt := pending.method == "session/prompt"
@@ -412,7 +412,7 @@ func (connection *Connection) deliverResponse(received message) bool {
 		if received.err == nil {
 			var terminal promptResponse
 			if decodeResult(received.result, &terminal) != nil || !knownStopReason(terminal.StopReason) {
-				connection.fail(fmt.Errorf("%w: unknown session/prompt terminal response", ErrProtocol))
+				connection.fail(withDiagnosticContext(fmt.Errorf("%w: unknown session/prompt terminal response", ErrProtocol), diagnosticPromptTerminal))
 				return false
 			}
 		}
@@ -421,14 +421,14 @@ func (connection *Connection) deliverResponse(received message) bool {
 			sessionID := connection.sessionID
 			connection.mu.Unlock()
 			if err := pending.assembler.terminal(turnIdentity{sessionID: sessionID, promptID: received.id.key}); err != nil {
-				connection.fail(err)
+				connection.fail(withDiagnosticContext(err, diagnosticAssistantContent))
 				return false
 			}
 		}
 		connection.mu.Lock()
 		if current := connection.pending[received.id.key]; current != pending || pending.terminal {
 			connection.mu.Unlock()
-			connection.fail(fmt.Errorf("%w: duplicate session/prompt terminal", ErrProtocol))
+			connection.fail(withDiagnosticContext(fmt.Errorf("%w: duplicate session/prompt terminal", ErrProtocol), diagnosticPromptTerminal))
 			return false
 		}
 		pending.terminal = true
@@ -497,7 +497,7 @@ func (connection *Connection) waitForInboundResponses() bool {
 		for _, pending := range connection.inboundCalls {
 			if !pending.responding {
 				connection.mu.Unlock()
-				connection.fail(fmt.Errorf("%w: session/prompt completed with pending inbound request", ErrProtocol))
+				connection.fail(withDiagnosticContext(fmt.Errorf("%w: session/prompt completed with pending inbound request", ErrProtocol), diagnosticAgentRequest))
 				return false
 			}
 			barrier = pending.done
@@ -532,11 +532,11 @@ func (connection *Connection) releasePrompt(id requestID) error {
 
 func (connection *Connection) dispatchNotification(received message) error {
 	if received.method != "session/update" {
-		return fmt.Errorf("%w: unexpected notification %s", ErrProtocol, safeMethod(received.method))
+		return withDiagnosticContext(fmt.Errorf("%w: unexpected notification %s", ErrProtocol, safeMethod(received.method)), diagnosticNotificationMethod)
 	}
 	var params sessionUpdateParams
 	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.Update) == 0 {
-		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed session/update", ErrProtocol), diagnosticSessionUpdateEnvelope)
 	}
 	kind, err := validateSessionUpdate(params.Update)
 	if err != nil {
@@ -548,33 +548,33 @@ func (connection *Connection) dispatchNotification(received message) error {
 	validSession := connection.ready && params.SessionID == connection.sessionID
 	connection.mu.Unlock()
 	if !validSession {
-		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: foreign or late session/update", ErrProtocol), diagnosticSessionUpdateLifecycle)
 	}
 	if promptID == "" || pending == nil {
 		if !informationalSessionUpdate(kind) {
-			return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
+			return withDiagnosticContext(fmt.Errorf("%w: foreign or late session/update", ErrProtocol), diagnosticSessionUpdateLifecycle)
 		}
 		if connection.handler.sessionUpdate != nil {
 			if err := connection.handler.sessionUpdate(received); err != nil {
-				return safeHandlerError("session/update")
+				return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdatePayload)
 			}
 		}
 		return nil
 	}
 	if pending.assembler != nil {
 		if err := pending.assembler.observe(turnIdentity{sessionID: params.SessionID, promptID: promptID}, params.Update); err != nil {
-			return err
+			return withDiagnosticContext(err, diagnosticAssistantContent)
 		}
 	}
 	if pending.terminal {
-		return fmt.Errorf("%w: late session/update", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: late session/update", ErrProtocol), diagnosticSessionUpdateLifecycle)
 	}
 	if err := connection.observeToolCall(params.Update); err != nil {
-		return err
+		return withDiagnosticContext(err, diagnosticToolCallUpdate)
 	}
 	if connection.handler.sessionUpdate != nil {
 		if err := connection.handler.sessionUpdate(received); err != nil {
-			return safeHandlerError("session/update")
+			return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdatePayload)
 		}
 	}
 	return nil
@@ -582,10 +582,13 @@ func (connection *Connection) dispatchNotification(received message) error {
 
 func (connection *Connection) dispatchRequest(received message) error {
 	if received.method == "fs/read_text_file" {
-		return connection.dispatchReadTextFile(received)
+		if err := connection.dispatchReadTextFile(received); err != nil {
+			return withDiagnosticContext(err, diagnosticAgentRequest)
+		}
+		return nil
 	}
 	if received.method != "session/request_permission" {
-		return fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method))
+		return withDiagnosticContext(fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method)), diagnosticAgentRequest)
 	}
 	var params struct {
 		SessionID string          `json:"sessionId"`
@@ -594,13 +597,13 @@ func (connection *Connection) dispatchRequest(received message) error {
 		Meta      json.RawMessage `json:"_meta,omitempty"`
 	}
 	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.ToolCall) == 0 || len(params.Options) == 0 {
-		return fmt.Errorf("%w: malformed session/request_permission", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission", ErrProtocol), diagnosticAgentRequest)
 	}
 	var toolCall struct {
 		ToolCallID string `json:"toolCallId"`
 	}
 	if json.Unmarshal(params.ToolCall, &toolCall) != nil || !validToolCallID(toolCall.ToolCallID) {
-		return fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol), diagnosticAgentRequest)
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
@@ -624,7 +627,7 @@ func (connection *Connection) dispatchRequest(received message) error {
 	}
 	connection.mu.Unlock()
 	if !valid {
-		return fmt.Errorf("%w: foreign or stale session/request_permission", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: foreign or stale session/request_permission", ErrProtocol), diagnosticAgentRequest)
 	}
 	if !accepting {
 		return connection.respond(received.id, cancelledPermissionResult())
@@ -637,7 +640,7 @@ func (connection *Connection) dispatchRequest(received message) error {
 			if errors.Is(err, errPermissionAlreadyResolved) {
 				return
 			}
-			connection.fail(safeHandlerError("session/request_permission"))
+			connection.fail(withDiagnosticContext(safeHandlerError("session/request_permission"), diagnosticAgentRequest))
 		}
 	}()
 	return nil
@@ -715,6 +718,7 @@ func protocolError(cause error) error {
 		return agentruntime.ErrRuntimeExited
 	}
 	category := "transport failure"
+	context := diagnosticACPTransport
 	switch {
 	case errors.Is(cause, errInvalidNDJSON):
 		category = "invalid NDJSON"
@@ -724,18 +728,24 @@ func protocolError(cause error) error {
 		category = "oversized NDJSON"
 	case errors.Is(cause, errInvalidEnvelope):
 		category = "invalid JSON-RPC envelope"
+		context = diagnosticJSONRPCEnvelope
 	case errors.Is(cause, errDuplicateRequestID):
 		category = "duplicate request ID"
+		context = diagnosticJSONRPCCorrelation
 	case errors.Is(cause, errOrphanResponse):
 		category = "orphan response"
+		context = diagnosticJSONRPCCorrelation
 	case errors.Is(cause, errDuplicateResponse):
 		category = "duplicate response"
+		context = diagnosticJSONRPCCorrelation
 	case errors.Is(cause, errRequestIDTooLong):
 		category = "oversized request ID"
+		context = diagnosticJSONRPCCorrelation
 	case errors.Is(cause, errTooManyRequests):
 		category = "too many outstanding requests"
+		context = diagnosticJSONRPCCorrelation
 	}
-	return fmt.Errorf("%w: %s", ErrProtocol, category)
+	return withDiagnosticContext(fmt.Errorf("%w: %s", ErrProtocol, category), context)
 }
 
 func safeHandlerError(method string) error {
@@ -768,16 +778,16 @@ func validateSessionUpdate(raw json.RawMessage) (string, error) {
 		} `json:"content,omitempty"`
 	}
 	if json.Unmarshal(raw, &header) != nil || header.Kind == "" {
-		return "", fmt.Errorf("%w: malformed session/update payload", ErrProtocol)
+		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update payload", ErrProtocol), diagnosticSessionUpdatePayload)
 	}
 	switch header.Kind {
 	case "user_message_chunk", "agent_message_chunk", "agent_thought_chunk":
 		if header.Content == nil || !knownContentType(header.Content.Type) {
-			return "", fmt.Errorf("%w: unknown session/update content", ErrProtocol)
+			return "", withDiagnosticContext(fmt.Errorf("%w: unknown session/update content", ErrProtocol), diagnosticSessionUpdateContent)
 		}
 	case "tool_call", "tool_call_update", "plan", "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update":
 	default:
-		return "", fmt.Errorf("%w: unknown session/update kind", ErrProtocol)
+		return "", withDiagnosticContext(fmt.Errorf("%w: unknown session/update kind", ErrProtocol), diagnosticSessionUpdateKind)
 	}
 	return header.Kind, nil
 }

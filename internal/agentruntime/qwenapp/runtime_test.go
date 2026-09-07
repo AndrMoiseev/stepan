@@ -992,3 +992,30 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedCapabilityContext(t *testing.T) {
 		t.Fatalf("untyped provider text escaped diagnostic boundary = %q", raw)
 	}
 }
+
+func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	contexts := []diagnosticContext{
+		diagnosticACPTransport,
+		diagnosticJSONRPCEnvelope,
+		diagnosticJSONRPCCorrelation,
+		diagnosticPromptTerminal,
+		diagnosticNotificationMethod,
+		diagnosticSessionUpdateEnvelope,
+		diagnosticSessionUpdatePayload,
+		diagnosticSessionUpdateKind,
+		diagnosticSessionUpdateContent,
+		diagnosticSessionUpdateLifecycle,
+		diagnosticToolCallUpdate,
+		diagnosticAssistantContent,
+		diagnosticAgentRequest,
+	}
+	for _, context := range contexts {
+		t.Run(context.String(), func(t *testing.T) {
+			err := safeRuntimeError("run turn", withDiagnosticContext(fmt.Errorf("%w: %s", ErrProtocol, secret), context))
+			if !errors.Is(err, agentruntime.ErrRuntimeProtocol) || !strings.Contains(err.Error(), context.String()) || strings.Contains(err.Error(), secret) {
+				t.Fatalf("protocol diagnostic = %q", err)
+			}
+		})
+	}
+}
