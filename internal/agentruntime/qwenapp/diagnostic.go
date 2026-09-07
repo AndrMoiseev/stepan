@@ -38,7 +38,6 @@ const (
 	diagnosticJSONRPCEnvelope
 	diagnosticJSONRPCCorrelation
 	diagnosticPromptTerminal
-	diagnosticNotificationMethod
 	diagnosticSessionUpdateEnvelope
 	diagnosticSessionUpdatePayload
 	diagnosticSessionUpdateKind
@@ -116,8 +115,6 @@ func (context diagnosticContext) String() string {
 		return "JSON-RPC correlation"
 	case diagnosticPromptTerminal:
 		return "session/prompt terminal"
-	case diagnosticNotificationMethod:
-		return "notification method"
 	case diagnosticSessionUpdateEnvelope:
 		return "session/update envelope"
 	case diagnosticSessionUpdatePayload:

@@ -947,6 +947,35 @@ func TestConnectionRejectsUnsupportedAgentRequestWithoutClosing(t *testing.T) {
 	}
 }
 
+func TestConnectionIgnoresUnsupportedNotificationAcrossPrompts(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	connection, owner, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	firstPromptErr := startPrompt(t, connection, server)
+	if err := server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-firstPromptErr; err != nil {
+		t.Fatalf("first prompt failed: %v", err)
+	}
+	secondPromptErr := startPrompt(t, connection, server)
+	if err := server.sendNotification("elicitation/complete", map[string]any{"elicitationId": secret}); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.sendResult(integerID(4), map[string]string{"stopReason": "end_turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondPromptErr; err != nil {
+		t.Fatalf("second prompt failed after unsupported notification: %v", err)
+	}
+	if connection.Err() != nil || owner.closeCount.Load() != 0 {
+		t.Fatalf("connection = %v, closes = %d", connection.Err(), owner.closeCount.Load())
+	}
+}
+
 func TestConnectionRejectsUnknownTerminalAndContentMessages(t *testing.T) {
 	for _, test := range []struct {
 		name   string

@@ -1000,7 +1000,6 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
 		diagnosticJSONRPCEnvelope,
 		diagnosticJSONRPCCorrelation,
 		diagnosticPromptTerminal,
-		diagnosticNotificationMethod,
 		diagnosticSessionUpdateEnvelope,
 		diagnosticSessionUpdatePayload,
 		diagnosticSessionUpdateKind,

@@ -532,7 +532,10 @@ func (connection *Connection) releasePrompt(id requestID) error {
 
 func (connection *Connection) dispatchNotification(received message) error {
 	if received.method != "session/update" {
-		return withDiagnosticContext(fmt.Errorf("%w: unexpected notification %s", ErrProtocol, safeMethod(received.method)), diagnosticNotificationMethod)
+		// JSON-RPC notifications are one-way and cannot receive a method-not-found
+		// response. Ignore unimplemented ACP and extension notifications so a newer
+		// agent cannot tear down an otherwise compatible connection.
+		return nil
 	}
 	var params sessionUpdateParams
 	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.Update) == 0 {
