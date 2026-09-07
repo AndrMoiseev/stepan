@@ -438,6 +438,67 @@ func TestPreflightRejectsOversizedSessionIdentity(t *testing.T) {
 	}
 }
 
+func TestConnectionAcceptsInformationalSessionUpdateBetweenSessionAndFirstPrompt(t *testing.T) {
+	observed := make(chan struct{}, 1)
+	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{
+		sessionUpdate: func(message) error {
+			observed <- struct{}{}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if err := server.sendNotification("session/update", map[string]any{
+		"sessionId": "s",
+		"update": map[string]any{
+			"sessionUpdate":     "available_commands_update",
+			"availableCommands": []any{},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observed:
+	case <-connection.Done():
+		t.Fatalf("informational update closed connection: %v", connection.Err())
+	case <-time.After(3 * time.Second):
+		t.Fatal("informational update was not dispatched")
+	}
+	callErr := startPrompt(t, connection, server)
+	if err := server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-callErr; err != nil {
+		t.Fatalf("first prompt after informational update failed: %v", err)
+	}
+}
+
+func TestConnectionRejectsTurnContentBetweenSessionAndFirstPrompt(t *testing.T) {
+	connection, owner, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if err := server.sendNotification("session/update", map[string]any{
+		"sessionId": "s",
+		"update": map[string]any{
+			"sessionUpdate": "agent_message_chunk",
+			"content":       map[string]any{"type": "text", "text": "must not be accepted"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitForDone(t, connection.Done())
+	if err := connection.Err(); !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "foreign or late session/update") {
+		t.Fatalf("out-of-turn content error = %v", err)
+	}
+	if owner.closeCount.Load() != 1 {
+		t.Fatalf("owner close count = %d", owner.closeCount.Load())
+	}
+}
+
 func TestConnectionCorrelationViolationsFailClosed(t *testing.T) {
 	tests := []struct {
 		name string

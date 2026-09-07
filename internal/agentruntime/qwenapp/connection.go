@@ -538,16 +538,28 @@ func (connection *Connection) dispatchNotification(received message) error {
 	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.Update) == 0 {
 		return fmt.Errorf("%w: malformed session/update", ErrProtocol)
 	}
+	kind, err := validateSessionUpdate(params.Update)
+	if err != nil {
+		return err
+	}
 	connection.mu.Lock()
 	promptID := connection.activePrompt
 	pending := connection.pending[promptID]
-	valid := connection.ready && params.SessionID == connection.sessionID && promptID != "" && pending != nil
+	validSession := connection.ready && params.SessionID == connection.sessionID
 	connection.mu.Unlock()
-	if !valid {
+	if !validSession {
 		return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
 	}
-	if err := validateSessionUpdate(params.Update); err != nil {
-		return err
+	if promptID == "" || pending == nil {
+		if !informationalSessionUpdate(kind) {
+			return fmt.Errorf("%w: foreign or late session/update", ErrProtocol)
+		}
+		if connection.handler.sessionUpdate != nil {
+			if err := connection.handler.sessionUpdate(received); err != nil {
+				return safeHandlerError("session/update")
+			}
+		}
+		return nil
 	}
 	if pending.assembler != nil {
 		if err := pending.assembler.observe(turnIdentity{sessionID: params.SessionID, promptID: promptID}, params.Update); err != nil {
@@ -748,7 +760,7 @@ func knownStopReason(reason string) bool {
 	}
 }
 
-func validateSessionUpdate(raw json.RawMessage) error {
+func validateSessionUpdate(raw json.RawMessage) (string, error) {
 	var header struct {
 		Kind    string `json:"sessionUpdate"`
 		Content *struct {
@@ -756,18 +768,27 @@ func validateSessionUpdate(raw json.RawMessage) error {
 		} `json:"content,omitempty"`
 	}
 	if json.Unmarshal(raw, &header) != nil || header.Kind == "" {
-		return fmt.Errorf("%w: malformed session/update payload", ErrProtocol)
+		return "", fmt.Errorf("%w: malformed session/update payload", ErrProtocol)
 	}
 	switch header.Kind {
 	case "user_message_chunk", "agent_message_chunk", "agent_thought_chunk":
 		if header.Content == nil || !knownContentType(header.Content.Type) {
-			return fmt.Errorf("%w: unknown session/update content", ErrProtocol)
+			return "", fmt.Errorf("%w: unknown session/update content", ErrProtocol)
 		}
 	case "tool_call", "tool_call_update", "plan", "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update":
 	default:
-		return fmt.Errorf("%w: unknown session/update kind", ErrProtocol)
+		return "", fmt.Errorf("%w: unknown session/update kind", ErrProtocol)
 	}
-	return nil
+	return header.Kind, nil
+}
+
+func informationalSessionUpdate(kind string) bool {
+	switch kind {
+	case "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update":
+		return true
+	default:
+		return false
+	}
 }
 
 func knownContentType(kind string) bool {
