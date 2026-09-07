@@ -413,7 +413,7 @@ type readTextFileRequest struct {
 func (connection *Connection) dispatchReadTextFile(received message) error {
 	var request readTextFileRequest
 	if err := decodeStrict(received.params, &request); err != nil || !validAgentIdentity(request.SessionID) || request.Path == "" || request.Line != nil && *request.Line == 0 {
-		return fmt.Errorf("%w: malformed fs/read_text_file", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed fs/read_text_file", ErrProtocol), diagnosticReadTextFileRequestEnvelope)
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(request.SessionID) && connection.activePermission != nil
@@ -421,7 +421,7 @@ func (connection *Connection) dispatchReadTextFile(received message) error {
 	if valid {
 		if len(connection.inboundCalls) >= maxOutstandingACPCalls {
 			connection.mu.Unlock()
-			return fmt.Errorf("%w: too many active inbound requests", ErrProtocol)
+			return withDiagnosticContext(fmt.Errorf("%w: too many active inbound requests", ErrProtocol), diagnosticReadTextFileRequestCapacity)
 		}
 		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "fs/read_text_file", sessionID: request.SessionID,
@@ -430,7 +430,7 @@ func (connection *Connection) dispatchReadTextFile(received message) error {
 	}
 	connection.mu.Unlock()
 	if !valid {
-		return fmt.Errorf("%w: foreign or stale fs/read_text_file", ErrProtocol)
+		return withDiagnosticContext(fmt.Errorf("%w: foreign or stale fs/read_text_file", ErrProtocol), diagnosticReadTextFileRequestLifecycle)
 	}
 	if !accepting {
 		return connection.respondError(received.id, invalidParamsCode, "filesystem read denied")
@@ -467,7 +467,7 @@ func (connection *Connection) readTextFile(id requestID, request readTextFileReq
 		return
 	}
 	if err := connection.respond(id, map[string]string{"content": text}); err != nil && !errors.Is(err, errPermissionAlreadyResolved) {
-		connection.fail(withDiagnosticContext(safeHandlerError("fs/read_text_file"), diagnosticAgentRequest))
+		connection.fail(withDiagnosticContext(safeHandlerError("fs/read_text_file"), diagnosticReadTextFileRequestHandler))
 	}
 }
 

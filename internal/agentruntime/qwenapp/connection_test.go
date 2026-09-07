@@ -878,6 +878,47 @@ func TestConnectionClassifiesMalformedSessionUpdatePayloadShape(t *testing.T) {
 	}
 }
 
+func TestConnectionClassifiesAgentRequestFailure(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	tests := []struct {
+		name   string
+		method string
+		params any
+		want   string
+	}{
+		{name: "write file method", method: "fs/write_text_file", params: map[string]any{}, want: "agent request fs/write_text_file"},
+		{name: "terminal method", method: "terminal/create", params: map[string]any{}, want: "agent request terminal/create"},
+		{name: "extension method", method: "_nessy/tool", params: map[string]any{}, want: "agent extension request"},
+		{name: "unknown method", method: "workspace/read", params: map[string]any{}, want: "agent request unknown method"},
+		{name: "permission envelope", method: "session/request_permission", params: map[string]any{}, want: "permission request envelope"},
+		{name: "permission tool call", method: "session/request_permission", params: map[string]any{"sessionId": "s", "toolCall": map[string]any{}, "options": []any{}}, want: "permission request toolCall"},
+		{name: "permission lifecycle", method: "session/request_permission", params: map[string]any{"sessionId": "foreign", "toolCall": map[string]any{"toolCallId": "tool"}, "options": []any{}}, want: "permission request lifecycle"},
+		{name: "read envelope", method: "fs/read_text_file", params: map[string]any{}, want: "fs/read_text_file request envelope"},
+		{name: "read lifecycle", method: "fs/read_text_file", params: map[string]any{"sessionId": "foreign", "path": secret}, want: "fs/read_text_file request lifecycle"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			callErr := startPrompt(t, connection, server)
+			if err := server.sendRequest(stringID("request"), test.method, test.params); err != nil {
+				t.Fatal(err)
+			}
+			<-callErr
+			diagnostic := safeRuntimeError("connection", connection.Err()).Error()
+			if !strings.Contains(diagnostic, test.want) {
+				t.Fatalf("agent request diagnostic = %q, want %q", diagnostic, test.want)
+			}
+			if strings.Contains(diagnostic, secret) {
+				t.Fatalf("agent request diagnostic leaked provider data: %q", diagnostic)
+			}
+		})
+	}
+}
+
 func TestConnectionRejectsUnknownTerminalAndContentMessages(t *testing.T) {
 	for _, test := range []struct {
 		name   string

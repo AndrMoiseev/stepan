@@ -59,6 +59,23 @@ const (
 	diagnosticSessionUpdateTypeDiscriminator
 	diagnosticSessionUpdateNestedUpdate
 	diagnosticSessionUpdateHandler
+	diagnosticAgentRequestFSWriteTextFile
+	diagnosticAgentRequestTerminalCreate
+	diagnosticAgentRequestTerminalOutput
+	diagnosticAgentRequestTerminalWaitForExit
+	diagnosticAgentRequestTerminalKill
+	diagnosticAgentRequestTerminalRelease
+	diagnosticAgentExtensionRequest
+	diagnosticAgentRequestUnknownMethod
+	diagnosticPermissionRequestEnvelope
+	diagnosticPermissionRequestToolCall
+	diagnosticPermissionRequestLifecycle
+	diagnosticPermissionRequestCapacity
+	diagnosticPermissionRequestHandler
+	diagnosticReadTextFileRequestEnvelope
+	diagnosticReadTextFileRequestLifecycle
+	diagnosticReadTextFileRequestCapacity
+	diagnosticReadTextFileRequestHandler
 )
 
 func (context diagnosticContext) String() string {
@@ -149,6 +166,40 @@ func (context diagnosticContext) String() string {
 		return "session/update nested update"
 	case diagnosticSessionUpdateHandler:
 		return "session/update handler"
+	case diagnosticAgentRequestFSWriteTextFile:
+		return "agent request fs/write_text_file"
+	case diagnosticAgentRequestTerminalCreate:
+		return "agent request terminal/create"
+	case diagnosticAgentRequestTerminalOutput:
+		return "agent request terminal/output"
+	case diagnosticAgentRequestTerminalWaitForExit:
+		return "agent request terminal/wait_for_exit"
+	case diagnosticAgentRequestTerminalKill:
+		return "agent request terminal/kill"
+	case diagnosticAgentRequestTerminalRelease:
+		return "agent request terminal/release"
+	case diagnosticAgentExtensionRequest:
+		return "agent extension request"
+	case diagnosticAgentRequestUnknownMethod:
+		return "agent request unknown method"
+	case diagnosticPermissionRequestEnvelope:
+		return "permission request envelope"
+	case diagnosticPermissionRequestToolCall:
+		return "permission request toolCall"
+	case diagnosticPermissionRequestLifecycle:
+		return "permission request lifecycle"
+	case diagnosticPermissionRequestCapacity:
+		return "permission request capacity"
+	case diagnosticPermissionRequestHandler:
+		return "permission request handler"
+	case diagnosticReadTextFileRequestEnvelope:
+		return "fs/read_text_file request envelope"
+	case diagnosticReadTextFileRequestLifecycle:
+		return "fs/read_text_file request lifecycle"
+	case diagnosticReadTextFileRequestCapacity:
+		return "fs/read_text_file request capacity"
+	case diagnosticReadTextFileRequestHandler:
+		return "fs/read_text_file request handler"
 	default:
 		return ""
 	}
@@ -330,5 +381,27 @@ func toolDiagnosticContext(name string) diagnosticContext {
 		return diagnosticToolAgent
 	default:
 		return diagnosticNone
+	}
+}
+
+func agentRequestMethodDiagnosticContext(method string) diagnosticContext {
+	switch method {
+	case "fs/write_text_file":
+		return diagnosticAgentRequestFSWriteTextFile
+	case "terminal/create":
+		return diagnosticAgentRequestTerminalCreate
+	case "terminal/output":
+		return diagnosticAgentRequestTerminalOutput
+	case "terminal/wait_for_exit":
+		return diagnosticAgentRequestTerminalWaitForExit
+	case "terminal/kill":
+		return diagnosticAgentRequestTerminalKill
+	case "terminal/release":
+		return diagnosticAgentRequestTerminalRelease
+	default:
+		if strings.HasPrefix(method, "_") {
+			return diagnosticAgentExtensionRequest
+		}
+		return diagnosticAgentRequestUnknownMethod
 	}
 }

@@ -582,13 +582,10 @@ func (connection *Connection) dispatchNotification(received message) error {
 
 func (connection *Connection) dispatchRequest(received message) error {
 	if received.method == "fs/read_text_file" {
-		if err := connection.dispatchReadTextFile(received); err != nil {
-			return withDiagnosticContext(err, diagnosticAgentRequest)
-		}
-		return nil
+		return connection.dispatchReadTextFile(received)
 	}
 	if received.method != "session/request_permission" {
-		return withDiagnosticContext(fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method)), diagnosticAgentRequest)
+		return withDiagnosticContext(fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method)), agentRequestMethodDiagnosticContext(received.method))
 	}
 	var params struct {
 		SessionID string          `json:"sessionId"`
@@ -597,13 +594,13 @@ func (connection *Connection) dispatchRequest(received message) error {
 		Meta      json.RawMessage `json:"_meta,omitempty"`
 	}
 	if err := decodeResult(received.params, &params); err != nil || !validAgentIdentity(params.SessionID) || len(params.ToolCall) == 0 || len(params.Options) == 0 {
-		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission", ErrProtocol), diagnosticAgentRequest)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission", ErrProtocol), diagnosticPermissionRequestEnvelope)
 	}
 	var toolCall struct {
 		ToolCallID string `json:"toolCallId"`
 	}
 	if json.Unmarshal(params.ToolCall, &toolCall) != nil || !validToolCallID(toolCall.ToolCallID) {
-		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol), diagnosticAgentRequest)
+		return withDiagnosticContext(fmt.Errorf("%w: malformed session/request_permission toolCall", ErrProtocol), diagnosticPermissionRequestToolCall)
 	}
 	connection.mu.Lock()
 	valid := connection.hasActivePromptLocked(params.SessionID) && connection.activePermission != nil
@@ -611,7 +608,7 @@ func (connection *Connection) dispatchRequest(received message) error {
 	if valid {
 		if len(connection.inboundCalls) >= maxOutstandingACPCalls {
 			connection.mu.Unlock()
-			return fmt.Errorf("%w: too many active inbound requests", ErrProtocol)
+			return withDiagnosticContext(fmt.Errorf("%w: too many active inbound requests", ErrProtocol), diagnosticPermissionRequestCapacity)
 		}
 		connection.inboundCalls[received.id.key] = &inboundCall{
 			id: received.id, method: "session/request_permission", sessionID: params.SessionID, toolCallID: toolCall.ToolCallID,
@@ -627,20 +624,20 @@ func (connection *Connection) dispatchRequest(received message) error {
 	}
 	connection.mu.Unlock()
 	if !valid {
-		return withDiagnosticContext(fmt.Errorf("%w: foreign or stale session/request_permission", ErrProtocol), diagnosticAgentRequest)
+		return withDiagnosticContext(fmt.Errorf("%w: foreign or stale session/request_permission", ErrProtocol), diagnosticPermissionRequestLifecycle)
 	}
 	if !accepting {
 		return connection.respond(received.id, cancelledPermissionResult())
 	}
 	if connection.handler.permission == nil {
-		return fmt.Errorf("%w: permission mediation unavailable", ErrIncompatible)
+		return withDiagnosticContext(fmt.Errorf("%w: permission mediation unavailable", ErrIncompatible), diagnosticPermissionRequestHandler)
 	}
 	go func() {
 		if err := connection.handler.permission(connection, received); err != nil {
 			if errors.Is(err, errPermissionAlreadyResolved) {
 				return
 			}
-			connection.fail(withDiagnosticContext(safeHandlerError("session/request_permission"), diagnosticAgentRequest))
+			connection.fail(withDiagnosticContext(safeHandlerError("session/request_permission"), diagnosticPermissionRequestHandler))
 		}
 	}()
 	return nil
