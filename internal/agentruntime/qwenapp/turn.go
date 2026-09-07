@@ -111,7 +111,14 @@ func (runner *turnRunner) run(prompt string) (json.RawMessage, error) {
 			return nil, err
 		}
 		if attempt+1 == agentruntime.DefaultRetryLimit {
-			return nil, fmt.Errorf("%w: %w after %d responses", ErrProtocol, ErrRepairExhausted, agentruntime.DefaultRetryLimit)
+			context := diagnosticStructuredResponseSyntax
+			if candidateErr.schema {
+				context = diagnosticStructuredResponseSchema
+			}
+			return nil, withDiagnosticContext(
+				fmt.Errorf("%w: %w after %d responses", ErrProtocol, ErrRepairExhausted, agentruntime.DefaultRetryLimit),
+				context,
+			)
 		}
 		nextPrompt = repairPrompt(runner.schema, safeCandidateDiagnostic(err))
 	}

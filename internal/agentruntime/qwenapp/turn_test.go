@@ -81,12 +81,51 @@ func TestTurnRunnerExhaustsAtThreeResponsesWithoutFourthPrompt(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := <-errOut; !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrRepairExhausted) {
-		t.Fatalf("exhaustion error = %v", err)
+	if err := <-errOut; !errors.Is(err, ErrProtocol) || !errors.Is(err, ErrRepairExhausted) || !strings.Contains(safeRuntimeError("run turn", err).Error(), "structured response syntax") {
+		t.Fatalf("exhaustion error = %v; safe diagnostic = %v", err, safeRuntimeError("run turn", err))
 	}
 	assertNoPrompt(t, raw, server)
 	if connection.Err() != nil {
 		t.Fatalf("format exhaustion corrupted connection: %v", connection.Err())
+	}
+}
+
+func TestTurnRunnerClassifiesUnmarkedProtocolFailureDuringPrompt(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	runner, connection, server, raw := establishTurnRunner(t, json.RawMessage(turnTestSchema), "role")
+	defer raw.Close()
+	errOut := make(chan error, 1)
+	go func() { _, err := runner.run("prompt"); errOut <- err }()
+	readSessionPrompt(t, server)
+
+	connection.fail(fmt.Errorf("%w: %s", ErrProtocol, secret))
+	err := <-errOut
+	diagnostic := safeRuntimeError("run turn", err).Error()
+	if !errors.Is(err, ErrProtocol) || !strings.Contains(diagnostic, "session/prompt lifecycle") {
+		t.Fatalf("protocol error = %v; safe diagnostic = %q", err, diagnostic)
+	}
+	if strings.Contains(diagnostic, secret) {
+		t.Fatalf("safe diagnostic leaked provider data: %q", diagnostic)
+	}
+}
+
+func TestTurnRunnerClassifiesSchemaRepairExhaustion(t *testing.T) {
+	runner, connection, server, raw := establishTurnRunner(t, json.RawMessage(turnTestSchema), "role")
+	defer raw.Close()
+	defer connection.Close()
+	errOut := make(chan error, 1)
+	go func() { _, err := runner.run("produce an answer"); errOut <- err }()
+	for range agentruntime.DefaultRetryLimit {
+		_, id := readSessionPromptMessage(t, server)
+		sendAssistantChunk(t, server, "s", "answer", `{"answer":7}`)
+		if err := server.sendResult(id, map[string]string{"stopReason": "end_turn"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := <-errOut
+	diagnostic := safeRuntimeError("run turn", err).Error()
+	if !errors.Is(err, ErrRepairExhausted) || !strings.Contains(diagnostic, "structured response schema") {
+		t.Fatalf("schema exhaustion = %v; safe diagnostic = %q", err, diagnostic)
 	}
 }
 

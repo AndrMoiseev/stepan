@@ -1009,6 +1009,8 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
 		diagnosticToolCallUpdate,
 		diagnosticAssistantContent,
 		diagnosticAgentRequest,
+		diagnosticStructuredResponseSyntax,
+		diagnosticStructuredResponseSchema,
 	}
 	for _, context := range contexts {
 		t.Run(context.String(), func(t *testing.T) {
@@ -1017,5 +1019,16 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
 				t.Fatalf("protocol diagnostic = %q", err)
 			}
 		})
+	}
+}
+
+func TestQwenSafeErrorAddsUnclassifiedProtocolFallback(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	err := safeRuntimeError("run turn", fmt.Errorf("%w: %s", ErrProtocol, secret))
+	if !errors.Is(err, agentruntime.ErrRuntimeProtocol) || !strings.Contains(err.Error(), "unclassified protocol") {
+		t.Fatalf("protocol fallback = %q", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("protocol fallback leaked provider data: %q", err)
 	}
 }

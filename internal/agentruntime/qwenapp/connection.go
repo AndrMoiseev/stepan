@@ -657,12 +657,15 @@ func (connection *Connection) fail(cause error) {
 		connection.mu.Unlock()
 		return
 	}
+	phase := connection.pendingDiagnosticContextLocked()
+	if errors.Is(cause, ErrProtocol) && errorDiagnosticContext(cause) == "" && phase != diagnosticNone {
+		cause = withDiagnosticContext(cause, phase)
+	}
 	if errors.Is(cause, ErrConnectionClosed) {
 		connection.err = ErrConnectionClosed
 	} else {
 		connection.err = connectionError{cause: cause}
 	}
-	phase := connection.pendingDiagnosticContextLocked()
 	connection.pending = nil
 	connection.inboundCalls = nil
 	connection.activePrompt = ""

@@ -47,6 +47,9 @@ const (
 	diagnosticToolCallUpdate
 	diagnosticAssistantContent
 	diagnosticAgentRequest
+	diagnosticStructuredResponseSyntax
+	diagnosticStructuredResponseSchema
+	diagnosticUnclassifiedProtocol
 )
 
 func (context diagnosticContext) String() string {
@@ -113,6 +116,12 @@ func (context diagnosticContext) String() string {
 		return "assistant content"
 	case diagnosticAgentRequest:
 		return "agent request"
+	case diagnosticStructuredResponseSyntax:
+		return "structured response syntax"
+	case diagnosticStructuredResponseSchema:
+		return "structured response schema"
+	case diagnosticUnclassifiedProtocol:
+		return "unclassified protocol"
 	default:
 		return ""
 	}

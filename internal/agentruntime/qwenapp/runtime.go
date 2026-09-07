@@ -438,6 +438,9 @@ func safeRuntimeError(action string, err error) error {
 	if context := errorRPCDiagnostic(err); context != "" {
 		contexts = append(contexts, context)
 	}
+	if len(contexts) == 0 && errors.Is(err, agentruntime.ErrRuntimeProtocol) {
+		contexts = append(contexts, diagnosticUnclassifiedProtocol.String())
+	}
 	if len(contexts) > 0 {
 		return fmt.Errorf("qwen %s (%s): %w", action, strings.Join(contexts, "; "), errors.Join(categories...))
 	}
