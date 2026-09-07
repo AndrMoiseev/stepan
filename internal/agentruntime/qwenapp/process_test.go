@@ -137,7 +137,6 @@ func TestLauncherPassesExactIsolatedContract(t *testing.T) {
 
 	metadata := readFakeMetadata(t, metadataPath)
 	wantArgs := []string{
-		"--safe-mode",
 		"--approval-mode", "default",
 		"--core-tools", "read_file,write_file,edit,glob,grep_search",
 		"--exclude-tools", "zoom_image,run_shell_command,todo_write,save_memory,agent,skill," +
@@ -168,7 +167,6 @@ func TestLauncherPassesExactIsolatedContract(t *testing.T) {
 		t.Fatal("authentication environment was not preserved")
 	}
 	for name, value := range map[string]string{
-		"QWEN_CODE_SAFE_MODE":               "true",
 		"QWEN_CODE_DISABLE_CRON":            "1",
 		"QWEN_CODE_ENABLE_AGENT_TEAM":       "0",
 		"QWEN_CODE_DISABLE_ARTIFACT":        "1",

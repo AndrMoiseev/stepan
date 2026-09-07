@@ -226,7 +226,6 @@ func (process *Process) preflight() (executable, workspace, artifact string, own
 
 func qwenArgs(contract, artifactRoot string) []string {
 	return []string{
-		"--safe-mode",
 		"--approval-mode", "default",
 		"--core-tools", allowedToolsCSV,
 		"--exclude-tools", excludedToolsCSV,
@@ -239,7 +238,6 @@ func qwenArgs(contract, artifactRoot string) []string {
 
 func isolatedEnv(base []string) []string {
 	overrides := map[string]string{
-		"QWEN_CODE_SAFE_MODE":               "true",
 		"QWEN_CODE_DISABLE_CRON":            "1",
 		"QWEN_CODE_ENABLE_AGENT_TEAM":       "0",
 		"QWEN_CODE_DISABLE_ARTIFACT":        "1",
