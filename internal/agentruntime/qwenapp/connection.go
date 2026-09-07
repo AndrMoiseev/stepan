@@ -556,7 +556,7 @@ func (connection *Connection) dispatchNotification(received message) error {
 		}
 		if connection.handler.sessionUpdate != nil {
 			if err := connection.handler.sessionUpdate(received); err != nil {
-				return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdatePayload)
+				return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdateHandler)
 			}
 		}
 		return nil
@@ -574,7 +574,7 @@ func (connection *Connection) dispatchNotification(received message) error {
 	}
 	if connection.handler.sessionUpdate != nil {
 		if err := connection.handler.sessionUpdate(received); err != nil {
-			return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdatePayload)
+			return withDiagnosticContext(safeHandlerError("session/update"), diagnosticSessionUpdateHandler)
 		}
 	}
 	return nil
@@ -774,25 +774,51 @@ func knownStopReason(reason string) bool {
 }
 
 func validateSessionUpdate(raw json.RawMessage) (string, error) {
-	var header struct {
-		Kind    string `json:"sessionUpdate"`
-		Content *struct {
-			Type string `json:"type"`
-		} `json:"content,omitempty"`
+	data := bytes.TrimSpace(raw)
+	var object map[string]json.RawMessage
+	if len(data) == 0 || data[0] != '{' || json.Unmarshal(data, &object) != nil || object == nil {
+		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update payload", ErrProtocol), diagnosticSessionUpdatePayloadShape)
 	}
-	if json.Unmarshal(raw, &header) != nil || header.Kind == "" {
-		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update payload", ErrProtocol), diagnosticSessionUpdatePayload)
+	discriminator, present := object["sessionUpdate"]
+	if !present {
+		context := diagnosticSessionUpdateDiscriminatorMissing
+		_, hasType := object["type"]
+		_, hasData := object["data"]
+		_, hasSnakeCase := object["session_update"]
+		_, hasNestedUpdate := object["update"]
+		switch {
+		case hasType && hasData:
+			context = diagnosticSessionUpdateEventEnvelope
+		case hasSnakeCase:
+			context = diagnosticSessionUpdateSnakeCaseDiscriminator
+		case hasType:
+			context = diagnosticSessionUpdateTypeDiscriminator
+		case hasNestedUpdate:
+			context = diagnosticSessionUpdateNestedUpdate
+		}
+		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update discriminator", ErrProtocol), context)
 	}
-	switch header.Kind {
+	var kind string
+	if json.Unmarshal(discriminator, &kind) != nil {
+		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update discriminator", ErrProtocol), diagnosticSessionUpdateDiscriminatorType)
+	}
+	if kind == "" {
+		return "", withDiagnosticContext(fmt.Errorf("%w: malformed session/update discriminator", ErrProtocol), diagnosticSessionUpdateDiscriminatorEmpty)
+	}
+	switch kind {
 	case "user_message_chunk", "agent_message_chunk", "agent_thought_chunk":
-		if header.Content == nil || !knownContentType(header.Content.Type) {
+		var content struct {
+			Type string `json:"type"`
+		}
+		contentRaw, present := object["content"]
+		if !present || json.Unmarshal(contentRaw, &content) != nil || !knownContentType(content.Type) {
 			return "", withDiagnosticContext(fmt.Errorf("%w: unknown session/update content", ErrProtocol), diagnosticSessionUpdateContent)
 		}
 	case "tool_call", "tool_call_update", "plan", "available_commands_update", "current_mode_update", "config_option_update", "session_info_update", "usage_update":
 	default:
 		return "", withDiagnosticContext(fmt.Errorf("%w: unknown session/update kind", ErrProtocol), diagnosticSessionUpdateKind)
 	}
-	return header.Kind, nil
+	return kind, nil
 }
 
 func informationalSessionUpdate(kind string) bool {

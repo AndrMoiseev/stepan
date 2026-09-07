@@ -835,8 +835,46 @@ func TestSessionUpdateHandlerErrorIsSanitized(t *testing.T) {
 	if !errors.Is(got, ErrProtocol) || !strings.Contains(got.Error(), "session/update handler failed") || strings.Contains(got.Error(), secret) {
 		t.Fatalf("unsafe handler error = %v", got)
 	}
+	if diagnostic := safeRuntimeError("connection", got).Error(); !strings.Contains(diagnostic, "session/update handler") {
+		t.Fatalf("handler diagnostic = %q", diagnostic)
+	}
 	if owner.closeCount.Load() != 1 {
 		t.Fatalf("owner close count = %d", owner.closeCount.Load())
+	}
+}
+
+func TestConnectionClassifiesMalformedSessionUpdatePayloadShape(t *testing.T) {
+	tests := []struct {
+		name   string
+		update any
+		want   string
+	}{
+		{name: "non-object", update: []any{}, want: "session/update payload shape"},
+		{name: "missing discriminator", update: map[string]any{"content": map[string]any{"type": "text"}}, want: "session/update discriminator missing"},
+		{name: "non-string discriminator", update: map[string]any{"sessionUpdate": map[string]any{}}, want: "session/update discriminator type"},
+		{name: "empty discriminator", update: map[string]any{"sessionUpdate": ""}, want: "session/update discriminator empty"},
+		{name: "event envelope", update: map[string]any{"type": "session_update", "data": map[string]any{}}, want: "session/update event envelope"},
+		{name: "snake-case discriminator", update: map[string]any{"session_update": "agent_message_chunk"}, want: "session/update snake_case discriminator"},
+		{name: "type discriminator", update: map[string]any{"type": "agent_message_chunk"}, want: "session/update type discriminator"},
+		{name: "nested update", update: map[string]any{"update": map[string]any{}}, want: "session/update nested update"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			callErr := startPrompt(t, connection, server)
+			if err := server.sendNotification("session/update", map[string]any{"sessionId": "s", "update": test.update}); err != nil {
+				t.Fatal(err)
+			}
+			<-callErr
+			diagnostic := safeRuntimeError("connection", connection.Err()).Error()
+			if !strings.Contains(diagnostic, test.want) {
+				t.Fatalf("payload diagnostic = %q, want %q", diagnostic, test.want)
+			}
+		})
 	}
 }
 

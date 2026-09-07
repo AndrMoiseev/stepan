@@ -50,6 +50,15 @@ const (
 	diagnosticStructuredResponseSyntax
 	diagnosticStructuredResponseSchema
 	diagnosticUnclassifiedProtocol
+	diagnosticSessionUpdatePayloadShape
+	diagnosticSessionUpdateDiscriminatorMissing
+	diagnosticSessionUpdateDiscriminatorType
+	diagnosticSessionUpdateDiscriminatorEmpty
+	diagnosticSessionUpdateEventEnvelope
+	diagnosticSessionUpdateSnakeCaseDiscriminator
+	diagnosticSessionUpdateTypeDiscriminator
+	diagnosticSessionUpdateNestedUpdate
+	diagnosticSessionUpdateHandler
 )
 
 func (context diagnosticContext) String() string {
@@ -122,6 +131,24 @@ func (context diagnosticContext) String() string {
 		return "structured response schema"
 	case diagnosticUnclassifiedProtocol:
 		return "unclassified protocol"
+	case diagnosticSessionUpdatePayloadShape:
+		return "session/update payload shape"
+	case diagnosticSessionUpdateDiscriminatorMissing:
+		return "session/update discriminator missing"
+	case diagnosticSessionUpdateDiscriminatorType:
+		return "session/update discriminator type"
+	case diagnosticSessionUpdateDiscriminatorEmpty:
+		return "session/update discriminator empty"
+	case diagnosticSessionUpdateEventEnvelope:
+		return "session/update event envelope"
+	case diagnosticSessionUpdateSnakeCaseDiscriminator:
+		return "session/update snake_case discriminator"
+	case diagnosticSessionUpdateTypeDiscriminator:
+		return "session/update type discriminator"
+	case diagnosticSessionUpdateNestedUpdate:
+		return "session/update nested update"
+	case diagnosticSessionUpdateHandler:
+		return "session/update handler"
 	default:
 		return ""
 	}

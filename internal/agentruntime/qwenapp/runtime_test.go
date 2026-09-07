@@ -1011,6 +1011,15 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
 		diagnosticAgentRequest,
 		diagnosticStructuredResponseSyntax,
 		diagnosticStructuredResponseSchema,
+		diagnosticSessionUpdatePayloadShape,
+		diagnosticSessionUpdateDiscriminatorMissing,
+		diagnosticSessionUpdateDiscriminatorType,
+		diagnosticSessionUpdateDiscriminatorEmpty,
+		diagnosticSessionUpdateEventEnvelope,
+		diagnosticSessionUpdateSnakeCaseDiscriminator,
+		diagnosticSessionUpdateTypeDiscriminator,
+		diagnosticSessionUpdateNestedUpdate,
+		diagnosticSessionUpdateHandler,
 	}
 	for _, context := range contexts {
 		t.Run(context.String(), func(t *testing.T) {
