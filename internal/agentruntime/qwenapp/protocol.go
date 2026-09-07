@@ -10,7 +10,11 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
-const acpProtocolVersion = 1
+const (
+	acpProtocolVersion  = 1
+	methodNotFoundCode  = int64(-32601)
+	methodNotFoundError = "Method not found"
+)
 
 var (
 	// ErrProtocol classifies an ambiguous or corrupt ACP stream. It deliberately

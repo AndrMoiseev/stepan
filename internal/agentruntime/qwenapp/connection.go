@@ -31,8 +31,8 @@ type pendingCall struct {
 	terminal  bool
 }
 
-// inboundCall tracks responses to agent-initiated permission and delegated
-// filesystem requests. These calls share one serialized response registry.
+// inboundCall tracks responses to agent-initiated requests. Supported client
+// methods and method-not-found rejections share one serialized registry.
 type inboundCall struct {
 	id         requestID
 	method     string
@@ -585,7 +585,7 @@ func (connection *Connection) dispatchRequest(received message) error {
 		return connection.dispatchReadTextFile(received)
 	}
 	if received.method != "session/request_permission" {
-		return withDiagnosticContext(fmt.Errorf("%w: unexpected request %s", ErrProtocol, safeMethod(received.method)), agentRequestMethodDiagnosticContext(received.method))
+		return connection.rejectUnsupportedRequest(received)
 	}
 	var params struct {
 		SessionID string          `json:"sessionId"`
@@ -641,6 +641,24 @@ func (connection *Connection) dispatchRequest(received message) error {
 		}
 	}()
 	return nil
+}
+
+func (connection *Connection) rejectUnsupportedRequest(received message) error {
+	connection.mu.Lock()
+	if connection.err != nil {
+		err := connection.err
+		connection.mu.Unlock()
+		return err
+	}
+	if len(connection.inboundCalls) >= maxOutstandingACPCalls {
+		connection.mu.Unlock()
+		return withDiagnosticContext(fmt.Errorf("%w: too many active inbound requests", ErrProtocol), diagnosticAgentRequest)
+	}
+	connection.inboundCalls[received.id.key] = &inboundCall{
+		id: received.id, method: received.method, turnID: connection.activePrompt, done: make(chan struct{}),
+	}
+	connection.mu.Unlock()
+	return connection.respondError(received.id, methodNotFoundCode, methodNotFoundError)
 }
 
 func (connection *Connection) hasActivePromptLocked(sessionID string) bool {

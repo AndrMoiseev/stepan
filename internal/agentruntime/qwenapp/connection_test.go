@@ -886,10 +886,6 @@ func TestConnectionClassifiesAgentRequestFailure(t *testing.T) {
 		params any
 		want   string
 	}{
-		{name: "write file method", method: "fs/write_text_file", params: map[string]any{}, want: "agent request fs/write_text_file"},
-		{name: "terminal method", method: "terminal/create", params: map[string]any{}, want: "agent request terminal/create"},
-		{name: "extension method", method: "_nessy/tool", params: map[string]any{}, want: "agent extension request"},
-		{name: "unknown method", method: "workspace/read", params: map[string]any{}, want: "agent request unknown method"},
 		{name: "permission envelope", method: "session/request_permission", params: map[string]any{}, want: "permission request envelope"},
 		{name: "permission tool call", method: "session/request_permission", params: map[string]any{"sessionId": "s", "toolCall": map[string]any{}, "options": []any{}}, want: "permission request toolCall"},
 		{name: "permission lifecycle", method: "session/request_permission", params: map[string]any{"sessionId": "foreign", "toolCall": map[string]any{"toolCallId": "tool"}, "options": []any{}}, want: "permission request lifecycle"},
@@ -916,6 +912,38 @@ func TestConnectionClassifiesAgentRequestFailure(t *testing.T) {
 				t.Fatalf("agent request diagnostic leaked provider data: %q", diagnostic)
 			}
 		})
+	}
+}
+
+func TestConnectionRejectsUnsupportedAgentRequestWithoutClosing(t *testing.T) {
+	const secret = "credential-body-do-not-echo"
+	connection, owner, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, connectionHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	promptErr := startPrompt(t, connection, server)
+	if err := server.sendRequest(stringID("unsupported-request"), "workspace/read", map[string]any{"content": secret}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := server.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.kind != responseMessage || response.id.key != stringID("unsupported-request").key || response.err == nil {
+		t.Fatalf("unsupported request response = %+v", response)
+	}
+	if response.err.Code != -32601 || response.err.Message != "Method not found" || strings.Contains(response.err.Message, secret) {
+		t.Fatalf("unsupported request error = %+v", response.err)
+	}
+	if err := server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-promptErr; err != nil {
+		t.Fatalf("prompt failed after unsupported request: %v", err)
+	}
+	if connection.Err() != nil || owner.closeCount.Load() != 0 {
+		t.Fatalf("connection = %v, closes = %d", connection.Err(), owner.closeCount.Load())
 	}
 }
 
