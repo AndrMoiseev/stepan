@@ -67,6 +67,16 @@ const (
 	diagnosticReadTextFileRequestLifecycle
 	diagnosticReadTextFileRequestCapacity
 	diagnosticReadTextFileRequestHandler
+	diagnosticPermissionDeniedRequest
+	diagnosticPermissionDeniedOptions
+	diagnosticPermissionDeniedCorrelation
+	diagnosticPermissionDeniedReadOnly
+	diagnosticPermissionDeniedPath
+	diagnosticPermissionDeniedTarget
+	diagnosticPermissionDeniedTool
+	diagnosticPermissionDeniedState
+	diagnosticPermissionDeniedLocation
+	diagnosticPermissionDeniedAnnouncement
 )
 
 func (context diagnosticContext) String() string {
@@ -173,6 +183,26 @@ func (context diagnosticContext) String() string {
 		return "fs/read_text_file request capacity"
 	case diagnosticReadTextFileRequestHandler:
 		return "fs/read_text_file request handler"
+	case diagnosticPermissionDeniedRequest:
+		return "permission request payload"
+	case diagnosticPermissionDeniedOptions:
+		return "permission options"
+	case diagnosticPermissionDeniedCorrelation:
+		return "permission correlation"
+	case diagnosticPermissionDeniedReadOnly:
+		return "permission read-only"
+	case diagnosticPermissionDeniedPath:
+		return "permission path"
+	case diagnosticPermissionDeniedTarget:
+		return "permission target"
+	case diagnosticPermissionDeniedTool:
+		return "permission tool"
+	case diagnosticPermissionDeniedState:
+		return "permission state"
+	case diagnosticPermissionDeniedLocation:
+		return "permission location"
+	case diagnosticPermissionDeniedAnnouncement:
+		return "permission announcement"
 	default:
 		return ""
 	}

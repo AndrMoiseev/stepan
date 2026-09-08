@@ -1028,6 +1028,16 @@ func TestQwenSafeErrorRetainsOnlyAllowlistedProtocolContext(t *testing.T) {
 		diagnosticReadTextFileRequestLifecycle,
 		diagnosticReadTextFileRequestCapacity,
 		diagnosticReadTextFileRequestHandler,
+		diagnosticPermissionDeniedRequest,
+		diagnosticPermissionDeniedOptions,
+		diagnosticPermissionDeniedCorrelation,
+		diagnosticPermissionDeniedReadOnly,
+		diagnosticPermissionDeniedPath,
+		diagnosticPermissionDeniedTarget,
+		diagnosticPermissionDeniedTool,
+		diagnosticPermissionDeniedState,
+		diagnosticPermissionDeniedLocation,
+		diagnosticPermissionDeniedAnnouncement,
 	}
 	for _, context := range contexts {
 		t.Run(context.String(), func(t *testing.T) {

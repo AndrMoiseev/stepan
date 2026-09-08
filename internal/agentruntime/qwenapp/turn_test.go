@@ -145,7 +145,8 @@ func TestTurnRunnerClonesBootstrapSchemaAndSessionContext(t *testing.T) {
 	first, firstID := readSessionPromptMessage(t, server)
 	firstText := first.Prompt[0].Text
 	encodedWorkspace, _ := json.Marshal(runner.context.Workspace)
-	for _, expected := range []string{role, string(originalSchema), string(encodedWorkspace), "first user request", "readableRoots", "writableRoots"} {
+	for _, expected := range []string{role, string(originalSchema), string(encodedWorkspace), "first user request", "readableRoots", "writableRoots",
+		"For write_file and edit, use an absolute target inside artifactRoot"} {
 		if !strings.Contains(firstText, expected) {
 			t.Fatalf("first prompt lacks %q:\n%s", expected, firstText)
 		}
@@ -227,6 +228,11 @@ func TestTurnRunnerDoesNotRepairNonFormatFailures(t *testing.T) {
 			test.run(t, server, raw, id)
 			if err := <-errOut; !errors.Is(err, test.want) {
 				t.Fatalf("turn error = %v, want %v", err, test.want)
+			} else if test.name == "permission denial" {
+				diagnostic := safeRuntimeError("run turn", err).Error()
+				if !strings.Contains(diagnostic, "permission target") {
+					t.Fatalf("permission diagnostic = %q", diagnostic)
+				}
 			}
 			if test.name != "transport corruption" {
 				assertNoPrompt(t, raw, server)

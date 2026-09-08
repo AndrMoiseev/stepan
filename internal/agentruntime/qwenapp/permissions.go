@@ -67,6 +67,7 @@ type announcedTool struct {
 	name   string
 	target string
 	valid  bool
+	denial diagnosticContext
 }
 
 type permissionTurn struct {
@@ -172,12 +173,25 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 
 	path, pathErr := toolPathFromInput(call.RawInput)
 	target, targetErr := canonicalTargetWithin(context.workspaceRoot, context.writableRoot, path)
-	valid := call.Kind == "edit" && (call.Status == "pending" || call.Status == "") && pathErr == nil && targetErr == nil
+	denial := diagnosticNone
+	switch {
+	case context.writableRoot == "":
+		denial = diagnosticPermissionDeniedReadOnly
+	case pathErr != nil:
+		denial = diagnosticPermissionDeniedPath
+	case targetErr != nil:
+		denial = diagnosticPermissionDeniedTarget
+	case call.Kind != "edit" || call.Status != "pending" && call.Status != "":
+		denial = diagnosticPermissionDeniedState
+	}
+	valid := denial == diagnosticNone
 	if valid && len(call.Locations) > 0 {
 		if len(call.Locations) != 1 {
 			valid = false
+			denial = diagnosticPermissionDeniedLocation
 		} else if location, err := canonicalTarget(context.workspaceRoot, call.Locations[0].Path); err != nil || location != target {
 			valid = false
+			denial = diagnosticPermissionDeniedLocation
 		}
 	}
 
@@ -189,7 +203,7 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 	if _, duplicate := turn.tools[call.ToolCallID]; duplicate {
 		return fmt.Errorf("%w: duplicate tool_call ID", ErrProtocol)
 	}
-	turn.tools[call.ToolCallID] = announcedTool{name: name, target: target, valid: valid}
+	turn.tools[call.ToolCallID] = announcedTool{name: name, target: target, valid: valid, denial: denial}
 	return nil
 }
 
@@ -290,16 +304,26 @@ func allowOnceOption(options []permissionOption) (string, error) {
 
 func (connection *Connection) mediatePermission(received message) error {
 	request, decodeErr := decodePermissionRequest(received.params)
+	denial := diagnosticNone
+	if decodeErr != nil {
+		denial = diagnosticPermissionDeniedRequest
+	}
 	allowOption := ""
 	grantErr := decodeErr
 	if grantErr == nil {
 		allowOption, grantErr = allowOnceOption(request.Options)
+		if grantErr != nil {
+			denial = diagnosticPermissionDeniedOptions
+		}
 	}
 
 	connection.mu.Lock()
 	pending := connection.inboundCalls[received.id.key]
 	turn := connection.activePermission
 	announced, requestErr := claimPermissionCorrelation(pending, turn, request, decodeErr)
+	if requestErr != nil && denial == diagnosticNone {
+		denial = diagnosticPermissionDeniedCorrelation
+	}
 	if requestErr == nil && grantErr != nil {
 		requestErr = grantErr
 	}
@@ -316,22 +340,39 @@ func (connection *Connection) mediatePermission(received message) error {
 		name := toolNameFromMeta(request.ToolCall.Meta)
 		path, err := toolPathFromInput(request.ToolCall.RawInput)
 		target, targetErr := canonicalTargetWithin(context.workspaceRoot, context.writableRoot, path)
-		if err != nil || targetErr != nil || !announced.valid || name != announced.name ||
-			(name != "write_file" && name != "edit") || request.ToolCall.Kind != "edit" ||
-			(request.ToolCall.Status != "pending" && request.ToolCall.Status != "") || target != announced.target {
+		switch {
+		case name != "write_file" && name != "edit", name != announced.name:
+			denial = diagnosticPermissionDeniedTool
+		case context.writableRoot == "":
+			denial = diagnosticPermissionDeniedReadOnly
+		case err != nil:
+			denial = diagnosticPermissionDeniedPath
+		case targetErr != nil, target != announced.target:
+			denial = diagnosticPermissionDeniedTarget
+		case !announced.valid:
+			denial = announced.denial
+			if denial == diagnosticNone {
+				denial = diagnosticPermissionDeniedAnnouncement
+			}
+		case request.ToolCall.Kind != "edit" || request.ToolCall.Status != "pending" && request.ToolCall.Status != "":
+			denial = diagnosticPermissionDeniedState
+		}
+		if denial != diagnosticNone {
 			requestErr = ErrPermissionDenied
 		}
 		if requestErr == nil && len(request.ToolCall.Locations) > 0 {
 			if len(request.ToolCall.Locations) != 1 {
 				requestErr = ErrPermissionDenied
+				denial = diagnosticPermissionDeniedLocation
 			} else if location, locationErr := canonicalTarget(context.workspaceRoot, request.ToolCall.Locations[0].Path); locationErr != nil || location != target {
 				requestErr = ErrPermissionDenied
+				denial = diagnosticPermissionDeniedLocation
 			}
 		}
 	}
 
 	if requestErr != nil {
-		connection.recordPermissionDenial(turn)
+		connection.recordPermissionDenial(turn, denial)
 		connection.mu.Lock()
 		connection.audit.permissionDenials++
 		connection.mu.Unlock()
@@ -457,7 +498,7 @@ func (connection *Connection) readTextFile(id requestID, request readTextFileReq
 
 	target, err := canonicalReadableTarget(context, request.Path)
 	if err != nil {
-		connection.recordPermissionDenial(turn)
+		connection.recordPermissionDenial(turn, diagnosticPermissionDeniedTarget)
 		_ = connection.respondError(id, invalidParamsCode, "filesystem read denied")
 		return
 	}
@@ -567,11 +608,11 @@ func (connection *Connection) respondError(id requestID, code int64, text string
 	return nil
 }
 
-func (connection *Connection) recordPermissionDenial(turn *permissionTurn) {
+func (connection *Connection) recordPermissionDenial(turn *permissionTurn, context diagnosticContext) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
 	if connection.activePermission == turn && turn != nil && turn.accepting && turn.cause == nil {
-		turn.cause = ErrPermissionDenied
+		turn.cause = withDiagnosticContext(ErrPermissionDenied, context)
 	}
 }
 

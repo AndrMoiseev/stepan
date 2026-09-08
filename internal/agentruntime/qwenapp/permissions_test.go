@@ -181,6 +181,29 @@ func TestPermissionMediationAllowsDistinctWritesAndRejectsInvalidGrants(t *testi
 	}
 }
 
+func TestPermissionDenialReportsSafePathShape(t *testing.T) {
+	workspace := t.TempDir()
+	artifact := t.TempDir()
+	target := filepath.Join(artifact, "intent.md")
+	connection, server, raw := establishPolicyConnection(t, workspace, artifact, connectionHandler{})
+	defer raw.Close()
+	defer connection.Close()
+	promptErr := startPrompt(t, connection, server)
+	input := map[string]any{"filePath": target}
+	announceTool(t, server, "tool-write", "write_file", input, target)
+	if outcome := requestPermission(t, server, "permission-write", "tool-write", "write_file", input, target, standardPermissionOptions()); outcome != "cancelled" {
+		t.Fatalf("permission outcome = %q", outcome)
+	}
+	err := finishPromptResult(t, server, promptErr, "end_turn")
+	diagnostic := safeRuntimeError("run turn", err).Error()
+	if !errors.Is(err, ErrPermissionDenied) || !strings.Contains(diagnostic, "permission path") {
+		t.Fatalf("permission diagnostic = %q", diagnostic)
+	}
+	if strings.Contains(diagnostic, target) {
+		t.Fatalf("permission diagnostic leaked target: %q", diagnostic)
+	}
+}
+
 func TestReadOnlyTurnAndForeignOrStalePermissionFailClosed(t *testing.T) {
 	workspace := t.TempDir()
 	target := filepath.Join(t.TempDir(), "artifact", "file.md")

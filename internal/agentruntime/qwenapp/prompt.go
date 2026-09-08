@@ -44,7 +44,7 @@ func newSessionPromptContext(policy filePolicy) sessionPromptContext {
 
 func firstPrompt(role string, schema json.RawMessage, context sessionPromptContext, input string) string {
 	contextJSON, _ := json.Marshal(context)
-	return fmt.Sprintf("Stepan role instructions:\n%s\n\nStepan immutable session context:\n%s\n\nStepan output schema (exact JSON Schema):\n%s\n\nUser request:\n%s",
+	return fmt.Sprintf("Stepan role instructions:\n%s\n\nStepan immutable session context:\n%s\n\nStepan filesystem tool contract:\nFor write_file and edit, use an absolute target inside artifactRoot. Never resolve an artifact filename relative to workspace.\n\nStepan output schema (exact JSON Schema):\n%s\n\nUser request:\n%s",
 		role, contextJSON, schema, input)
 }
 
