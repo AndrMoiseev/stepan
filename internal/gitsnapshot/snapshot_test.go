@@ -132,16 +132,16 @@ func TestCompareAndCheckBoundary(t *testing.T) {
 	write(t, filepath.Join(repo, "outside-before.txt"), "dirty before baseline\n")
 	before := mustCapture(t, repo)
 
-	write(t, filepath.Join(repo, "docs", "specs", "idea", "specification.md"), "inside\n")
+	write(t, filepath.Join(repo, "docs", "changes", "features", "feature", "specification.md"), "inside\n")
 	after := mustCapture(t, repo)
 	paths, err := Compare(context.Background(), repo, before, after)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"docs/specs/idea/specification.md"}; !reflect.DeepEqual(paths, want) {
+	if want := []string{"docs/changes/features/feature/specification.md"}; !reflect.DeepEqual(paths, want) {
 		t.Fatalf("changed paths = %q, want %q", paths, want)
 	}
-	if err := CheckBoundary(paths, "docs/specs/idea"); err != nil {
+	if err := CheckBoundary(paths, "docs/changes/features/feature"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -149,7 +149,7 @@ func TestCompareAndCheckBoundary(t *testing.T) {
 func TestCompareReportsAllOutsideChanges(t *testing.T) {
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
-	write(t, filepath.Join(repo, "docs", "specs", "idea", "specification.md"), "inside\n")
+	write(t, filepath.Join(repo, "docs", "changes", "features", "feature", "specification.md"), "inside\n")
 	write(t, filepath.Join(repo, "outside.txt"), "outside\n")
 	remove(t, filepath.Join(repo, "tracked.txt"))
 	if err := os.Rename(filepath.Join(repo, "rename.txt"), filepath.Join(repo, "renamed.txt")); err != nil {
@@ -161,11 +161,11 @@ func TestCompareReportsAllOutsideChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"docs/specs/idea/specification.md", "outside.txt", "rename.txt", "renamed.txt", "tracked.txt"}
+	want := []string{"docs/changes/features/feature/specification.md", "outside.txt", "rename.txt", "renamed.txt", "tracked.txt"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("changed paths = %q, want %q", paths, want)
 	}
-	err = CheckBoundary(paths, "docs/specs/idea")
+	err = CheckBoundary(paths, "docs/changes/features/feature")
 	var boundaryErr *BoundaryError
 	if !errors.As(err, &boundaryErr) || !errors.Is(err, ErrOutsideBoundary) {
 		t.Fatalf("error = %v", err)
@@ -189,11 +189,11 @@ func TestCompareRejectsChangedHead(t *testing.T) {
 
 func TestCheckBoundaryRejectsUnsafePaths(t *testing.T) {
 	for _, path := range []string{"", ".", "../outside", filepath.Join(string(filepath.Separator), "outside")} {
-		if err := CheckBoundary([]string{path}, "docs/specs/idea"); err == nil {
+		if err := CheckBoundary([]string{path}, "docs/changes/features/feature"); err == nil {
 			t.Fatalf("path %q accepted", path)
 		}
 	}
-	if err := CheckBoundary([]string{"docs/specs/idea-file"}, "docs/specs/idea"); !errors.Is(err, ErrOutsideBoundary) {
+	if err := CheckBoundary([]string{"docs/changes/features/feature-file"}, "docs/changes/features/feature"); !errors.Is(err, ErrOutsideBoundary) {
 		t.Fatalf("sibling-prefix error = %v", err)
 	}
 }

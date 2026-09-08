@@ -11,12 +11,40 @@ import (
 	"strings"
 )
 
-var specIDPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+var specIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
-type SpecTarget struct {
-	Directory   string
-	Entrypoint  string
-	DisplayPath string
+const featuresDirectoryPath = "docs/changes/features"
+
+func displayFeaturesDirectory() string { return featuresDirectoryPath }
+
+// PrepareFeaturesDirectory returns the common write root for the first agent
+// turn. It is created up front because some agent runtimes require a writable
+// root to already exist before a turn begins.
+func PrepareFeaturesDirectory(root string) (string, error) {
+	root, err := canonicalExisting(root)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize Git root: %w", err)
+	}
+	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath))
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		return "", fmt.Errorf("create feature directory %q: %w", directory, err)
+	}
+	if err := CheckContainment(root, directory); err != nil {
+		return "", err
+	}
+	return directory, nil
+}
+
+func featureEntries(directory string) (map[string]struct{}, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		result[entry.Name()] = struct{}{}
+	}
+	return result, nil
 }
 
 func FindGitRoot(ctx context.Context, start string) (string, error) {
@@ -31,46 +59,145 @@ func FindGitRoot(ctx context.Context, start string) (string, error) {
 	return canonicalExisting(root)
 }
 
-func ValidateSpecID(specID string) error {
-	if specID == "" {
-		return fmt.Errorf("spec-id must not be empty")
+func ValidateFeatureID(featureID string) error {
+	if featureID == "" {
+		return fmt.Errorf("feature ID must not be empty")
 	}
-	if len(specID) > 64 {
-		return fmt.Errorf("spec-id must not exceed 64 characters")
+	if len(featureID) > 64 {
+		return fmt.Errorf("feature ID must not exceed 64 characters")
 	}
-	upper := strings.ToUpper(specID)
+	upper := strings.ToUpper(featureID)
 	if upper == "CON" || upper == "PRN" || upper == "AUX" || upper == "NUL" ||
 		len(upper) == 4 && (strings.HasPrefix(upper, "COM") || strings.HasPrefix(upper, "LPT")) && upper[3] >= '1' && upper[3] <= '9' {
-		return fmt.Errorf("spec-id %q is a reserved Windows device name", specID)
+		return fmt.Errorf("feature ID %q is a reserved Windows device name", featureID)
 	}
-	if !specIDPattern.MatchString(specID) {
-		return fmt.Errorf("spec-id must match [a-z0-9-]+")
+	if !specIDPattern.MatchString(featureID) {
+		return fmt.Errorf("feature ID must start and end with [a-z0-9] and otherwise match [a-z0-9-]+")
 	}
 	return nil
 }
 
-func PrepareSpecTarget(root, specID string) (SpecTarget, error) {
-	if err := ValidateSpecID(specID); err != nil {
-		return SpecTarget{}, err
+// FeatureTarget names every durable artifact in one planning flow.
+type FeatureTarget struct {
+	ID               string
+	Directory        string
+	IntentPath       string
+	SpecPath         string
+	PlanPath         string
+	JournalPath      string
+	StatePath        string
+	ReviewsDirectory string
+}
+
+func (t FeatureTarget) DocumentPath(stage Stage) (string, error) {
+	switch stage {
+	case StageIntent:
+		return t.IntentPath, nil
+	case StageSpec:
+		return t.SpecPath, nil
+	case StagePlan:
+		return t.PlanPath, nil
+	default:
+		return "", domainError("stage", stage)
+	}
+}
+
+func (t FeatureTarget) DisplayDocumentPath(stage Stage) (string, error) {
+	if !stage.Valid() {
+		return "", domainError("stage", stage)
+	}
+	return path.Join(featuresDirectoryPath, t.ID, string(stage)+".md"), nil
+}
+
+func (t FeatureTarget) ArtifactFilename(stage Stage, review bool) (string, error) {
+	if review {
+		if stage != StageSpec && stage != StagePlan {
+			return "", fmt.Errorf("%w: %s has no review artifact", ErrInvalidDomainValue, stage)
+		}
+		return "review.md", nil
+	}
+	if !stage.Valid() {
+		return "", domainError("stage", stage)
+	}
+	return string(stage) + ".md", nil
+}
+
+func PrepareFeatureTarget(root, date, featureID string) (FeatureTarget, error) {
+	if err := ValidateFeatureID(featureID); err != nil {
+		return FeatureTarget{}, err
 	}
 	root, err := canonicalExisting(root)
 	if err != nil {
-		return SpecTarget{}, fmt.Errorf("canonicalize Git root: %w", err)
+		return FeatureTarget{}, err
 	}
-	directory := filepath.Join(root, "docs", "specs", specID)
-	if _, err := os.Lstat(directory); err == nil {
-		return SpecTarget{}, fmt.Errorf("specification directory %q already exists", directory)
-	} else if !os.IsNotExist(err) {
-		return SpecTarget{}, fmt.Errorf("check specification directory %q: %w", directory, err)
+	base := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath))
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return FeatureTarget{}, err
 	}
+	for suffix := 1; ; suffix++ {
+		id := date + "-" + featureID
+		if suffix > 1 {
+			id += fmt.Sprintf("-%d", suffix)
+		}
+		directory := filepath.Join(base, id)
+		if _, err := os.Lstat(directory); os.IsNotExist(err) {
+			if err := CheckContainment(root, directory); err != nil {
+				return FeatureTarget{}, err
+			}
+			return featureTarget(root, id)
+		} else if err != nil {
+			return FeatureTarget{}, err
+		}
+	}
+}
+
+func FeatureTargetForID(root, featureID string) (FeatureTarget, error) {
+	if err := ValidateFeatureID(featureID); err != nil {
+		return FeatureTarget{}, err
+	}
+	root, err := canonicalExisting(root)
+	if err != nil {
+		return FeatureTarget{}, err
+	}
+	return featureTarget(root, featureID)
+}
+
+func featureTarget(root, id string) (FeatureTarget, error) {
+	directory := filepath.Join(root, filepath.FromSlash(featuresDirectoryPath), id)
 	if err := CheckContainment(root, directory); err != nil {
-		return SpecTarget{}, err
+		return FeatureTarget{}, err
 	}
-	return SpecTarget{
-		Directory:   directory,
-		Entrypoint:  filepath.Join(directory, "specification.md"),
-		DisplayPath: path.Join("docs", "specs", specID, "specification.md"),
+	return FeatureTarget{
+		ID:               id,
+		Directory:        directory,
+		IntentPath:       filepath.Join(directory, "intent.md"),
+		SpecPath:         filepath.Join(directory, "spec.md"),
+		PlanPath:         filepath.Join(directory, "plan.md"),
+		JournalPath:      filepath.Join(directory, "mem-log.md"),
+		StatePath:        filepath.Join(directory, "state.json"),
+		ReviewsDirectory: filepath.Join(directory, "reviews"),
 	}, nil
+}
+
+func CreateArtifactRoot(workspace string) (string, error) {
+	workspace, err := canonicalExisting(workspace)
+	if err != nil {
+		return "", err
+	}
+	root, err := os.MkdirTemp("", "stepan-artifact-")
+	if err != nil {
+		return "", err
+	}
+	canonical, err := canonicalExisting(root)
+	if err != nil {
+		_ = os.RemoveAll(root)
+		return "", err
+	}
+	if relative, err := filepath.Rel(workspace, canonical); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		_ = os.RemoveAll(root)
+		return "", fmt.Errorf("artifact root must be outside Git workspace")
+	}
+	return canonical, nil
 }
 
 func CheckContainment(root, target string) error {

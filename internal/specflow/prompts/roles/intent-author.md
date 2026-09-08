@@ -1,0 +1,1 @@
+Establish the feature's intent before implementation details are considered. Lead a concise dialogue that makes the problem, observable outcome, scope, exclusions, and material constraints explicit. Keep the artifact understandable to a future author resuming from project files.

@@ -1,10 +1,11 @@
-# ADR 0002: Текущий стек и архитектурный baseline
+﻿# ADR 0002: Текущий стек и архитектурный baseline
 
 Статус: **предложено**
 
 Дата: 2026-08-13
 
-Обновлено: 2026-08-24 после принятия ADR 0003
+Обновлено: 2026-08-29: intent dialogue использует thread-scoped configuration
+с read-only workspace и одним внешним writable artifact root.
 
 Разделы о provider boundary и Claude дополняет [ADR 0004](0004-claude-cli-runtime.md).
 
@@ -30,9 +31,9 @@ CLI-программой, синхронной машиной состояний
 | Агентский runtime | Codex App Server; Claude Code-совместимый CLI через SDK v0.6.22 |
 | IPC | JSON-RPC поверх UTF-8 JSONL в `stdin`/`stdout` |
 | Контракты ответов | JSON Schema 2020-12 и строгая декодировка в Go |
-| Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/specs/` |
+| Репозиторий и artifacts | Локальная файловая система и Git CLI; спецификации в `docs/changes/features/` |
 | Изоляция процессов | Windows Job Object или Darwin process group; Windows/amd64 и macOS/arm64 |
-| Тесты | `go test`, стандартный пакет `testing`, fake/replay App Server |
+| Тесты | `go test`, `testing`, Arch-Go для графа импортов, fake/replay App Server |
 
 Прямые UI/runtime-зависимости приложения — `huh` и TTY detector `x/term`;
 остальные UI-библиотеки приходят транзитивно. Базы данных, серверного API,
@@ -45,20 +46,20 @@ flowchart LR
     User[Пользователь] --> CLI[cmd/stepan]
     CLI --> Flow[internal/specflow]
     Flow --> Contract[internal/agentruntime]
-    Contract --> App[internal/codexapp]
-    Contract --> Claude[internal/claudeapp]
+    Contract --> App[internal/agentruntime/codexapp]
+    Contract --> Claude[internal/agentruntime/claudeapp]
     Flow --> Git[internal/gitsnapshot]
     App --> Job[internal/processjob]
+    Probe[internal/codexprobe] --> App
+    Probe --> Git
     CLI --> Platform[internal/platformsupport]
-    App --> Legacy[internal/codexexec\nversion check]
     App <-->|JSON-RPC / JSONL over stdio| Codex[codex app-server]
     Claude <-->|SDK standard subprocess transport| ClaudeCLI[Claude-compatible CLI]
     Git --> GitCLI[git CLI]
     Job --> Win[Windows Job Object]
     Job --> Mac[Darwin process group]
 
-    Probe1[cmd/codex-appserver-probe] --> App
-    Probe2[cmd/codex-probe] --> Legacy
+    Probe1[cmd/codex-appserver-probe] --> Probe
 ```
 
 Основной production-путь соблюдает направление зависимостей
@@ -67,22 +68,23 @@ flowchart LR
 
 - `cmd/stepan` — composition root, provider/CLI preflight, platform/terminal
   preflight и обработка завершения процесса.
-- `internal/specflow` — прикладное ядро текущего `/idea` flow: машина состояний,
-  prompts, JSON-схемы, правила размещения спецификаций и постусловия записи.
-- `internal/codexapp` — lifecycle App Server, JSON-RPC transport, thread/turn,
-  correlation, structured output и fail-closed approval policy.
-- `internal/agentruntime` — provider-neutral contract session/thread, turn,
-  policy и lifecycle.
-- `internal/claudeapp` — Claude SDK adapter с exact tool allowlist и
-  turn-scoped filesystem permission callback; не управляет деревом процессов.
+- `internal/specflow` — прикладное ядро `/feature`: intent dialogue, строгие
+  `message | draft` contracts, feature storage, append-only journal и review.
+- `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
+  JSON-RPC transport, thread/turn, correlation, structured output и общий
+  fail-closed approval evaluator.
+- `internal/agentruntime` — provider-neutral thread configuration: bootstrap,
+  schema, read-only workspace, один внешний artifact root и lifecycle.
+- `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
+  thread-scoped filesystem permission callback; не управляет деревом процессов.
 - `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
   сравнение до/после turn и проверка write boundary.
+- `internal/codexprobe` — диагностический App Server flow, replay artifacts и
+  durable approval manager с Git candidate snapshot.
 - `internal/processjob` — завершение всего дерева дочерних процессов.
 - `internal/platformsupport` — единая матрица поддерживаемых OS/architecture.
-- `internal/codexexec` — legacy spike/evidence для `codex exec`; основной путь
-  переиспользует из него только проверку версии Codex.
-- `cmd/codex-probe` и `cmd/codex-appserver-probe` — диагностические программы,
-  не входящие в пользовательский workflow.
+- `cmd/codex-appserver-probe` — диагностическая программа, не входящая в
+  пользовательский workflow.
 
 Небольшие интерфейсы объявляются потребляющим пакетом `specflow` и служат швами
 для тестирования. Общего provider API, workflow engine, DSL или registry нет.
@@ -96,36 +98,44 @@ thread, turns выполняются последовательно.
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    Idle --> Clarification: /idea
-    Clarification --> Clarification: NEEDS_INPUT
-    Clarification --> ReadyToWrite: READY_TO_WRITE
-    ReadyToWrite --> Draft: WRITTEN + postconditions
-    Draft --> Draft: ANSWERED / UPDATED
-    Draft --> Idle: /approve
+    Idle --> Dialogue: feature_id selected
+    Dialogue --> Dialogue: message
+    Dialogue --> Published: first draft
+    Published --> Published: message
+    Published --> Review: later draft
+    Review --> Published: apply / reject
+    Review --> Rework: rework
+    Rework --> Review: revised draft
+    Published --> Idle: /approve
 ```
 
 Текущий источник истины разделён так:
 
 - состояние диалога, thread/turn IDs и approvals живут только в памяти процесса;
-- созданная спецификация сохраняется в `docs/specs/<spec-id>/`;
-- фактические изменения и границы записи проверяются по Git, а не по сообщению
-  агента;
+- Stepan публикует `intent.md` и append-only `mem-log.md` в
+  `docs/changes/features/<dated-feature-id>/`; агент пишет только временный
+  draft во внешнем artifact root;
+- revision применяет ровно байты, для которых был показан diff: перед записью
+  повторно проверяется hash draft;
 - `.stepan/`, durable event log и resume в пользовательском пути пока не
   используются.
 
-Durable approval manager существует в probe-коде `codexapp`, но текущий путь
-`cmd/stepan → specflow.Session → codexapp.Runtime` использует turn-scoped
-in-memory approvals.
+Durable approval manager существует в `codexprobe`, но текущий путь
+`cmd/stepan → specflow.Session → codexapp.Runtime` использует thread-scoped
+in-memory policy и turn-local evidence для approval.
 
 ### Инварианты текущего пути
 
 - Stepan, а не Codex, выбирает переходы workflow.
 - Свободный текст агента не меняет состояние: переход требует результата,
   валидного относительно схемы конкретного turn.
-- Turn по умолчанию read-only и без сети; write-turn получает один writable
-  root каталога текущей спецификации.
-- После записи отдельно проверяются structured status, наличие
-  `specification.md` и Git write boundary.
+- Конфигурация schema и доступа фиксируется при создании thread; `RunTurn`
+  принимает только новый пользовательский текст. Workspace read-only, а
+  основной intent thread может писать только в один внешний artifact root.
+- Агент возвращает строгий `message | draft` envelope; Stepan сам публикует
+  `intent.md`, журналирует решения и показывает unified diff для revision.
+- `/approve` и отмена журналируются, закрывают thread и удаляют только
+  внешний artifact root; resume не предусмотрен.
 - Ошибка протокола, approval или containment закрывает текущий flow без
   автоматического retry.
 - Закрытие Codex runtime завершает контролируемое дерево App Server через
@@ -172,10 +182,11 @@ baseline.
 - [`go.mod`](../../go.mod)
 - [`cmd/stepan`](../../cmd/stepan/)
 - [`internal/specflow`](../../internal/specflow/)
-- [`internal/codexapp`](../../internal/codexapp/)
+- [`internal/agentruntime/codexapp`](../../internal/agentruntime/codexapp/)
+- [`internal/codexprobe`](../../internal/codexprobe/)
 - [`internal/gitsnapshot`](../../internal/gitsnapshot/)
 - [`internal/processjob`](../../internal/processjob/)
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0003](0003-macos-process-containment.md)
 - [ADR 0004](0004-claude-cli-runtime.md)
-- [Спецификация итерации 1](../specs/iteration-1/specification.md)
+- [Спецификация итерации 1](../changes/features/iteration-1/specification.md)

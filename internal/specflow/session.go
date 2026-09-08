@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
@@ -39,30 +40,47 @@ func newSession(start func(context.Context) (agentruntime.Runtime, error)) *Sess
 	return &Session{start: start}
 }
 
-func (session *Session) StartThread() (agentruntime.Thread, error) {
+func (session *Session) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	slot, err := session.current()
 	if err != nil {
 		return nil, err
 	}
-	thread, err := slot.runtime.StartThread()
-	if err != nil {
+	thread, err := slot.runtime.StartThread(config)
+	if err != nil && !errors.Is(err, agentruntime.ErrThreadFailed) {
 		session.discard(slot)
 	}
 	return thread, err
 }
 
-func (session *Session) RunTurn(thread agentruntime.Thread, prompt string, options agentruntime.TurnOptions) (json.RawMessage, error) {
+func (session *Session) RunTurn(thread agentruntime.Thread, prompt string) (json.RawMessage, error) {
 	session.mu.Lock()
 	slot := session.runtime
 	session.mu.Unlock()
 	if slot == nil {
 		return nil, agentruntime.ErrRuntimeClosed
 	}
-	output, err := slot.runtime.RunTurn(thread, prompt, options)
-	if err != nil {
+	output, err := slot.runtime.RunTurn(thread, prompt)
+	if err != nil && !errors.Is(err, agentruntime.ErrThreadFailed) {
 		session.discard(slot)
 	}
 	return output, err
+}
+
+func (session *Session) CloseThread(thread agentruntime.Thread) error {
+	session.mu.Lock()
+	slot := session.runtime
+	session.mu.Unlock()
+	if slot == nil {
+		return agentruntime.ErrRuntimeClosed
+	}
+	if err := slot.runtime.CloseThread(thread); err != nil {
+		if errors.Is(err, agentruntime.ErrThreadFailed) {
+			return err
+		}
+		session.discard(slot)
+		return err
+	}
+	return nil
 }
 
 func (session *Session) Interrupt() error { return session.stop(true) }
@@ -104,7 +122,7 @@ func (session *Session) current() (*runtimeSlot, error) {
 	} else {
 		runtime, err = session.start(ctx)
 	}
-	if err == nil && runtime == nil {
+	if err == nil && isNilRuntime(runtime) {
 		err = errors.New("runtime factory returned nil")
 	}
 
@@ -122,10 +140,23 @@ func (session *Session) current() (*runtimeSlot, error) {
 	session.starting = nil
 	close(attempt.done)
 	session.mu.Unlock()
-	if err != nil && runtime != nil {
+	if err != nil && !isNilRuntime(runtime) {
 		_ = runtime.Close()
 	}
 	return slot, err
+}
+
+func isNilRuntime(runtime agentruntime.Runtime) bool {
+	if runtime == nil {
+		return true
+	}
+	value := reflect.ValueOf(runtime)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (session *Session) discard(slot *runtimeSlot) {
@@ -156,5 +187,3 @@ func (session *Session) stop(interrupt bool) error {
 	}
 	return slot.runtime.Close()
 }
-
-var _ initialTurnRunner = (*Session)(nil)

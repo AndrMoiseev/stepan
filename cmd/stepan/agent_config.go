@@ -1,12 +1,11 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 )
 
 type agentKind string
@@ -14,6 +13,7 @@ type agentKind string
 const (
 	agentCodex  agentKind = "codex"
 	agentClaude agentKind = "claude"
+	agentNessy  agentKind = "nessy"
 )
 
 type agentConfig struct {
@@ -24,47 +24,53 @@ type agentConfig struct {
 func parseAgentConfig(args []string) (agentConfig, error) {
 	flags := flag.NewFlagSet("stepan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	agent := flags.String("agent", string(agentCodex), "agent provider: codex or claude")
-	cli := flags.String("agent-cli", "", "absolute path to the agent CLI executable")
+	agent := flags.String("agent", string(agentCodex), "agent provider: codex, claude, or nessy")
+	cli := flags.String("agent-cli-name", "", "simple agent CLI executable name resolved through PATH")
 	if err := flags.Parse(args); err != nil {
 		return agentConfig{}, fmt.Errorf("parse flags: %w", err)
 	}
 	if flags.NArg() != 0 {
 		return agentConfig{}, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
 	}
-	config := agentConfig{kind: agentKind(*agent), executable: *cli}
-	if config.kind != agentCodex && config.kind != agentClaude {
-		return agentConfig{}, fmt.Errorf("unknown agent %q (expected codex or claude)", *agent)
-	}
-	if config.executable == "" {
-		if config.kind == agentClaude {
-			return agentConfig{}, errors.New("--agent-cli is required for --agent claude")
+	cliSupplied := false
+	flags.Visit(func(item *flag.Flag) {
+		if item.Name == "agent-cli-name" {
+			cliSupplied = true
 		}
-		config.executable = "codex"
+	})
+	config := agentConfig{kind: agentKind(*agent), executable: *cli}
+	if *agent == "qwen" {
+		return agentConfig{}, fmt.Errorf("agent qwen was removed; use --agent nessy")
+	}
+	if config.kind == agentNessy && cliSupplied {
+		return agentConfig{}, fmt.Errorf("--agent-cli-name is not supported for Nessy; use nessy from PATH")
+	}
+	if config.kind != agentCodex && config.kind != agentClaude && config.kind != agentNessy {
+		return agentConfig{}, fmt.Errorf("unknown agent %q (expected codex, claude, or nessy)", *agent)
+	}
+	if !cliSupplied {
+		switch config.kind {
+		case agentClaude:
+			config.executable = "claude"
+		case agentNessy:
+			config.executable = "nessy"
+		case agentCodex:
+			config.executable = "codex"
+		}
 		return config, nil
 	}
-	return validateExplicitCLI(config)
-}
-
-func validateExplicitCLI(config agentConfig) (agentConfig, error) {
-	path := filepath.Clean(config.executable)
-	if !filepath.IsAbs(path) {
-		return agentConfig{}, fmt.Errorf("--agent-cli %q must be an absolute path", config.executable)
-	}
-	info, err := os.Stat(path)
+	name, err := agentruntime.ParseExecutableName(config.executable)
 	if err != nil {
-		return agentConfig{}, fmt.Errorf("stat --agent-cli %q: %w", path, err)
+		return agentConfig{}, fmt.Errorf("--agent-cli-name %q: %w", config.executable, err)
 	}
-	if !info.Mode().IsRegular() {
-		return agentConfig{}, fmt.Errorf("--agent-cli %q must name a regular file", path)
-	}
-	config.executable = path
+	config.executable = name.String()
 	return config, nil
 }
 
-const usageText = `Usage: stepan [--agent codex|claude] [--agent-cli <absolute-path>]
+const usageText = `Usage: stepan [--agent codex|claude|nessy] [--agent-cli-name <name>]
 
-Without options Stepan uses codex from PATH. Claude requires an explicit CLI
-path, which may point to a compatible corporate fork.
-Windows: stepan --agent claude --agent-cli "C:\\Program Files\\Company\\claude-corp.exe"
-macOS:   stepan --agent claude --agent-cli /Applications/Company/claude-corp`
+Codex and Claude allow a simple agent CLI name resolved through PATH.
+Nessy always uses nessy from PATH; --agent-cli-name is not supported for Nessy.
+Configure nessy.auth_token in ~/.stepan/settings.json before starting Nessy.
+The configured token replaces NESSY_CLI_DP_AUTH_TOKEN for child processes.
+Example: stepan --agent nessy`

@@ -30,10 +30,20 @@ Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED
 
 Cross-build проверяет только компиляцию. Runtime-приёмку macOS выполняйте на
 физическом Apple Silicon Mac по
-`docs/specs/macos-compatibility/manual-test-plan.md`. Intel Mac, signing и
+`docs/changes/features/macos-compatibility/manual-test-plan.md`. Intel Mac, signing и
 notarization пока не поддерживаются.
 
 Для запуска тестов отдельного пакета используйте `go test ./путь/к/пакету`, например `go test ./internal/specflow`.
+
+## Codex App Server: response schema
+
+Для `turn/start` schema в `text.format.schema` используйте flat object-schema:
+
+- `oneOf` не поддерживается;
+- `required` должен содержать каждый ключ из `properties`;
+- для семантически необязательного поля используйте required transport-placeholder
+  и нормализуйте его до передачи в доменный слой. Например, intent `draft`
+  передаёт `"message": ""`; пустое значение не является сообщением draft.
 
 ## GitHub Actions
 

@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/AndrMoiseev/stepan/internal/codexapp"
+	"github.com/AndrMoiseev/stepan/internal/codexprobe"
 )
 
 func main() {
@@ -16,7 +16,7 @@ func main() {
 }
 
 func run() int {
-	var config codexapp.ProbeConfig
+	var config codexprobe.Config
 	var schemaPath, policyPath string
 	flag.StringVar(&config.Executable, "executable", "codex", "absolute Codex path or PATH name")
 	flag.StringVar(&config.Workspace, "workspace", "", "absolute role workspace")
@@ -60,7 +60,7 @@ func run() int {
 			return 2
 		}
 	}
-	result, err := codexapp.RunProbe(config)
+	result, err := codexprobe.Run(config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "run probe:", err)
 		return 2
@@ -69,7 +69,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "write result:", err)
 		return 2
 	}
-	if result.Outcome != codexapp.Pass {
+	if result.Outcome != codexprobe.Pass {
 		return 1
 	}
 	return 0

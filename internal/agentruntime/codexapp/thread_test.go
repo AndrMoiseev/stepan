@@ -1,0 +1,550 @@
+package codexapp
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
+	"github.com/AndrMoiseev/stepan/internal/specflow"
+)
+
+var testSchema = json.RawMessage(`{"type":"object"}`)
+
+func testThreadConfig(workspace string) agentruntime.ThreadConfig {
+	return agentruntime.ThreadConfig{Workspace: workspace, OutputSchema: testSchema}
+}
+
+func TestCodexProviderParity(t *testing.T) {
+	conformance.ProviderParity(t, func(t *testing.T, script conformance.Script) conformance.Fixture {
+		t.Helper()
+		root := canonicalTempDir(t)
+		connection, server, serverErr := threadTestConnection(t)
+		go serveConformanceScript(server, script.Outputs(), serverErr)
+		return conformance.Fixture{
+			Runtime:      &connectionRuntime{connection: connection, workspace: root},
+			Workspace:    root,
+			OutputSchema: specflow.DialogueSchema(),
+			Decode: func(raw json.RawMessage) (conformance.DomainEnvelope, error) {
+				envelope, err := specflow.DecodeEnvelope(raw)
+				return conformance.DomainEnvelope{Kind: string(envelope.Kind), Message: envelope.Message, DecisionCount: len(envelope.Decisions)}, err
+			},
+			Wait: func() error {
+				return <-serverErr
+			},
+			WriteAllowed: func(config agentruntime.ThreadConfig, target string) bool {
+				evaluator, err := NewApprovalEvaluator(config.Workspace, AccessPolicy{
+					ReadableRoots: []string{config.Workspace, config.ArtifactRoot},
+					WritableRoots: []string{config.ArtifactRoot},
+				})
+				return err == nil && allowedRequestedPath(evaluator.policy, target, evaluator.policy.WritableRoots)
+			},
+		}
+	})
+}
+
+func TestCodexApplicationParity(t *testing.T) {
+	conformance.ApplicationParity(t, specflow.RuntimeIdentity{Provider: "codex", Model: "default"}, func(t *testing.T, workspace string, script conformance.Script) conformance.ApplicationFixture {
+		t.Helper()
+		connection, server, serverErr := threadTestConnection(t)
+		go serveConformanceScript(server, script.Outputs(), serverErr)
+		runtime := &connectionRuntime{connection: connection, workspace: workspace}
+		return conformance.ApplicationFixture{
+			Runtime: conformance.ScriptedArtifacts(runtime, script),
+			Wait:    func() error { return <-serverErr },
+		}
+	})
+}
+
+type connectionRuntime struct {
+	connection *Connection
+	workspace  string
+}
+
+func (runtime *connectionRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	return runtime.connection.StartThread(runtime.workspace, config)
+}
+
+func (runtime *connectionRuntime) RunTurn(handle agentruntime.Thread, prompt string) (json.RawMessage, error) {
+	thread, ok := handle.(*Thread)
+	if !ok {
+		return nil, errors.New("invalid Codex thread handle")
+	}
+	return runtime.connection.RunTurn(thread, prompt)
+}
+
+func (runtime *connectionRuntime) CloseThread(handle agentruntime.Thread) error {
+	thread, ok := handle.(*Thread)
+	if !ok {
+		return errors.New("invalid Codex thread handle")
+	}
+	return runtime.connection.CloseThread(thread)
+}
+
+func (runtime *connectionRuntime) Interrupt() error { return runtime.Close() }
+func (runtime *connectionRuntime) Close() error     { return runtime.connection.Close() }
+
+func serveConformanceScript(server *Transport, outputs []json.RawMessage, result chan<- error) {
+	threadCount := 0
+	turnCount := 0
+	for turnCount < len(outputs) {
+		request, err := server.Read()
+		if err != nil {
+			result <- err
+			return
+		}
+		switch request.Method {
+		case "thread/start":
+			threadCount++
+			if err := server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": fmt.Sprintf("thread-%d", threadCount)}}); err != nil {
+				result <- err
+				return
+			}
+		case "turn/start":
+			var params struct {
+				ThreadID string              `json:"threadId"`
+				Input    []map[string]string `json:"input"`
+				CWD      string              `json:"cwd"`
+				Sandbox  struct {
+					Type    string `json:"type"`
+					Network bool   `json:"networkAccess"`
+				} `json:"sandboxPolicy"`
+				Schema json.RawMessage `json:"outputSchema"`
+			}
+			if err := json.Unmarshal(request.Params, &params); err != nil || params.ThreadID == "" || len(params.Input) != 1 || params.CWD == "" || params.Sandbox.Type != "readOnly" || params.Sandbox.Network {
+				result <- fmt.Errorf("invalid conformance turn params: %s", request.Params)
+				return
+			}
+			if err := validateCodexSchema(params.Schema); err != nil {
+				result <- err
+				return
+			}
+			turnCount++
+			turnID := fmt.Sprintf("turn-%d", turnCount)
+			if err := server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": turnID}}); err != nil {
+				result <- err
+				return
+			}
+			if err := sendCompletedTurn(server, params.ThreadID, turnID, fmt.Sprintf("item-%d", turnCount), string(outputs[turnCount-1]), string(outputs[turnCount-1])); err != nil {
+				result <- err
+				return
+			}
+		default:
+			result <- fmt.Errorf("unexpected conformance method %q", request.Method)
+			return
+		}
+	}
+	result <- nil
+}
+
+func TestThreadAPIReusesConnectionForThreadsAndTurns(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		for threadIndex, turns := range []int{2, 1} {
+			request, err := server.Read()
+			if err != nil || request.Method != "thread/start" {
+				serverErr <- fmt.Errorf("thread/start: %+v, %v", request, err)
+				return
+			}
+			var params struct {
+				CWD string `json:"cwd"`
+			}
+			if json.Unmarshal(request.Params, &params) != nil || params.CWD != root {
+				serverErr <- fmt.Errorf("thread/start params = %s", request.Params)
+				return
+			}
+			threadID := fmt.Sprintf("thread-%d", threadIndex+1)
+			if err := server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": threadID}}); err != nil {
+				serverErr <- err
+				return
+			}
+			for turnIndex := range turns {
+				request, err = server.Read()
+				if err != nil || request.Method != "turn/start" {
+					serverErr <- fmt.Errorf("turn/start: %+v, %v", request, err)
+					return
+				}
+				var params struct {
+					ThreadID string              `json:"threadId"`
+					Input    []map[string]string `json:"input"`
+					CWD      string              `json:"cwd"`
+					Approval string              `json:"approvalPolicy"`
+					Sandbox  struct {
+						Type    string `json:"type"`
+						Network bool   `json:"networkAccess"`
+					} `json:"sandboxPolicy"`
+					Schema map[string]any `json:"outputSchema"`
+				}
+				if json.Unmarshal(request.Params, &params) != nil || params.ThreadID != threadID || len(params.Input) != 1 || params.Input[0]["text"] == "" || params.CWD != root || params.Approval != "on-request" || params.Sandbox.Type != "readOnly" || params.Sandbox.Network || params.Schema["type"] != "object" {
+					serverErr <- fmt.Errorf("turn/start params = %s", request.Params)
+					return
+				}
+				turnID := fmt.Sprintf("turn-%d-%d", threadIndex+1, turnIndex+1)
+				if err := server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": turnID}}); err != nil {
+					serverErr <- err
+					return
+				}
+				output := fmt.Sprintf(`{"thread":%d,"turn":%d}`, threadIndex+1, turnIndex+1)
+				if err := sendCompletedTurn(server, threadID, turnID, "item-1", output, output); err != nil {
+					serverErr <- err
+					return
+				}
+			}
+		}
+		serverErr <- nil
+	}()
+
+	for threadIndex, turns := range []int{2, 1} {
+		thread, err := connection.StartThread(root, testThreadConfig(root))
+		if err != nil || thread.ID != fmt.Sprintf("thread-%d", threadIndex+1) {
+			t.Fatalf("thread = %+v, %v", thread, err)
+		}
+		for turnIndex := range turns {
+			output, err := connection.RunTurn(thread, "prompt")
+			want := fmt.Sprintf(`{"thread":%d,"turn":%d}`, threadIndex+1, turnIndex+1)
+			if err != nil || string(output) != want {
+				t.Fatalf("turn output = %s, %v", output, err)
+			}
+		}
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("thread state was persisted: %v, %v", entries, err)
+	}
+}
+
+func TestRunTurnRejectsConcurrentTurn(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	received := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		threadRequest, err := server.Read()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if err := server.SendResult(threadRequest.ID, map[string]any{"thread": map[string]string{"id": "thread"}}); err != nil {
+			serverErr <- err
+			return
+		}
+		turnRequest, err := server.Read()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if err := server.SendResult(turnRequest.ID, map[string]any{"turn": map[string]string{"id": "turn"}}); err != nil {
+			serverErr <- err
+			return
+		}
+		close(received)
+		<-release
+		serverErr <- sendCompletedTurn(server, "thread", "turn", "item", `{"ok":true}`, `{"ok":true}`)
+	}()
+	thread, err := connection.StartThread(root, testThreadConfig(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := connection.RunTurn(thread, "first")
+		first <- err
+	}()
+	<-received
+	if _, err := connection.RunTurn(thread, "second"); !errors.Is(err, ErrTurnInProgress) {
+		t.Fatalf("concurrent turn error = %v", err)
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunTurnReturnsFailedTurnMessageWithoutClosingConnection(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		request, err := server.Read()
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+		}
+		if err == nil {
+			request, err = server.Read()
+		}
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": "turn"}})
+		}
+		if err == nil {
+			err = server.SendNotification("turn/completed", map[string]any{
+				"threadId": "thread",
+				"turn": map[string]any{
+					"id": "turn", "status": "failed", "items": []any{},
+					"error": map[string]string{"message": "quota exhausted"},
+				},
+			})
+		}
+		serverErr <- err
+	}()
+
+	thread, err := connection.StartThread(root, testThreadConfig(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.RunTurn(thread, "prompt"); err == nil || !strings.Contains(err.Error(), "quota exhausted") {
+		t.Fatalf("failed turn error = %v", err)
+	}
+	if err := connection.Err(); err != nil {
+		t.Fatalf("connection closed after failed turn: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexIntentDialogueSchemaAvoidsUnsupportedOneOf(t *testing.T) {
+	root := canonicalTempDir(t)
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		request, err := server.Read()
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+		}
+		if err == nil {
+			request, err = server.Read()
+		}
+		if err == nil {
+			var params struct {
+				Schema json.RawMessage `json:"outputSchema"`
+			}
+			schemaErr := json.Unmarshal(request.Params, &params)
+			if schemaErr == nil && bytes.Contains(params.Schema, []byte(`"oneOf"`)) {
+				schemaErr = fmt.Errorf("Codex received unsupported dialogue schema: %s", params.Schema)
+			}
+			if schemaErr == nil {
+				var schema struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+					Required   []string                   `json:"required"`
+				}
+				if json.Unmarshal(params.Schema, &schema) != nil || len(schema.Properties) != len(schema.Required) {
+					schemaErr = fmt.Errorf("Codex requires every dialogue property to be required: %s", params.Schema)
+				} else {
+					required := make(map[string]bool, len(schema.Required))
+					for _, name := range schema.Required {
+						required[name] = true
+					}
+					for name := range schema.Properties {
+						if !required[name] {
+							schemaErr = fmt.Errorf("Codex dialogue schema misses required %q: %s", name, params.Schema)
+							break
+						}
+					}
+				}
+			}
+			if sendErr := server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": "turn"}}); sendErr != nil {
+				err = sendErr
+			} else if sendErr = sendCompletedTurn(server, "thread", "turn", "item", `{"kind":"message","message":"ok","decisions":[]}`, `{"kind":"message","message":"ok","decisions":[]}`); sendErr != nil {
+				err = sendErr
+			} else {
+				err = schemaErr
+			}
+		}
+		serverErr <- err
+	}()
+	thread, err := connection.StartThread(root, agentruntime.ThreadConfig{Workspace: root, OutputSchema: specflow.DialogueSchema()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connection.RunTurn(thread, "brief"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCodexSchemaRejectsUnionAndOptionalProperties(t *testing.T) {
+	for _, schema := range []json.RawMessage{
+		json.RawMessage(`{"oneOf":[{"type":"object"}]}`),
+		json.RawMessage(`{"type":"object","properties":{"kind":{"type":"string"}},"required":[]}`),
+	} {
+		if err := validateCodexSchema(schema); err == nil {
+			t.Fatalf("Codex accepted incompatible schema: %s", schema)
+		}
+	}
+	if err := validateCodexSchema(specflow.DialogueSchema()); err != nil {
+		t.Fatalf("dialogue schema is not Codex-compatible: %v", err)
+	}
+}
+
+func TestCloseThreadInvalidatesItsHandle(t *testing.T) {
+	conformance.ClosedThread(t, func(t *testing.T) (agentruntime.Runtime, agentruntime.ThreadConfig) {
+		t.Helper()
+		t.Setenv("GO_WANT_CODEXAPP_FAKE", "runtime-interrupt-ignore")
+		workspace := t.TempDir()
+		runtime, err := StartRuntime(os.Args[0], workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return runtime, testThreadConfig(workspace)
+	})
+}
+
+func TestCompletedTurnValidation(t *testing.T) {
+	final := terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{"ok":true}`}
+	completed := map[string]terminalItem{"final": final}
+	terminal := func(status string, items ...any) json.RawMessage {
+		return mustJSON(t, map[string]any{"threadId": "thread", "turn": map[string]any{"id": "turn", "status": status, "items": items}})
+	}
+	for _, test := range []struct {
+		name      string
+		raw       json.RawMessage
+		completed map[string]terminalItem
+	}{
+		{"invalid notification", json.RawMessage(`{`), completed},
+		{"failed status", terminal("failed", final), completed},
+		{"missing final", terminal("completed", terminalItem{ID: "tool", Type: "commandExecution"}), map[string]terminalItem{"tool": {ID: "tool", Type: "commandExecution"}}},
+		{"duplicate finals", terminal("completed", final, terminalItem{ID: "other", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{}`}), map[string]terminalItem{"final": final, "other": {ID: "other", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{}`}}},
+		{"contradictory final", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{"ok":false}`}), completed},
+		{"non-object output", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `[]`}), map[string]terminalItem{"final": {ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `[]`}}},
+		{"invalid output", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{`}), map[string]terminalItem{"final": {ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{`}}},
+		{"trailing output", terminal("completed", terminalItem{ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{} {}`}), map[string]terminalItem{"final": {ID: "final", Type: "agentMessage", Phase: phasePtr("final_answer"), Text: `{} {}`}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := decodeCompletedTurn(test.raw, test.completed); err == nil {
+				t.Fatal("expected malformed terminal error")
+			}
+		})
+	}
+	t.Run("nullable phase compatibility", func(t *testing.T) {
+		item := terminalItem{ID: "final", Type: "agentMessage", Text: `{"ok":true}`}
+		output, err := decodeCompletedTurn(terminal("completed", item), map[string]terminalItem{"final": item})
+		if err != nil || string(output) != item.Text {
+			t.Fatalf("output = %s, %v", output, err)
+		}
+	})
+	t.Run("terminal item without completed event", func(t *testing.T) {
+		output, err := decodeCompletedTurn(terminal("completed", final), nil)
+		if err != nil || string(output) != final.Text {
+			t.Fatalf("output = %s, %v", output, err)
+		}
+	})
+}
+
+func TestTurnCorrelationRejectsWrongAndIncompleteIDs(t *testing.T) {
+	run := &turnRun{threadID: "thread", turnID: "turn"}
+	for _, test := range []struct {
+		name, method string
+		params       any
+	}{
+		{"wrong thread", "turn/completed", map[string]any{"threadId": "other", "turn": map[string]string{"id": "turn"}}},
+		{"wrong turn", "item/completed", map[string]any{"threadId": "thread", "turnId": "other", "item": map[string]string{"id": "item"}}},
+		{"missing item", "item/completed", map[string]any{"threadId": "thread", "turnId": "turn"}},
+		{"approval mismatch", "item/fileChange/requestApproval", map[string]string{"threadId": "thread", "turnId": "other", "itemId": "item"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := run.correlate(Message{Method: test.method, Params: mustJSON(t, test.params)}); err == nil {
+				t.Fatal("expected correlation error")
+			}
+		})
+	}
+}
+
+func threadTestConnection(t *testing.T) (*Connection, *Transport, chan error) {
+	t.Helper()
+	clientSide, serverSide := net.Pipe()
+	t.Cleanup(func() { _ = clientSide.Close(); _ = serverSide.Close() })
+	server := NewTransport(serverSide, serverSide)
+	serverErr := make(chan error, 1)
+	ready := make(chan struct{})
+	go func() {
+		initialize, err := server.Read()
+		if err == nil {
+			err = server.SendResult(initialize.ID, map[string]string{"codexHome": "test", "platformFamily": "windows", "platformOs": "windows", "userAgent": "test/1"})
+		}
+		if err == nil {
+			var initialized Message
+			initialized, err = server.Read()
+			if err == nil && (initialized.Kind != Notification || initialized.Method != "initialized") {
+				err = errors.New("missing initialized notification")
+			}
+		}
+		if err != nil {
+			serverErr <- err
+		}
+		close(ready)
+	}()
+	connection, err := NewConnection(NewTransport(clientSide, clientSide), Handler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-ready
+	return connection, server, serverErr
+}
+
+func sendCompletedTurn(server *Transport, threadID, turnID, itemID, itemText, turnText string) error {
+	item := map[string]any{"id": itemID, "type": "agentMessage", "phase": "final_answer", "text": itemText}
+	if err := server.SendNotification("item/completed", map[string]any{"threadId": threadID, "turnId": turnID, "item": item}); err != nil {
+		return err
+	}
+	item["text"] = turnText
+	return server.SendNotification("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": turnID, "status": "completed", "items": []any{item}}})
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func phasePtr(value string) *string { return &value }
+
+func TestStartThreadCanonicalizesCWD(t *testing.T) {
+	root := canonicalTempDir(t)
+	nested := filepath.Join(root, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	connection, server, serverErr := threadTestConnection(t)
+	go func() {
+		request, err := server.Read()
+		if err == nil && !strings.Contains(string(request.Params), filepath.ToSlash(nested)) && !strings.Contains(string(request.Params), strings.ReplaceAll(nested, `\`, `\\`)) {
+			err = fmt.Errorf("cwd was not sent: %s", request.Params)
+		}
+		if err == nil {
+			err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+		}
+		serverErr <- err
+	}()
+	if _, err := connection.StartThread(filepath.Join(nested, "."), testThreadConfig(nested)); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}

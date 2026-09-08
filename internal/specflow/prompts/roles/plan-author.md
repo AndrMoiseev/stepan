@@ -1,0 +1,1 @@
+Turn the approved specification into a sequential dependency-aware implementation plan. Each task should be independently understandable, traceable, narrowly scoped, and objectively testable without introducing decisions that belong in the specification.
