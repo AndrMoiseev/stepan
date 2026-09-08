@@ -13,7 +13,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
-	"github.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
 )
 
@@ -62,7 +62,7 @@ func (runtime *compositionRuntime) RunTurn(thread agentruntime.Thread, prompt st
 	}
 	runtime.prompts = append(runtime.prompts, prompt)
 	if strings.Contains(string(runtime.configs[index-1].OutputSchema), `"feature_id"`) {
-		return json.RawMessage(`{"feature_id":"qwen-composition"}`), nil
+		return json.RawMessage(`{"feature_id":"nessy-composition"}`), nil
 	}
 	return json.RawMessage(`{"kind":"message","message":"What should the intent guarantee?","decisions":[]}`), nil
 }
@@ -71,9 +71,9 @@ func (*compositionRuntime) CloseThread(agentruntime.Thread) error { return nil }
 func (*compositionRuntime) Interrupt() error                      { return nil }
 func (*compositionRuntime) Close() error                          { return nil }
 
-func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.T) {
+func TestNessyCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.T) {
 	pathDirectory := t.TempDir()
-	pathName := "qwen"
+	pathName := "nessy"
 	compatiblePathName := "corporate-compatible-agent"
 	if runtime.GOOS == "windows" {
 		pathName += ".exe"
@@ -94,8 +94,7 @@ func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.
 		executable string
 		resolved   string
 	}{
-		{name: "official PATH default", args: []string{"--agent", "qwen"}, executable: "qwen", resolved: pathExecutable},
-		{name: "authoritative compatible PATH name", args: []string{"--agent", "qwen", "--agent-cli-name", "corporate-compatible-agent"}, executable: "corporate-compatible-agent", resolved: compatibleExecutable},
+		{name: "official PATH default", args: []string{"--agent", "nessy"}, executable: "nessy", resolved: pathExecutable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -105,8 +104,8 @@ func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.
 			}
 			root := initializeCompositionRepository(t)
 			providerRuntime := &compositionRuntime{}
-			var captured qwenapp.Config
-			qwenStarts, otherStarts := 0, 0
+			var captured nessyapp.Config
+			nessyStarts, otherStarts := 0, 0
 			starters := runtimeStarters{
 				codex: func(string, string) (agentruntime.Runtime, error) {
 					otherStarts++
@@ -116,13 +115,13 @@ func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.
 					otherStarts++
 					return nil, errors.New("unexpected Claude fallback")
 				},
-				qwen: func(value qwenapp.Config) (agentruntime.Runtime, error) {
-					qwenStarts++
+				nessy: func(value nessyapp.Config) (agentruntime.Runtime, error) {
+					nessyStarts++
 					captured = value
 					return providerRuntime, nil
 				},
 			}
-			session := specflow.NewSession(runtimeFactoryWithStarters(config, root, starters))
+			session := specflow.NewSession(runtimeFactoryWithStarters(config, root, starters, "test-auth-token"))
 			t.Cleanup(func() { _ = session.Close() })
 			application, registry, err := composePlanningFlow(root, session, config)
 			if err != nil {
@@ -130,30 +129,30 @@ func TestQwenCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing.
 			}
 			t.Cleanup(func() { _ = registry.Close() })
 
-			progress, err := application.StartFeature("Exercise Qwen composition")
+			progress, err := application.StartFeature("Exercise Nessy composition")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if qwenStarts != 1 || otherStarts != 0 {
-				t.Fatalf("provider starts: qwen=%d other=%d", qwenStarts, otherStarts)
+			if nessyStarts != 1 || otherStarts != 0 {
+				t.Fatalf("provider starts: nessy=%d other=%d", nessyStarts, otherStarts)
 			}
-			if captured.Executable != test.executable || captured.Workspace != root {
-				t.Fatalf("Qwen config selection = %#v", captured)
+			if captured.AuthToken != "test-auth-token" || captured.Workspace != root {
+				t.Fatalf("Nessy config selection = %#v", captured)
 			}
-			resolved, err := qwenapp.ResolveExecutable(captured.Executable)
+			resolved, err := nessyapp.ResolveExecutable()
 			if err != nil {
 				t.Fatal(err)
 			}
 			if resolved != filepath.Clean(test.resolved) {
 				t.Fatalf("resolved selected executable = %q, want %q", resolved, test.resolved)
 			}
-			if captured.JSONContract != qwenapp.JSONContract || string(captured.EnvelopeSchema) != string(specflow.FlowEnvelopeSchema()) {
-				t.Fatalf("Qwen structured contract = %#v", captured)
+			if captured.JSONContract != nessyapp.JSONContract || string(captured.EnvelopeSchema) != string(specflow.FlowEnvelopeSchema()) {
+				t.Fatalf("Nessy structured contract = %#v", captured)
 			}
-			if got := runtimeIdentity(config); got != (specflow.RuntimeIdentity{Provider: "qwen", Model: "default"}) {
+			if got := runtimeIdentity(config); got != (specflow.RuntimeIdentity{Provider: "nessy", Model: "default"}) {
 				t.Fatalf("runtime identity = %#v", got)
 			}
-			if len(providerRuntime.configs) != 2 || !strings.Contains(providerRuntime.configs[1].BootstrapInstructions, "Provider: qwen\nModel: default") {
+			if len(providerRuntime.configs) != 2 || !strings.Contains(providerRuntime.configs[1].BootstrapInstructions, "Provider: nessy\nModel: default") {
 				t.Fatalf("thread runtime context = %#v", providerRuntime.configs)
 			}
 
@@ -184,21 +183,20 @@ func TestRuntimeFactoryRejectsUnknownKindWithoutProviderFallback(t *testing.T) {
 			starts++
 			return &compositionRuntime{}, nil
 		},
-		qwen: func(qwenapp.Config) (agentruntime.Runtime, error) { starts++; return &compositionRuntime{}, nil },
+		nessy: func(nessyapp.Config) (agentruntime.Runtime, error) { starts++; return &compositionRuntime{}, nil },
 	}
-	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentKind("unknown")}, t.TempDir(), starters)(context.Background())
+	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentKind("unknown")}, t.TempDir(), starters, "test-auth-token")(context.Background())
 	if runtime != nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || starts != 0 {
 		t.Fatalf("unknown provider factory = %#v, %v; starts=%d", runtime, err, starts)
 	}
 }
 
-func TestQwenStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
+func TestNessyStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		args []string
 	}{
-		{name: "missing official name", args: []string{"--agent", "qwen"}},
-		{name: "missing supplied name", args: []string{"--agent", "qwen", "--agent-cli-name", "missing-qwen-compatible-cli"}},
+		{name: "missing official name", args: []string{"--agent", "nessy"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := initializeCompositionRepository(t)
@@ -207,7 +205,7 @@ func TestQwenStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			session := specflow.NewSession(runtimeFactory(config, root))
+			session := specflow.NewSession(runtimeFactory(config, root, "test-auth-token"))
 			t.Cleanup(func() { _ = session.Close() })
 			application, registry, err := composePlanningFlow(root, session, config)
 			if err != nil {
@@ -215,9 +213,9 @@ func TestQwenStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = registry.Close() })
 
-			progress, err := application.StartFeature("Qwen must be available")
-			if err == nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "qwen start thread") {
-				t.Fatalf("Qwen startup result = %#v, %v", progress, err)
+			progress, err := application.StartFeature("Nessy must be available")
+			if err == nil || !errors.Is(err, agentruntime.ErrRuntimeConfiguration) || !strings.Contains(err.Error(), "nessy start thread") {
+				t.Fatalf("Nessy startup result = %#v, %v", progress, err)
 			}
 			features := filepath.Join(root, "docs", "changes", "features")
 			if _, statErr := os.Stat(features); !errors.Is(statErr, os.ErrNotExist) {
@@ -241,17 +239,17 @@ func TestRuntimeFactoryPreservesCodexAndClaudeComposition(t *testing.T) {
 			claudeConfig = config
 			return marker, nil
 		},
-		qwen: func(qwenapp.Config) (agentruntime.Runtime, error) {
-			return nil, errors.New("unexpected Qwen start")
+		nessy: func(nessyapp.Config) (agentruntime.Runtime, error) {
+			return nil, errors.New("unexpected Nessy start")
 		},
 	}
 
-	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentCodex, executable: "codex"}, root, starters)(context.Background())
+	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentCodex, executable: "codex"}, root, starters, "")(context.Background())
 	if err != nil || runtime != marker || codexExecutable != "codex" || codexWorkspace != root {
 		t.Fatalf("Codex composition = %#v, %v, executable=%q workspace=%q", runtime, err, codexExecutable, codexWorkspace)
 	}
 	claudeExecutable := "corporate-claude"
-	runtime, err = runtimeFactoryWithStarters(agentConfig{kind: agentClaude, executable: claudeExecutable}, root, starters)(context.Background())
+	runtime, err = runtimeFactoryWithStarters(agentConfig{kind: agentClaude, executable: claudeExecutable}, root, starters, "")(context.Background())
 	if err != nil || runtime != marker || claudeConfig.Executable != claudeExecutable || claudeConfig.Workspace != root || string(claudeConfig.EnvelopeSchema) != string(specflow.FlowEnvelopeSchema()) {
 		t.Fatalf("Claude composition = %#v, %v, config=%#v", runtime, err, claudeConfig)
 	}
@@ -260,7 +258,7 @@ func TestRuntimeFactoryPreservesCodexAndClaudeComposition(t *testing.T) {
 func assertNoRuntimeIdentity(t *testing.T, name string, data []byte) {
 	t.Helper()
 	lower := strings.ToLower(string(data))
-	for _, forbidden := range []string{"qwen", "default", "provider", "model", "process", "session_id"} {
+	for _, forbidden := range []string{"nessy", "default", "provider", "model", "process", "session_id"} {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("%s contains runtime identity %q: %s", name, forbidden, data)
 		}

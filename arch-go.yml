@@ -14,9 +14,10 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
-        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp$'
+        - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/specflow$'
+        - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
     shouldNotDependsOn:
       internal:
@@ -31,9 +32,10 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
     shouldOnlyDependsOn:
       internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
@@ -60,6 +62,10 @@ dependenciesRules:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+    shouldNotDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/.+$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'

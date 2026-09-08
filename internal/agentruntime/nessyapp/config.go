@@ -1,0 +1,53 @@
+// Package nessyapp implements the contained Nessy ACP adapter.
+package nessyapp
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+)
+
+const (
+	defaultExecutable  = "nessy"
+	maxDiagnosticBytes = 64 << 10
+)
+
+var (
+	// ErrConfiguration classifies executable, workspace, contract, and root
+	// validation failures that happen before a child is started.
+	ErrConfiguration = agentruntime.ErrRuntimeConfiguration
+	// ErrStartup classifies failures to start the selected executable.
+	ErrStartup = agentruntime.ErrRuntimeStartup
+	// ErrContainment classifies failures to create, prepare, or assign the
+	// process-tree supervisor.
+	ErrContainment = agentruntime.ErrRuntimeContainment
+)
+
+// Config is immutable input shared by the contained processes of one Nessy
+// runtime. AuthToken is a validated snapshot from user settings. The executable
+// is always nessy from PATH. JSONContract is the process-level instruction that requires
+// one JSON object per completed turn.
+// EnvelopeSchema declares the common structured contract supplied by the
+// composition root; each thread still validates its narrower OutputSchema.
+type Config struct {
+	AuthToken      string
+	Workspace      string
+	JSONContract   string
+	EnvelopeSchema json.RawMessage
+}
+
+type processJob interface {
+	Prepare(*exec.Cmd) error
+	Assign(*os.Process) error
+	Close() error
+}
+
+type processDependencies struct {
+	command  func(string, ...string) *exec.Cmd
+	newJob   func() (processJob, error)
+	makeRoot func() (string, error)
+	remove   func(string) error
+	environ  func() []string
+}

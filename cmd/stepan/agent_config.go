@@ -13,7 +13,7 @@ type agentKind string
 const (
 	agentCodex  agentKind = "codex"
 	agentClaude agentKind = "claude"
-	agentQwen   agentKind = "qwen"
+	agentNessy  agentKind = "nessy"
 )
 
 type agentConfig struct {
@@ -24,7 +24,7 @@ type agentConfig struct {
 func parseAgentConfig(args []string) (agentConfig, error) {
 	flags := flag.NewFlagSet("stepan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	agent := flags.String("agent", string(agentCodex), "agent provider: codex, claude, or qwen")
+	agent := flags.String("agent", string(agentCodex), "agent provider: codex, claude, or nessy")
 	cli := flags.String("agent-cli-name", "", "simple agent CLI executable name resolved through PATH")
 	if err := flags.Parse(args); err != nil {
 		return agentConfig{}, fmt.Errorf("parse flags: %w", err)
@@ -39,15 +39,21 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 		}
 	})
 	config := agentConfig{kind: agentKind(*agent), executable: *cli}
-	if config.kind != agentCodex && config.kind != agentClaude && config.kind != agentQwen {
-		return agentConfig{}, fmt.Errorf("unknown agent %q (expected codex, claude, or qwen)", *agent)
+	if *agent == "qwen" {
+		return agentConfig{}, fmt.Errorf("agent qwen was removed; use --agent nessy")
+	}
+	if config.kind == agentNessy && cliSupplied {
+		return agentConfig{}, fmt.Errorf("--agent-cli-name is not supported for Nessy; use nessy from PATH")
+	}
+	if config.kind != agentCodex && config.kind != agentClaude && config.kind != agentNessy {
+		return agentConfig{}, fmt.Errorf("unknown agent %q (expected codex, claude, or nessy)", *agent)
 	}
 	if !cliSupplied {
 		switch config.kind {
 		case agentClaude:
 			config.executable = "claude"
-		case agentQwen:
-			config.executable = "qwen"
+		case agentNessy:
+			config.executable = "nessy"
 		case agentCodex:
 			config.executable = "codex"
 		}
@@ -61,11 +67,10 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 	return config, nil
 }
 
-const usageText = `Usage: stepan [--agent codex|claude|qwen] [--agent-cli-name <name>]
+const usageText = `Usage: stepan [--agent codex|claude|nessy] [--agent-cli-name <name>]
 
-Without --agent-cli-name, Stepan resolves the official provider name (codex,
-claude, or qwen) through PATH. A supplied name may select a compatible fork in
-PATH; paths and names containing directory separators are rejected.
-When the selected Qwen-compatible name is nessy, Stepan first runs nessy with
-the terminal attached. Complete authentication and exit Nessy CLI to continue.
-Example: stepan --agent qwen --agent-cli-name qwen-compatible`
+Codex and Claude allow a simple agent CLI name resolved through PATH.
+Nessy always uses nessy from PATH; --agent-cli-name is not supported for Nessy.
+Configure nessy.auth_token in ~/.stepan/settings.json before starting Nessy.
+The configured token replaces NESSY_CLI_DP_AUTH_TOKEN for child processes.
+Example: stepan --agent nessy`

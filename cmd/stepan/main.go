@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/signal"
 	"runtime"
@@ -12,9 +11,10 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
-	"github.com/AndrMoiseev/stepan/internal/agentruntime/qwenapp"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/specflow"
+	"github.com/AndrMoiseev/stepan/internal/usersettings"
 )
 
 func main() {
@@ -44,15 +44,12 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	if err := prepareAgentLogin(ctx, config, root, os.Stdin, os.Stdout, os.Stderr, qwenapp.RunInteractiveLogin); err != nil {
-		if errors.Is(err, context.Canceled) {
-			return 130
-		}
+	factory, err := configuredRuntimeFactory(config, root, usersettings.NessyAuthToken, defaultRuntimeStarters())
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "start Stepan:", err)
 		return 2
 	}
-
-	session := specflow.NewSession(runtimeFactory(config, root))
+	session := specflow.NewSession(factory)
 	defer session.Close()
 	controller, registry, err := composePlanningFlow(root, session, config)
 	if err != nil {
@@ -73,22 +70,16 @@ func run(ctx context.Context, args []string) int {
 	return 0
 }
 
-type interactiveLoginFunc func(context.Context, string, string, io.Reader, io.Writer, io.Writer) error
-
-func prepareAgentLogin(ctx context.Context, config agentConfig, workspace string, stdin io.Reader, stdout, stderr io.Writer, login interactiveLoginFunc) error {
-	if config.kind != agentQwen || config.executable != "nessy" {
-		return nil
+func configuredRuntimeFactory(config agentConfig, root string, load func() (string, error), starters runtimeStarters) (func(context.Context) (agentruntime.Runtime, error), error) {
+	token := ""
+	if config.kind == agentNessy {
+		var err error
+		token, err = load()
+		if err != nil {
+			return nil, err
+		}
 	}
-	if login == nil {
-		return errors.New("Nessy interactive login is unavailable")
-	}
-	_, _ = fmt.Fprintln(stdout, "\nStepan > Завершите аутентификацию в Nessy, затем выйдите из Nessy CLI для продолжения.")
-	if err := login(ctx, config.executable, workspace, stdin, stdout, stderr); err != nil {
-		return fmt.Errorf("authenticate agent CLI %q: %w", config.executable, err)
-	}
-	_, _ = fmt.Fprintln(stdout, "Stepan > Аутентификация Nessy завершена.")
-	_, _ = fmt.Fprintln(stdout)
-	return nil
+	return runtimeFactoryWithStarters(config, root, starters, token), nil
 }
 
 func composePlanningFlow(root string, session *specflow.Session, config agentConfig) (*specflow.ApplicationController, *specflow.SessionRegistry, error) {
@@ -128,14 +119,14 @@ func runtimeIdentity(config agentConfig) specflow.RuntimeIdentity {
 	return specflow.RuntimeIdentity{Provider: string(config.kind), Model: "default"}
 }
 
-func runtimeFactory(config agentConfig, root string) func(context.Context) (agentruntime.Runtime, error) {
-	return runtimeFactoryWithStarters(config, root, defaultRuntimeStarters())
+func runtimeFactory(config agentConfig, root string, token string) func(context.Context) (agentruntime.Runtime, error) {
+	return runtimeFactoryWithStarters(config, root, defaultRuntimeStarters(), token)
 }
 
 type runtimeStarters struct {
 	codex  func(string, string) (agentruntime.Runtime, error)
 	claude func(context.Context, claudeapp.Config) (agentruntime.Runtime, error)
-	qwen   func(qwenapp.Config) (agentruntime.Runtime, error)
+	nessy  func(nessyapp.Config) (agentruntime.Runtime, error)
 }
 
 func defaultRuntimeStarters() runtimeStarters {
@@ -146,13 +137,13 @@ func defaultRuntimeStarters() runtimeStarters {
 		claude: func(ctx context.Context, config claudeapp.Config) (agentruntime.Runtime, error) {
 			return claudeapp.StartRuntime(ctx, config)
 		},
-		qwen: func(config qwenapp.Config) (agentruntime.Runtime, error) {
-			return qwenapp.StartRuntime(config)
+		nessy: func(config nessyapp.Config) (agentruntime.Runtime, error) {
+			return nessyapp.StartRuntime(config)
 		},
 	}
 }
 
-func runtimeFactoryWithStarters(config agentConfig, root string, starters runtimeStarters) func(context.Context) (agentruntime.Runtime, error) {
+func runtimeFactoryWithStarters(config agentConfig, root string, starters runtimeStarters, token string) func(context.Context) (agentruntime.Runtime, error) {
 	switch config.kind {
 	case agentClaude:
 		return func(ctx context.Context) (agentruntime.Runtime, error) {
@@ -162,12 +153,12 @@ func runtimeFactoryWithStarters(config agentConfig, root string, starters runtim
 				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
 			})
 		}
-	case agentQwen:
+	case agentNessy:
 		return func(context.Context) (agentruntime.Runtime, error) {
-			return starters.qwen(qwenapp.Config{
-				Executable:     config.executable,
+			return starters.nessy(nessyapp.Config{
+				AuthToken:      token,
 				Workspace:      root,
-				JSONContract:   qwenapp.JSONContract,
+				JSONContract:   nessyapp.JSONContract,
 				EnvelopeSchema: specflow.FlowEnvelopeSchema(),
 			})
 		}
