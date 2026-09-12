@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 9/65 implementation tasks complete; task 3.1 awaiting initial review; final review `not_started`.
+- Outcome: `paused_by_user`; 9/65 tasks implemented and accepted; task 3.1 accepted; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -208,3 +208,31 @@ Task3.1 rereviewcycle2 FAIL /root/review_3_1 on4197a01; completedcycles2.002/003
 Task3.1 correction3 frozen: Validatependingacceptance requirescurrentcode equality; RefreshAcceptanceInputs atomicallyupdates spec/config, archivesfinal and reopensstalepending withhistory; RecordFinalAcceptance archivesexistingbeforereplacement. Directtests restoredstalecode/pendinginputrefresh/finalarchival/reacceptancevalidation. Focusedstate/archPASS diffcheckPASS. Fullhelpertask-3.1-correction-3 session82875 runningstable; completedcycles2/no correction3commityet. Controllerobservesexternalinputs viaRefreshAcceptanceInputs/ObserveCodeState; domainnoGit. Stopafterthirdrereview regardless peruser/skilllimit.
 
 Task3.1 correction3 mandatoryfullchecks session82875 PASS TEST_EXIT=0 BUILD_EXIT=0; state0.024s architecture5.185s spec41.238s; logs .tmp/task-3.1-correction-3-{tests,build}.log; knownnonfatalstatcachewarningonly. Checkboxcomplete/reviewawaiting_review; completedcycles2. Nextseparatecorrection3commit/lastsamereviewerround.
+
+Task3.1 correction3commit verifiedc631561647249942a6ac8f2e18c55d3ed63ea89f parent4197a016fec60446b952b467e7ec17d617a42485 originaltaskbasefd914fbee861f7d63a6b57f69550c8a3ae11a97f. Cleantreeaftercommit. Pendingrereviewcycle3 /root/review_3_1; completedcycles2 untilresult. Stopafterthisrereview; substantialremaining triggersskillglobalstop.
+
+Task3.1 rereviewcycle3 PASS /root/review_3_1 on c631561647249942a6ac8f2e18c55d3ed63ea89f:001resolved,002/003remainresolved, nonewfindings. Independentfocused state0.021s/architecture4.071s PASS; frozenfulllogs/diffchecksPASS. Completedcorrectioncycles3; nopendingcycle; implementation/reviewaccepted. No furthercorrections or tasks dispatched.
+
+## User-requested pause checkpoint
+- Paused after task3.1 acceptance per user instruction, not a blocker and not autonomous/full completion. Tasks1.1,1.2,2.1-2.6,3.1 accepted (9/65). Next task3.2 unstarted; finalreviewnot_started; unresolvedfindingsnone.
+- Branchimprove; fixedbaseline412429f68c7e0715af46802027ab8ed386f00d94; HEADc631561647249942a6ac8f2e18c55d3ed63ea89f.
+- This continuation localcommits:44d3b9c,4af14a9(task2.5 corrections1/2);fd914fb(task2.6);a57dcca(task3.1);f2f6e52,4197a01,c631561(task3.1 corrections1/2/3). Exacthashes/checklogs/reviews above.
+- Latest full go test ./... and Windowsbuild PASS on thirdcorrectiontree; macOScrossbuild PASS at task2.5 corrections, not claimedasfinalHEADruntimeverification. Wholechangefinalchecks/review stillpending.
+- RealCodex/Claude/Nessy smoke and nativeAppleSilicon execution not_run. Separatemanualplan/script still task14.3/14.6 preparation pending; noactualproviderinvocation. No push/PR/merge/publication/sync/archive.
+- Agreed initial tasks/progress changes preserved in authorizedcommits; latest review/pause checkpoint remains localuncommitted autopilot-progress.md. Source/index clean after lastcommit; verifyGit onresume. Resume requires user instruction, preservecycles/baseline/rolemodels.
+
+## Resume after user-requested pause
+
+- User instructed `продолжай`; pause cleared. Reconciled branch `improve`, HEAD `c631561647249942a6ac8f2e18c55d3ed63ea89f`, fixed baseline ancestry, OpenSpec ready at 9/65, clean index, and only this expected progress checkpoint modified.
+- Outcome: `in_progress`; next task 3.2. Real Codex/Claude/Nessy smoke and native Apple Silicon execution remain manual `not_run`; no publication, spec sync, or archive authorized.
+
+### 3.2 — run directory and related files
+
+- Base: `c631561647249942a6ac8f2e18c55d3ed63ea89f`; dependency 3.1 accepted.
+- Acceptance: task 3.2 and implementation-run-state storage requirement; create injectable `~/.stepan/runs/<run-id>/` layout, durably publish related result files before references with hashes, reject unavailable references, and never auto-delete open or closed runs.
+- Implementation: `implementing`; implementer `/root/implement_3_2` (`gpt-5.6-terra`/`high`); reviewer `not_started`; no commits, findings, or correction cycles.
+- JSONL/SQLite sequencing is task 3.3 and recovery is task 3.4. Next: focused implementation, mandatory stable checks, local commit, fresh independent review.
+
+Task 3.2 frozen candidate: `internal/runstore` owns `<stepan-root>/runs/<safe-run-id>/files`; immutable streamed SHA-256 publication fsyncs the temporary file, creates the final name exclusively, syncs the directory where supported, and returns an `EvidenceRef` only afterward. Verification/read reject missing, altered, non-regular, and symlink artifacts; run/path components reject traversal and symlink escape. Reopening the store preserves files for both open and closed run fixtures; no cleanup API exists. Focused runstore/architecture tests, runstore vet, Darwin/arm64 CGO-free package build, and diff check passed. Full stable validation `task-3.2` with Windows build and macOS/arm64 cross-build is running as session 73095 on the frozen candidate. No commit yet; correction cycles: 0.
+
+Task 3.2 stable mandatory validation session 73095 passed: `TEST_EXIT=0`, `BUILD_EXIT=0`, `CROSS_BUILD_EXIT=0`; runstore 0.047s, architecture 5.201s, flows/spec 41.317s. Logs: `.tmp/task-3.2-{tests,build,cross-build}.log`. Known nonfatal Go module stat-cache access warnings did not affect exit codes. Implementation complete; review `awaiting_review`; correction cycles: 0. Next: implementation commit and fresh independent reviewer.
