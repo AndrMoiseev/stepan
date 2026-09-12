@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 7/65 implementation tasks complete; task 2.5 awaiting correction review; final review `not_started`.
+- Outcome: `in_progress`; 8/65 implementation tasks complete; task 2.6 awaiting initial review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -167,3 +167,19 @@ Task2.6 candidate ready: RoleProfile defaults, ValidateLoopRoles excludes bootst
 Task2.6 first fullcheck session63368 passed tests/build, but limits_test.go expanded after run began (file15:25:23 vs start15:25:14 local). Superseded as candidate evidence; full stable rerun required. No implementation defect/reviewcycle consumed; source frozen after implementer final report.
 
 Task2.6 final stable fullcheck session76731 PASS TEST_EXIT=0 BUILD_EXIT=0; config0.264s spec41.342s; logs .tmp/task-2.6-final-{tests,build}.log. Nonfatal module statcachewarning only. Allsource unchanged during finalrun. Implementation complete; review awaiting_review, no corrections/completedcycles0. Next implementationcommit and fresh sol/xhighreview.
+
+Task2.6 implementationcommit verifiedfd914fbee861f7d63a6b57f69550c8a3ae11a97f, base4af14a98fd1fdd814da13204405a6ba4f894dbab; clean tree aftercommit. Initialreviewpending, correctionsnone completedcycles0. Next freshreviewer.
+Task2.6 reviewer /root/review_2_6 created gpt-5.6-sol/xhigh, initialreviewfd914fb pending; next action reviewdisposition.
+
+Task2.6 accepted by /root/review_2_6: PASS nofindings onfd914fb. Independent focused config test -count=1 PASS0.654s and diffcheckclean. Defaults/overrides/bootstrap separation matchspec; runtimevalidation deferred6.5. Completedcycles0, no corrections. Next3.1.
+
+### 3.1 - machine state model
+- Basefd914fbee861f7d63a6b57f69550c8a3ae11a97f; dependenciesfoundations/configaccepted.
+- Acceptance tasks3.1, run-state/loop specs anddesign: runstates, ordered hierarchy, assignments/briefversions, operations/results/acceptance evidence, acceptedawaitingcommit distinct; validtransitions, wholeleaves, parents afterchildren, completionaftercommitevidence notMarkdown.
+- Freshimplementer /root/implement_3_1 gpt-5.6-terra/high; implementing, reviewer not_started, no commits/findings/cycles. Pure domainmodel; storage3.2-3.4/counters3.5-3.6/controllerlater deferred. Required focused/fulltests/Windowsbuild; crossbuild ifapplicable. Next implementation/frozenchecks/commit/review.
+
+Task3.1 frozen candidate: dependency-free shared internal/implementationstate with runidentity/inputs, orderedhierarchy and derivedparents, whole-prefix assignments, briefs/operations/results, exactstate acceptance/pendingcommit and commit-onlycompletion, pause/close/success invariants. Narrow arch-go dependency permissions for impl_loop/runstore and nointernalimports statepackage. Focused state/architecture tests PASS, diffcheckPASS. Full helper task-3.1 session11654 running on frozen tree, Windowsbuild required; no platformcode so taskcrossbuildnotrequired. No manualcase. Next mandatorychecks/commit/freshreview.
+
+User steering: stop after current step. Coordinator interpreted current step as task3.1 through mandatorychecks/localcommit/independentreview and allowedcorrections; do not start3.2. Save final disposition and localprogress then yield. Fullchecks11654 currentlyrunning.
+
+Task3.1 stablemandatorychecks session11654 PASS TEST_EXIT=0 BUILD_EXIT=0; state0.020s architecture5.166s spec41.421s. Logs .tmp/task-3.1-{tests,build}.log; knownnonfatalstatcachewarning. Implementationcomplete, reviewawaiting_review; no corrections/cycles0. Nextlocalcommit/freshreview; stopafter3.1 peruser.

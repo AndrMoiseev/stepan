@@ -63,20 +63,31 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/runstore$'
         - '^github\.com/AndrMoiseev/stepan/internal/checkexec$'
         - '^github\.com/AndrMoiseev/stepan/internal/implementationconfig$'
+        - '^github\.com/AndrMoiseev/stepan/internal/implementationstate$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/spec(?:/.+)?$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|runstore|checkexec)$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|checkexec)$'
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/runstore$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+        - '^github\.com/AndrMoiseev/stepan/internal/implementationstate$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|runstore|checkexec)$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/(spec|impl_loop)(?:/.+)?$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/implementationconfig$'
+    shouldNotDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/.+$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/implementationstate$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
