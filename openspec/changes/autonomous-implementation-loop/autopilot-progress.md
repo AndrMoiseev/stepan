@@ -96,3 +96,12 @@ Task2.3 session97837 test/build PASS, but coordinator acceptance check confirmed
 Task2.3 empty-name fix applied by same implementer; focused config tests PASS(0.029s). Final full helper 	ask-2.3-final running session90988; logs .tmp/task-2.3-final-tests.log, .tmp/task-2.3-final-build.log. Source stable, no commit yet.
 
 Task2.3 final stable validation session90988 exited0, TEST_EXIT=0, BUILD_EXIT=0. All packages passed (flows/spec41.274s, implementationconfig0.037s). Empty-name acceptance defect fixed before first commit; no correction cycle consumed. Only known nonfatal telemetry/module-cache warnings. Next: implementation commit/review. TimeoutSeconds omitted or0 normalizes600; this choice disclosed for review.
+
+Task2.3 implementation commit verified252bc2f1f829b0fa9aab6e9c3d9b23bf63da780f, base4b513475e3a9e66c2c6a9308202f2cf51ebce727; initial review pending, no corrections/cycles.
+
+Task2.3 reviewer /root/review_2_3 (gpt-5.6-sol/xhigh) reviewing252bc2f. Source stable; next initial review.
+
+Task2.3 initial review /root/review_2_3: TASK-2.3-001, Medium, substantial specification violation. checks.go parseChecks/selection accepts missing/null required args and null array/env elements because ordinary Go decoding erases presence/null distinctions. A command may run unintended zero/empty arguments and falsely pass. Require presence-aware command validation for declared common and platform commands; args must exist as array (empty array allowed), null elements/env values invalid. Other task behavior accepted. Task2.3 checkbox reopened; implementation not accepted, review `correcting`. Same implementer assigned correction1 against252bc2f; no correction commit yet, completed cycles0. Next: fix/tests/fullchecks, separate correction commit, rereview same reviewer. No new requirements needed.
+Task2.3 correction1 candidate ready: TASK-2.3-001 addressed with presence-aware parsing for all declared common/platform commands, strict program/args/env types, explicit empty args preserved across copy/JSON. Focused tests PASS(0.030s). Full helper task-2.3-correction-1 running session21658, logs .tmp/task-2.3-correction-1-tests.log/build.log. Pending correctioncommit, completed cycles still0.
+
+Task2.3 correction1 full checks session21658 exited0 TEST_EXIT=0 BUILD_EXIT=0, allpackages PASS (flows/spec41.328s config0.038s), Windows build PASS. Required commandargs shape validated; implementation checkbox complete again, awaiting rereview. Next: separate correction commit then same reviewer; completed cycles remains0 until rereview returns.

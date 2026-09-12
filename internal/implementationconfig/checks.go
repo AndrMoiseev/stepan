@@ -111,13 +111,18 @@ func (configuration Configuration) SelectHostChecks() (CheckSelection, error) {
 }
 
 func parseChecks(raw json.RawMessage) (map[string]CheckDefinition, error) {
-	var definitions map[string]CheckDefinition
-	if err := json.Unmarshal(raw, &definitions); err != nil || definitions == nil {
+	var rawDefinitions map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawDefinitions); err != nil || rawDefinitions == nil {
 		return nil, configurationError("project", "checks must be an object")
 	}
-	for name, definition := range definitions {
+	definitions := make(map[string]CheckDefinition, len(rawDefinitions))
+	for name, rawDefinition := range rawDefinitions {
 		if name == "" {
 			return nil, configurationError("project", "checks must use non-empty names")
+		}
+		definition, err := parseCheckDefinition(name, rawDefinition)
+		if err != nil {
+			return nil, err
 		}
 		if !validCheckKind(definition.Kind) {
 			return nil, configurationError("project", fmt.Sprintf("checks.%s has unsupported kind %q", name, definition.Kind))
@@ -131,6 +136,96 @@ func parseChecks(raw json.RawMessage) (map[string]CheckDefinition, error) {
 		definitions[name] = definition
 	}
 	return definitions, nil
+}
+
+func parseCheckDefinition(name string, raw json.RawMessage) (CheckDefinition, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return CheckDefinition{}, configurationError("project", fmt.Sprintf("checks.%s must be an object", name))
+	}
+
+	var definition struct {
+		Kind           CheckKind `json:"kind"`
+		CWD            string    `json:"cwd"`
+		TimeoutSeconds int       `json:"timeout_seconds"`
+	}
+	if err := json.Unmarshal(raw, &definition); err != nil {
+		return CheckDefinition{}, configurationError("project", fmt.Sprintf("checks.%s has invalid fields", name))
+	}
+	result := CheckDefinition{
+		Kind:           definition.Kind,
+		CWD:            definition.CWD,
+		TimeoutSeconds: definition.TimeoutSeconds,
+	}
+	if commandRaw, ok := fields["command"]; ok {
+		command, err := parseDeclaredCheckCommand("checks."+name+".command", commandRaw)
+		if err != nil {
+			return CheckDefinition{}, err
+		}
+		result.Command = &command
+	}
+	if platformsRaw, ok := fields["platforms"]; ok {
+		var rawPlatforms map[string]json.RawMessage
+		if err := json.Unmarshal(platformsRaw, &rawPlatforms); err != nil || rawPlatforms == nil {
+			return CheckDefinition{}, configurationError("project", fmt.Sprintf("checks.%s.platforms must be an object", name))
+		}
+		result.Platforms = make(map[string]*CheckCommand, len(rawPlatforms))
+		for platform, commandRaw := range rawPlatforms {
+			command, err := parseDeclaredCheckCommand("checks."+name+".platforms."+platform, commandRaw)
+			if err != nil {
+				return CheckDefinition{}, err
+			}
+			result.Platforms[platform] = &command
+		}
+	}
+	return result, nil
+}
+
+func parseDeclaredCheckCommand(field string, raw json.RawMessage) (CheckCommand, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return CheckCommand{}, configurationError("project", field+" must be an object")
+	}
+
+	programRaw, ok := fields["program"]
+	var program string
+	if !ok || isNull(programRaw) || json.Unmarshal(programRaw, &program) != nil || program == "" {
+		return CheckCommand{}, configurationError("project", field+".program must be a non-empty string")
+	}
+	argsRaw, ok := fields["args"]
+	if !ok || isNull(argsRaw) {
+		return CheckCommand{}, configurationError("project", field+".args must be an array of strings")
+	}
+	var rawArgs []json.RawMessage
+	if err := json.Unmarshal(argsRaw, &rawArgs); err != nil || rawArgs == nil {
+		return CheckCommand{}, configurationError("project", field+".args must be an array of strings")
+	}
+	args := make([]string, len(rawArgs))
+	for index, rawArg := range rawArgs {
+		if isNull(rawArg) || json.Unmarshal(rawArg, &args[index]) != nil {
+			return CheckCommand{}, configurationError("project", field+".args must be an array of strings")
+		}
+	}
+
+	command := CheckCommand{Program: program, Args: args}
+	if envRaw, ok := fields["env"]; ok {
+		if isNull(envRaw) {
+			return CheckCommand{}, configurationError("project", field+".env must be an object of strings")
+		}
+		var rawEnv map[string]json.RawMessage
+		if err := json.Unmarshal(envRaw, &rawEnv); err != nil || rawEnv == nil {
+			return CheckCommand{}, configurationError("project", field+".env must be an object of strings")
+		}
+		command.Env = make(map[string]string, len(rawEnv))
+		for name, rawValue := range rawEnv {
+			var value string
+			if isNull(rawValue) || json.Unmarshal(rawValue, &value) != nil {
+				return CheckCommand{}, configurationError("project", field+".env must be an object of strings")
+			}
+			command.Env[name] = value
+		}
+	}
+	return command, nil
 }
 
 func parseRequiredChecks(raw json.RawMessage) ([]string, error) {
@@ -175,7 +270,9 @@ func selectCheck(name string, definition CheckDefinition, platform Platform) Sel
 }
 
 func copyCommand(command CheckCommand) CheckCommand {
-	command.Args = append([]string(nil), command.Args...)
+	if command.Args != nil {
+		command.Args = append([]string{}, command.Args...)
+	}
 	if command.Env != nil {
 		env := make(map[string]string, len(command.Env))
 		for key, value := range command.Env {
