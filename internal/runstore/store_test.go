@@ -268,6 +268,63 @@ func TestReadUsesOneVerifiedHandle(t *testing.T) {
 	}
 }
 
+func TestVerificationUsesFixedBufferForLargeArtifacts(t *testing.T) {
+	const size = 8 * 1024 * 1024
+	chunk := []byte("0123456789abcdef")
+	digest := repeatedDigest(chunk, size)
+	reader := &maximumReadReader{remaining: size, chunk: chunk, maximum: verificationBuffer}
+	if err := verifyDigest(reader, digest); err != nil {
+		t.Fatalf("streaming digest verification: %v", err)
+	}
+	if reader.largestRequest > verificationBuffer {
+		t.Fatalf("verification requested %d bytes, limit is %d", reader.largestRequest, verificationBuffer)
+	}
+
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Create("run-large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := run.filePath("large-result")
+	if err := writeRepeatedFile(target, chunk, size); err != nil {
+		t.Fatal(err)
+	}
+	reference := implementationstate.EvidenceRef{ID: "large-result", Digest: digest}
+	if err := os.WriteFile(run.markerPath(target), []byte(digest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.VerifyReference(reference); err != nil {
+		t.Fatalf("large reference verification: %v", err)
+	}
+	if err := verifyPublication(target, run.markerPath(target), digest); err != nil {
+		t.Fatalf("duplicate publication verification: %v", err)
+	}
+}
+
+func TestVerifyReferenceRejectsOversizedMarker(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Create("run-marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := run.Publish("result", []byte("contents"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(run.markerPath(run.filePath(reference.ID)), []byte(reference.Digest+"\nextra"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.VerifyReference(reference); !errors.Is(err, ErrReferenceIntegrity) {
+		t.Fatalf("oversized marker error = %v, want integrity failure", err)
+	}
+}
+
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -291,6 +348,57 @@ func (r *gatedReader) Read(p []byte) (int, error) {
 }
 
 var _ io.Reader = (*gatedReader)(nil)
+
+type maximumReadReader struct {
+	remaining      int
+	chunk          []byte
+	maximum        int
+	largestRequest int
+}
+
+func (r *maximumReadReader) Read(p []byte) (int, error) {
+	if len(p) > r.largestRequest {
+		r.largestRequest = len(p)
+	}
+	if len(p) > r.maximum {
+		return 0, errors.New("reader request exceeds streaming buffer")
+	}
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	count := min(len(p), r.remaining)
+	for offset := 0; offset < count; {
+		offset += copy(p[offset:count], r.chunk)
+	}
+	r.remaining -= count
+	return count, nil
+}
+
+func repeatedDigest(chunk []byte, size int) string {
+	hash := sha256.New()
+	for remaining := size; remaining > 0; {
+		count := min(remaining, len(chunk))
+		_, _ = hash.Write(chunk[:count])
+		remaining -= count
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func writeRepeatedFile(path string, chunk []byte, size int) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	for remaining := size; remaining > 0; {
+		count := min(remaining, len(chunk))
+		if _, err := file.Write(chunk[:count]); err != nil {
+			return err
+		}
+		remaining -= count
+	}
+	return file.Close()
+}
 
 var runstoreTestHookMu sync.Mutex
 

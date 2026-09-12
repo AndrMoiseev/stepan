@@ -29,6 +29,8 @@ const (
 	// FilesDirectoryName is the run-local directory for immutable related
 	// files. The journal and state database are added by later store layers.
 	FilesDirectoryName = "files"
+	markerSize         = sha256.Size*2 + 1
+	verificationBuffer = 32 * 1024
 )
 
 var (
@@ -243,8 +245,23 @@ func (r *Run) PublishReader(id implementationstate.EvidenceID, source io.Reader)
 // VerifyReference checks that a previously published reference is present,
 // regular, and unchanged. Event writers use it before accepting a reference.
 func (r *Run) VerifyReference(reference implementationstate.EvidenceRef) error {
-	_, err := r.readVerified(reference)
-	return err
+	if r == nil {
+		return fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
+	}
+	if err := validReference(reference); err != nil {
+		return err
+	}
+	if err := requireDirectory(r.directory); err != nil {
+		return err
+	}
+	if err := requireDirectory(r.files); err != nil {
+		return err
+	}
+	target := r.filePath(reference.ID)
+	if err := verifyMarker(r.markerPath(target), reference.Digest); err != nil {
+		return err
+	}
+	return verifyFile(target, reference.Digest)
 }
 
 // Read returns a verified copy of a related file. It is deliberately routed
@@ -296,23 +313,33 @@ func (r *Run) publishTemporary(temporary, target, digest string) error {
 }
 
 func (r *Run) readVerified(reference implementationstate.EvidenceRef) ([]byte, error) {
+	if err := r.verifyReferenceMarker(reference); err != nil {
+		return nil, err
+	}
+	return readVerifiedFile(r.filePath(reference.ID), reference.Digest)
+}
+
+// verifyReferenceMarker validates a reference and its bounded publication
+// marker. Read then verifies and materializes the artifact through one opened
+// handle, while VerifyReference uses the streaming artifact verifier below.
+func (r *Run) verifyReferenceMarker(reference implementationstate.EvidenceRef) error {
 	if r == nil {
-		return nil, fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
+		return fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
 	}
 	if err := validReference(reference); err != nil {
-		return nil, err
+		return err
 	}
 	if err := requireDirectory(r.directory); err != nil {
-		return nil, err
+		return err
 	}
 	if err := requireDirectory(r.files); err != nil {
-		return nil, err
+		return err
 	}
 	target := r.filePath(reference.ID)
 	if err := verifyMarker(r.markerPath(target), reference.Digest); err != nil {
-		return nil, err
+		return err
 	}
-	return readVerifiedFile(target, reference.Digest)
+	return nil
 }
 
 func (r *Run) markerPath(target string) string { return target + ".published" }
@@ -349,14 +376,16 @@ func verifyPublication(target, marker, digest string) error {
 }
 
 func verifyMarker(path, digest string) error {
-	data, err := readRegularFile(path)
-	if err != nil {
-		return err
-	}
-	if string(data) != digest+"\n" {
-		return fmt.Errorf("%w: publication marker does not match artifact", ErrReferenceIntegrity)
-	}
-	return nil
+	return withRegularFile(path, func(file *os.File) error {
+		data, err := io.ReadAll(io.LimitReader(file, markerSize+1))
+		if err != nil {
+			return fmt.Errorf("read publication marker: %w", err)
+		}
+		if len(data) != markerSize || string(data) != digest+"\n" {
+			return fmt.Errorf("%w: publication marker does not match artifact", ErrReferenceIntegrity)
+		}
+		return nil
+	})
 }
 
 func removeUnpublished(target, marker, directory string) error {
@@ -462,54 +491,68 @@ func requireDirectory(path string) error {
 }
 
 func verifyFile(path, digest string) error {
-	_, err := readVerifiedFile(path, digest)
-	return err
+	return withRegularFile(path, func(file *os.File) error {
+		return verifyDigest(file, digest)
+	})
 }
 
 func readVerifiedFile(path, digest string) ([]byte, error) {
-	data, err := readRegularFile(path)
-	if err != nil {
-		return nil, err
-	}
-	sum := sha256.Sum256(data)
-	if hex.EncodeToString(sum[:]) != digest {
-		return nil, fmt.Errorf("%w: %s", ErrReferenceIntegrity, path)
-	}
-	return data, nil
+	var data []byte
+	err := withRegularFile(path, func(file *os.File) error {
+		var err error
+		data, err = io.ReadAll(file)
+		if err != nil {
+			return fmt.Errorf("read published artifact: %w", err)
+		}
+		sum := sha256.Sum256(data)
+		if hex.EncodeToString(sum[:]) != digest {
+			return fmt.Errorf("%w: %s", ErrReferenceIntegrity, path)
+		}
+		return nil
+	})
+	return data, err
 }
 
-// readRegularFile opens and reads one handle after rejecting a path-level link.
-// The opened handle is statted and consumed directly, so Read cannot validate
-// one file and return another after a path replacement.
-func readRegularFile(path string) ([]byte, error) {
+// withRegularFile opens a single regular handle after rejecting a path-level
+// link. Consumers hash or read that handle directly, so they cannot validate
+// one file and consume another after a path replacement.
+func withRegularFile(path string, consume func(*os.File) error) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("%w: %s", ErrReferenceUnavailable, path)
+		return fmt.Errorf("%w: %s", ErrReferenceUnavailable, path)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("inspect published artifact: %w", err)
+		return fmt.Errorf("inspect published artifact: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: artifact is not a regular file", ErrUnsafePath)
+		return fmt.Errorf("%w: artifact is not a regular file", ErrUnsafePath)
 	}
 	if beforeArtifactOpenHook != nil {
 		beforeArtifactOpenHook(path)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open published artifact: %w", err)
+		return fmt.Errorf("open published artifact: %w", err)
 	}
 	defer file.Close()
 	opened, err := file.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat opened artifact: %w", err)
+		return fmt.Errorf("stat opened artifact: %w", err)
 	}
 	if !opened.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: opened artifact is not a regular file", ErrUnsafePath)
+		return fmt.Errorf("%w: opened artifact is not a regular file", ErrUnsafePath)
 	}
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("read published artifact: %w", err)
+	return consume(file)
+}
+
+func verifyDigest(source io.Reader, digest string) error {
+	hash := sha256.New()
+	buffer := make([]byte, verificationBuffer)
+	if _, err := io.CopyBuffer(hash, source, buffer); err != nil {
+		return fmt.Errorf("hash published artifact: %w", err)
 	}
-	return data, nil
+	if hex.EncodeToString(hash.Sum(nil)) != digest {
+		return fmt.Errorf("%w", ErrReferenceIntegrity)
+	}
+	return nil
 }
