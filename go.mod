@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/mattn/go-colorable v0.1.13
 	github.com/severity1/claude-agent-sdk-go v0.6.22
+	github.com/yuin/goldmark v1.4.13
 	golang.org/x/sys v0.42.0
 )
 
