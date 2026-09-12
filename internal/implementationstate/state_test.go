@@ -223,6 +223,69 @@ func TestObserveCodeStateInvalidatesAcceptedAssignmentAndFinalAcceptance(t *test
 	}
 }
 
+func TestValidateRejectsRestoredAcceptedAssignmentWithStaleCodeState(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "assignment-1")
+	run.CurrentState = EvidenceRef{ID: "changed-code", Digest: "changed-code-digest"}
+	if err := run.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Validate() stale pending code state error = %v, want invalid state", err)
+	}
+}
+
+func TestRefreshAcceptanceInputsAtomicallyReopensPendingAndArchivesFinalEvidence(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "assignment-1")
+	newConfig := EvidenceRef{ID: "config-2", Digest: "config-digest-2"}
+	if err := run.RefreshAcceptanceInputs(testBasis().Specification, newConfig); err != nil {
+		t.Fatal(err)
+	}
+	assignment := run.Assignments[0]
+	if assignment.Status != AssignmentActive || assignment.Acceptance != nil || len(assignment.AcceptanceHistory) != 1 || run.LeafStatus["task"] != TaskPending {
+		t.Fatalf("RefreshAcceptanceInputs() did not reopen pending assignment: %#v", assignment)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate() after input refresh error = %v", err)
+	}
+
+	run = newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "assignment-1")
+	if err := run.CommitAssignment("assignment-1", CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	final := addFinalEvidence(t, run, "final", acceptedState())
+	if err := run.RecordFinalAcceptance(final); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RefreshAcceptanceInputs(testBasis().Specification, newConfig); err != nil {
+		t.Fatal(err)
+	}
+	if run.FinalAcceptance != nil || len(run.FinalAcceptanceHistory) != 1 {
+		t.Fatalf("RefreshAcceptanceInputs() did not archive final evidence: %#v", run)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate() with archived final evidence error = %v", err)
+	}
+
+	basis := run.currentBasis()
+	refreshed := addFinalEvidence(t, run, "refreshed", acceptedState())
+	refreshed.Basis = basis
+	if err := run.RecordFinalAcceptance(refreshed); err != nil {
+		t.Fatalf("RecordFinalAcceptance() refreshed basis error = %v", err)
+	}
+	if len(run.FinalAcceptanceHistory) != 1 {
+		t.Fatalf("refreshed final acceptance should retain exactly prior final history, got %d", len(run.FinalAcceptanceHistory))
+	}
+}
+
 func TestSucceedRequiresFinalChecksReviewAndNoOpenFindings(t *testing.T) {
 	run := newSingleTaskRun(t)
 	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {

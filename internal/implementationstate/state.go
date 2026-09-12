@@ -334,8 +334,8 @@ func (r *Run) Validate() error {
 		if err := r.validateAssignment(assignment); err != nil {
 			return err
 		}
-		if assignment.Status == AssignmentAcceptedAwaitingCommit && assignment.Acceptance.Basis != r.currentBasis() {
-			return fmt.Errorf("%w: pending acceptance has stale basis", ErrInvalidState)
+		if assignment.Status == AssignmentAcceptedAwaitingCommit && (assignment.Acceptance.Basis != r.currentBasis() || assignment.Acceptance.State != r.CurrentState) {
+			return fmt.Errorf("%w: pending acceptance has stale basis or code state", ErrInvalidState)
 		}
 		if len(assignment.TaskIDs) > len(leafOrder)-leafCursor || !slices.Equal(assignment.TaskIDs, leafOrder[leafCursor:leafCursor+len(assignment.TaskIDs)]) {
 			return fmt.Errorf("%w: assignment tasks are not a contiguous leaf prefix", ErrInvalidState)
@@ -669,6 +669,32 @@ func (r *Run) ObserveCodeState(state EvidenceRef) error {
 	return nil
 }
 
+// RefreshAcceptanceInputs records newly observed specification and effective
+// configuration versions as one transition. It archives final evidence and
+// reopens a pending acceptance, so no evidence from the old inputs can be
+// reused for the refreshed run.
+func (r *Run) RefreshAcceptanceInputs(specification, configuration EvidenceRef) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if !specification.valid() || !configuration.valid() {
+		return fmt.Errorf("%w: invalid acceptance inputs", ErrInvalidState)
+	}
+	if r.Identity.Specification == specification && r.Identity.Configuration == configuration {
+		return nil
+	}
+	r.Identity.Specification = specification
+	r.Identity.Configuration = configuration
+	r.invalidateFinalAcceptance()
+	for index := range r.Assignments {
+		assignment := &r.Assignments[index]
+		if assignment.Status == AssignmentAcceptedAwaitingCommit && assignment.Acceptance != nil {
+			r.reopenAssignment(assignment)
+		}
+	}
+	return nil
+}
+
 func (r *Run) reopenAssignment(assignment *Assignment) {
 	assignment.AcceptanceHistory = append(assignment.AcceptanceHistory, *cloneAcceptance(*assignment.Acceptance))
 	assignment.Acceptance = nil
@@ -721,6 +747,7 @@ func (r *Run) RecordFinalAcceptance(evidence FinalAcceptanceEvidence) error {
 	if err := r.validateFinalAcceptance(evidence, true); err != nil {
 		return err
 	}
+	r.invalidateFinalAcceptance()
 	r.FinalAcceptance = cloneFinalAcceptance(evidence)
 	return nil
 }
