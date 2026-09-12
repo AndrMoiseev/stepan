@@ -558,6 +558,17 @@ func replaceBeforeJournalAppendHook(t *testing.T, replacement func()) {
 	})
 }
 
+func replaceAfterJournalSyncHook(t *testing.T, replacement func() error) {
+	t.Helper()
+	stateStoreTestHookMu.Lock()
+	original := afterJournalSyncHook
+	afterJournalSyncHook = replacement
+	t.Cleanup(func() {
+		afterJournalSyncHook = original
+		stateStoreTestHookMu.Unlock()
+	})
+}
+
 func TestStateStoreFilesStayInRunDirectory(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)
@@ -1131,6 +1142,46 @@ func TestRecordAttemptStartLeavesCallerUntouchedUntilDurableAndRetriesPendingSta
 	}
 	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 2 {
 		t.Fatalf("pending retry journal = sequence=%d, error=%v", sequence, err)
+	}
+}
+
+func TestRecordAttemptStartKeepsAfterJournalSyncFailurePending(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	model := attemptStartModel(t, run)
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	staleEvent, err := implementationstate.NewRunStateEvent(1, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := staleEvent.State
+	replaceAfterJournalSyncHook(t, func() error { return errors.New("after journal sync") })
+	first, event, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
+	if err == nil || first != (implementationstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
+		t.Fatalf("after-sync attempt = %#v, event=%d, error=%v", first, event.Sequence, err)
+	}
+	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
+		t.Fatalf("caller did not retain durably appended attempt: %#v", got)
+	}
+	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 2 {
+		t.Fatalf("after-sync durable journal = sequence=%d, error=%v", sequence, err)
+	}
+	if _, err := state.Record(context.Background(), stale); !errors.Is(err, ErrPendingEvent) || state.pending == nil {
+		t.Fatalf("stale Record() = %v, pending=%#v; want retained pending event", err, state.pending)
+	}
+	afterJournalSyncHook = nil
+	second, retried, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
+	if err != nil || second != first || retried.Sequence != 2 {
+		t.Fatalf("after-sync pending retry = %#v, event=%d, error=%v", second, retried.Sequence, err)
+	}
+	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
+		t.Fatalf("after-sync retry incremented attempt: %#v", got)
 	}
 }
 

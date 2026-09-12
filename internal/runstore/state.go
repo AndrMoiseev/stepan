@@ -175,10 +175,14 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 	if err != nil {
 		return implementationstate.Event{}, err
 	}
-	if err := appendJournal(s.journalPath, data); err != nil {
-		return implementationstate.Event{}, err
+	journal := appendJournalResult(s.journalPath, data)
+	if !journal.durable {
+		return implementationstate.Event{}, journal.err
 	}
 	s.pending = &pendingEvent{data: bytes.Clone(data)}
+	if journal.err != nil {
+		return eventWithError(s.pending.data, journal.err)
+	}
 	if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
 		return eventWithError(s.pending.data, err)
 	}
@@ -748,43 +752,56 @@ func eventWithError(data []byte, operationErr error) (implementationstate.Event,
 	return event, operationErr
 }
 
+// journalAppendResult distinguishes a definite pre-durability failure from a
+// failure after the exact event bytes reached durable storage. The latter must
+// remain pending: blindly treating it as absent could repeat an external
+// action after a crash.
+type journalAppendResult struct {
+	durable bool
+	err     error
+}
+
 func appendJournal(path string, data []byte) error {
+	return appendJournalResult(path, data).err
+}
+
+func appendJournalResult(path string, data []byte) journalAppendResult {
 	if err := requireRegularOrAbsent(path); err != nil {
-		return err
+		return journalAppendResult{err: err}
 	}
 	if beforeJournalAppendHook != nil {
 		beforeJournalAppendHook()
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("open event journal: %w", err)
+		return journalAppendResult{err: fmt.Errorf("open event journal: %w", err)}
 	}
 	if _, err := file.Write(data); err != nil {
 		file.Close()
-		return fmt.Errorf("append event journal: %w", err)
+		return journalAppendResult{err: fmt.Errorf("append event journal: %w", err)}
 	}
 	if beforeJournalSyncHook != nil {
 		if err := beforeJournalSyncHook(); err != nil {
 			file.Close()
-			return err
+			return journalAppendResult{err: err}
 		}
 	}
 	if err := file.Sync(); err != nil {
 		file.Close()
-		return fmt.Errorf("sync event journal: %w", err)
+		return journalAppendResult{err: fmt.Errorf("sync event journal: %w", err)}
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close event journal: %w", err)
+		return journalAppendResult{durable: true, err: fmt.Errorf("close event journal: %w", err)}
 	}
 	if err := syncDirectory(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("sync event journal directory: %w", err)
+		return journalAppendResult{durable: true, err: fmt.Errorf("sync event journal directory: %w", err)}
 	}
 	if afterJournalSyncHook != nil {
 		if err := afterJournalSyncHook(); err != nil {
-			return err
+			return journalAppendResult{durable: true, err: err}
 		}
 	}
-	return nil
+	return journalAppendResult{durable: true}
 }
 
 func journalLastSequence(path string) (uint64, error) {
