@@ -107,6 +107,53 @@ func TestStateStoreSyncsJournalBeforeProjectionAndRetriesPendingEventOnce(t *tes
 	}
 }
 
+func TestStateStoreRechecksEvidenceAfterJournalSyncBeforeProjection(t *testing.T) {
+	stateStoreTestHookMu.Lock()
+	defer stateStoreTestHookMu.Unlock()
+	original := afterJournalSyncHook
+	defer func() { afterJournalSyncHook = original }()
+
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	model := newStoredModel(t, run)
+	afterJournalSyncHook = func() error {
+		return os.WriteFile(run.filePath(model.Identity.TaskList.ID), []byte("altered after journal sync"), 0o600)
+	}
+
+	event, err := state.Record(context.Background(), model)
+	if !errors.Is(err, ErrStateReference) || !errors.Is(err, ErrReferenceIntegrity) || event.Sequence != 1 {
+		t.Fatalf("Record() = event %#v, error %v; want durable but unapplied reference failure", event, err)
+	}
+	if state.pending == nil {
+		t.Fatal("pending event was cleared after rejected projection")
+	}
+	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 1 {
+		t.Fatalf("durable journal after rejected projection = sequence %d, error %v", sequence, err)
+	}
+	if _, _, err := state.Current(context.Background()); !errors.Is(err, ErrCurrentStateUnavailable) {
+		t.Fatalf("Current() after rejected projection = %v, want unavailable", err)
+	}
+	var count int
+	if err := state.db.QueryRow("SELECT COUNT(*) FROM applied_events").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("applied events after rejected projection = %d, error %v", count, err)
+	}
+
+	afterJournalSyncHook = nil
+	if err := os.WriteFile(run.filePath(model.Identity.TaskList.ID), []byte(model.Identity.TaskList.ID), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if retried, err := state.Record(context.Background(), model); err != nil || retried.Sequence != 1 {
+		t.Fatalf("pending retry after evidence restoration = %#v, error %v", retried, err)
+	}
+	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 1 {
+		t.Fatalf("journal after safe retry = sequence %d, error %v", sequence, err)
+	}
+}
+
 func TestStateStoreAppliesIdenticalEventOnceAndRollsBackFailedTransaction(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)

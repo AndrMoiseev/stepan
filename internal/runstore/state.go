@@ -175,7 +175,7 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		if !bytes.Equal(data, s.pending.data) {
 			return implementationstate.Event{}, ErrPendingEvent
 		}
-		if err := s.applyCanonical(ctx, s.pending.data, false); err != nil {
+		if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
 			return eventWithError(s.pending.data, err)
 		}
 		s.pending = nil
@@ -201,7 +201,7 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		return implementationstate.Event{}, err
 	}
 	s.pending = &pendingEvent{data: bytes.Clone(data)}
-	if err := s.applyCanonical(ctx, s.pending.data, false); err != nil {
+	if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
 		return eventWithError(s.pending.data, err)
 	}
 	s.pending = nil
