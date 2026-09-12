@@ -15,7 +15,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/specflow"
+	"github.com/AndrMoiseev/stepan/internal/flows/spec"
 )
 
 // Factory starts a real adapter backed by that adapter's fake transport and

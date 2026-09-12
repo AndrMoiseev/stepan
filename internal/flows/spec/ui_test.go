@@ -64,13 +64,13 @@ func TestDecoratedUIUsesDistinctStatusCommandAndInputAccents(t *testing.T) {
 func TestDirtyRepositoryErrorIsReportedWithoutTechnicalDetails(t *testing.T) {
 	var output bytes.Buffer
 	ui := &UI{input: bufio.NewReader(strings.NewReader("")), output: &output}
-	ui.ReportError(fmt.Errorf("begin feature: %w: %w: Git working tree and index must be clean: internal/specflow/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty))
+	ui.ReportError(fmt.Errorf("begin feature: %w: %w: Git working tree and index must be clean: internal/flows/spec/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty))
 
 	text := output.String()
 	if !strings.Contains(text, "Нельзя начать feature flow: в Git есть незакоммиченные изменения") {
 		t.Fatalf("friendly repository error missing from %q", text)
 	}
-	for _, technical := range []string{"begin feature", "feature repository is blocked", "internal/specflow/controller.go"} {
+	for _, technical := range []string{"begin feature", "feature repository is blocked", "internal/flows/spec/controller.go"} {
 		if strings.Contains(text, technical) {
 			t.Fatalf("technical detail %q leaked in %q", technical, text)
 		}
@@ -377,7 +377,7 @@ func TestInteractiveShowsActivityForLongControllerOperations(t *testing.T) {
 }
 
 func TestInteractiveChecksRepositoryBeforeReadingFeatureBrief(t *testing.T) {
-	blocked := fmt.Errorf("%w: %w: Git working tree and index must be clean: internal/specflow/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty)
+	blocked := fmt.Errorf("%w: %w: Git working tree and index must be clean: internal/flows/spec/controller.go", ErrRepositoryBlocked, ErrRepositoryDirty)
 	controller := &planningControllerStub{preflightErr: blocked}
 	ui := &planningUIStub{needBrief: true, flowErr: ErrCanceled}
 

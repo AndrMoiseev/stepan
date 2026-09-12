@@ -12,8 +12,8 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
+	"github.com/AndrMoiseev/stepan/internal/flows/spec"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
-	"github.com/AndrMoiseev/stepan/internal/specflow"
 	"github.com/AndrMoiseev/stepan/internal/usersettings"
 )
 

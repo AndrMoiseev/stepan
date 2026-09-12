@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/specflow"
+	"github.com/AndrMoiseev/stepan/internal/flows/spec"
 )
 
 func testRealCLIFeatureFlow(t *testing.T, fixture realCLIFixture) {

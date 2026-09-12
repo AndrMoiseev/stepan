@@ -15,7 +15,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
-	"github.com/AndrMoiseev/stepan/internal/specflow"
+	"github.com/AndrMoiseev/stepan/internal/flows/spec"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 

@@ -16,7 +16,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
-        - '^github\.com/AndrMoiseev/stepan/internal/specflow$'
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
         - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
     shouldNotDependsOn:
@@ -44,7 +44,7 @@ dependenciesRules:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/specflow$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
