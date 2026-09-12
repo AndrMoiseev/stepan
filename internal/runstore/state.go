@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -32,6 +34,11 @@ var (
 	// ErrPendingEvent reports an attempt to append a distinct event after the
 	// journal was durable but its SQLite projection failed.
 	ErrPendingEvent = errors.New("implementation event awaits projection")
+	// ErrRunIdentity reports state intended for a different run directory.
+	ErrRunIdentity = errors.New("implementation state belongs to a different run")
+	// ErrStateReference reports a state event that names unpublished or altered
+	// run-local evidence.
+	ErrStateReference = errors.New("implementation state has unavailable evidence")
 )
 
 // StateStore owns the append-only event journal and its SQLite projection for
@@ -41,15 +48,15 @@ type StateStore struct {
 	journalPath  string
 	databasePath string
 	db           *sql.DB
+	run          *Run
+	writer       *sync.Mutex
 
 	mu      sync.Mutex
-	lastSeq uint64
 	pending *pendingEvent
 }
 
 type pendingEvent struct {
-	event implementationstate.Event
-	data  []byte
+	data []byte
 }
 
 // OpenState opens the durable state layers for an existing run layout. It
@@ -62,6 +69,12 @@ func OpenState(run *Run) (*StateStore, error) {
 	if err := requireDirectory(run.directory); err != nil {
 		return nil, err
 	}
+	writer, err := stateWriterLock(run.directory)
+	if err != nil {
+		return nil, err
+	}
+	writer.Lock()
+	defer writer.Unlock()
 
 	journalPath := filepath.Join(run.directory, JournalFileName)
 	if err := requireRegularOrAbsent(journalPath); err != nil {
@@ -82,7 +95,7 @@ func OpenState(run *Run) (*StateStore, error) {
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
-	store := &StateStore{journalPath: journalPath, databasePath: databasePath, db: db, lastSeq: lastSeq}
+	store := &StateStore{journalPath: journalPath, databasePath: databasePath, db: db, run: run, writer: writer}
 	if err := store.initialize(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -121,6 +134,12 @@ func (s *StateStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
 	}
+	if s.writer != nil {
+		s.writer.Lock()
+		defer s.writer.Unlock()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.db.Close()
 }
 
@@ -128,14 +147,23 @@ func (s *StateStore) Close() error {
 // event to SQLite. If projection fails after the journal is durable, retrying
 // Record with the same state applies that exact event without a second line.
 func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.db == nil || s.writer == nil {
 		return implementationstate.Event{}, fmt.Errorf("%w: nil state store", ErrUnsafePath)
 	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.pending != nil {
-		event, err := implementationstate.NewRunStateEvent(s.pending.event.Sequence, state)
+		pending, err := eventFromData(s.pending.data)
+		if err != nil {
+			return implementationstate.Event{}, err
+		}
+		if err := s.verifyStateReferences(state); err != nil {
+			return implementationstate.Event{}, err
+		}
+		event, err := implementationstate.NewRunStateEvent(pending.Sequence, state)
 		if err != nil {
 			return implementationstate.Event{}, err
 		}
@@ -146,15 +174,21 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		if !bytes.Equal(data, s.pending.data) {
 			return implementationstate.Event{}, ErrPendingEvent
 		}
-		if err := s.apply(ctx, s.pending.event, s.pending.data); err != nil {
-			return s.pending.event, err
+		if err := s.apply(ctx, s.pending.data); err != nil {
+			return eventWithError(s.pending.data, err)
 		}
-		event = s.pending.event
 		s.pending = nil
-		return event, nil
+		return cloneEventFromData(data)
 	}
 
-	event, err := implementationstate.NewRunStateEvent(s.lastSeq+1, state)
+	lastSeq, err := s.refreshCleanSequence(ctx)
+	if err != nil {
+		return implementationstate.Event{}, err
+	}
+	if err := s.verifyStateReferences(state); err != nil {
+		return implementationstate.Event{}, err
+	}
+	event, err := implementationstate.NewRunStateEvent(lastSeq+1, state)
 	if err != nil {
 		return implementationstate.Event{}, err
 	}
@@ -165,29 +199,12 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 	if err := appendJournal(s.journalPath, data); err != nil {
 		return implementationstate.Event{}, err
 	}
-	s.lastSeq = event.Sequence
-	s.pending = &pendingEvent{event: event, data: data}
-	if err := s.apply(ctx, event, data); err != nil {
-		return event, err
+	s.pending = &pendingEvent{data: bytes.Clone(data)}
+	if err := s.apply(ctx, s.pending.data); err != nil {
+		return eventWithError(s.pending.data, err)
 	}
 	s.pending = nil
-	return event, nil
-}
-
-// ApplyJournalEvent transactionally applies a previously durable event. It is
-// idempotent only for byte-identical event records, which is the replay entry
-// point used by recovery in the next storage task.
-func (s *StateStore) ApplyJournalEvent(ctx context.Context, event implementationstate.Event) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("%w: nil state store", ErrUnsafePath)
-	}
-	data, err := marshalEvent(event)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.apply(ctx, event, data)
+	return cloneEventFromData(data)
 }
 
 // Current returns the current SQLite projection and the sequence that produced
@@ -238,8 +255,12 @@ func (s *StateStore) initialize(ctx context.Context) error {
 	return nil
 }
 
-func (s *StateStore) apply(ctx context.Context, event implementationstate.Event, data []byte) (err error) {
-	if err := event.Validate(); err != nil {
+func (s *StateStore) apply(ctx context.Context, data []byte) (err error) {
+	event, err := eventFromData(data)
+	if err != nil {
+		return err
+	}
+	if err := s.verifyStateReferences(event.State); err != nil {
 		return err
 	}
 	state, err := event.Apply(nil)
@@ -326,9 +347,35 @@ func marshalEvent(event implementationstate.Event) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
+func eventFromData(data []byte) (implementationstate.Event, error) {
+	var event implementationstate.Event
+	if err := json.Unmarshal(data, &event); err != nil {
+		return implementationstate.Event{}, fmt.Errorf("decode journal event: %w", err)
+	}
+	if err := event.Validate(); err != nil {
+		return implementationstate.Event{}, err
+	}
+	return event, nil
+}
+
+func cloneEventFromData(data []byte) (implementationstate.Event, error) {
+	return eventFromData(bytes.Clone(data))
+}
+
+func eventWithError(data []byte, operationErr error) (implementationstate.Event, error) {
+	event, err := cloneEventFromData(data)
+	if err != nil {
+		return implementationstate.Event{}, errors.Join(operationErr, err)
+	}
+	return event, operationErr
+}
+
 func appendJournal(path string, data []byte) error {
 	if err := requireRegularOrAbsent(path); err != nil {
 		return err
+	}
+	if beforeJournalAppendHook != nil {
+		beforeJournalAppendHook()
 	}
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
@@ -395,4 +442,113 @@ func requireRegularOrAbsent(path string) error {
 	return nil
 }
 
+func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
+	lastSeq, err := journalLastSequence(s.journalPath)
+	if err != nil {
+		return 0, err
+	}
+	lastApplied, err := s.lastApplied(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	if lastApplied < 0 || uint64(lastApplied) != lastSeq {
+		return 0, fmt.Errorf("%w: journal and projection differ", ErrJournalSequence)
+	}
+	return lastSeq, nil
+}
+
+func (s *StateStore) verifyStateReferences(state *implementationstate.Run) error {
+	if state == nil || state.Identity.ID != s.run.ID() {
+		return ErrRunIdentity
+	}
+	for _, reference := range stateEvidenceRefs(state) {
+		if err := s.run.VerifyReference(reference); err != nil {
+			return fmt.Errorf("%w: %w", ErrStateReference, err)
+		}
+	}
+	return nil
+}
+
+func stateEvidenceRefs(state *implementationstate.Run) []implementationstate.EvidenceRef {
+	references := []implementationstate.EvidenceRef{
+		state.Identity.BaselineState,
+		state.Identity.Specification,
+		state.Identity.TaskList,
+		state.Identity.Configuration,
+		state.CurrentState,
+	}
+	appendBasis := func(basis implementationstate.AcceptanceBasis) {
+		references = append(references, basis.Specification, basis.Configuration)
+	}
+	for _, assignment := range state.Assignments {
+		for _, brief := range assignment.Briefs {
+			references = append(references, brief.Document)
+		}
+		for _, operation := range assignment.Operations {
+			appendBasis(operation.Basis)
+		}
+		for _, result := range assignment.Results {
+			references = append(references, result.State)
+			appendBasis(result.Basis)
+			references = append(references, result.Evidence...)
+		}
+		appendAcceptanceReferences(&references, assignment.Acceptance, appendBasis)
+		for index := range assignment.AcceptanceHistory {
+			appendAcceptanceReferences(&references, &assignment.AcceptanceHistory[index], appendBasis)
+		}
+		if assignment.Commit != nil {
+			references = append(references, assignment.Commit.State)
+			appendBasis(assignment.Commit.Basis)
+		}
+	}
+	for _, operation := range state.RunOperations {
+		appendBasis(operation.Basis)
+	}
+	for _, result := range state.RunResults {
+		references = append(references, result.State)
+		appendBasis(result.Basis)
+		references = append(references, result.Evidence...)
+	}
+	for _, evidence := range append([]implementationstate.FinalAcceptanceEvidence{derefFinalAcceptance(state.FinalAcceptance)}, state.FinalAcceptanceHistory...) {
+		if evidence.State.ID == "" {
+			continue
+		}
+		references = append(references, evidence.State)
+		appendBasis(evidence.Basis)
+	}
+	return references
+}
+
+func appendAcceptanceReferences(references *[]implementationstate.EvidenceRef, acceptance *implementationstate.AcceptanceEvidence, appendBasis func(implementationstate.AcceptanceBasis)) {
+	if acceptance == nil {
+		return
+	}
+	*references = append(*references, acceptance.State)
+	appendBasis(acceptance.Basis)
+}
+
+func derefFinalAcceptance(evidence *implementationstate.FinalAcceptanceEvidence) implementationstate.FinalAcceptanceEvidence {
+	if evidence == nil {
+		return implementationstate.FinalAcceptanceEvidence{}
+	}
+	return *evidence
+}
+
+var stateWriterLocks sync.Map
+
+func stateWriterLock(path string) (*sync.Mutex, error) {
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolve run state path: %w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	if runtime.GOOS == "windows" {
+		canonical = strings.ToLower(canonical)
+	}
+	created := &sync.Mutex{}
+	actual, _ := stateWriterLocks.LoadOrStore(canonical, created)
+	return actual.(*sync.Mutex), nil
+}
+
 var beforeProjectionCommitHook func(implementationstate.Event) error
+var beforeJournalAppendHook func()
