@@ -14,6 +14,10 @@ var (
 	// ErrInvalidTransition reports a transition that is not allowed from the
 	// current state.
 	ErrInvalidTransition = errors.New("invalid implementation state transition")
+	// ErrLimitExceeded reports that the next semantic or technical attempt was
+	// not started because its configured limit is already exhausted. The Run is
+	// paused before this error is returned.
+	ErrLimitExceeded = errors.New("implementation cycle limit exceeded")
 )
 
 type (
@@ -191,6 +195,61 @@ type CycleCounters struct {
 	ChecksRequested  uint64            `json:"checks_requested"`
 	BriefRefinement  uint64            `json:"brief_refinement"`
 	Explorer         map[string]uint64 `json:"explorer,omitempty"`
+	// The generation fields identify the active cycle behind each current
+	// counter. They keep completed-cycle attempts immutable when a successful
+	// mandatory set, or an explicit limit-pause continuation, opens a new one.
+	AssignmentReviewCycle uint64            `json:"assignment_review_cycle,omitempty"`
+	MandatoryChecksCycle  uint64            `json:"mandatory_checks_cycle,omitempty"`
+	ChecksRequestedCycle  uint64            `json:"checks_requested_cycle,omitempty"`
+	BriefRefinementCycle  uint64            `json:"brief_refinement_cycle,omitempty"`
+	ExplorerCycle         map[string]uint64 `json:"explorer_cycle,omitempty"`
+}
+
+// CycleLimits is the effective configured limit set needed by the durable
+// state model. It has no aggregate call budget: each field limits only its
+// named cycle. TechnicalAttempts applies independently to one operation.
+type CycleLimits struct {
+	AssignmentReview  int
+	MandatoryChecks   int
+	ChecksRequested   int
+	BriefRefinement   int
+	Explorer          int
+	TechnicalAttempts int
+	FinalReview       int
+}
+
+func (l CycleLimits) valid() bool {
+	return l.AssignmentReview > 0 && l.MandatoryChecks > 0 && l.ChecksRequested > 0 && l.BriefRefinement > 0 && l.Explorer > 0 && l.TechnicalAttempts > 0 && l.FinalReview > 0
+}
+
+// LimitPause identifies exactly the exhausted counter that paused a run.
+// Counter is CycleCounterNone only when Technical is true; OperationID then
+// selects the one operation whose technical retry window is reset on resume.
+type LimitPause struct {
+	Counter      CycleCounter `json:"counter"`
+	AssignmentID AssignmentID `json:"assignment_id,omitempty"`
+	OperationID  OperationID  `json:"operation_id"`
+	Episode      string       `json:"episode,omitempty"`
+	Technical    bool         `json:"technical,omitempty"`
+}
+
+func (p LimitPause) valid() bool {
+	if p.OperationID == "" || (!p.Counter.valid()) || (p.Technical && p.Episode != "") {
+		return false
+	}
+	if p.Technical {
+		return true
+	}
+	if p.Counter == CycleCounterNone || p.Counter == CycleCounterExplorer && strings.TrimSpace(p.Episode) == "" {
+		return false
+	}
+	if p.Counter == CycleCounterFinalReview {
+		return p.AssignmentID == "" && p.Episode == ""
+	}
+	if p.Counter == CycleCounterExplorer {
+		return p.AssignmentID != "" && strings.TrimSpace(p.Episode) != ""
+	}
+	return p.AssignmentID != "" && p.Episode == ""
 }
 
 // OperationAttempt is written into the run state before dispatch. A missing
@@ -216,6 +275,14 @@ type Operation struct {
 	// makes an Explorer episode's counter independent from other episodes.
 	Episode  string
 	Attempts []OperationAttempt
+	// SemanticCycle is assigned when the operation first consumes a semantic
+	// counter. Keeping it on the operation retains completed-cycle history when
+	// the corresponding current counter is reset.
+	SemanticCycle uint64 `json:"semantic_cycle,omitempty"`
+	// TechnicalAttemptStart is the number of already recorded attempts at the
+	// start of the current technical retry window. It preserves prior attempts
+	// when a technical-limit pause is explicitly continued.
+	TechnicalAttemptStart uint64 `json:"technical_attempt_start,omitempty"`
 	// UncountedResumeCheck is the explicit exception for the mandatory set
 	// executed during /resume. It records an externally observed result without
 	// consuming either a semantic cycle or a technical attempt.
@@ -227,9 +294,12 @@ func (o Operation) valid() bool {
 		return false
 	}
 	for index, attempt := range o.Attempts {
-		if attempt.Number != uint64(index+1) || (o.Counter == CycleCounterNone && attempt.SemanticRound != 0) || (o.Counter != CycleCounterNone && (attempt.SemanticRound == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound))) {
+		if attempt.Number != uint64(index+1) || (o.Counter == CycleCounterNone && (attempt.SemanticRound != 0 || o.SemanticCycle != 0)) || (o.Counter != CycleCounterNone && (attempt.SemanticRound == 0 || o.SemanticCycle == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound))) {
 			return false
 		}
+	}
+	if o.TechnicalAttemptStart > uint64(len(o.Attempts)) {
+		return false
 	}
 	return true
 }
@@ -349,7 +419,9 @@ type Run struct {
 	FinalAcceptance        *FinalAcceptanceEvidence
 	FinalAcceptanceHistory []FinalAcceptanceEvidence
 	FinalReviewRounds      uint64
+	FinalReviewCycle       uint64
 	PauseReason            string
+	LimitPause             *LimitPause
 	CloseReason            string
 }
 
@@ -580,19 +652,19 @@ func (r *Run) Validate() error {
 func (r *Run) validateLifecycle() error {
 	switch r.Status {
 	case RunActive:
-		if r.PauseReason != "" || r.CloseReason != "" {
+		if r.PauseReason != "" || r.CloseReason != "" || r.LimitPause != nil {
 			return fmt.Errorf("%w: active run has stop reason", ErrInvalidState)
 		}
 	case RunPaused:
-		if strings.TrimSpace(r.PauseReason) == "" || r.CloseReason != "" {
+		if strings.TrimSpace(r.PauseReason) == "" || r.CloseReason != "" || (r.LimitPause != nil && !r.LimitPause.valid()) {
 			return fmt.Errorf("%w: paused run lacks pause reason", ErrInvalidState)
 		}
 	case RunClosed:
-		if strings.TrimSpace(r.CloseReason) == "" || r.PauseReason != "" {
+		if strings.TrimSpace(r.CloseReason) == "" || r.PauseReason != "" || r.LimitPause != nil {
 			return fmt.Errorf("%w: closed run lacks close reason", ErrInvalidState)
 		}
 	case RunSucceeded:
-		if r.PauseReason != "" || r.CloseReason != "" {
+		if r.PauseReason != "" || r.CloseReason != "" || r.LimitPause != nil {
 			return fmt.Errorf("%w: succeeded run has stop reason", ErrInvalidState)
 		}
 	}
@@ -721,6 +793,10 @@ func (r *Run) AddResult(assignmentID AssignmentID, result OperationResult) error
 		return fmt.Errorf("%w: invalid operation result", ErrInvalidState)
 	}
 	assignment.Results = append(assignment.Results, cloneResult(result))
+	if operation.Counter == CycleCounterMandatoryChecks && result.Status == ResultSucceeded {
+		assignment.Counters.MandatoryChecks = 0
+		assignment.Counters.MandatoryChecksCycle = nextCycle(assignment.Counters.MandatoryChecksCycle)
+	}
 	return nil
 }
 
@@ -892,6 +968,28 @@ func (r *Run) StartAssignmentAttempt(assignmentID AssignmentID, operationID Oper
 	return attempt, nil
 }
 
+// StartAssignmentAttemptWithLimits is the checked counterpart of
+// StartAssignmentAttempt. It pauses before recording an attempt that would
+// exceed a configured semantic or technical limit, so callers have no
+// external action to recover from in that case.
+func (r *Run) StartAssignmentAttemptWithLimits(assignmentID AssignmentID, operationID OperationID, limits CycleLimits) (OperationAttempt, error) {
+	if !limits.valid() {
+		return OperationAttempt{}, fmt.Errorf("%w: invalid cycle limits", ErrInvalidState)
+	}
+	assignment, err := r.activeAssignment(assignmentID)
+	if err != nil {
+		return OperationAttempt{}, err
+	}
+	operation := assignment.operation(operationID)
+	if operation == nil || operation.UncountedResumeCheck || assignment.hasResultForOperation(operationID) {
+		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume an assignment counter", ErrInvalidState)
+	}
+	if err := r.allowAssignmentAttempt(assignmentID, assignment, operation, limits); err != nil {
+		return OperationAttempt{}, err
+	}
+	return assignment.startAttempt(operation)
+}
+
 // StartRunAttempt reserves a run-level operation attempt before external
 // dispatch. It follows the same durable-record-before-dispatch rule as
 // assignment work.
@@ -904,6 +1002,183 @@ func (r *Run) StartRunAttempt(operationID OperationID) (OperationAttempt, error)
 		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume a run counter", ErrInvalidState)
 	}
 	return r.startRunAttempt(operation)
+}
+
+// StartRunAttemptWithLimits applies the final-review and per-operation
+// technical limits before reserving the durable attempt.
+func (r *Run) StartRunAttemptWithLimits(operationID OperationID, limits CycleLimits) (OperationAttempt, error) {
+	if !limits.valid() {
+		return OperationAttempt{}, fmt.Errorf("%w: invalid cycle limits", ErrInvalidState)
+	}
+	if err := r.requireActive(); err != nil {
+		return OperationAttempt{}, err
+	}
+	operation := r.runOperation(operationID)
+	if operation == nil || operation.UncountedResumeCheck || r.hasRunResultForOperation(operationID) {
+		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume a run counter", ErrInvalidState)
+	}
+	if technicalAttempts(operation) >= uint64(limits.TechnicalAttempts) {
+		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: operation.Counter, OperationID: operationID, Technical: true})
+	}
+	if operation.Counter == CycleCounterFinalReview && r.FinalReviewRounds >= uint64(limits.FinalReview) {
+		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterFinalReview, OperationID: operationID})
+	}
+	return r.startRunAttempt(operation)
+}
+
+func (r *Run) allowAssignmentAttempt(assignmentID AssignmentID, assignment *Assignment, operation *Operation, limits CycleLimits) error {
+	if technicalAttempts(operation) >= uint64(limits.TechnicalAttempts) {
+		return r.pauseForLimit(LimitPause{Counter: operation.Counter, AssignmentID: assignmentID, OperationID: operation.ID, Technical: true})
+	}
+	if len(operation.Attempts) != 0 {
+		return nil
+	}
+	var current uint64
+	var limit int
+	switch operation.Counter {
+	case CycleCounterNone:
+		return nil
+	case CycleCounterAssignmentReview:
+		current, limit = assignment.Counters.AssignmentReview, limits.AssignmentReview
+	case CycleCounterMandatoryChecks:
+		current, limit = assignment.Counters.MandatoryChecks, limits.MandatoryChecks
+	case CycleCounterChecksRequested:
+		current, limit = assignment.Counters.ChecksRequested, limits.ChecksRequested
+	case CycleCounterBriefRefinement:
+		current, limit = assignment.Counters.BriefRefinement, limits.BriefRefinement
+	case CycleCounterExplorer:
+		current, limit = assignment.Counters.Explorer[operation.Episode], limits.Explorer
+	default:
+		return fmt.Errorf("%w: unsupported assignment counter", ErrInvalidState)
+	}
+	if current >= uint64(limit) {
+		return r.pauseForLimit(LimitPause{Counter: operation.Counter, AssignmentID: assignmentID, OperationID: operation.ID, Episode: operation.Episode})
+	}
+	return nil
+}
+
+func technicalAttempts(operation *Operation) uint64 {
+	if operation == nil || uint64(len(operation.Attempts)) < operation.TechnicalAttemptStart {
+		return 0
+	}
+	return uint64(len(operation.Attempts)) - operation.TechnicalAttemptStart
+}
+
+func (r *Run) pauseForLimit(limit LimitPause) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if !limit.valid() {
+		return fmt.Errorf("%w: invalid limit pause", ErrInvalidState)
+	}
+	r.Status = RunPaused
+	r.PauseReason = "implementation cycle limit: " + string(limit.Counter)
+	if limit.Technical {
+		r.PauseReason = "implementation technical attempt limit"
+	}
+	copy := limit
+	r.LimitPause = &copy
+	return ErrLimitExceeded
+}
+
+func (r *Run) resetLimitPause(limit LimitPause) error {
+	if !limit.valid() {
+		return fmt.Errorf("%w: invalid persisted limit pause", ErrInvalidState)
+	}
+	if limit.Technical {
+		operation := r.operationForLimit(limit)
+		if operation == nil || operation.hasResult(r, limit.AssignmentID) {
+			return fmt.Errorf("%w: technical limit operation cannot resume", ErrInvalidState)
+		}
+		operation.TechnicalAttemptStart = uint64(len(operation.Attempts))
+		return nil
+	}
+	if limit.Counter == CycleCounterFinalReview {
+		r.FinalReviewRounds = 0
+		r.FinalReviewCycle++
+		return nil
+	}
+	assignment := r.assignment(limit.AssignmentID)
+	if assignment == nil || assignment.Status != AssignmentActive {
+		return fmt.Errorf("%w: limit assignment cannot resume", ErrInvalidState)
+	}
+	switch limit.Counter {
+	case CycleCounterAssignmentReview:
+		assignment.Counters.AssignmentReview, assignment.Counters.AssignmentReviewCycle = 0, nextCycle(assignment.Counters.AssignmentReviewCycle)
+	case CycleCounterMandatoryChecks:
+		assignment.Counters.MandatoryChecks, assignment.Counters.MandatoryChecksCycle = 0, nextCycle(assignment.Counters.MandatoryChecksCycle)
+	case CycleCounterChecksRequested:
+		assignment.Counters.ChecksRequested, assignment.Counters.ChecksRequestedCycle = 0, nextCycle(assignment.Counters.ChecksRequestedCycle)
+	case CycleCounterBriefRefinement:
+		assignment.Counters.BriefRefinement, assignment.Counters.BriefRefinementCycle = 0, nextCycle(assignment.Counters.BriefRefinementCycle)
+	case CycleCounterExplorer:
+		if assignment.Counters.Explorer == nil {
+			assignment.Counters.Explorer = make(map[string]uint64)
+		}
+		if assignment.Counters.ExplorerCycle == nil {
+			assignment.Counters.ExplorerCycle = make(map[string]uint64)
+		}
+		assignment.Counters.Explorer[limit.Episode] = 0
+		assignment.Counters.ExplorerCycle[limit.Episode] = nextCycle(assignment.Counters.ExplorerCycle[limit.Episode])
+	default:
+		return fmt.Errorf("%w: unsupported limit counter", ErrInvalidState)
+	}
+	return nil
+}
+
+func nextCycle(current uint64) uint64 {
+	if current == 0 {
+		return 2
+	}
+	return current + 1
+}
+
+func currentCycle(current uint64) uint64 {
+	if current == 0 {
+		return 1
+	}
+	return current
+}
+
+func (r *Run) operationForLimit(limit LimitPause) *Operation {
+	if limit.AssignmentID == "" {
+		return r.runOperation(limit.OperationID)
+	}
+	assignment := r.assignment(limit.AssignmentID)
+	if assignment == nil {
+		return nil
+	}
+	return assignment.operation(limit.OperationID)
+}
+
+func (o *Operation) hasResult(r *Run, assignmentID AssignmentID) bool {
+	if assignmentID == "" {
+		return r.hasRunResultForOperation(o.ID)
+	}
+	assignment := r.assignment(assignmentID)
+	return assignment == nil || assignment.hasResultForOperation(o.ID)
+}
+
+// EndExplorerEpisode opens a fresh per-episode counter after the source
+// agent returns or transitions. Continuing the source agent after Explorer
+// deliberately does not call this method and therefore preserves the count.
+func (r *Run) EndExplorerEpisode(assignmentID AssignmentID, episode string) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	assignment := r.assignment(assignmentID)
+	if assignment == nil || assignment.Status != AssignmentActive || strings.TrimSpace(episode) == "" {
+		return fmt.Errorf("%w: invalid explorer episode boundary", ErrInvalidState)
+	}
+	if assignment.Counters.Explorer == nil {
+		assignment.Counters.Explorer = make(map[string]uint64)
+	}
+	if assignment.Counters.ExplorerCycle == nil {
+		assignment.Counters.ExplorerCycle = make(map[string]uint64)
+	}
+	assignment.Counters.Explorer[episode] = 0
+	assignment.Counters.ExplorerCycle[episode] = nextCycle(assignment.Counters.ExplorerCycle[episode])
+	return nil
 }
 
 func (r *Run) AddRunResult(result OperationResult) error {
@@ -938,7 +1213,7 @@ func (r *Run) Pause(reason string) error {
 	if r.Status != RunActive || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: run cannot be paused", ErrInvalidTransition)
 	}
-	r.Status, r.PauseReason = RunPaused, reason
+	r.Status, r.PauseReason, r.LimitPause = RunPaused, reason, nil
 	return nil
 }
 
@@ -946,7 +1221,12 @@ func (r *Run) Resume() error {
 	if r.Status != RunPaused {
 		return fmt.Errorf("%w: only a paused run can resume", ErrInvalidTransition)
 	}
-	r.Status, r.PauseReason = RunActive, ""
+	if r.LimitPause != nil {
+		if err := r.resetLimitPause(*r.LimitPause); err != nil {
+			return err
+		}
+	}
+	r.Status, r.PauseReason, r.LimitPause = RunActive, "", nil
 	return nil
 }
 
@@ -954,7 +1234,7 @@ func (r *Run) Close(reason string) error {
 	if (r.Status != RunActive && r.Status != RunPaused) || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: run cannot close", ErrInvalidTransition)
 	}
-	r.Status, r.CloseReason, r.PauseReason = RunClosed, reason, ""
+	r.Status, r.CloseReason, r.PauseReason, r.LimitPause = RunClosed, reason, "", nil
 	return nil
 }
 
@@ -1094,50 +1374,65 @@ func validRunCounter(counter CycleCounter) bool {
 }
 
 func (r *Run) validateCounters() error {
-	var finalReviews uint64
+	finalRounds := make(map[uint64]uint64)
+	var currentFinalReviews uint64
 	for _, operation := range r.RunOperations {
 		if operation.Counter == CycleCounterFinalReview && len(operation.Attempts) != 0 {
-			finalReviews++
-			if operation.Attempts[0].SemanticRound != finalReviews {
+			cycle := operation.SemanticCycle
+			if cycle == 0 {
+				return fmt.Errorf("%w: final review lacks semantic cycle", ErrInvalidState)
+			}
+			finalRounds[cycle]++
+			if operation.Attempts[0].SemanticRound != finalRounds[cycle] {
 				return fmt.Errorf("%w: final review semantic rounds are not sequential", ErrInvalidState)
+			}
+			if cycle == currentCycle(r.FinalReviewCycle) {
+				currentFinalReviews++
 			}
 		}
 	}
-	if r.FinalReviewRounds != finalReviews {
+	if r.FinalReviewRounds != currentFinalReviews {
 		return fmt.Errorf("%w: final review counter does not match attempts", ErrInvalidState)
 	}
 	for _, assignment := range r.Assignments {
 		want := CycleCounters{Explorer: make(map[string]uint64)}
+		rounds := make(map[string]uint64)
 		for _, operation := range assignment.Operations {
 			if len(operation.Attempts) == 0 {
 				continue
 			}
 			round := operation.Attempts[0].SemanticRound
+			if operation.Counter == CycleCounterNone {
+				continue
+			}
+			if operation.SemanticCycle == 0 {
+				return fmt.Errorf("%w: operation lacks semantic cycle", ErrInvalidState)
+			}
+			key := string(operation.Counter) + "\x00" + operation.Episode + "\x00" + fmt.Sprint(operation.SemanticCycle)
+			rounds[key]++
+			if round != rounds[key] {
+				return fmt.Errorf("%w: semantic rounds are not sequential", ErrInvalidState)
+			}
 			switch operation.Counter {
 			case CycleCounterAssignmentReview:
-				want.AssignmentReview++
-				if round != want.AssignmentReview {
-					return fmt.Errorf("%w: assignment review semantic rounds are not sequential", ErrInvalidState)
+				if operation.SemanticCycle == currentCycle(assignment.Counters.AssignmentReviewCycle) {
+					want.AssignmentReview++
 				}
 			case CycleCounterMandatoryChecks:
-				want.MandatoryChecks++
-				if round != want.MandatoryChecks {
-					return fmt.Errorf("%w: mandatory check semantic rounds are not sequential", ErrInvalidState)
+				if operation.SemanticCycle == currentCycle(assignment.Counters.MandatoryChecksCycle) {
+					want.MandatoryChecks++
 				}
 			case CycleCounterChecksRequested:
-				want.ChecksRequested++
-				if round != want.ChecksRequested {
-					return fmt.Errorf("%w: requested-check semantic rounds are not sequential", ErrInvalidState)
+				if operation.SemanticCycle == currentCycle(assignment.Counters.ChecksRequestedCycle) {
+					want.ChecksRequested++
 				}
 			case CycleCounterBriefRefinement:
-				want.BriefRefinement++
-				if round != want.BriefRefinement {
-					return fmt.Errorf("%w: brief refinement semantic rounds are not sequential", ErrInvalidState)
+				if operation.SemanticCycle == currentCycle(assignment.Counters.BriefRefinementCycle) {
+					want.BriefRefinement++
 				}
 			case CycleCounterExplorer:
-				want.Explorer[operation.Episode]++
-				if round != want.Explorer[operation.Episode] {
-					return fmt.Errorf("%w: explorer semantic rounds are not sequential", ErrInvalidState)
+				if operation.SemanticCycle == currentCycle(assignment.Counters.ExplorerCycle[operation.Episode]) {
+					want.Explorer[operation.Episode]++
 				}
 			}
 		}
@@ -1149,11 +1444,13 @@ func (r *Run) validateCounters() error {
 }
 
 func mapsEqual(got, want map[string]uint64) bool {
-	if len(got) != len(want) {
-		return false
-	}
 	for key, value := range want {
 		if got[key] != value {
+			return false
+		}
+	}
+	for key, value := range got {
+		if value != 0 && want[key] != value {
 			return false
 		}
 	}
@@ -1175,21 +1472,29 @@ func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error
 		case CycleCounterAssignmentReview:
 			a.Counters.AssignmentReview++
 			attempt.SemanticRound = a.Counters.AssignmentReview
+			operation.SemanticCycle = currentCycle(a.Counters.AssignmentReviewCycle)
 		case CycleCounterMandatoryChecks:
 			a.Counters.MandatoryChecks++
 			attempt.SemanticRound = a.Counters.MandatoryChecks
+			operation.SemanticCycle = currentCycle(a.Counters.MandatoryChecksCycle)
 		case CycleCounterChecksRequested:
 			a.Counters.ChecksRequested++
 			attempt.SemanticRound = a.Counters.ChecksRequested
+			operation.SemanticCycle = currentCycle(a.Counters.ChecksRequestedCycle)
 		case CycleCounterBriefRefinement:
 			a.Counters.BriefRefinement++
 			attempt.SemanticRound = a.Counters.BriefRefinement
+			operation.SemanticCycle = currentCycle(a.Counters.BriefRefinementCycle)
 		case CycleCounterExplorer:
 			if a.Counters.Explorer == nil {
 				a.Counters.Explorer = make(map[string]uint64)
 			}
+			if a.Counters.ExplorerCycle == nil {
+				a.Counters.ExplorerCycle = make(map[string]uint64)
+			}
 			a.Counters.Explorer[operation.Episode]++
 			attempt.SemanticRound = a.Counters.Explorer[operation.Episode]
+			operation.SemanticCycle = currentCycle(a.Counters.ExplorerCycle[operation.Episode])
 		}
 	}
 	operation.Attempts = append(operation.Attempts, attempt)
@@ -1204,6 +1509,7 @@ func (r *Run) startRunAttempt(operation *Operation) (OperationAttempt, error) {
 	if len(operation.Attempts) == 0 && operation.Counter == CycleCounterFinalReview {
 		r.FinalReviewRounds++
 		attempt.SemanticRound = r.FinalReviewRounds
+		operation.SemanticCycle = currentCycle(r.FinalReviewCycle)
 	} else if len(operation.Attempts) != 0 {
 		attempt.SemanticRound = operation.Attempts[0].SemanticRound
 	}
@@ -1346,6 +1652,15 @@ func (r *Run) hasRunResultForOperation(id OperationID) bool {
 		}
 	}
 	return false
+}
+
+func (r *Run) assignment(id AssignmentID) *Assignment {
+	for index := range r.Assignments {
+		if r.Assignments[index].ID == id {
+			return &r.Assignments[index]
+		}
+	}
+	return nil
 }
 
 func (a *Assignment) hasBrief(id BriefID) bool {

@@ -1033,6 +1033,106 @@ func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testin
 	}
 }
 
+func TestRecordLimitedAttemptPersistsPauseBeforeAnExceededRound(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	model := attemptStartModel(t, run)
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, id := range []implementationstate.OperationID{"review-1", "review-2"} {
+		if err := model.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := implementationstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+	if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "review-1", limits); err != nil || event.Sequence != 1 {
+		t.Fatalf("last permitted start = event %#v, error %v", event, err)
+	}
+	if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "review-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || attempt != (implementationstate.OperationAttempt{}) || event.Sequence != 2 {
+		t.Fatalf("exceeded start = attempt %#v, event %#v, error %v", attempt, event, err)
+	}
+	if model.Status != implementationstate.RunPaused || model.LimitPause == nil || len(model.Assignments[0].Operations[2].Attempts) != 0 {
+		t.Fatalf("caller did not retain durable pre-dispatch pause: %#v", model)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	current, sequence, err := reopened.Current(context.Background())
+	if err != nil || sequence != 2 || current.Status != implementationstate.RunPaused || current.LimitPause == nil {
+		t.Fatalf("reopened limit pause = state %#v, sequence %d, error %v", current, sequence, err)
+	}
+}
+
+func TestRecordExplorerLimitPauseResetsOnlyItsEpisodeOnResume(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := attemptStartModel(t, run)
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, operation := range []implementationstate.Operation{
+		{ID: "explorer-review", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "review"},
+		{ID: "explorer-implementation-1", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "implementation"},
+		{ID: "explorer-implementation-2", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "implementation"},
+	} {
+		if err := model.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 3, FinalReview: 3}
+	for _, operationID := range []implementationstate.OperationID{"explorer-review", "explorer-implementation-1"} {
+		if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", operationID, limits); err != nil || event.Sequence == 0 {
+			t.Fatalf("permitted explorer %s = event %#v, error %v", operationID, event, err)
+		}
+	}
+	if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "explorer-implementation-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || event.Sequence == 0 {
+		t.Fatalf("exceeded explorer = event %#v, error %v", event, err)
+	}
+	if err := model.Validate(); err != nil {
+		t.Fatalf("durable explorer limit state is invalid: %v", err)
+	}
+	if model.LimitPause == nil || model.LimitPause.Counter != implementationstate.CycleCounterExplorer || model.LimitPause.Episode != "implementation" {
+		t.Fatalf("explorer limit pause = %#v", model.LimitPause)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	current, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if counters := current.Assignments[0].Counters; counters.Explorer["implementation"] != 0 || counters.Explorer["review"] != 1 {
+		t.Fatalf("explorer reset was not episode-specific: %#v", counters)
+	}
+	if _, err := reopened.Record(context.Background(), current); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := reopened.RecordAssignmentAttemptStartWithLimits(context.Background(), current, "assignment", "explorer-implementation-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("explorer after episode reset = %#v, %v", got, err)
+	}
+	if err := current.Validate(); err != nil {
+		t.Fatalf("resumed explorer state is invalid: %v", err)
+	}
+}
+
 func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)

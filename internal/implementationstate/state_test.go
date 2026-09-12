@@ -101,6 +101,160 @@ func TestFinalReviewTechnicalRetryDoesNotConsumeAnotherRound(t *testing.T) {
 	}
 }
 
+func TestLimitedAttemptPausesBeforeExceedingAndResumeResetsOnlyItsCause(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", testBrief()); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []Operation{
+		{ID: "requested", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterChecksRequested},
+		{ID: "requested-2", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterChecksRequested},
+		{ID: "review-1", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterAssignmentReview},
+		{ID: "review-2", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterAssignmentReview},
+	} {
+		if err := run.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 1, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "requested", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("requested check = %#v, %v", got, err)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "review-1", limits); err != nil || got != (OperationAttempt{Number: 1, SemanticRound: 1}) {
+		t.Fatalf("last permitted review = %#v, %v", got, err)
+	}
+	if _, err := run.StartAssignmentAttemptWithLimits("assignment", "review-2", limits); !errors.Is(err, ErrLimitExceeded) {
+		t.Fatalf("attempt beyond review limit = %v, want limit pause", err)
+	}
+	if run.Status != RunPaused || run.LimitPause == nil || run.LimitPause.Counter != CycleCounterAssignmentReview || len(run.Assignments[0].Operations[3].Attempts) != 0 {
+		t.Fatalf("limit pause must precede dispatch: %#v", run)
+	}
+	if err := run.Resume(); err != nil {
+		t.Fatalf("resume after limit pause: %v", err)
+	}
+	if counters := run.Assignments[0].Counters; counters.AssignmentReview != 0 || counters.ChecksRequested != 1 {
+		t.Fatalf("targeted reset = %#v", counters)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "review-2", limits); err != nil || got != (OperationAttempt{Number: 1, SemanticRound: 1}) {
+		t.Fatalf("review in new counter cycle = %#v, %v", got, err)
+	}
+	if run.Assignments[0].Operations[3].SemanticCycle == run.Assignments[0].Operations[2].SemanticCycle {
+		t.Fatalf("new review must retain a distinct historical cycle")
+	}
+	if _, err := run.StartAssignmentAttemptWithLimits("assignment", "requested-2", limits); !errors.Is(err, ErrLimitExceeded) || run.LimitPause == nil || run.LimitPause.Counter != CycleCounterChecksRequested {
+		t.Fatalf("other exhausted counter must still pause: %v, %#v", err, run.LimitPause)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("state after targeted reset is invalid: %v", err)
+	}
+}
+
+func TestSuccessfulMandatorySetAndExplorerEpisodeOpenOnlyTheirNewCycles(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", testBrief()); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []Operation{
+		{ID: "mandatory-1", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterMandatoryChecks},
+		{ID: "mandatory-2", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterMandatoryChecks},
+		{ID: "refinement", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterBriefRefinement},
+		{ID: "explorer-1", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "implementation"},
+		{ID: "explorer-2", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "implementation"},
+	} {
+		if err := run.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := CycleLimits{AssignmentReview: 3, MandatoryChecks: 1, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+	if counters := run.Assignments[0].Counters; counters.BriefRefinement != 0 {
+		t.Fatalf("initial brief must not consume a refinement: %#v", counters)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "refinement", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("first post-brief refinement = %#v, %v", got, err)
+	}
+	if _, err := run.StartAssignmentAttemptWithLimits("assignment", "mandatory-1", limits); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddResult("assignment", OperationResult{ID: "mandatory-result", OperationID: "mandatory-1", Status: ResultSucceeded, State: run.CurrentState, Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	if counters := run.Assignments[0].Counters; counters.MandatoryChecks != 0 || currentCycle(counters.MandatoryChecksCycle) != 2 {
+		t.Fatalf("successful mandatory set did not finish its cycle: %#v", counters)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "mandatory-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("mandatory set after review fixes = %#v, %v", got, err)
+	}
+	if _, err := run.StartAssignmentAttemptWithLimits("assignment", "explorer-1", limits); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.EndExplorerEpisode("assignment", "implementation"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "explorer-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("explorer in next episode = %#v, %v", got, err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("cycle boundary state is invalid: %v", err)
+	}
+}
+
+func TestFinalReviewLimitIncludesPrimaryRound(t *testing.T) {
+	run := newSingleTaskRun(t)
+	for _, id := range []OperationID{"final-1", "final-2"} {
+		if err := run.AddRunOperation(Operation{ID: id, Kind: OperationReview, Basis: testBasis(), Counter: CycleCounterFinalReview}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 1}
+	if got, err := run.StartRunAttemptWithLimits("final-1", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("primary final review = %#v, %v", got, err)
+	}
+	if _, err := run.StartRunAttemptWithLimits("final-2", limits); !errors.Is(err, ErrLimitExceeded) || run.LimitPause == nil || run.LimitPause.Counter != CycleCounterFinalReview {
+		t.Fatalf("second final review = %v, pause=%#v", err, run.LimitPause)
+	}
+	if err := run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := run.StartRunAttemptWithLimits("final-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("final review after targeted reset = %#v, %v", got, err)
+	}
+}
+
+func TestTechnicalLimitResumesTheSameOperationWithoutCreatingSemanticRound(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", testBrief()); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddOperation("assignment", Operation{ID: "agent", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	limits := CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 1, FinalReview: 3}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "agent", limits); err != nil || got.Number != 1 || got.SemanticRound != 0 {
+		t.Fatalf("first technical attempt = %#v, %v", got, err)
+	}
+	if _, err := run.StartAssignmentAttemptWithLimits("assignment", "agent", limits); !errors.Is(err, ErrLimitExceeded) || run.LimitPause == nil || !run.LimitPause.Technical {
+		t.Fatalf("technical limit = %v, pause=%#v", err, run.LimitPause)
+	}
+	if err := run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := run.StartAssignmentAttemptWithLimits("assignment", "agent", limits); err != nil || got.Number != 2 || got.SemanticRound != 0 {
+		t.Fatalf("technical retry after targeted reset = %#v, %v", got, err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("technical retry state is invalid: %v", err)
+	}
+}
+
 func TestCounterNoneStillRecordsTechnicalAttemptsAndRequiresStartForResults(t *testing.T) {
 	run := newSingleTaskRun(t)
 	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {

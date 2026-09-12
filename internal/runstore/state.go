@@ -251,12 +251,33 @@ func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *im
 	})
 }
 
+// RecordAssignmentAttemptStartWithLimits persists either a reserved attempt or
+// the limit pause that prevented it before a caller can dispatch external
+// work. The returned event is non-zero for a durably recorded limit pause.
+func (s *StateStore) RecordAssignmentAttemptStartWithLimits(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, limits implementationstate.CycleLimits) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+		return candidate.StartAssignmentAttemptWithLimits(assignmentID, operationID, limits)
+	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+		return assignmentLastAttempt(current, assignmentID, operationID)
+	})
+}
+
 // RecordRunAttemptStart is the final-review counterpart of
 // RecordAssignmentAttemptStart. It provides the same record-before-dispatch
 // boundary for a run-level operation.
 func (s *StateStore) RecordRunAttemptStart(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
 	return s.recordAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
 		return candidate.StartRunAttempt(operationID)
+	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+		return runLastAttempt(current, operationID)
+	})
+}
+
+// RecordRunAttemptStartWithLimits is the final-review counterpart of
+// RecordAssignmentAttemptStartWithLimits.
+func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID, limits implementationstate.CycleLimits) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+		return candidate.StartRunAttemptWithLimits(operationID, limits)
 	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
 		return runLastAttempt(current, operationID)
 	})
@@ -288,6 +309,37 @@ func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementati
 		*state = *candidate
 	}
 	return attempt, event, err
+}
+
+func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool)) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	if state == nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+	}
+	if event, pending, err := s.resolvePending(ctx, state); pending {
+		if err != nil {
+			return implementationstate.OperationAttempt{}, event, err
+		}
+		if attempt, found := last(state); found {
+			return attempt, event, nil
+		}
+	}
+	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
+	if err != nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+	}
+	candidate := candidateEvent.State
+	attempt, startErr := start(candidate)
+	if startErr != nil && !errors.Is(startErr, implementationstate.ErrLimitExceeded) {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, startErr
+	}
+	event, recordErr := s.Record(ctx, candidate)
+	if event.Sequence != 0 {
+		*state = *candidate
+	}
+	if startErr != nil {
+		return attempt, event, errors.Join(startErr, recordErr)
+	}
+	return attempt, event, recordErr
 }
 
 func assignmentLastAttempt(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {
