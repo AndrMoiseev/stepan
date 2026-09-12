@@ -10,8 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+)
+
+var (
+	artifactLocks          sync.Map // map[string]*sync.Mutex, keyed by final artifact path
+	failedPublications     sync.Map // map[string]struct{}, finalization that needs cleanup
+	finalizePublication    = publishFinalFile
+	beforeArtifactOpenHook func(string)
 )
 
 const (
@@ -235,67 +243,161 @@ func (r *Run) PublishReader(id implementationstate.EvidenceID, source io.Reader)
 // VerifyReference checks that a previously published reference is present,
 // regular, and unchanged. Event writers use it before accepting a reference.
 func (r *Run) VerifyReference(reference implementationstate.EvidenceRef) error {
-	if r == nil {
-		return fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
-	}
-	if err := validReference(reference); err != nil {
-		return err
-	}
-	if err := requireDirectory(r.directory); err != nil {
-		return err
-	}
-	if err := requireDirectory(r.files); err != nil {
-		return err
-	}
-	return verifyFile(r.filePath(reference.ID), reference.Digest)
+	_, err := r.readVerified(reference)
+	return err
 }
 
 // Read returns a verified copy of a related file. It is deliberately routed
 // through VerifyReference so recovery never silently consumes altered output.
 func (r *Run) Read(reference implementationstate.EvidenceRef) ([]byte, error) {
-	if err := r.VerifyReference(reference); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(r.filePath(reference.ID))
-	if err != nil {
-		return nil, fmt.Errorf("read published artifact: %w", err)
-	}
-	return data, nil
+	return r.readVerified(reference)
 }
 
 func (r *Run) publishTemporary(temporary, target, digest string) error {
-	info, err := os.Lstat(target)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-			return fmt.Errorf("%w: artifact target is not a regular file", ErrUnsafePath)
+	lock := artifactLock(target)
+	lock.Lock()
+	defer lock.Unlock()
+
+	marker := r.markerPath(target)
+	if _, failed := failedPublications.Load(target); failed {
+		if err := removeUnpublished(target, marker, r.files); err != nil {
+			return fmt.Errorf("clear failed artifact publication: %w", err)
 		}
-		if err := verifyFile(target, digest); err != nil {
-			if errors.Is(err, ErrReferenceIntegrity) {
-				return fmt.Errorf("%w: %s", ErrConflictingPublication, target)
-			}
-			return err
+		failedPublications.Delete(target)
+	}
+	if err := verifyPublication(target, marker, digest); err == nil {
+		// A duplicate publisher still waits for a directory barrier. This makes
+		// it impossible for a loser to return while the winning publication is
+		// still awaiting its final durability step.
+		if err := syncDirectory(r.files); err != nil {
+			return fmt.Errorf("sync published artifact directory: %w", err)
 		}
 		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect artifact target: %w", err)
-	}
-	// Link creates the final name only when it is absent, unlike Rename on
-	// Unix, which can replace a concurrent publisher's immutable file.
-	if err := os.Link(temporary, target); err != nil {
-		// A concurrent publisher may have won the race. Verify its immutable
-		// result before deciding whether this is a conflict.
-		if verifyErr := verifyFile(target, digest); verifyErr == nil {
-			return nil
-		} else if errors.Is(verifyErr, ErrReferenceIntegrity) {
+	} else if !errors.Is(err, ErrReferenceUnavailable) {
+		if errors.Is(err, ErrReferenceIntegrity) {
 			return fmt.Errorf("%w: %s", ErrConflictingPublication, target)
 		}
-		return fmt.Errorf("publish artifact: %w", err)
+		return err
 	}
-	if err := syncDirectory(r.files); err != nil {
-		return fmt.Errorf("sync artifact directory: %w", err)
+
+	// A data file without a durable marker came from an interrupted or failed
+	// publication and cannot be referenced. Remove it before retrying so a
+	// later successful call always has its own final publication barrier.
+	if err := removeUnpublished(target, marker, r.files); err != nil {
+		return err
+	}
+	if err := finalizePublication(temporary, target); err != nil {
+		return discardFailedPublication(target, marker, r.files, fmt.Errorf("publish artifact: %w", err))
+	}
+	if err := publishMarker(r.files, marker, digest); err != nil {
+		return discardFailedPublication(target, marker, r.files, err)
 	}
 	return nil
+}
+
+func (r *Run) readVerified(reference implementationstate.EvidenceRef) ([]byte, error) {
+	if r == nil {
+		return nil, fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
+	}
+	if err := validReference(reference); err != nil {
+		return nil, err
+	}
+	if err := requireDirectory(r.directory); err != nil {
+		return nil, err
+	}
+	if err := requireDirectory(r.files); err != nil {
+		return nil, err
+	}
+	target := r.filePath(reference.ID)
+	if err := verifyMarker(r.markerPath(target), reference.Digest); err != nil {
+		return nil, err
+	}
+	return readVerifiedFile(target, reference.Digest)
+}
+
+func (r *Run) markerPath(target string) string { return target + ".published" }
+
+func publishMarker(directory, marker, digest string) error {
+	temporary, err := os.CreateTemp(directory, ".publish-marker-*")
+	if err != nil {
+		return fmt.Errorf("create publication marker: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if _, err := io.WriteString(temporary, digest+"\n"); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write publication marker: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync publication marker: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close publication marker: %w", err)
+	}
+	if err := finalizePublication(temporaryName, marker); err != nil {
+		return fmt.Errorf("publish artifact marker: %w", err)
+	}
+	return nil
+}
+
+func verifyPublication(target, marker, digest string) error {
+	if err := verifyMarker(marker, digest); err != nil {
+		return err
+	}
+	return verifyFile(target, digest)
+}
+
+func verifyMarker(path, digest string) error {
+	data, err := readRegularFile(path)
+	if err != nil {
+		return err
+	}
+	if string(data) != digest+"\n" {
+		return fmt.Errorf("%w: publication marker does not match artifact", ErrReferenceIntegrity)
+	}
+	return nil
+}
+
+func removeUnpublished(target, marker, directory string) error {
+	removed := false
+	for _, path := range []string{target, marker} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect unpublished artifact: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: unpublished artifact is not a regular file", ErrUnsafePath)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove unpublished artifact: %w", err)
+		}
+		removed = true
+	}
+	if removed {
+		if err := syncDirectory(directory); err != nil {
+			return fmt.Errorf("sync unpublished artifact removal: %w", err)
+		}
+	}
+	return nil
+}
+
+func artifactLock(path string) *sync.Mutex {
+	created := &sync.Mutex{}
+	actual, _ := artifactLocks.LoadOrStore(path, created)
+	return actual.(*sync.Mutex)
+}
+
+func discardFailedPublication(target, marker, directory string, publicationErr error) error {
+	failedPublications.Store(target, struct{}{})
+	if err := removeUnpublished(target, marker, directory); err != nil {
+		return errors.Join(publicationErr, fmt.Errorf("clear failed publication: %w", err))
+	}
+	failedPublications.Delete(target)
+	return publicationErr
 }
 
 func (r *Run) filePath(id implementationstate.EvidenceID) string {
@@ -360,27 +462,54 @@ func requireDirectory(path string) error {
 }
 
 func verifyFile(path, digest string) error {
+	_, err := readVerifiedFile(path, digest)
+	return err
+}
+
+func readVerifiedFile(path, digest string) ([]byte, error) {
+	data, err := readRegularFile(path)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(data)
+	if hex.EncodeToString(sum[:]) != digest {
+		return nil, fmt.Errorf("%w: %s", ErrReferenceIntegrity, path)
+	}
+	return data, nil
+}
+
+// readRegularFile opens and reads one handle after rejecting a path-level link.
+// The opened handle is statted and consumed directly, so Read cannot validate
+// one file and return another after a path replacement.
+func readRegularFile(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: %s", ErrReferenceUnavailable, path)
+		return nil, fmt.Errorf("%w: %s", ErrReferenceUnavailable, path)
 	}
 	if err != nil {
-		return fmt.Errorf("inspect published artifact: %w", err)
+		return nil, fmt.Errorf("inspect published artifact: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("%w: artifact is not a regular file", ErrUnsafePath)
+		return nil, fmt.Errorf("%w: artifact is not a regular file", ErrUnsafePath)
+	}
+	if beforeArtifactOpenHook != nil {
+		beforeArtifactOpenHook(path)
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open published artifact: %w", err)
+		return nil, fmt.Errorf("open published artifact: %w", err)
 	}
 	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
-		return fmt.Errorf("hash published artifact: %w", err)
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat opened artifact: %w", err)
 	}
-	if hex.EncodeToString(hash.Sum(nil)) != digest {
-		return fmt.Errorf("%w: %s", ErrReferenceIntegrity, path)
+	if !opened.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: opened artifact is not a regular file", ErrUnsafePath)
 	}
-	return nil
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("read published artifact: %w", err)
+	}
+	return data, nil
 }

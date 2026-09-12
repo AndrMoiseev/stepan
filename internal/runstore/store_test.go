@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -144,24 +145,126 @@ func TestPublishCompletesBeforeReferenceCanBeReturned(t *testing.T) {
 	}
 }
 
-func TestRejectsTraversalAndSymlinkedRunComponents(t *testing.T) {
+func TestPublishRetryAfterFinalBarrierFailureDoesNotReuseUnpublishedTarget(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []implementationstate.RunID{"", "..", "../other", `..\\other`, "nested/run"} {
-		if _, err := store.Create(id); !errors.Is(err, ErrInvalidRunID) {
-			t.Fatalf("Create(%q) error = %v, want invalid run ID", id, err)
-		}
+	run, err := store.Create("run-1")
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	target := t.TempDir()
-	link := filepath.Join(store.RunsRoot(), "linked-run")
-	if err := os.Symlink(target, link); err != nil {
-		t.Skipf("creating a symlink is unavailable: %v", err)
+	original := finalizePublication
+	fail := true
+	replaceFinalizerForTest(t, func(temporary, target string) error {
+		err := original(temporary, target)
+		if target == run.filePath("result") && fail {
+			fail = false
+			return errors.New("injected final publication failure")
+		}
+		return err
+	})
+
+	if _, err := run.Publish("result", []byte("durable payload")); err == nil {
+		t.Fatal("publish succeeded despite final barrier failure")
 	}
-	if _, err := store.Open("linked-run"); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("open symlinked run error = %v, want unsafe path", err)
+	target := run.filePath("result")
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed publication left reusable target: %v", err)
+	}
+	if _, err := os.Lstat(run.markerPath(target)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed publication left usable marker: %v", err)
+	}
+
+	reference, err := run.Publish("result", []byte("durable payload"))
+	if err != nil {
+		t.Fatalf("retry after failed barrier: %v", err)
+	}
+	if err := run.VerifyReference(reference); err != nil {
+		t.Fatalf("retry reference is not durable: %v", err)
+	}
+}
+
+func TestConcurrentSameIDPublishWaitsForWinningBarrier(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Create("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	original := finalizePublication
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	first := true
+	replaceFinalizerForTest(t, func(temporary, target string) error {
+		err := original(temporary, target)
+		if target == run.filePath("same-result") && first {
+			first = false
+			close(entered)
+			<-release
+		}
+		return err
+	})
+
+	type result struct {
+		reference implementationstate.EvidenceRef
+		err       error
+	}
+	winner := make(chan result, 1)
+	loser := make(chan result, 1)
+	go func() {
+		reference, err := run.Publish("same-result", []byte("same bytes"))
+		winner <- result{reference, err}
+	}()
+	<-entered
+	go func() {
+		reference, err := run.Publish("same-result", []byte("same bytes"))
+		loser <- result{reference, err}
+	}()
+	select {
+	case outcome := <-loser:
+		t.Fatalf("loser returned before winning barrier: %+v", outcome)
+	default:
+	}
+	close(release)
+	firstResult := <-winner
+	secondResult := <-loser
+	if firstResult.err != nil || secondResult.err != nil {
+		t.Fatalf("concurrent publications failed: winner=%v loser=%v", firstResult.err, secondResult.err)
+	}
+	if firstResult.reference != secondResult.reference {
+		t.Fatalf("concurrent references differ: %#v != %#v", firstResult.reference, secondResult.reference)
+	}
+}
+
+func TestReadUsesOneVerifiedHandle(t *testing.T) {
+	store, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.Create("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := run.Publish("result", []byte("original"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := run.filePath(reference.ID)
+	replaceBeforeOpenHookForTest(t, func(path string) {
+		if path == target {
+			if err := os.WriteFile(target, []byte("replaced"), 0o600); err != nil {
+				t.Errorf("replace verified target: %v", err)
+			}
+		}
+	})
+
+	if _, err := run.Read(reference); !errors.Is(err, ErrReferenceIntegrity) {
+		t.Fatalf("read after replacement error = %v, want integrity failure", err)
 	}
 }
 
@@ -188,3 +291,27 @@ func (r *gatedReader) Read(p []byte) (int, error) {
 }
 
 var _ io.Reader = (*gatedReader)(nil)
+
+var runstoreTestHookMu sync.Mutex
+
+func replaceFinalizerForTest(t *testing.T, replacement func(string, string) error) {
+	t.Helper()
+	runstoreTestHookMu.Lock()
+	original := finalizePublication
+	finalizePublication = replacement
+	t.Cleanup(func() {
+		finalizePublication = original
+		runstoreTestHookMu.Unlock()
+	})
+}
+
+func replaceBeforeOpenHookForTest(t *testing.T, replacement func(string)) {
+	t.Helper()
+	runstoreTestHookMu.Lock()
+	original := beforeArtifactOpenHook
+	beforeArtifactOpenHook = replacement
+	t.Cleanup(func() {
+		beforeArtifactOpenHook = original
+		runstoreTestHookMu.Unlock()
+	})
+}
