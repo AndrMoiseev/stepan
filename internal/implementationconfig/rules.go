@@ -68,7 +68,7 @@ func (configuration Configuration) ValidateRulesFile(repositoryRoot string) (Rul
 type rulesValidator struct {
 	repository string
 	rulesRoot  string
-	visited    map[string]struct{}
+	ancestors  map[string]struct{}
 }
 
 func (validator *rulesValidator) scanDirectory(directory string) error {
@@ -76,16 +76,21 @@ func (validator *rulesValidator) scanDirectory(directory string) error {
 	if err != nil {
 		return err
 	}
-	if !rulesPathWithin(validator.rulesRoot, canonical) {
-		return fmt.Errorf("rules directory %q escapes the rules root through a symbolic link", directory)
+	if !rulesPathWithin(validator.repository, canonical) {
+		return fmt.Errorf("rules directory %q escapes the repository through a symbolic link", directory)
 	}
-	if validator.visited == nil {
-		validator.visited = make(map[string]struct{})
+	if validator.ancestors == nil {
+		validator.ancestors = make(map[string]struct{})
 	}
-	if _, ok := validator.visited[rulesPathKey(canonical)]; ok {
+	key := rulesPathKey(canonical)
+	// Keep aliases as distinct lexical document contexts: their relative links
+	// can resolve differently. Only a directory already on this branch is a
+	// cycle and may be skipped safely.
+	if _, ok := validator.ancestors[key]; ok {
 		return nil
 	}
-	validator.visited[rulesPathKey(canonical)] = struct{}{}
+	validator.ancestors[key] = struct{}{}
+	defer delete(validator.ancestors, key)
 
 	entries, err := os.ReadDir(directory)
 	if err != nil {
