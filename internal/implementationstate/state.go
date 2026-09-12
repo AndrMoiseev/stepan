@@ -1,6 +1,7 @@
 package implementationstate
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -273,6 +274,70 @@ type Run struct {
 	FinalAcceptanceHistory []FinalAcceptanceEvidence
 	PauseReason            string
 	CloseReason            string
+}
+
+// EventKind identifies one durable state transition. New event kinds can be
+// added without making the journal depend on a storage implementation.
+type EventKind string
+
+const (
+	// EventRunStateRecorded records the complete validated state after one
+	// controller transition. It is intentionally self-contained so the first
+	// journal format can rebuild a projection without provider session data.
+	EventRunStateRecorded EventKind = "run_state_recorded"
+)
+
+// Event is one ordered journal record. Sequence is assigned by the run store;
+// callers use NewRunStateEvent rather than constructing events directly.
+type Event struct {
+	Sequence uint64    `json:"sequence"`
+	Kind     EventKind `json:"kind"`
+	State    *Run      `json:"state"`
+}
+
+// NewRunStateEvent makes an immutable event payload from a validated run.
+func NewRunStateEvent(sequence uint64, run *Run) (Event, error) {
+	if sequence == 0 || run == nil || run.Validate() != nil {
+		return Event{}, fmt.Errorf("%w: invalid run-state event", ErrInvalidState)
+	}
+	state, err := cloneRun(run)
+	if err != nil {
+		return Event{}, err
+	}
+	return Event{Sequence: sequence, Kind: EventRunStateRecorded, State: state}, nil
+}
+
+// Validate checks that an event is safe to persist or apply.
+func (e Event) Validate() error {
+	if e.Sequence == 0 || e.Kind != EventRunStateRecorded || e.State == nil || e.State.Validate() != nil {
+		return fmt.Errorf("%w: invalid run-state event", ErrInvalidState)
+	}
+	return nil
+}
+
+// Apply returns the state represented by this event. The current argument is
+// reserved for future incremental event kinds, whose validation can then keep
+// the same replay boundary.
+func (e Event) Apply(_ *Run) (*Run, error) {
+	if err := e.Validate(); err != nil {
+		return nil, err
+	}
+	return cloneRun(e.State)
+}
+
+func cloneRun(run *Run) (*Run, error) {
+	data, err := json.Marshal(run)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode run state: %v", ErrInvalidState, err)
+	}
+	var clone Run
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("%w: decode run state: %v", ErrInvalidState, err)
+	}
+	if err := clone.Validate(); err != nil {
+		return nil, err
+	}
+	return &clone, nil
 }
 
 // NewRun validates the extracted ordered hierarchy and creates a new active
