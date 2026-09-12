@@ -61,6 +61,41 @@ type Store struct {
 	runs string
 }
 
+// RunIDs returns the identifiers of all durable run directories. It does not
+// open projections or modify run data, so status inspection can use it while
+// another process owns the controller lock.
+func (s *Store) RunIDs() ([]implementationstate.RunID, error) {
+	if s == nil {
+		return nil, fmt.Errorf("%w: nil store", ErrUnsafePath)
+	}
+	if err := requireDirectory(s.root); err != nil {
+		return nil, err
+	}
+	if err := requireDirectory(s.runs); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(s.runs)
+	if err != nil {
+		return nil, fmt.Errorf("list implementation runs: %w", err)
+	}
+	ids := make([]implementationstate.RunID, 0, len(entries))
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("inspect implementation run %q: %w", entry.Name(), err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("%w: %s", ErrUnsafePath, filepath.Join(s.runs, entry.Name()))
+		}
+		id := implementationstate.RunID(entry.Name())
+		if _, err := validRunID(id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // DefaultRoot returns the Stepan data root for a supplied home directory.
 func DefaultRoot(home string) string {
 	return filepath.Join(home, ".stepan")

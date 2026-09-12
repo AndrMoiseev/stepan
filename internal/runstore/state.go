@@ -408,6 +408,37 @@ func (s *StateStore) Current(ctx context.Context) (*implementationstate.Run, uin
 	return &state, uint64(sequence), nil
 }
 
+// ReadJournalCurrent reads the latest complete state directly from the
+// authoritative journal without opening, rebuilding, or otherwise changing
+// its SQLite projection. An incomplete final fragment is ignored, matching
+// recovery semantics, while corruption of a completed record is rejected.
+// This is the status-read path used even while a controller process is active.
+func ReadJournalCurrent(run *Run) (*implementationstate.Run, uint64, error) {
+	if run == nil {
+		return nil, 0, fmt.Errorf("%w: nil run", ErrUnsafePath)
+	}
+	store := &StateStore{journalPath: filepath.Join(run.directory, JournalFileName), run: run}
+	verified := make(map[implementationstate.EvidenceRef]struct{})
+	var current *implementationstate.Run
+	journal, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+		if err := store.verifyStateReferencesSeen(event.State, verified); err != nil {
+			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
+		}
+		current = event.State
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	if journal.lastSequence == 0 {
+		return nil, 0, ErrCurrentStateUnavailable
+	}
+	if current == nil {
+		return nil, 0, ErrCurrentStateUnavailable
+	}
+	return current, journal.lastSequence, nil
+}
+
 func (s *StateStore) initialize(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		PRAGMA journal_mode = DELETE;
