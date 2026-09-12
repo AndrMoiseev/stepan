@@ -1,9 +1,105 @@
 package implementationstate
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 )
+
+func TestAttemptCountersSeparateSemanticRoundsFromTechnicalRetries(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", testBrief()); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []Operation{
+		{ID: "review-1", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterAssignmentReview},
+		{ID: "review-2", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterAssignmentReview},
+		{ID: "mandatory", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterMandatoryChecks},
+		{ID: "requested", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterChecksRequested},
+		{ID: "brief-refinement", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterBriefRefinement},
+		{ID: "explorer-1", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "implementation"},
+		{ID: "explorer-2", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "implementation"},
+		{ID: "explorer-next", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "review"},
+	} {
+		if err := run.AddOperation("assignment", operation); err != nil {
+			t.Fatalf("AddOperation(%s): %v", operation.ID, err)
+		}
+	}
+
+	if got, err := run.StartAssignmentAttempt("assignment", "review-1"); err != nil || got != (OperationAttempt{Number: 1, SemanticRound: 1}) {
+		t.Fatalf("first review attempt = %#v, %v", got, err)
+	}
+	if got, err := run.StartAssignmentAttempt("assignment", "review-1"); err != nil || got != (OperationAttempt{Number: 2, SemanticRound: 1}) {
+		t.Fatalf("technical retry = %#v, %v; want same semantic round", got, err)
+	}
+	for _, id := range []OperationID{"review-2", "mandatory", "requested", "brief-refinement", "explorer-1", "explorer-2", "explorer-next"} {
+		if _, err := run.StartAssignmentAttempt("assignment", id); err != nil {
+			t.Fatalf("StartAssignmentAttempt(%s): %v", id, err)
+		}
+	}
+
+	counters := run.Assignments[0].Counters
+	if counters.AssignmentReview != 2 || counters.MandatoryChecks != 1 || counters.ChecksRequested != 1 || counters.BriefRefinement != 1 || counters.Explorer["implementation"] != 2 || counters.Explorer["review"] != 1 {
+		t.Fatalf("independent counters = %#v", counters)
+	}
+	if err := run.AddBriefVersion("assignment", BriefVersion{ID: "brief-2", Number: 2, Document: testBrief().Document}); err != nil {
+		t.Fatalf("brief revision rejected: %v", err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate() after a brief revision = %v", err)
+	}
+
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted Run
+	if err := json.Unmarshal(data, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Validate(); err != nil {
+		t.Fatalf("restarted state is invalid: %v", err)
+	}
+	if got, err := restarted.StartAssignmentAttempt("assignment", "review-2"); err != nil || got != (OperationAttempt{Number: 2, SemanticRound: 2}) {
+		t.Fatalf("review after restart = %#v, %v; want retained counter", got, err)
+	}
+}
+
+func TestFinalReviewTechnicalRetryDoesNotConsumeAnotherRound(t *testing.T) {
+	run := newSingleTaskRun(t)
+	for _, operation := range []Operation{
+		{ID: "final-1", Kind: OperationReview, Basis: testBasis(), Counter: CycleCounterFinalReview},
+		{ID: "final-2", Kind: OperationReview, Basis: testBasis(), Counter: CycleCounterFinalReview},
+	} {
+		if err := run.AddRunOperation(operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []struct {
+		id      OperationID
+		attempt OperationAttempt
+	}{
+		{"final-1", OperationAttempt{Number: 1, SemanticRound: 1}},
+		{"final-1", OperationAttempt{Number: 2, SemanticRound: 1}},
+		{"final-2", OperationAttempt{Number: 1, SemanticRound: 2}},
+	} {
+		if got, err := run.StartRunAttempt(want.id); err != nil || got != want.attempt {
+			t.Fatalf("StartRunAttempt(%s) = %#v, %v; want %#v", want.id, got, err, want.attempt)
+		}
+	}
+	if run.FinalReviewRounds != 2 {
+		t.Fatalf("final review rounds = %d, want 2", run.FinalReviewRounds)
+	}
+	if err := run.AddRunResult(OperationResult{ID: "final-result", OperationID: "final-2", Status: ResultSucceeded, State: run.CurrentState, Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt("final-2"); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("technical retry after an operation result = %v, want invalid state", err)
+	}
+}
 
 func TestAssignmentTransitionsRequireAcceptanceThenCommit(t *testing.T) {
 	run := newTestRun(t)

@@ -208,6 +208,38 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 	return cloneEventFromData(data)
 }
 
+// RecordAssignmentAttemptStart reserves and durably records an assignment
+// attempt before its external agent or command is dispatched. Callers MUST NOT
+// dispatch when this method returns an error. If the JSONL write succeeded but
+// projection failed, the returned attempt remains conservatively spent and
+// the caller can retry Record with the same state to finish projection.
+func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	if state == nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+	}
+	attempt, err := state.StartAssignmentAttempt(assignmentID, operationID)
+	if err != nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+	}
+	event, err := s.Record(ctx, state)
+	return attempt, event, err
+}
+
+// RecordRunAttemptStart is the final-review counterpart of
+// RecordAssignmentAttemptStart. It provides the same record-before-dispatch
+// boundary for a run-level operation.
+func (s *StateStore) RecordRunAttemptStart(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	if state == nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+	}
+	attempt, err := state.StartRunAttempt(operationID)
+	if err != nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+	}
+	event, err := s.Record(ctx, state)
+	return attempt, event, err
+}
+
 // Current returns the current SQLite projection and the sequence that produced
 // it. It never reads the journal, keeping JSONL as the recovery source rather
 // than a second cache on normal reads.

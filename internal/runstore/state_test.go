@@ -963,6 +963,62 @@ func TestStateStoreRecoveryRechecksEvidenceImmediatelyBeforeReplay(t *testing.T)
 	}
 }
 
+func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	document := publishTestReference(t, run, "brief")
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+
+	first, event, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != (implementationstate.OperationAttempt{Number: 1, SemanticRound: 1}) || event.Sequence != 2 {
+		t.Fatalf("durable first attempt = %#v, event %d", first, event.Sequence)
+	}
+	// Deliberately do not add a result: this represents a process death after
+	// the durable start and before it can establish whether dispatch occurred.
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted, sequence, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sequence != 2 || restarted.Assignments[0].Counters.AssignmentReview != 1 || len(restarted.Assignments[0].Operations[0].Attempts) != 1 {
+		t.Fatalf("ambiguous start was not retained: sequence=%d assignment=%#v", sequence, restarted.Assignments[0])
+	}
+	second, event, err := reopened.RecordAssignmentAttemptStart(context.Background(), restarted, "assignment", "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != (implementationstate.OperationAttempt{Number: 2, SemanticRound: 1}) || event.Sequence != 3 {
+		t.Fatalf("technical retry = %#v, event %d; want same semantic round", second, event.Sequence)
+	}
+}
+
 func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t *testing.T) {
 	for _, test := range []struct {
 		name   string

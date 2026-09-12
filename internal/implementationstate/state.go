@@ -144,6 +144,64 @@ func (k OperationKind) valid() bool {
 	return k == OperationAgent || k == OperationCheck || k == OperationReview
 }
 
+// CycleCounter identifies the semantic cycle that an operation consumes when
+// its first attempt starts. It deliberately has no "assignment calls" value:
+// the implementation loop limits only the concrete cycles from its
+// configuration.
+type CycleCounter string
+
+const (
+	CycleCounterNone             CycleCounter = ""
+	CycleCounterAssignmentReview CycleCounter = "assignment_review"
+	CycleCounterMandatoryChecks  CycleCounter = "mandatory_checks"
+	CycleCounterChecksRequested  CycleCounter = "checks_requested"
+	CycleCounterBriefRefinement  CycleCounter = "brief_refinement"
+	CycleCounterExplorer         CycleCounter = "explorer"
+	CycleCounterFinalReview      CycleCounter = "final_review"
+)
+
+func (c CycleCounter) valid() bool {
+	return c == CycleCounterNone || c == CycleCounterAssignmentReview || c == CycleCounterMandatoryChecks || c == CycleCounterChecksRequested || c == CycleCounterBriefRefinement || c == CycleCounterExplorer || c == CycleCounterFinalReview
+}
+
+func (c CycleCounter) matchesOperationKind(kind OperationKind) bool {
+	switch c {
+	case CycleCounterNone:
+		return true
+	case CycleCounterAssignmentReview, CycleCounterFinalReview:
+		return kind == OperationReview
+	case CycleCounterMandatoryChecks, CycleCounterChecksRequested:
+		return kind == OperationCheck
+	case CycleCounterBriefRefinement, CycleCounterExplorer:
+		return kind == OperationAgent
+	default:
+		return false
+	}
+}
+
+// CycleCounters are the independent, currently active semantic-cycle
+// counters for one assignment. Explorer counters are partitioned by episode;
+// the controller supplies a stable episode ID on the operation.
+//
+// Reset boundaries are intentionally not defined here. They are controller
+// policy and are added with the lifecycle work that opens a new cycle.
+type CycleCounters struct {
+	AssignmentReview uint64            `json:"assignment_review"`
+	MandatoryChecks  uint64            `json:"mandatory_checks"`
+	ChecksRequested  uint64            `json:"checks_requested"`
+	BriefRefinement  uint64            `json:"brief_refinement"`
+	Explorer         map[string]uint64 `json:"explorer,omitempty"`
+}
+
+// OperationAttempt is written into the run state before dispatch. A missing
+// result is intentional: after a crash it conservatively means that this
+// attempt was spent even if the controller cannot establish whether the
+// external action actually started.
+type OperationAttempt struct {
+	Number        uint64 `json:"number"`
+	SemanticRound uint64 `json:"semantic_round"`
+}
+
 // Operation records a controller-requested agent, check, or review action.
 // It is intentionally descriptive; dispatch and attempt accounting are added
 // by later layers.
@@ -153,10 +211,26 @@ type Operation struct {
 	BriefID     BriefID
 	Basis       AcceptanceBasis
 	Description string
+	Counter     CycleCounter
+	// Episode is required for Explorer operations and is otherwise empty. It
+	// makes an Explorer episode's counter independent from other episodes.
+	Episode  string
+	Attempts []OperationAttempt
 }
 
 func (o Operation) valid() bool {
-	return o.ID != "" && o.Kind.valid() && o.Basis.valid()
+	if o.ID == "" || !o.Kind.valid() || !o.Basis.valid() || !o.Counter.valid() || !o.Counter.matchesOperationKind(o.Kind) || (o.Counter == CycleCounterExplorer && strings.TrimSpace(o.Episode) == "") || (o.Counter != CycleCounterExplorer && o.Episode != "") {
+		return false
+	}
+	if o.Counter == CycleCounterNone {
+		return len(o.Attempts) == 0
+	}
+	for index, attempt := range o.Attempts {
+		if attempt.Number != uint64(index+1) || attempt.SemanticRound == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound) {
+			return false
+		}
+	}
+	return true
 }
 
 type ResultStatus string
@@ -246,6 +320,7 @@ type Assignment struct {
 	Acceptance        *AcceptanceEvidence
 	AcceptanceHistory []AcceptanceEvidence
 	Commit            *CommitEvidence
+	Counters          CycleCounters
 }
 
 // FinalAcceptanceEvidence proves completion of the run rather than of one
@@ -272,6 +347,7 @@ type Run struct {
 	RunResults             []OperationResult
 	FinalAcceptance        *FinalAcceptanceEvidence
 	FinalAcceptanceHistory []FinalAcceptanceEvidence
+	FinalReviewRounds      uint64
 	PauseReason            string
 	CloseReason            string
 }
@@ -462,14 +538,14 @@ func (r *Run) Validate() error {
 		}
 	}
 	for _, operation := range r.RunOperations {
-		if !operation.valid() || operation.BriefID != "" || operations[operation.ID] {
+		if !operation.valid() || operation.BriefID != "" || !validRunCounter(operation.Counter) || operations[operation.ID] {
 			return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
 		}
 		operations[operation.ID] = true
 	}
 	for _, result := range r.RunResults {
 		operation := r.runOperation(result.OperationID)
-		if !result.valid() || operation == nil || results[result.ID] || result.Basis != operation.Basis {
+		if !result.valid() || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || results[result.ID] || result.Basis != operation.Basis {
 			return fmt.Errorf("%w: invalid run result", ErrInvalidState)
 		}
 		results[result.ID] = true
@@ -478,6 +554,9 @@ func (r *Run) Validate() error {
 		if err := r.validateFinalAcceptance(*r.FinalAcceptance, true); err != nil {
 			return err
 		}
+	}
+	if err := r.validateCounters(); err != nil {
+		return err
 	}
 	for _, evidence := range r.FinalAcceptanceHistory {
 		if err := r.validateFinalAcceptance(evidence, false); err != nil {
@@ -624,7 +703,7 @@ func (r *Run) AddOperation(assignmentID AssignmentID, operation Operation) error
 	if err != nil {
 		return err
 	}
-	if !operation.valid() || operation.BriefID == "" || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
+	if !operation.valid() || operation.BriefID == "" || !validAssignmentCounter(operation.Counter) || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
 		return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 	}
 	assignment.Operations = append(assignment.Operations, operation)
@@ -637,7 +716,7 @@ func (r *Run) AddResult(assignmentID AssignmentID, result OperationResult) error
 		return err
 	}
 	operation := assignment.operation(result.OperationID)
-	if !result.valid() || r.resultExists(result.ID) || operation == nil || result.Basis != operation.Basis {
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: invalid operation result", ErrInvalidState)
 	}
 	assignment.Results = append(assignment.Results, cloneResult(result))
@@ -784,11 +863,45 @@ func (r *Run) AddRunOperation(operation Operation) error {
 	if err := r.requireActive(); err != nil {
 		return err
 	}
-	if !operation.valid() || operation.BriefID != "" || r.operationExists(operation.ID) {
+	if !operation.valid() || operation.BriefID != "" || !validRunCounter(operation.Counter) || r.operationExists(operation.ID) {
 		return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
 	}
 	r.RunOperations = append(r.RunOperations, operation)
 	return nil
+}
+
+// StartAssignmentAttempt reserves an attempt before the caller dispatches the
+// external action. The caller MUST durably record the changed Run (normally
+// through runstore.StateStore) before dispatching it. A later technical retry
+// of this same operation receives a new technical number but retains the
+// already-reserved semantic round.
+func (r *Run) StartAssignmentAttempt(assignmentID AssignmentID, operationID OperationID) (OperationAttempt, error) {
+	assignment, err := r.activeAssignment(assignmentID)
+	if err != nil {
+		return OperationAttempt{}, err
+	}
+	operation := assignment.operation(operationID)
+	if operation == nil || operation.Counter == CycleCounterNone || assignment.hasResultForOperation(operationID) {
+		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume an assignment counter", ErrInvalidState)
+	}
+	attempt, err := assignment.startAttempt(operation)
+	if err != nil {
+		return OperationAttempt{}, err
+	}
+	return attempt, nil
+}
+
+// StartRunAttempt reserves a final-review attempt before external dispatch.
+// It follows the same durable-record-before-dispatch rule as assignment work.
+func (r *Run) StartRunAttempt(operationID OperationID) (OperationAttempt, error) {
+	if err := r.requireActive(); err != nil {
+		return OperationAttempt{}, err
+	}
+	operation := r.runOperation(operationID)
+	if operation == nil || operation.Counter != CycleCounterFinalReview || r.hasRunResultForOperation(operationID) {
+		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume a run counter", ErrInvalidState)
+	}
+	return r.startFinalReviewAttempt(operation)
 }
 
 func (r *Run) AddRunResult(result OperationResult) error {
@@ -796,7 +909,7 @@ func (r *Run) AddRunResult(result OperationResult) error {
 		return err
 	}
 	operation := r.runOperation(result.OperationID)
-	if !result.valid() || r.resultExists(result.ID) || operation == nil || result.Basis != operation.Basis {
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: invalid run result", ErrInvalidState)
 	}
 	r.RunResults = append(r.RunResults, cloneResult(result))
@@ -945,7 +1058,7 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 	}
 	for _, result := range assignment.Results {
 		operation := assignment.operation(result.OperationID)
-		if !result.valid() || operation == nil || result.Basis != operation.Basis {
+		if !result.valid() || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 			return fmt.Errorf("%w: invalid result", ErrInvalidState)
 		}
 	}
@@ -968,6 +1081,129 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 		}
 	}
 	return nil
+}
+
+func validAssignmentCounter(counter CycleCounter) bool {
+	return counter == CycleCounterNone || counter == CycleCounterAssignmentReview || counter == CycleCounterMandatoryChecks || counter == CycleCounterChecksRequested || counter == CycleCounterBriefRefinement || counter == CycleCounterExplorer
+}
+
+func validRunCounter(counter CycleCounter) bool {
+	return counter == CycleCounterNone || counter == CycleCounterFinalReview
+}
+
+func (r *Run) validateCounters() error {
+	var finalReviews uint64
+	for _, operation := range r.RunOperations {
+		if len(operation.Attempts) != 0 {
+			finalReviews++
+			if operation.Attempts[0].SemanticRound != finalReviews {
+				return fmt.Errorf("%w: final review semantic rounds are not sequential", ErrInvalidState)
+			}
+		}
+	}
+	if r.FinalReviewRounds != finalReviews {
+		return fmt.Errorf("%w: final review counter does not match attempts", ErrInvalidState)
+	}
+	for _, assignment := range r.Assignments {
+		want := CycleCounters{Explorer: make(map[string]uint64)}
+		for _, operation := range assignment.Operations {
+			if len(operation.Attempts) == 0 {
+				continue
+			}
+			round := operation.Attempts[0].SemanticRound
+			switch operation.Counter {
+			case CycleCounterAssignmentReview:
+				want.AssignmentReview++
+				if round != want.AssignmentReview {
+					return fmt.Errorf("%w: assignment review semantic rounds are not sequential", ErrInvalidState)
+				}
+			case CycleCounterMandatoryChecks:
+				want.MandatoryChecks++
+				if round != want.MandatoryChecks {
+					return fmt.Errorf("%w: mandatory check semantic rounds are not sequential", ErrInvalidState)
+				}
+			case CycleCounterChecksRequested:
+				want.ChecksRequested++
+				if round != want.ChecksRequested {
+					return fmt.Errorf("%w: requested-check semantic rounds are not sequential", ErrInvalidState)
+				}
+			case CycleCounterBriefRefinement:
+				want.BriefRefinement++
+				if round != want.BriefRefinement {
+					return fmt.Errorf("%w: brief refinement semantic rounds are not sequential", ErrInvalidState)
+				}
+			case CycleCounterExplorer:
+				want.Explorer[operation.Episode]++
+				if round != want.Explorer[operation.Episode] {
+					return fmt.Errorf("%w: explorer semantic rounds are not sequential", ErrInvalidState)
+				}
+			}
+		}
+		if assignment.Counters.AssignmentReview != want.AssignmentReview || assignment.Counters.MandatoryChecks != want.MandatoryChecks || assignment.Counters.ChecksRequested != want.ChecksRequested || assignment.Counters.BriefRefinement != want.BriefRefinement || !mapsEqual(assignment.Counters.Explorer, want.Explorer) {
+			return fmt.Errorf("%w: assignment counters do not match attempts", ErrInvalidState)
+		}
+	}
+	return nil
+}
+
+func mapsEqual(got, want map[string]uint64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error) {
+	if operation == nil || !validAssignmentCounter(operation.Counter) || operation.Counter == CycleCounterNone {
+		return OperationAttempt{}, fmt.Errorf("%w: invalid assignment attempt", ErrInvalidState)
+	}
+	attempt := OperationAttempt{Number: uint64(len(operation.Attempts) + 1)}
+	if len(operation.Attempts) != 0 {
+		attempt.SemanticRound = operation.Attempts[0].SemanticRound
+	} else {
+		switch operation.Counter {
+		case CycleCounterAssignmentReview:
+			a.Counters.AssignmentReview++
+			attempt.SemanticRound = a.Counters.AssignmentReview
+		case CycleCounterMandatoryChecks:
+			a.Counters.MandatoryChecks++
+			attempt.SemanticRound = a.Counters.MandatoryChecks
+		case CycleCounterChecksRequested:
+			a.Counters.ChecksRequested++
+			attempt.SemanticRound = a.Counters.ChecksRequested
+		case CycleCounterBriefRefinement:
+			a.Counters.BriefRefinement++
+			attempt.SemanticRound = a.Counters.BriefRefinement
+		case CycleCounterExplorer:
+			if a.Counters.Explorer == nil {
+				a.Counters.Explorer = make(map[string]uint64)
+			}
+			a.Counters.Explorer[operation.Episode]++
+			attempt.SemanticRound = a.Counters.Explorer[operation.Episode]
+		}
+	}
+	operation.Attempts = append(operation.Attempts, attempt)
+	return attempt, nil
+}
+
+func (r *Run) startFinalReviewAttempt(operation *Operation) (OperationAttempt, error) {
+	if operation == nil || operation.Counter != CycleCounterFinalReview {
+		return OperationAttempt{}, fmt.Errorf("%w: invalid final review attempt", ErrInvalidState)
+	}
+	attempt := OperationAttempt{Number: uint64(len(operation.Attempts) + 1)}
+	if len(operation.Attempts) == 0 {
+		r.FinalReviewRounds++
+		attempt.SemanticRound = r.FinalReviewRounds
+	} else {
+		attempt.SemanticRound = operation.Attempts[0].SemanticRound
+	}
+	operation.Attempts = append(operation.Attempts, attempt)
+	return attempt, nil
 }
 
 func (a *Assignment) accept(e AcceptanceEvidence) error {
@@ -1098,6 +1334,15 @@ func (r *Run) runResult(id ResultID) *OperationResult {
 	return nil
 }
 
+func (r *Run) hasRunResultForOperation(id OperationID) bool {
+	for _, result := range r.RunResults {
+		if result.OperationID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *Assignment) hasBrief(id BriefID) bool {
 	for _, brief := range a.Briefs {
 		if brief.ID == id {
@@ -1123,6 +1368,15 @@ func (a *Assignment) result(id ResultID) *OperationResult {
 		}
 	}
 	return nil
+}
+
+func (a *Assignment) hasResultForOperation(id OperationID) bool {
+	for _, result := range a.Results {
+		if result.OperationID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func hasDuplicates(values []TaskID) bool {
