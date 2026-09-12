@@ -152,3 +152,18 @@ Task2.5 rereviewcycle1 complete /root/review_2_5_restored on44d3b9c: TASK-2.5-00
 Task2.5 correction2 candidate: reject active canonical directory cycles diagnostically instead of silently pruning. Rationale: cycles create unbounded lexical contexts, no specification acceptance requirement for cycles; original accepting-cycle test was implementation convenience, replaced with rejection and exact reachable alias repro on Windows/nonwindows. Reviewer must assess this rationale. Focused config tests PASS0.240s; Darwin testbinary compile PASS; diffcheck PASS. Full helper task-2.5-correction-2 -CrossBuild running session47181 on stable candidate. Completedcycles1; no correction2commit yet.
 
 Task2.5 correction2 stable mandatory checks session47181 exited0 TEST_EXIT=0 BUILD_EXIT=0 CROSS_BUILD_EXIT=0; config0.256s spec41.299s. Known nonfatal statcache warnings only. Logs .tmp/task-2.5-correction-2-{tests,build,cross-build}.log. Checkbox complete, review awaiting_review; completedcycles1, next correction2commit and same reviewer.
+
+Task2.5 correction2commit verified4af14a98fd1fdd814da13204405a6ba4f894dbab; parent44d3b9cd51f3958ddf00ee8209ebccc2e025267c, original taskbasecd90d26f364b5cbc3731862b847d8c9efebb7c71. Clean tree after commit. Pending rereviewcycle2 by same /root/review_2_5_restored; completedcycles1 until response.
+
+Task2.5 rereviewcycle2 PASS /root/review_2_5_restored on4af14a98fd1fdd814da13204405a6ba4f894dbab. TASK-2.5-001 resolved by diagnostic cycle rejection; reviewer accepted specification rationale and test replacement. TASK-2.5-002 remains resolved. No new findings. Independent noncached config tests PASS0.244s, diffcheckPASS and full logs inspected. Completedcorrectioncycles2; no pendingcycle; implementation/review accepted. Next task2.6 with fresh implementer/reviewer.
+
+### 2.6 - configuration defaults
+- Base4af14a98fd1fdd814da13204405a6ba4f894dbab; dependencies2.1-2.5 accepted.
+- Acceptance tasks2.6, configuration role/limits requirements, design6/7 tables: default role profile names without built-in models; 3/3/5/3/10/3/3 cycle limits, agent1800s, command600s, Explorer12000 Unicode; per-key overrides and missingprofile validation, bootstrap separate from loop.
+- Implementing /root/implement_2_6 (gpt-5.6-terra/high); reviewer not_started; no commits/findings/cycles. Runtime factory/executable/reasoning capability validation deferred6.5; required full tests and Windowsbuild, crossbuild if applicable. Next focused implementation then mandatory stable checks/commit/freshreview.
+
+Task2.6 candidate ready: RoleProfile defaults, ValidateLoopRoles excludes bootstrap, BootstrapProfile optional interactive fallback, ResolveLimits typed positive integer validation. Existing raw merge contract preserved; focused config tests PASS0.625s and diffcheckPASS. Full helper task-2.6 running session63368 on stable candidate; Windowsbuild required, no platform code changed so no task-specific crossbuild. No manual case required. Next commit and fresh independent reviewer.
+
+Task2.6 first fullcheck session63368 passed tests/build, but limits_test.go expanded after run began (file15:25:23 vs start15:25:14 local). Superseded as candidate evidence; full stable rerun required. No implementation defect/reviewcycle consumed; source frozen after implementer final report.
+
+Task2.6 final stable fullcheck session76731 PASS TEST_EXIT=0 BUILD_EXIT=0; config0.264s spec41.342s; logs .tmp/task-2.6-final-{tests,build}.log. Nonfatal module statcachewarning only. Allsource unchanged during finalrun. Implementation complete; review awaiting_review, no corrections/completedcycles0. Next implementationcommit and fresh sol/xhighreview.

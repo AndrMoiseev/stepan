@@ -6,6 +6,35 @@ import (
 	"fmt"
 )
 
+const (
+	RoleOrchestrator  = "orchestrator"
+	RoleBriefer       = "briefer"
+	RoleImplementer   = "implementer"
+	RoleTaskReviewer  = "task_reviewer"
+	RoleExplorer      = "explorer"
+	RoleFinalReviewer = "final_reviewer"
+	RoleBootstrapper  = "bootstrapper"
+)
+
+var defaultRoleProfiles = map[string]string{
+	RoleOrchestrator:  "medium",
+	RoleBriefer:       "high",
+	RoleImplementer:   "medium",
+	RoleTaskReviewer:  "high",
+	RoleExplorer:      "low",
+	RoleFinalReviewer: "ultra",
+	RoleBootstrapper:  "high",
+}
+
+var loopRoles = []string{
+	RoleOrchestrator,
+	RoleBriefer,
+	RoleImplementer,
+	RoleTaskReviewer,
+	RoleExplorer,
+	RoleFinalReviewer,
+}
+
 // Configuration is the effective implementation configuration after the user
 // and project sections have been merged. Check-related values deliberately
 // remain raw project JSON: their command schema is handled separately.
@@ -164,6 +193,40 @@ func validateRoleProfiles(configuration Configuration) error {
 		}
 	}
 	return nil
+}
+
+// RoleProfile returns the configured profile for a role, or its agreed
+// default. It deliberately does not fabricate a profile: provider, model, and
+// reasoning remain configuration supplied values.
+func (configuration Configuration) RoleProfile(role string) string {
+	if profile, ok := configuration.Roles[role]; ok {
+		return profile
+	}
+	return defaultRoleProfiles[role]
+}
+
+// ValidateLoopRoles verifies the role assignments required to start an
+// implementation loop. Bootstrap is intentionally excluded because it has a
+// separate interactive setup path when no bootstrapper profile exists.
+func (configuration Configuration) ValidateLoopRoles() error {
+	for _, role := range loopRoles {
+		profile := configuration.RoleProfile(role)
+		if _, ok := configuration.Profiles[profile]; !ok {
+			return fmt.Errorf("implementation configuration: role %q references missing profile %q", role, profile)
+		}
+	}
+	return nil
+}
+
+// BootstrapProfile returns the configured bootstrapper profile when it is
+// available. A missing default profile is not an error here: bootstrap asks
+// the user for provider, model, and reasoning before its first agent call.
+func (configuration Configuration) BootstrapProfile() (string, bool, error) {
+	profile := configuration.RoleProfile(RoleBootstrapper)
+	if _, ok := configuration.Profiles[profile]; !ok {
+		return "", false, nil
+	}
+	return profile, true, nil
 }
 
 func configurationError(level, reason string) error {

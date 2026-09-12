@@ -88,6 +88,87 @@ func TestMergeRejectsRemainingReferenceToMissingProfile(t *testing.T) {
 	}
 }
 
+func TestRoleProfileUsesAgreedDefaultsWithoutBuiltInProfiles(t *testing.T) {
+	configuration, err := Merge(sources(t, ``, ``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		RoleOrchestrator:  "medium",
+		RoleBriefer:       "high",
+		RoleImplementer:   "medium",
+		RoleTaskReviewer:  "high",
+		RoleExplorer:      "low",
+		RoleFinalReviewer: "ultra",
+		RoleBootstrapper:  "high",
+	}
+	for role, profile := range want {
+		if got := configuration.RoleProfile(role); got != profile {
+			t.Fatalf("profile for %q = %q, want %q", role, got, profile)
+		}
+	}
+	if len(configuration.Profiles) != 0 {
+		t.Fatalf("default profiles must not be built in: %#v", configuration.Profiles)
+	}
+}
+
+func TestMergeProjectOverridesDefaultRole(t *testing.T) {
+	configuration, err := Merge(sources(t, `{"profiles":{"review":{"provider":"codex"}}}`, `{"roles":{"final_reviewer":"review"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := configuration.RoleProfile(RoleFinalReviewer), "review"; got != want {
+		t.Fatalf("final reviewer profile = %q, want %q", got, want)
+	}
+}
+
+func TestValidateLoopRolesRequiresAllLoopProfilesButNotBootstrapper(t *testing.T) {
+	configuration, err := Merge(sources(t, `{
+  "profiles":{"low":{},"medium":{},"high":{},"ultra":{}},
+  "roles":{"bootstrapper":"missing"}
+}`, ``))
+	if err == nil || !strings.Contains(err.Error(), `role "bootstrapper" references missing profile "missing"`) {
+		t.Fatalf("explicit bootstrapper assignment must still resolve: %v", err)
+	}
+
+	configuration, err = Merge(sources(t, `{"profiles":{"low":{},"medium":{},"high":{},"ultra":{}}}`, ``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configuration.ValidateLoopRoles(); err != nil {
+		t.Fatalf("loop validation = %v", err)
+	}
+	profile, configured, err := configuration.BootstrapProfile()
+	if err != nil || !configured || profile != "high" {
+		t.Fatalf("bootstrap profile = %q, %t, %v", profile, configured, err)
+	}
+
+	configuration, err = Merge(sources(t, `{
+  "profiles":{"low":{},"medium":{},"ultra":{}},
+  "roles":{"briefer":"medium","task_reviewer":"medium"}
+}`, ``))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configuration.ValidateLoopRoles(); err != nil {
+		t.Fatalf("loop must not require bootstrapper: %v", err)
+	}
+	profile, configured, err = configuration.BootstrapProfile()
+	if err != nil || configured || profile != "" {
+		t.Fatalf("bootstrap fallback = %q, %t, %v", profile, configured, err)
+	}
+}
+
+func TestValidateLoopRolesRejectsDeletedDefaultProfile(t *testing.T) {
+	configuration, err := Merge(sources(t, `{"profiles":{"low":{},"medium":{},"high":{},"ultra":{}}}`, `{"profiles":{"high":null}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configuration.ValidateLoopRoles(); err == nil || !strings.Contains(err.Error(), `role "briefer" references missing profile "high"`) {
+		t.Fatalf("loop validation must reject deleted default: %v", err)
+	}
+}
+
 func TestMergeRejectsMalformedMergeValues(t *testing.T) {
 	for _, test := range []struct {
 		name string
