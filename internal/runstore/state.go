@@ -1,6 +1,7 @@
 package runstore
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -80,12 +81,9 @@ func OpenState(run *Run) (*StateStore, error) {
 	if err := requireRegularOrAbsent(journalPath); err != nil {
 		return nil, err
 	}
-	journal, err := readJournal(journalPath)
-	if err != nil {
-		return nil, err
-	}
 	store := &StateStore{journalPath: journalPath, databasePath: filepath.Join(run.directory, StateDatabaseFileName), run: run, writer: writer}
-	if err := store.verifyJournalReferences(journal); err != nil {
+	journal, err := store.validateJournal()
+	if err != nil {
 		return nil, err
 	}
 	if journal.discardTail {
@@ -98,7 +96,7 @@ func OpenState(run *Run) (*StateStore, error) {
 		return nil, err
 	}
 
-	if db, current, err := openCurrentProjection(store.databasePath, journal); err == nil && current {
+	if db, current, err := openCurrentProjection(store.databasePath, store.journalPath); err == nil && current {
 		store.db = db
 		return store, nil
 	} else if db != nil {
@@ -177,7 +175,7 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		if !bytes.Equal(data, s.pending.data) {
 			return implementationstate.Event{}, ErrPendingEvent
 		}
-		if err := s.apply(ctx, s.pending.data); err != nil {
+		if err := s.applyCanonical(ctx, s.pending.data, false); err != nil {
 			return eventWithError(s.pending.data, err)
 		}
 		s.pending = nil
@@ -203,7 +201,7 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		return implementationstate.Event{}, err
 	}
 	s.pending = &pendingEvent{data: bytes.Clone(data)}
-	if err := s.apply(ctx, s.pending.data); err != nil {
+	if err := s.applyCanonical(ctx, s.pending.data, false); err != nil {
 		return eventWithError(s.pending.data, err)
 	}
 	s.pending = nil
@@ -261,7 +259,7 @@ func (s *StateStore) initialize(ctx context.Context) error {
 // openCurrentProjection leaves a usable database open only when it is a
 // byte-for-byte projection of the accepted journal. Any failure is recoverable
 // from that journal, so callers rebuild instead of trusting a partial view.
-func openCurrentProjection(path string, journal journalContents) (*sql.DB, bool, error) {
+func openCurrentProjection(path, journalPath string) (*sql.DB, bool, error) {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	} else if err != nil {
@@ -271,7 +269,7 @@ func openCurrentProjection(path string, journal journalContents) (*sql.DB, bool,
 	if err != nil {
 		return nil, false, err
 	}
-	current, err := projectionMatchesJournal(context.Background(), db, journal)
+	current, err := projectionMatchesJournal(context.Background(), db, journalPath)
 	if err != nil || !current {
 		return db, false, err
 	}
@@ -288,22 +286,43 @@ func openProjection(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-func projectionMatchesJournal(ctx context.Context, db *sql.DB, journal journalContents) (bool, error) {
-	var quickCheck string
-	if err := db.QueryRowContext(ctx, "PRAGMA quick_check").Scan(&quickCheck); err != nil || quickCheck != "ok" {
-		return false, err
-	}
-	var count int
-	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM applied_events").Scan(&count); err != nil || count != len(journal.entries) {
-		return false, err
-	}
-	for _, entry := range journal.entries {
-		var stored []byte
-		if err := db.QueryRowContext(ctx, "SELECT event_json FROM applied_events WHERE sequence = ?", entry.event.Sequence).Scan(&stored); err != nil || !bytes.Equal(stored, entry.data) {
+func projectionMatchesJournal(ctx context.Context, db *sql.DB, journalPath string) (bool, error) {
+	for _, pragma := range []string{"PRAGMA integrity_check", "PRAGMA quick_check"} {
+		var check string
+		if err := db.QueryRowContext(ctx, pragma).Scan(&check); err != nil || check != "ok" {
 			return false, err
 		}
 	}
-	if len(journal.entries) == 0 {
+	var expectedCount int
+	var lastEvent implementationstate.Event
+	haveEvent := false
+	_, err := scanJournal(journalPath, func(_ int64, data []byte, event implementationstate.Event) error {
+		expectedCount++
+		var stored []byte
+		if err := db.QueryRowContext(ctx, "SELECT event_json FROM applied_events WHERE sequence = ?", event.Sequence).Scan(&stored); err != nil {
+			return err
+		}
+		if !bytes.Equal(stored, data) {
+			return errProjectionMismatch
+		}
+		lastEvent = event
+		haveEvent = true
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, errProjectionMismatch) {
+			return false, nil
+		}
+		return false, err
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM applied_events").Scan(&count); err != nil {
+		return false, err
+	}
+	if count != expectedCount {
+		return false, nil
+	}
+	if !haveEvent {
 		var count int
 		if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM current_state").Scan(&count); err != nil || count != 0 {
 			return false, err
@@ -312,10 +331,13 @@ func projectionMatchesJournal(ctx context.Context, db *sql.DB, journal journalCo
 	}
 	var sequence int64
 	var stateJSON []byte
-	if err := db.QueryRowContext(ctx, "SELECT last_applied_sequence, state_json FROM current_state WHERE id = 1").Scan(&sequence, &stateJSON); err != nil || sequence != int64(journal.entries[len(journal.entries)-1].event.Sequence) {
+	if err := db.QueryRowContext(ctx, "SELECT last_applied_sequence, state_json FROM current_state WHERE id = 1").Scan(&sequence, &stateJSON); err != nil {
 		return false, err
 	}
-	want, err := json.Marshal(journal.entries[len(journal.entries)-1].event.State)
+	if sequence != int64(lastEvent.Sequence) {
+		return false, nil
+	}
+	want, err := json.Marshal(lastEvent.State)
 	if err != nil || !bytes.Equal(stateJSON, want) {
 		return false, err
 	}
@@ -350,11 +372,19 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 		_ = db.Close()
 		return err
 	}
-	for _, entry := range journal.entries {
-		if err := replacement.apply(ctx, entry.data); err != nil {
-			_ = db.Close()
-			return fmt.Errorf("rebuild state projection at journal event %d: %w", entry.event.Sequence, err)
+	rebuiltJournal, err := scanJournal(store.journalPath, func(_ int64, data []byte, event implementationstate.Event) error {
+		if err := replacement.applyCanonical(ctx, data, false); err != nil {
+			return fmt.Errorf("rebuild state projection at journal event %d: %w", event.Sequence, err)
 		}
+		return nil
+	})
+	if err != nil {
+		_ = db.Close()
+		return err
+	}
+	if rebuiltJournal.lastSequence != journal.lastSequence || rebuiltJournal.validBytes != journal.validBytes || rebuiltJournal.discardTail {
+		_ = db.Close()
+		return fmt.Errorf("%w: journal changed while rebuilding projection", ErrJournalSequence)
 	}
 	if err := db.Close(); err != nil {
 		return fmt.Errorf("close replacement state projection: %w", err)
@@ -362,19 +392,119 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 	if err := syncProjectionFile(temporaryPath); err != nil {
 		return fmt.Errorf("sync replacement state projection: %w", err)
 	}
-	if err := publishReplacementProjection(temporaryPath, store.databasePath); err != nil {
+	for _, sidecar := range projectionSidecars(temporaryPath) {
+		if _, err := os.Lstat(sidecar); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				return fmt.Errorf("replacement state projection left SQLite sidecar %s", filepath.Base(sidecar))
+			}
+			return fmt.Errorf("inspect replacement SQLite sidecar %s: %w", filepath.Base(sidecar), err)
+		}
+	}
+	if err := publishProjectionGroup(temporaryPath, store.databasePath); err != nil {
 		return fmt.Errorf("publish replacement state projection: %w", err)
+	}
+	published, err := openProjection(store.databasePath)
+	if err != nil {
+		return fmt.Errorf("reopen published state projection: %w", err)
+	}
+	defer published.Close()
+	if current, err := projectionMatchesJournal(ctx, published, store.journalPath); err != nil {
+		return fmt.Errorf("verify published state projection: %w", err)
+	} else if !current {
+		return fmt.Errorf("verify published state projection: %w", ErrJournalSequence)
 	}
 	return nil
 }
 
+// publishProjectionGroup prevents a crash-left SQLite sidecar from being
+// paired with a newly rebuilt main database. The replacement is fully built,
+// closed, and synced before this touches an old sidecar, so a publication
+// failure before the final replacement keeps the prior main projection.
+func publishProjectionGroup(temporary, target string) error {
+	backups, err := moveProjectionSidecarsAside(temporary, target)
+	if err != nil {
+		return err
+	}
+	if err := publishReplacementProjection(temporary, target); err != nil {
+		return errors.Join(err, restoreProjectionSidecars(backups))
+	}
+	for _, backup := range backups {
+		_ = os.Remove(backup.backup)
+	}
+	if err := syncDirectory(filepath.Dir(target)); err != nil {
+		return fmt.Errorf("sync SQLite sidecar cleanup: %w", err)
+	}
+	return nil
+}
+
+func projectionSidecars(target string) []string {
+	return []string{target + "-journal", target + "-wal", target + "-shm"}
+}
+
+type projectionSidecarBackup struct {
+	original string
+	backup   string
+}
+
+func moveProjectionSidecarsAside(temporary, target string) ([]projectionSidecarBackup, error) {
+	var backups []projectionSidecarBackup
+	for _, sidecar := range projectionSidecars(target) {
+		if err := requireRegularOrAbsent(sidecar); err != nil {
+			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+		}
+		if _, err := os.Lstat(sidecar); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+		}
+		backup := temporary + ".previous-" + filepath.Base(sidecar)
+		if err := requireRegularOrAbsent(backup); err != nil {
+			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+		}
+		if _, err := os.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
+			if err == nil {
+				err = fmt.Errorf("replacement SQLite sidecar backup already exists: %s", filepath.Base(backup))
+			}
+			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+		}
+		if err := os.Rename(sidecar, backup); err != nil {
+			return nil, errors.Join(fmt.Errorf("move stale SQLite sidecar %s aside: %w", filepath.Base(sidecar), err), restoreProjectionSidecars(backups))
+		}
+		backups = append(backups, projectionSidecarBackup{original: sidecar, backup: backup})
+	}
+	if err := syncDirectory(filepath.Dir(target)); err != nil {
+		return nil, errors.Join(fmt.Errorf("sync SQLite sidecar isolation: %w", err), restoreProjectionSidecars(backups))
+	}
+	return backups, nil
+}
+
+func restoreProjectionSidecars(backups []projectionSidecarBackup) error {
+	var err error
+	for index := len(backups) - 1; index >= 0; index-- {
+		backup := backups[index]
+		if moveErr := os.Rename(backup.backup, backup.original); moveErr != nil && !errors.Is(moveErr, os.ErrNotExist) {
+			err = errors.Join(err, fmt.Errorf("restore SQLite sidecar %s: %w", filepath.Base(backup.original), moveErr))
+		}
+	}
+	if len(backups) != 0 {
+		err = errors.Join(err, syncDirectory(filepath.Dir(backups[0].original)))
+	}
+	return err
+}
+
 func (s *StateStore) apply(ctx context.Context, data []byte) (err error) {
+	return s.applyCanonical(ctx, data, true)
+}
+
+func (s *StateStore) applyCanonical(ctx context.Context, data []byte, verifyReferences bool) (err error) {
 	event, err := eventFromData(data)
 	if err != nil {
 		return err
 	}
-	if err := s.verifyStateReferences(event.State); err != nil {
-		return err
+	if verifyReferences {
+		if err := s.verifyStateReferences(event.State); err != nil {
+			return err
+		}
 	}
 	state, err := event.Apply(nil)
 	if err != nil {
@@ -533,32 +663,26 @@ func appendJournal(path string, data []byte) error {
 }
 
 func journalLastSequence(path string) (uint64, error) {
-	journal, err := readJournal(path)
-	if err != nil {
-		return 0, err
-	}
-	if len(journal.entries) == 0 {
-		return 0, nil
-	}
-	return journal.entries[len(journal.entries)-1].event.Sequence, nil
+	journal, err := scanJournal(path, nil)
+	return journal.lastSequence, err
 }
 
-type journalEntry struct {
-	data  []byte
-	event implementationstate.Event
-}
-
+// journalContents contains only the bounded metadata needed to continue a
+// journal. Event bytes and decoded snapshots are passed to callbacks while a
+// single record is live and are never retained for the full history.
 type journalContents struct {
-	entries     []journalEntry
-	validBytes  int64
-	discardTail bool
+	lastSequence uint64
+	validBytes   int64
+	discardTail  bool
 }
 
-// readJournal accepts only complete newline-delimited event records. A final
-// unterminated record is the only recoverable write tear; every malformed
-// complete record is corruption because later records could otherwise be
-// applied to the wrong history.
-func readJournal(path string) (journalContents, error) {
+var errProjectionMismatch = errors.New("state projection does not match journal")
+
+// scanJournal walks complete JSONL records in order. callback receives the
+// exact newline-terminated canonical bytes and their starting byte offset.
+// The only tolerated tear is an unterminated final record; any completed bad
+// record is reported with its deterministic byte position.
+func scanJournal(path string, callback func(offset int64, data []byte, event implementationstate.Event) error) (journalContents, error) {
 	var journal journalContents
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -568,38 +692,36 @@ func readJournal(path string) (journalContents, error) {
 		return journal, fmt.Errorf("open event journal: %w", err)
 	}
 	defer file.Close()
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return journal, fmt.Errorf("read event journal: %w", err)
-	}
-	var last uint64
-	for offset := 0; offset < len(data); {
-		remainder := data[offset:]
-		end := bytes.IndexByte(remainder, '\n')
-		if end < 0 {
-			journal.discardTail = len(remainder) != 0
-			break
+
+	reader := bufio.NewReader(file)
+	for {
+		offset := journal.validBytes
+		data, readErr := reader.ReadBytes('\n')
+		if errors.Is(readErr, io.EOF) {
+			journal.discardTail = len(data) != 0
+			return journal, nil
 		}
-		line := remainder[:end]
-		var event implementationstate.Event
-		if len(line) == 0 {
+		if readErr != nil {
+			return journal, fmt.Errorf("read event journal at byte %d: %w", offset, readErr)
+		}
+		if len(data) == 1 {
 			return journal, fmt.Errorf("%w: empty complete record at byte %d", ErrJournalSequence, offset)
 		}
-		if err := json.Unmarshal(line, &event); err != nil {
-			return journal, fmt.Errorf("%w: malformed complete record at byte %d: %w", ErrJournalSequence, offset, err)
+		event, err := eventFromData(data[:len(data)-1])
+		if err != nil {
+			return journal, fmt.Errorf("%w: malformed or invalid complete record at byte %d: %w", ErrJournalSequence, offset, err)
 		}
-		if err := event.Validate(); err != nil {
-			return journal, fmt.Errorf("%w: invalid event at byte %d: %w", ErrJournalSequence, offset, err)
+		if event.Sequence != journal.lastSequence+1 {
+			return journal, fmt.Errorf("%w: event at byte %d has sequence %d, want %d", ErrJournalSequence, offset, event.Sequence, journal.lastSequence+1)
 		}
-		if event.Sequence != last+1 {
-			return journal, fmt.Errorf("%w: event at byte %d has sequence %d, want %d", ErrJournalSequence, offset, event.Sequence, last+1)
+		if callback != nil {
+			if err := callback(offset, data, event); err != nil {
+				return journal, err
+			}
 		}
-		last = event.Sequence
-		journal.entries = append(journal.entries, journalEntry{data: bytes.Clone(remainder[:end+1]), event: event})
-		offset += end + 1
-		journal.validBytes = int64(offset)
+		journal.lastSequence = event.Sequence
+		journal.validBytes += int64(len(data))
 	}
-	return journal, nil
 }
 
 func discardJournalTail(path string, validBytes int64) error {
@@ -639,7 +761,7 @@ func requireRegularOrAbsent(path string) error {
 }
 
 func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
-	journal, err := readJournal(s.journalPath)
+	journal, err := s.validateJournal()
 	if err != nil {
 		return 0, err
 	}
@@ -648,37 +770,40 @@ func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
 			return 0, err
 		}
 	}
-	var lastSeq uint64
-	if len(journal.entries) != 0 {
-		lastSeq = journal.entries[len(journal.entries)-1].event.Sequence
-	}
 	lastApplied, err := s.lastApplied(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	if lastApplied < 0 || uint64(lastApplied) != lastSeq {
+	if lastApplied < 0 || uint64(lastApplied) != journal.lastSequence {
 		return 0, fmt.Errorf("%w: journal and projection differ", ErrJournalSequence)
 	}
-	return lastSeq, nil
+	return journal.lastSequence, nil
 }
 
-func (s *StateStore) verifyJournalReferences(journal journalContents) error {
-	for _, entry := range journal.entries {
-		if err := s.verifyStateReferences(entry.event.State); err != nil {
-			return fmt.Errorf("verify journal event %d references: %w", entry.event.Sequence, err)
+// validateJournal performs a full streaming validation before any destructive
+// tail discard or projection replacement.
+func (s *StateStore) validateJournal() (journalContents, error) {
+	return scanJournal(s.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+		if err := s.verifyStateReferences(event.State); err != nil {
+			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *StateStore) verifyStateReferences(state *implementationstate.Run) error {
 	if state == nil || state.Identity.ID != s.run.ID() {
 		return ErrRunIdentity
 	}
+	verified := make(map[implementationstate.EvidenceRef]struct{})
 	for _, reference := range stateEvidenceRefs(state) {
+		if _, ok := verified[reference]; ok {
+			continue
+		}
 		if err := s.run.VerifyReference(reference); err != nil {
 			return fmt.Errorf("%w: %w", ErrStateReference, err)
 		}
+		verified[reference] = struct{}{}
 	}
 	return nil
 }

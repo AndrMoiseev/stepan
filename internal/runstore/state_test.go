@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -842,4 +846,245 @@ func TestStateStoreKeepsExistingProjectionUntilReplacementPublishes(t *testing.T
 	if err != nil || sequence64 != 2 {
 		t.Fatalf("published replacement = sequence %d, error %v", sequence64, err)
 	}
+}
+
+func TestPublishProjectionGroupRestoresSidecarsWhenMainPublicationFails(t *testing.T) {
+	stateStoreTestHookMu.Lock()
+	defer stateStoreTestHookMu.Unlock()
+	original := publishReplacementProjection
+	defer func() { publishReplacementProjection = original }()
+
+	directory := t.TempDir()
+	temporary := filepath.Join(directory, "replacement.sqlite")
+	target := filepath.Join(directory, StateDatabaseFileName)
+	if err := os.WriteFile(temporary, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, sidecar := range projectionSidecars(target) {
+		if err := os.WriteFile(sidecar, []byte(filepath.Base(sidecar)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publishReplacementProjection = func(string, string) error { return errors.New("main replacement failed") }
+	if err := publishProjectionGroup(temporary, target); err == nil {
+		t.Fatal("publishProjectionGroup() error = nil, want publication failure")
+	}
+	if previous, err := os.ReadFile(target); err != nil || !bytes.Equal(previous, []byte("previous")) {
+		t.Fatalf("main file after failed replacement = %q, error %v", previous, err)
+	}
+	for _, sidecar := range projectionSidecars(target) {
+		if restored, err := os.ReadFile(sidecar); err != nil || !bytes.Equal(restored, []byte(filepath.Base(sidecar))) {
+			t.Fatalf("sidecar %s after failed replacement = %q, error %v", filepath.Base(sidecar), restored, err)
+		}
+	}
+}
+
+func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		damage func(t *testing.T, path string)
+	}{
+		{name: "missing main", damage: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "corrupt main", damage: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte("not sqlite"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := newStoredRun(t)
+			state, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := newStoredModel(t, run)
+			if _, err := state.Record(context.Background(), model); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			createHotSQLiteJournal(t, state.DatabasePath())
+			if err := model.Pause("second durable event"); err != nil {
+				t.Fatal(err)
+			}
+			event, err := implementationstate.NewRunStateEvent(2, model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := marshalEvent(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := appendJournal(state.JournalPath(), data); err != nil {
+				t.Fatal(err)
+			}
+			test.damage(t, state.DatabasePath())
+
+			recovered, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovered.Close()
+			if current, sequence, err := recovered.Current(context.Background()); err != nil || sequence != 2 || current.Status != implementationstate.RunPaused {
+				t.Fatalf("recovered hot-journal projection = sequence %d, state %#v, error %v", sequence, current, err)
+			}
+			if _, err := os.Stat(state.DatabasePath() + "-journal"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("stale rollback journal after recovery = %v, want absent", err)
+			}
+			if err := recovered.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			if _, sequence, err := reopened.Current(context.Background()); err != nil || sequence != 2 {
+				t.Fatalf("reopened replacement after hot journal = sequence %d, error %v", sequence, err)
+			}
+		})
+	}
+}
+
+// TestStateStoreHotJournalHelper is run as a separate process so killing it
+// leaves a real SQLite rollback journal, rather than a synthetic sidecar.
+func TestStateStoreHotJournalHelper(t *testing.T) {
+	path := os.Getenv("STEPAN_HOT_JOURNAL_PATH")
+	if path == "" {
+		return
+	}
+	db, err := openProjection(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA journal_mode = DELETE; BEGIN IMMEDIATE; UPDATE current_state SET state_json = randomblob(length(state_json)) WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("STEPAN_HOT_JOURNAL_READY"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {}
+}
+
+func createHotSQLiteJournal(t *testing.T, databasePath string) {
+	t.Helper()
+	ready := filepath.Join(t.TempDir(), "hot-journal-ready")
+	command := exec.Command(os.Args[0], "-test.run=^TestStateStoreHotJournalHelper$", "-test.v")
+	command.Env = append(os.Environ(), "STEPAN_HOT_JOURNAL_PATH="+databasePath, "STEPAN_HOT_JOURNAL_READY="+ready)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		_ = command.Wait()
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for helper to create a hot SQLite journal")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(databasePath + "-journal"); err != nil {
+		t.Fatalf("hot SQLite journal was not created: %v", err)
+	}
+}
+
+func TestStateStoreRecoveryStreamsLargeJournal(t *testing.T) {
+	stateStoreTestHookMu.Lock()
+	defer stateStoreTestHookMu.Unlock()
+	original := publishReplacementProjection
+	defer func() { publishReplacementProjection = original }()
+
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newLargeStoredModel(t, run, 500, 256)
+	journalFile, err := os.Create(state.JournalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journalBytes int64
+	for sequence := uint64(1); sequence <= 128; sequence++ {
+		event, err := implementationstate.NewRunStateEvent(sequence, model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := marshalEvent(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := journalFile.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		journalBytes += int64(len(data))
+	}
+	if err := journalFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state.DatabasePath()); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	var during runtime.MemStats
+	publishReplacementProjection = func(temporary, target string) error {
+		runtime.GC()
+		runtime.ReadMemStats(&during)
+		return original(temporary, target)
+	}
+
+	recovered, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if _, sequence, err := recovered.Current(context.Background()); err != nil || sequence != 128 {
+		t.Fatalf("large streamed recovery = sequence %d, error %v", sequence, err)
+	}
+	if journalBytes < 8<<20 {
+		t.Fatalf("large journal = %d bytes, want at least 8 MiB", journalBytes)
+	}
+	if during.HeapAlloc > before.HeapAlloc+uint64(journalBytes/4) {
+		t.Fatalf("recovery retained %d heap bytes for a %d-byte journal; want bounded streaming memory", during.HeapAlloc-before.HeapAlloc, journalBytes)
+	}
+}
+
+func newLargeStoredModel(t *testing.T, run *Run, taskCount, titleSize int) *implementationstate.Run {
+	t.Helper()
+	model := newStoredModel(t, run)
+	model.Tasks = make([]implementationstate.Task, taskCount)
+	model.LeafStatus = make(map[implementationstate.TaskID]implementationstate.TaskStatus, taskCount)
+	for index := range model.Tasks {
+		id := implementationstate.TaskID("task-" + strconv.Itoa(index))
+		model.Tasks[index] = implementationstate.Task{ID: id, Order: index, Title: strings.Repeat("title", titleSize/5)}
+		model.LeafStatus[id] = implementationstate.TaskPending
+	}
+	if err := model.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	return model
 }
