@@ -1263,6 +1263,63 @@ func TestRecordLimitedAttemptPendingPauseIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRecordRunTechnicalRetryDoesNotConsumeOrRecheckSemanticLimit(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		counter implementationstate.CycleCounter
+		episode string
+	}{
+		{name: "final-review", counter: implementationstate.CycleCounterFinalReview},
+		{name: "run-explorer", counter: implementationstate.CycleCounterExplorer, episode: "initial-briefer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := newStoredRun(t)
+			state, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := newStoredModel(t, run)
+			basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+			kind := implementationstate.OperationAgent
+			if test.counter == implementationstate.CycleCounterFinalReview {
+				kind = implementationstate.OperationReview
+			}
+			if err := model.AddRunOperation(implementationstate.Operation{ID: "operation", Kind: kind, Basis: basis, Counter: test.counter, Episode: test.episode}); err != nil {
+				t.Fatal(err)
+			}
+			limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 2, FinalReview: 1}
+			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implementationstate.OperationAttempt{Number: 1, SemanticRound: 1}) {
+				t.Fatalf("first limited attempt = %#v, %v", got, err)
+			}
+			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implementationstate.OperationAttempt{Number: 2, SemanticRound: 1}) {
+				t.Fatalf("technical retry at semantic limit = %#v, %v", got, err)
+			}
+			if err := model.Validate(); err != nil {
+				t.Fatalf("technical retry state is invalid: %v", err)
+			}
+			if err := state.Close(); err != nil {
+				t.Fatal(err)
+			}
+			reopened, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			current, _, err := reopened.Current(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := current.Validate(); err != nil {
+				t.Fatalf("reopened technical retry state is invalid: %v", err)
+			}
+			attempts := current.RunOperations[0].Attempts
+			if len(attempts) != 2 || attempts[0].SemanticRound != 1 || attempts[1].SemanticRound != 1 || current.RunOperations[0].SemanticCycle != 1 {
+				t.Fatalf("persisted technical retry = %#v, cycle %d", attempts, current.RunOperations[0].SemanticCycle)
+			}
+		})
+	}
+}
+
 func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)

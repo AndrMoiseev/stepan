@@ -1025,11 +1025,13 @@ func (r *Run) StartRunAttemptWithLimits(operationID OperationID, limits CycleLim
 	if technicalAttempts(operation) >= uint64(limits.TechnicalAttempts) {
 		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: operation.Counter, OperationID: operationID, Technical: true})
 	}
-	if operation.Counter == CycleCounterFinalReview && r.FinalReviewRounds >= uint64(limits.FinalReview) {
-		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterFinalReview, OperationID: operationID})
-	}
-	if operation.Counter == CycleCounterExplorer && r.RunExplorerCounters[operation.Episode] >= uint64(limits.Explorer) {
-		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterExplorer, OperationID: operationID, Episode: operation.Episode})
+	if len(operation.Attempts) == 0 {
+		if operation.Counter == CycleCounterFinalReview && r.FinalReviewRounds >= uint64(limits.FinalReview) {
+			return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterFinalReview, OperationID: operationID})
+		}
+		if operation.Counter == CycleCounterExplorer && r.RunExplorerCounters[operation.Episode] >= uint64(limits.Explorer) {
+			return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterExplorer, OperationID: operationID, Episode: operation.Episode})
+		}
 	}
 	return r.startRunAttempt(operation)
 }
