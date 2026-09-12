@@ -515,3 +515,331 @@ func TestStateStoreFilesStayInRunDirectory(t *testing.T) {
 		t.Fatalf("database path was not created: %v", err)
 	}
 }
+
+func TestStateStoreRecoversMissingAndCorruptProjectionFromJournal(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		damage func(t *testing.T, path string)
+	}{
+		{name: "missing", damage: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "corrupt", damage: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.WriteFile(path, []byte("not sqlite"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := newStoredRun(t)
+			state, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := newStoredModel(t, run)
+			if _, err := state.Record(context.Background(), model); err != nil {
+				t.Fatal(err)
+			}
+			if err := model.Pause("recover projection"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := state.Record(context.Background(), model); err != nil {
+				t.Fatal(err)
+			}
+			if err := state.Close(); err != nil {
+				t.Fatal(err)
+			}
+			test.damage(t, state.DatabasePath())
+
+			recovered, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovered.Close()
+			current, sequence, err := recovered.Current(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sequence != 2 || current.Status != implementationstate.RunPaused {
+				t.Fatalf("recovered projection = sequence %d, state %#v", sequence, current)
+			}
+			if _, err := recovered.Record(context.Background(), model); err != nil {
+				t.Fatal(err)
+			}
+			_, sequence, err = recovered.Current(context.Background())
+			if err != nil || sequence != 3 {
+				t.Fatalf("continued recovered projection = sequence %d, error %v", sequence, err)
+			}
+		})
+	}
+}
+
+func TestStateStoreRecoveryDiscardsOnlyIncompleteJournalTail(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(state.JournalPath(), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"sequence":2`); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(state.DatabasePath()); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if sequence, err := journalLastSequence(recovered.JournalPath()); err != nil || sequence != 1 {
+		t.Fatalf("journal after tail recovery = sequence %d, error %v", sequence, err)
+	}
+	data, err := os.ReadFile(recovered.JournalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasSuffix(data, []byte{'\n'}) {
+		t.Fatalf("journal tail was not durably discarded: %q", data)
+	}
+	if err := model.Pause("continued after tail recovery"); err != nil {
+		t.Fatal(err)
+	}
+	if event, err := recovered.Record(context.Background(), model); err != nil || event.Sequence != 2 {
+		t.Fatalf("continued record = %#v, error %v", event, err)
+	}
+}
+
+func TestStateStoreRecoveryRejectsMiddleJournalCorruptionAndMissingEvidence(t *testing.T) {
+	t.Run("complete malformed record", func(t *testing.T) {
+		run := newStoredRun(t)
+		state, err := OpenState(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := newStoredModel(t, run)
+		if _, err := state.Record(context.Background(), model); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Close(); err != nil {
+			t.Fatal(err)
+		}
+		file, err := os.OpenFile(state.JournalPath(), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("not json\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := model.Pause("event after corruption"); err != nil {
+			t.Fatal(err)
+		}
+		event, err := implementationstate.NewRunStateEvent(2, model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := marshalEvent(event)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(data); err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(state.DatabasePath()); err != nil {
+			t.Fatal(err)
+		}
+		_, err = OpenState(run)
+		if !errors.Is(err, ErrJournalSequence) || !strings.Contains(err.Error(), "byte") {
+			t.Fatalf("OpenState() error = %v, want actionable journal corruption", err)
+		}
+	})
+
+	t.Run("altered related file", func(t *testing.T) {
+		run := newStoredRun(t)
+		state, err := OpenState(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := newStoredModel(t, run)
+		if _, err := state.Record(context.Background(), model); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(run.filePath(model.Identity.TaskList.ID), []byte("altered"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(state.DatabasePath()); err != nil {
+			t.Fatal(err)
+		}
+		_, err = OpenState(run)
+		if !errors.Is(err, ErrStateReference) || !errors.Is(err, ErrReferenceIntegrity) {
+			t.Fatalf("OpenState() error = %v, want altered related-file diagnostic", err)
+		}
+	})
+
+	t.Run("missing related file", func(t *testing.T) {
+		run := newStoredRun(t)
+		state, err := OpenState(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		model := newStoredModel(t, run)
+		if _, err := state.Record(context.Background(), model); err != nil {
+			t.Fatal(err)
+		}
+		if err := state.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(run.filePath(model.Identity.TaskList.ID)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(state.DatabasePath()); err != nil {
+			t.Fatal(err)
+		}
+		_, err = OpenState(run)
+		if !errors.Is(err, ErrStateReference) || !errors.Is(err, ErrReferenceUnavailable) {
+			t.Fatalf("OpenState() error = %v, want missing related-file diagnostic", err)
+		}
+	})
+}
+
+func TestStateStoreRecoveryReplaysEachDurableFailureBoundaryOnce(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		install func(t *testing.T)
+	}{
+		{name: "before journal fsync", install: func(t *testing.T) { beforeJournalSyncHook = func() error { return errors.New("before journal fsync") } }},
+		{name: "after journal fsync", install: func(t *testing.T) { afterJournalSyncHook = func() error { return errors.New("after journal fsync") } }},
+		{name: "before sqlite transaction", install: func(t *testing.T) {
+			beforeProjectionTransactionHook = func(implementationstate.Event) error { return errors.New("before sqlite transaction") }
+		}},
+		{name: "after sqlite transaction", install: func(t *testing.T) {
+			afterProjectionTransactionHook = func(implementationstate.Event) error { return errors.New("after sqlite transaction") }
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stateStoreTestHookMu.Lock()
+			defer stateStoreTestHookMu.Unlock()
+			beforeJournalSyncHook, afterJournalSyncHook = nil, nil
+			beforeProjectionTransactionHook, afterProjectionTransactionHook = nil, nil
+			t.Cleanup(func() {
+				beforeJournalSyncHook, afterJournalSyncHook = nil, nil
+				beforeProjectionTransactionHook, afterProjectionTransactionHook = nil, nil
+			})
+
+			run := newStoredRun(t)
+			state, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.install(t)
+			model := newStoredModel(t, run)
+			if _, err := state.Record(context.Background(), model); err == nil {
+				t.Fatal("Record() error = nil, want injected failure")
+			}
+			beforeJournalSyncHook, afterJournalSyncHook = nil, nil
+			beforeProjectionTransactionHook, afterProjectionTransactionHook = nil, nil
+			if err := state.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			recovered, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer recovered.Close()
+			_, sequence, err := recovered.Current(context.Background())
+			if err != nil || sequence != 1 {
+				t.Fatalf("recovered sequence = %d, error %v", sequence, err)
+			}
+			var count int
+			if err := recovered.db.QueryRow("SELECT COUNT(*) FROM applied_events").Scan(&count); err != nil || count != 1 {
+				t.Fatalf("applied durable event count = %d, error %v", count, err)
+			}
+		})
+	}
+}
+
+func TestStateStoreKeepsExistingProjectionUntilReplacementPublishes(t *testing.T) {
+	stateStoreTestHookMu.Lock()
+	defer stateStoreTestHookMu.Unlock()
+	original := publishReplacementProjection
+	t.Cleanup(func() { publishReplacementProjection = original })
+
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.Pause("durable but not projected"); err != nil {
+		t.Fatal(err)
+	}
+	event, err := implementationstate.NewRunStateEvent(2, model)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := marshalEvent(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendJournal(state.JournalPath(), data); err != nil {
+		t.Fatal(err)
+	}
+	publishReplacementProjection = func(string, string) error { return errors.New("replacement publication failed") }
+	if _, err := OpenState(run); err == nil {
+		t.Fatal("OpenState() error = nil, want replacement publication failure")
+	}
+
+	db, err := openProjection(state.DatabasePath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sequence int
+	if err := db.QueryRow("SELECT last_applied_sequence FROM current_state WHERE id = 1").Scan(&sequence); err != nil || sequence != 1 {
+		t.Fatalf("last usable projection = sequence %d, error %v", sequence, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	publishReplacementProjection = original
+	recovered, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	_, sequence64, err := recovered.Current(context.Background())
+	if err != nil || sequence64 != 2 {
+		t.Fatalf("published replacement = sequence %d, error %v", sequence64, err)
+	}
+}
