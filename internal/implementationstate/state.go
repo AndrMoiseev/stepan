@@ -216,17 +216,18 @@ type Operation struct {
 	// makes an Explorer episode's counter independent from other episodes.
 	Episode  string
 	Attempts []OperationAttempt
+	// UncountedResumeCheck is the explicit exception for the mandatory set
+	// executed during /resume. It records an externally observed result without
+	// consuming either a semantic cycle or a technical attempt.
+	UncountedResumeCheck bool
 }
 
 func (o Operation) valid() bool {
-	if o.ID == "" || !o.Kind.valid() || !o.Basis.valid() || !o.Counter.valid() || !o.Counter.matchesOperationKind(o.Kind) || (o.Counter == CycleCounterExplorer && strings.TrimSpace(o.Episode) == "") || (o.Counter != CycleCounterExplorer && o.Episode != "") {
+	if o.ID == "" || !o.Kind.valid() || !o.Basis.valid() || !o.Counter.valid() || !o.Counter.matchesOperationKind(o.Kind) || (o.Counter == CycleCounterExplorer && strings.TrimSpace(o.Episode) == "") || (o.Counter != CycleCounterExplorer && o.Episode != "") || (o.UncountedResumeCheck && (o.Kind != OperationCheck || o.Counter != CycleCounterNone || len(o.Attempts) != 0)) {
 		return false
 	}
-	if o.Counter == CycleCounterNone {
-		return len(o.Attempts) == 0
-	}
 	for index, attempt := range o.Attempts {
-		if attempt.Number != uint64(index+1) || attempt.SemanticRound == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound) {
+		if attempt.Number != uint64(index+1) || (o.Counter == CycleCounterNone && attempt.SemanticRound != 0) || (o.Counter != CycleCounterNone && (attempt.SemanticRound == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound))) {
 			return false
 		}
 	}
@@ -545,7 +546,7 @@ func (r *Run) Validate() error {
 	}
 	for _, result := range r.RunResults {
 		operation := r.runOperation(result.OperationID)
-		if !result.valid() || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || results[result.ID] || result.Basis != operation.Basis {
+		if !result.valid() || operation == nil || (!operation.UncountedResumeCheck && len(operation.Attempts) == 0) || results[result.ID] || result.Basis != operation.Basis {
 			return fmt.Errorf("%w: invalid run result", ErrInvalidState)
 		}
 		results[result.ID] = true
@@ -703,7 +704,7 @@ func (r *Run) AddOperation(assignmentID AssignmentID, operation Operation) error
 	if err != nil {
 		return err
 	}
-	if !operation.valid() || operation.BriefID == "" || !validAssignmentCounter(operation.Counter) || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
+	if !operation.valid() || operation.BriefID == "" || operation.UncountedResumeCheck || !validAssignmentCounter(operation.Counter) || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
 		return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 	}
 	assignment.Operations = append(assignment.Operations, operation)
@@ -716,7 +717,7 @@ func (r *Run) AddResult(assignmentID AssignmentID, result OperationResult) error
 		return err
 	}
 	operation := assignment.operation(result.OperationID)
-	if !result.valid() || r.resultExists(result.ID) || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || (!operation.UncountedResumeCheck && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: invalid operation result", ErrInvalidState)
 	}
 	assignment.Results = append(assignment.Results, cloneResult(result))
@@ -881,7 +882,7 @@ func (r *Run) StartAssignmentAttempt(assignmentID AssignmentID, operationID Oper
 		return OperationAttempt{}, err
 	}
 	operation := assignment.operation(operationID)
-	if operation == nil || operation.Counter == CycleCounterNone || assignment.hasResultForOperation(operationID) {
+	if operation == nil || operation.UncountedResumeCheck || assignment.hasResultForOperation(operationID) {
 		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume an assignment counter", ErrInvalidState)
 	}
 	attempt, err := assignment.startAttempt(operation)
@@ -891,17 +892,18 @@ func (r *Run) StartAssignmentAttempt(assignmentID AssignmentID, operationID Oper
 	return attempt, nil
 }
 
-// StartRunAttempt reserves a final-review attempt before external dispatch.
-// It follows the same durable-record-before-dispatch rule as assignment work.
+// StartRunAttempt reserves a run-level operation attempt before external
+// dispatch. It follows the same durable-record-before-dispatch rule as
+// assignment work.
 func (r *Run) StartRunAttempt(operationID OperationID) (OperationAttempt, error) {
 	if err := r.requireActive(); err != nil {
 		return OperationAttempt{}, err
 	}
 	operation := r.runOperation(operationID)
-	if operation == nil || operation.Counter != CycleCounterFinalReview || r.hasRunResultForOperation(operationID) {
+	if operation == nil || operation.UncountedResumeCheck || r.hasRunResultForOperation(operationID) {
 		return OperationAttempt{}, fmt.Errorf("%w: operation cannot consume a run counter", ErrInvalidState)
 	}
-	return r.startFinalReviewAttempt(operation)
+	return r.startRunAttempt(operation)
 }
 
 func (r *Run) AddRunResult(result OperationResult) error {
@@ -909,7 +911,7 @@ func (r *Run) AddRunResult(result OperationResult) error {
 		return err
 	}
 	operation := r.runOperation(result.OperationID)
-	if !result.valid() || r.resultExists(result.ID) || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || (!operation.UncountedResumeCheck && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: invalid run result", ErrInvalidState)
 	}
 	r.RunResults = append(r.RunResults, cloneResult(result))
@@ -1052,13 +1054,13 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 		}
 	}
 	for _, operation := range assignment.Operations {
-		if !operation.valid() || operation.BriefID == "" || !assignment.hasBrief(operation.BriefID) {
+		if !operation.valid() || operation.BriefID == "" || operation.UncountedResumeCheck || !assignment.hasBrief(operation.BriefID) {
 			return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 		}
 	}
 	for _, result := range assignment.Results {
 		operation := assignment.operation(result.OperationID)
-		if !result.valid() || operation == nil || (operation.Counter != CycleCounterNone && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
+		if !result.valid() || operation == nil || (!operation.UncountedResumeCheck && len(operation.Attempts) == 0) || result.Basis != operation.Basis {
 			return fmt.Errorf("%w: invalid result", ErrInvalidState)
 		}
 	}
@@ -1094,7 +1096,7 @@ func validRunCounter(counter CycleCounter) bool {
 func (r *Run) validateCounters() error {
 	var finalReviews uint64
 	for _, operation := range r.RunOperations {
-		if len(operation.Attempts) != 0 {
+		if operation.Counter == CycleCounterFinalReview && len(operation.Attempts) != 0 {
 			finalReviews++
 			if operation.Attempts[0].SemanticRound != finalReviews {
 				return fmt.Errorf("%w: final review semantic rounds are not sequential", ErrInvalidState)
@@ -1159,7 +1161,7 @@ func mapsEqual(got, want map[string]uint64) bool {
 }
 
 func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error) {
-	if operation == nil || !validAssignmentCounter(operation.Counter) || operation.Counter == CycleCounterNone {
+	if operation == nil || !validAssignmentCounter(operation.Counter) || operation.UncountedResumeCheck {
 		return OperationAttempt{}, fmt.Errorf("%w: invalid assignment attempt", ErrInvalidState)
 	}
 	attempt := OperationAttempt{Number: uint64(len(operation.Attempts) + 1)}
@@ -1167,6 +1169,9 @@ func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error
 		attempt.SemanticRound = operation.Attempts[0].SemanticRound
 	} else {
 		switch operation.Counter {
+		case CycleCounterNone:
+			// Technical attempts without a semantic-cycle counter are still
+			// durable and independently numbered.
 		case CycleCounterAssignmentReview:
 			a.Counters.AssignmentReview++
 			attempt.SemanticRound = a.Counters.AssignmentReview
@@ -1191,15 +1196,15 @@ func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error
 	return attempt, nil
 }
 
-func (r *Run) startFinalReviewAttempt(operation *Operation) (OperationAttempt, error) {
-	if operation == nil || operation.Counter != CycleCounterFinalReview {
+func (r *Run) startRunAttempt(operation *Operation) (OperationAttempt, error) {
+	if operation == nil || !validRunCounter(operation.Counter) || operation.UncountedResumeCheck {
 		return OperationAttempt{}, fmt.Errorf("%w: invalid final review attempt", ErrInvalidState)
 	}
 	attempt := OperationAttempt{Number: uint64(len(operation.Attempts) + 1)}
-	if len(operation.Attempts) == 0 {
+	if len(operation.Attempts) == 0 && operation.Counter == CycleCounterFinalReview {
 		r.FinalReviewRounds++
 		attempt.SemanticRound = r.FinalReviewRounds
-	} else {
+	} else if len(operation.Attempts) != 0 {
 		attempt.SemanticRound = operation.Attempts[0].SemanticRound
 	}
 	operation.Attempts = append(operation.Attempts, attempt)

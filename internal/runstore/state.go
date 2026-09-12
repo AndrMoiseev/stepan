@@ -156,30 +156,8 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.pending != nil {
-		pending, err := eventFromData(s.pending.data)
-		if err != nil {
-			return implementationstate.Event{}, err
-		}
-		if err := s.verifyStateReferences(state); err != nil {
-			return implementationstate.Event{}, err
-		}
-		event, err := implementationstate.NewRunStateEvent(pending.Sequence, state)
-		if err != nil {
-			return implementationstate.Event{}, err
-		}
-		data, err := marshalEvent(event)
-		if err != nil {
-			return implementationstate.Event{}, err
-		}
-		if !bytes.Equal(data, s.pending.data) {
-			return implementationstate.Event{}, ErrPendingEvent
-		}
-		if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
-			return eventWithError(s.pending.data, err)
-		}
-		s.pending = nil
-		return cloneEventFromData(data)
+	if event, pending, err := s.applyPendingLocked(ctx, state); pending {
+		return event, err
 	}
 
 	lastSeq, err := s.refreshCleanSequence(ctx)
@@ -205,39 +183,130 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 		return eventWithError(s.pending.data, err)
 	}
 	s.pending = nil
-	return cloneEventFromData(data)
+	event, err = cloneEventFromData(data)
+	return event, err
+}
+
+// resolvePending applies a previously durable event without creating a new
+// journal record. It is used by the attempt-start boundary so a caller can
+// retry the same start after a projection-only failure.
+func (s *StateStore) resolvePending(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, bool, error) {
+	if s == nil || s.db == nil || s.writer == nil {
+		return implementationstate.Event{}, false, fmt.Errorf("%w: nil state store", ErrUnsafePath)
+	}
+	s.writer.Lock()
+	defer s.writer.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.applyPendingLocked(ctx, state)
+}
+
+func (s *StateStore) applyPendingLocked(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, bool, error) {
+	if s.pending == nil {
+		return implementationstate.Event{}, false, nil
+	}
+	pending, err := eventFromData(s.pending.data)
+	if err != nil {
+		return implementationstate.Event{}, true, err
+	}
+	if err := s.verifyStateReferences(state); err != nil {
+		return implementationstate.Event{}, true, err
+	}
+	event, err := implementationstate.NewRunStateEvent(pending.Sequence, state)
+	if err != nil {
+		return implementationstate.Event{}, true, err
+	}
+	data, err := marshalEvent(event)
+	if err != nil {
+		return implementationstate.Event{}, true, err
+	}
+	if !bytes.Equal(data, s.pending.data) {
+		return implementationstate.Event{}, true, ErrPendingEvent
+	}
+	if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
+		event, cloneErr := cloneEventFromData(s.pending.data)
+		if cloneErr != nil {
+			return implementationstate.Event{}, true, errors.Join(err, cloneErr)
+		}
+		return event, true, err
+	}
+	s.pending = nil
+	event, err = cloneEventFromData(data)
+	return event, true, err
 }
 
 // RecordAssignmentAttemptStart reserves and durably records an assignment
-// attempt before its external agent or command is dispatched. Callers MUST NOT
-// dispatch when this method returns an error. If the JSONL write succeeded but
-// projection failed, the returned attempt remains conservatively spent and
-// the caller can retry Record with the same state to finish projection.
+// attempt before its external agent or command is dispatched. It changes the
+// caller only after the attempt has reached durable JSONL. Callers MUST NOT
+// dispatch when this method returns an error.
 func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
-	if state == nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
-	}
-	attempt, err := state.StartAssignmentAttempt(assignmentID, operationID)
-	if err != nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
-	}
-	event, err := s.Record(ctx, state)
-	return attempt, event, err
+	return s.recordAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+		return candidate.StartAssignmentAttempt(assignmentID, operationID)
+	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+		return assignmentLastAttempt(current, assignmentID, operationID)
+	})
 }
 
 // RecordRunAttemptStart is the final-review counterpart of
 // RecordAssignmentAttemptStart. It provides the same record-before-dispatch
 // boundary for a run-level operation.
 func (s *StateStore) RecordRunAttemptStart(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+	return s.recordAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+		return candidate.StartRunAttempt(operationID)
+	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+		return runLastAttempt(current, operationID)
+	})
+}
+
+func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool)) (implementationstate.OperationAttempt, implementationstate.Event, error) {
 	if state == nil {
 		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
 	}
-	attempt, err := state.StartRunAttempt(operationID)
+	if event, pending, err := s.resolvePending(ctx, state); pending {
+		if err != nil {
+			return implementationstate.OperationAttempt{}, event, err
+		}
+		if attempt, found := last(state); found {
+			return attempt, event, nil
+		}
+	}
+	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
 	if err != nil {
 		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
 	}
-	event, err := s.Record(ctx, state)
+	candidate := candidateEvent.State
+	attempt, err := start(candidate)
+	if err != nil {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+	}
+	event, err := s.Record(ctx, candidate)
+	if event.Sequence != 0 {
+		*state = *candidate
+	}
 	return attempt, event, err
+}
+
+func assignmentLastAttempt(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {
+	for _, assignment := range state.Assignments {
+		if assignment.ID != assignmentID {
+			continue
+		}
+		for _, operation := range assignment.Operations {
+			if operation.ID == operationID && len(operation.Attempts) != 0 {
+				return operation.Attempts[len(operation.Attempts)-1], true
+			}
+		}
+	}
+	return implementationstate.OperationAttempt{}, false
+}
+
+func runLastAttempt(state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {
+	for _, operation := range state.RunOperations {
+		if operation.ID == operationID && len(operation.Attempts) != 0 {
+			return operation.Attempts[len(operation.Attempts)-1], true
+		}
+	}
+	return implementationstate.OperationAttempt{}, false
 }
 
 // Current returns the current SQLite projection and the sequence that produced

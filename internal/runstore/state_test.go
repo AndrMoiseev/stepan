@@ -464,6 +464,9 @@ func TestStateStoreRejectsWrongOrUnavailableEvidenceBeforeJournalAppend(t *testi
 		if err := model.AddOperation("assignment", implementationstate.Operation{ID: "operation", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := model.StartAssignmentAttempt("assignment", "operation"); err != nil {
+			t.Fatal(err)
+		}
 		if err := model.AddResult("assignment", implementationstate.OperationResult{ID: "result", OperationID: "operation", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{nested}}); err != nil {
 			t.Fatal(err)
 		}
@@ -1017,6 +1020,144 @@ func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testin
 	if second != (implementationstate.OperationAttempt{Number: 2, SemanticRound: 1}) || event.Sequence != 3 {
 		t.Fatalf("technical retry = %#v, event %d; want same semantic round", second, event.Sequence)
 	}
+}
+
+func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	document := publishTestReference(t, run, "brief")
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "agent", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddRunOperation(implementationstate.Operation{ID: "run-agent", Kind: implementationstate.OperationAgent, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	if attempt, _, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 1}) {
+		t.Fatalf("first assignment CounterNone attempt = %#v, %v", attempt, err)
+	}
+	if attempt, _, err := state.RecordRunAttemptStart(context.Background(), model, "run-agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 1}) {
+		t.Fatalf("first run CounterNone attempt = %#v, %v", attempt, err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt, _, err := reopened.RecordAssignmentAttemptStart(context.Background(), restarted, "assignment", "agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 2}) {
+		t.Fatalf("assignment CounterNone attempt after restart = %#v, %v", attempt, err)
+	}
+	if attempt, _, err := reopened.RecordRunAttemptStart(context.Background(), restarted, "run-agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 2}) {
+		t.Fatalf("run CounterNone attempt after restart = %#v, %v", attempt, err)
+	}
+}
+
+func TestRecordAttemptStartLeavesCallerUntouchedUntilDurableAndRetriesPendingStart(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	model := attemptStartModel(t, run)
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+
+	closed := *model
+	if err := closed.Close("closed"); err != nil {
+		t.Fatal(err)
+	}
+	beforeClosed := mustJSON(t, &closed)
+	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &closed, "assignment", "agent"); !errors.Is(err, implementationstate.ErrInvalidTransition) {
+		t.Fatalf("closed attempt start error = %v", err)
+	}
+	if got := mustJSON(t, &closed); !bytes.Equal(got, beforeClosed) {
+		t.Fatal("closed caller changed before journal append")
+	}
+
+	invalid := *model
+	invalid.Identity.Change = ""
+	beforeInvalid := mustJSON(t, &invalid)
+	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &invalid, "assignment", "agent"); !errors.Is(err, implementationstate.ErrInvalidState) {
+		t.Fatalf("invalid attempt start error = %v", err)
+	}
+	if got := mustJSON(t, &invalid); !bytes.Equal(got, beforeInvalid) {
+		t.Fatal("invalid caller changed before journal append")
+	}
+	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 1 {
+		t.Fatalf("pre-journal failures changed journal: sequence=%d, error=%v", sequence, err)
+	}
+
+	replaceBeforeProjectionCommitHook(t, func(implementationstate.Event) error { return errors.New("injected projection failure") })
+	first, event, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
+	if err == nil || first != (implementationstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
+		t.Fatalf("post-journal start = %#v, event=%d, error=%v", first, event.Sequence, err)
+	}
+	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
+		t.Fatalf("caller did not receive canonical durable attempt: %#v", got)
+	}
+	beforeProjectionCommitHook = nil
+	second, retried, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
+	if err != nil || second != first || retried.Sequence != 2 {
+		t.Fatalf("pending retry = %#v, event=%d, error=%v; want original attempt", second, retried.Sequence, err)
+	}
+	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
+		t.Fatalf("pending retry incremented attempt: %#v", got)
+	}
+	if current, sequence, err := state.Current(context.Background()); err != nil || sequence != 2 || len(current.Assignments[0].Operations[0].Attempts) != 1 {
+		t.Fatalf("pending retry projection = sequence=%d state=%#v error=%v", sequence, current, err)
+	}
+	if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 2 {
+		t.Fatalf("pending retry journal = sequence=%d, error=%v", sequence, err)
+	}
+}
+
+func attemptStartModel(t *testing.T, run *Run) *implementationstate.Run {
+	t.Helper()
+	model := newStoredModel(t, run)
+	document := publishTestReference(t, run, "attempt-brief")
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "attempt-brief", Number: 1, Document: document}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "agent", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	return model
+}
+
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t *testing.T) {

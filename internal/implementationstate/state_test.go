@@ -101,6 +101,72 @@ func TestFinalReviewTechnicalRetryDoesNotConsumeAnotherRound(t *testing.T) {
 	}
 }
 
+func TestCounterNoneStillRecordsTechnicalAttemptsAndRequiresStartForResults(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", testBrief()); err != nil {
+		t.Fatal(err)
+	}
+	assignmentOperation := Operation{ID: "ordinary-agent", Kind: OperationAgent, BriefID: "brief-1", Basis: testBasis()}
+	if err := run.AddOperation("assignment", assignmentOperation); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddResult("assignment", OperationResult{ID: "too-early", OperationID: "ordinary-agent", Status: ResultSucceeded, State: run.CurrentState, Basis: testBasis()}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("result without a recorded start = %v, want invalid state", err)
+	}
+	for number := uint64(1); number <= 2; number++ {
+		if got, err := run.StartAssignmentAttempt("assignment", "ordinary-agent"); err != nil || got != (OperationAttempt{Number: number}) {
+			t.Fatalf("assignment technical attempt %d = %#v, %v", number, got, err)
+		}
+	}
+	if err := run.AddRunOperation(Operation{ID: "ordinary-run-agent", Kind: OperationAgent, Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(OperationResult{ID: "run-too-early", OperationID: "ordinary-run-agent", Status: ResultSucceeded, State: run.CurrentState, Basis: testBasis()}); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("run result without a recorded start = %v, want invalid state", err)
+	}
+	if got, err := run.StartRunAttempt("ordinary-run-agent"); err != nil || got != (OperationAttempt{Number: 1}) {
+		t.Fatalf("run technical attempt = %#v, %v", got, err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted Run
+	if err := json.Unmarshal(data, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := restarted.StartAssignmentAttempt("assignment", "ordinary-agent"); err != nil || got != (OperationAttempt{Number: 3}) {
+		t.Fatalf("assignment technical retry after JSON restart = %#v, %v", got, err)
+	}
+	if got, err := restarted.StartRunAttempt("ordinary-run-agent"); err != nil || got != (OperationAttempt{Number: 2}) {
+		t.Fatalf("run technical retry after JSON restart = %#v, %v", got, err)
+	}
+}
+
+func TestUncountedResumeCheckIsTheOnlyResultWithoutAttemptException(t *testing.T) {
+	run := newSingleTaskRun(t)
+	operation := Operation{ID: "resume-check", Kind: OperationCheck, Basis: testBasis(), UncountedResumeCheck: true}
+	if err := run.AddRunOperation(operation); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(OperationResult{ID: "resume-result", OperationID: "resume-check", Status: ResultSucceeded, State: run.CurrentState, Basis: testBasis()}); err != nil {
+		t.Fatalf("uncounted resume result: %v", err)
+	}
+	if _, err := run.StartRunAttempt("resume-check"); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("start of uncounted resume check = %v, want invalid state", err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAssignmentTransitionsRequireAcceptanceThenCommit(t *testing.T) {
 	run := newTestRun(t)
 	if err := run.StartAssignment("assignment-1", []TaskID{"task-a", "task-b"}); err != nil {
@@ -157,6 +223,11 @@ func TestAcceptanceRequiresResultsForSameBriefAndExactState(t *testing.T) {
 	}
 	if err := run.AddOperation("assignment-1", Operation{ID: "review", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis()}); err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []OperationID{"check", "review"} {
+		if _, err := run.StartAssignmentAttempt("assignment-1", id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := run.AddResult("assignment-1", OperationResult{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}); err != nil {
 		t.Fatal(err)
@@ -263,6 +334,11 @@ func TestReopenAssignmentPreservesEvidenceAndAllowsNewBasisAfterInputAndCodeChan
 	}
 	for _, operation := range []Operation{{ID: "check-2", Kind: OperationCheck, BriefID: "brief-2", Basis: basis}, {ID: "review-2", Kind: OperationReview, BriefID: "brief-2", Basis: basis}} {
 		if err := run.AddOperation("assignment-1", operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []OperationID{"check-2", "review-2"} {
+		if _, err := run.StartAssignmentAttempt("assignment-1", id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -396,6 +472,11 @@ func TestSucceedRequiresFinalChecksReviewAndNoOpenFindings(t *testing.T) {
 	}
 	for _, operation := range []Operation{{ID: "final-check", Kind: OperationCheck, Basis: testBasis()}, {ID: "final-review", Kind: OperationReview, Basis: testBasis()}} {
 		if err := run.AddRunOperation(operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []OperationID{"final-check", "final-review"} {
+		if _, err := run.StartRunAttempt(id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -533,6 +614,11 @@ func prepareAcceptedAssignment(t *testing.T, run *Run, assignmentID AssignmentID
 			t.Fatal(err)
 		}
 	}
+	for _, id := range []OperationID{"check", "review"} {
+		if _, err := run.StartAssignmentAttempt(assignmentID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, result := range []OperationResult{{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: state, Basis: testBasis()}, {ID: "review-result", OperationID: "review", Status: ResultSucceeded, State: state, Basis: testBasis()}} {
 		if err := run.AddResult(assignmentID, result); err != nil {
 			t.Fatal(err)
@@ -569,6 +655,11 @@ func addFinalEvidence(t *testing.T, run *Run, prefix string, state EvidenceRef) 
 	}
 	if err := run.AddRunOperation(Operation{ID: reviewID, Kind: OperationReview, Basis: basis}); err != nil {
 		t.Fatal(err)
+	}
+	for _, id := range []OperationID{checkID, reviewID} {
+		if _, err := run.StartRunAttempt(id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := run.AddRunResult(OperationResult{ID: checkResultID, OperationID: checkID, Status: ResultSucceeded, State: state, Basis: basis}); err != nil {
 		t.Fatal(err)
