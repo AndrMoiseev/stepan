@@ -107,6 +107,18 @@ type EvidenceRef struct {
 
 func (e EvidenceRef) valid() bool { return e.ID != "" && e.Digest != "" }
 
+// AcceptanceBasis versions the specification and effective configuration used
+// by an operation, result, or acceptance decision. Task-list progress is not
+// an acceptance input: it is informational after extraction.
+type AcceptanceBasis struct {
+	Specification EvidenceRef
+	Configuration EvidenceRef
+}
+
+func (b AcceptanceBasis) valid() bool {
+	return b.Specification.valid() && b.Configuration.valid()
+}
+
 // BriefVersion is an immutable version of one assignment's task contract.
 type BriefVersion struct {
 	ID       BriefID
@@ -137,11 +149,12 @@ type Operation struct {
 	ID          OperationID
 	Kind        OperationKind
 	BriefID     BriefID
+	Basis       AcceptanceBasis
 	Description string
 }
 
 func (o Operation) valid() bool {
-	return o.ID != "" && o.Kind.valid() && o.BriefID != ""
+	return o.ID != "" && o.Kind.valid() && o.Basis.valid()
 }
 
 type ResultStatus string
@@ -162,11 +175,12 @@ type OperationResult struct {
 	OperationID OperationID
 	Status      ResultStatus
 	State       EvidenceRef
+	Basis       AcceptanceBasis
 	Evidence    []EvidenceRef
 }
 
 func (r OperationResult) valid() bool {
-	if r.ID == "" || r.OperationID == "" || !r.Status.valid() {
+	if r.ID == "" || r.OperationID == "" || !r.Status.valid() || !r.State.valid() || !r.Basis.valid() {
 		return false
 	}
 	for _, evidence := range r.Evidence {
@@ -182,6 +196,7 @@ func (r OperationResult) valid() bool {
 type AcceptanceEvidence struct {
 	BriefID        BriefID
 	State          EvidenceRef
+	Basis          AcceptanceBasis
 	CheckResultIDs []ResultID
 	ReviewResultID ResultID
 	PendingCommit  CommitIntent
@@ -209,10 +224,11 @@ type CommitEvidence struct {
 	Tree         string
 	Message      string
 	State        EvidenceRef
+	Basis        AcceptanceBasis
 }
 
 func (c CommitEvidence) valid() bool {
-	return c.OperationID != "" && c.CommitID != "" && c.ParentCommit != "" && c.Tree != "" && strings.TrimSpace(c.Message) != "" && c.State.valid()
+	return c.OperationID != "" && c.CommitID != "" && c.ParentCommit != "" && c.Tree != "" && strings.TrimSpace(c.Message) != "" && c.State.valid() && c.Basis.valid()
 }
 
 // Assignment retains selection, brief versions, operations and results for a
@@ -229,16 +245,30 @@ type Assignment struct {
 	Commit     *CommitEvidence
 }
 
+// FinalAcceptanceEvidence proves completion of the run rather than of one
+// assignment. OpenFindingIDs must be empty for a successful final review; the
+// referenced review result retains the full finding evidence either way.
+type FinalAcceptanceEvidence struct {
+	State          EvidenceRef
+	Basis          AcceptanceBasis
+	CheckResultIDs []ResultID
+	ReviewResultID ResultID
+	OpenFindingIDs []EvidenceID
+}
+
 // Run is the portable in-memory representation for future JSONL and SQLite
 // stores. Markdown checkbox state is deliberately absent.
 type Run struct {
-	Identity    RunIdentity
-	Status      RunStatus
-	Tasks       []Task
-	LeafStatus  map[TaskID]TaskStatus
-	Assignments []Assignment
-	PauseReason string
-	CloseReason string
+	Identity        RunIdentity
+	Status          RunStatus
+	Tasks           []Task
+	LeafStatus      map[TaskID]TaskStatus
+	Assignments     []Assignment
+	RunOperations   []Operation
+	RunResults      []OperationResult
+	FinalAcceptance *FinalAcceptanceEvidence
+	PauseReason     string
+	CloseReason     string
 }
 
 // NewRun validates the extracted ordered hierarchy and creates a new active
@@ -265,6 +295,9 @@ func (r *Run) Validate() error {
 	if err := r.validateStructure(); err != nil {
 		return err
 	}
+	if err := r.validateLifecycle(); err != nil {
+		return err
+	}
 	for _, task := range r.Tasks {
 		_, stored := r.LeafStatus[task.ID]
 		if r.isLeaf(task.ID) {
@@ -286,6 +319,7 @@ func (r *Run) Validate() error {
 	operations := make(map[OperationID]bool)
 	results := make(map[ResultID]bool)
 	openAssignments := 0
+	seenOpenAssignment := false
 	leafOrder := r.allLeafTasks()
 	leafCursor := 0
 	for _, assignment := range r.Assignments {
@@ -296,12 +330,18 @@ func (r *Run) Validate() error {
 		if err := r.validateAssignment(assignment); err != nil {
 			return err
 		}
+		if assignment.Status == AssignmentAcceptedAwaitingCommit && assignment.Acceptance.Basis != r.currentBasis() {
+			return fmt.Errorf("%w: pending acceptance has stale basis", ErrInvalidState)
+		}
 		if len(assignment.TaskIDs) > len(leafOrder)-leafCursor || !slices.Equal(assignment.TaskIDs, leafOrder[leafCursor:leafCursor+len(assignment.TaskIDs)]) {
 			return fmt.Errorf("%w: assignment tasks are not a contiguous leaf prefix", ErrInvalidState)
 		}
 		leafCursor += len(assignment.TaskIDs)
 		if assignment.Status != AssignmentCommitted {
 			openAssignments++
+			seenOpenAssignment = true
+		} else if seenOpenAssignment {
+			return fmt.Errorf("%w: committed assignment follows an open assignment", ErrInvalidState)
 		}
 		lastVersion := 0
 		for _, brief := range assignment.Briefs {
@@ -350,6 +390,56 @@ func (r *Run) Validate() error {
 	for _, taskID := range leafOrder[leafCursor:] {
 		if r.LeafStatus[taskID] != TaskPending {
 			return fmt.Errorf("%w: unassigned task %q is not pending", ErrInvalidState, taskID)
+		}
+	}
+	for _, operation := range r.RunOperations {
+		if !operation.valid() || operation.BriefID != "" || operations[operation.ID] {
+			return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
+		}
+		operations[operation.ID] = true
+	}
+	for _, result := range r.RunResults {
+		operation := r.runOperation(result.OperationID)
+		if !result.valid() || operation == nil || results[result.ID] || result.Basis != operation.Basis {
+			return fmt.Errorf("%w: invalid run result", ErrInvalidState)
+		}
+		results[result.ID] = true
+	}
+	if r.FinalAcceptance != nil {
+		if err := r.validateFinalAcceptance(*r.FinalAcceptance, false); err != nil {
+			return err
+		}
+	}
+	if r.Status == RunSucceeded {
+		if r.FinalAcceptance == nil {
+			return fmt.Errorf("%w: succeeded run lacks final acceptance", ErrInvalidState)
+		}
+		for _, status := range r.LeafStatus {
+			if status != TaskComplete {
+				return fmt.Errorf("%w: succeeded run has unfinished task", ErrInvalidState)
+			}
+		}
+	}
+	return nil
+}
+
+func (r *Run) validateLifecycle() error {
+	switch r.Status {
+	case RunActive:
+		if r.PauseReason != "" || r.CloseReason != "" {
+			return fmt.Errorf("%w: active run has stop reason", ErrInvalidState)
+		}
+	case RunPaused:
+		if strings.TrimSpace(r.PauseReason) == "" || r.CloseReason != "" {
+			return fmt.Errorf("%w: paused run lacks pause reason", ErrInvalidState)
+		}
+	case RunClosed:
+		if strings.TrimSpace(r.CloseReason) == "" || r.PauseReason != "" {
+			return fmt.Errorf("%w: closed run lacks close reason", ErrInvalidState)
+		}
+	case RunSucceeded:
+		if r.PauseReason != "" || r.CloseReason != "" {
+			return fmt.Errorf("%w: succeeded run has stop reason", ErrInvalidState)
 		}
 	}
 	return nil
@@ -459,7 +549,7 @@ func (r *Run) AddOperation(assignmentID AssignmentID, operation Operation) error
 	if err != nil {
 		return err
 	}
-	if !operation.valid() || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
+	if !operation.valid() || operation.BriefID == "" || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
 		return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 	}
 	assignment.Operations = append(assignment.Operations, operation)
@@ -471,7 +561,8 @@ func (r *Run) AddResult(assignmentID AssignmentID, result OperationResult) error
 	if err != nil {
 		return err
 	}
-	if !result.valid() || r.resultExists(result.ID) || assignment.operation(result.OperationID) == nil {
+	operation := assignment.operation(result.OperationID)
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: invalid operation result", ErrInvalidState)
 	}
 	assignment.Results = append(assignment.Results, cloneResult(result))
@@ -485,7 +576,10 @@ func (r *Run) AcceptAssignment(assignmentID AssignmentID, evidence AcceptanceEvi
 	if err != nil {
 		return err
 	}
-	if err := assignment.accept(evidence); err != nil {
+	if err := assignment.accept(evidence); err != nil || evidence.Basis != r.currentBasis() {
+		if err == nil {
+			err = fmt.Errorf("%w: acceptance basis is stale", ErrInvalidState)
+		}
 		return err
 	}
 	assignment.Acceptance = cloneAcceptance(evidence)
@@ -506,7 +600,7 @@ func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidenc
 		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
 	}
 	assignment := &r.Assignments[index]
-	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !evidence.valid() || !matchesIntent(evidence, assignment.Acceptance.PendingCommit) || evidence.State != assignment.Acceptance.State {
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !evidence.valid() || !matchesIntent(evidence, assignment.Acceptance.PendingCommit) || evidence.State != assignment.Acceptance.State || evidence.Basis != assignment.Acceptance.Basis || evidence.Basis != r.currentBasis() {
 		return fmt.Errorf("%w: assignment is not accepted for this commit state", ErrInvalidTransition)
 	}
 	assignment.Commit = &evidence
@@ -514,6 +608,44 @@ func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidenc
 	for _, taskID := range assignment.TaskIDs {
 		r.LeafStatus[taskID] = TaskComplete
 	}
+	return nil
+}
+
+// AddRunOperation records baseline, resume, or final work that is not tied to
+// an assignment brief.
+func (r *Run) AddRunOperation(operation Operation) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if !operation.valid() || operation.BriefID != "" || r.operationExists(operation.ID) {
+		return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
+	}
+	r.RunOperations = append(r.RunOperations, operation)
+	return nil
+}
+
+func (r *Run) AddRunResult(result OperationResult) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	operation := r.runOperation(result.OperationID)
+	if !result.valid() || r.resultExists(result.ID) || operation == nil || result.Basis != operation.Basis {
+		return fmt.Errorf("%w: invalid run result", ErrInvalidState)
+	}
+	r.RunResults = append(r.RunResults, cloneResult(result))
+	return nil
+}
+
+// RecordFinalAcceptance preserves the required checks, final review, and its
+// absence of open findings before Succeed can close a run successfully.
+func (r *Run) RecordFinalAcceptance(evidence FinalAcceptanceEvidence) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if err := r.validateFinalAcceptance(evidence, true); err != nil {
+		return err
+	}
+	r.FinalAcceptance = cloneFinalAcceptance(evidence)
 	return nil
 }
 
@@ -543,9 +675,8 @@ func (r *Run) Close(reason string) error {
 	return nil
 }
 
-// Succeed closes a fully committed run successfully. Final checks and review
-// are represented by later controller work; this model enforces only the task
-// completion invariant.
+// Succeed closes a fully committed run only after final required checks and a
+// final review with no open findings have been recorded for the current basis.
 func (r *Run) Succeed() error {
 	if err := r.requireActive(); err != nil {
 		return err
@@ -563,7 +694,45 @@ func (r *Run) Succeed() error {
 			return fmt.Errorf("%w: unfinished accepted task", ErrInvalidTransition)
 		}
 	}
+	if r.FinalAcceptance == nil {
+		return fmt.Errorf("%w: final acceptance is required", ErrInvalidTransition)
+	}
+	if err := r.validateFinalAcceptance(*r.FinalAcceptance, true); err != nil {
+		return fmt.Errorf("%w: invalid final acceptance: %v", ErrInvalidTransition, err)
+	}
 	r.Status = RunSucceeded
+	return nil
+}
+
+func (r *Run) validateFinalAcceptance(evidence FinalAcceptanceEvidence, current bool) error {
+	if !evidence.State.valid() || !evidence.Basis.valid() || len(evidence.CheckResultIDs) == 0 || evidence.ReviewResultID == "" || hasDuplicateResultIDs(evidence.CheckResultIDs) || len(evidence.OpenFindingIDs) != 0 {
+		return fmt.Errorf("%w: incomplete final acceptance", ErrInvalidState)
+	}
+	if current && evidence.Basis != r.currentBasis() {
+		return fmt.Errorf("%w: final acceptance basis is stale", ErrInvalidState)
+	}
+	for _, resultID := range evidence.CheckResultIDs {
+		result := r.runResult(resultID)
+		operation := Operation{}
+		if result != nil {
+			if found := r.runOperation(result.OperationID); found != nil {
+				operation = *found
+			}
+		}
+		if result == nil || !operation.valid() || result.Status != ResultSucceeded || result.State != evidence.State || result.Basis != evidence.Basis || operation.Kind != OperationCheck || operation.Basis != evidence.Basis {
+			return fmt.Errorf("%w: final check result %q does not prove accepted state", ErrInvalidState, resultID)
+		}
+	}
+	review := r.runResult(evidence.ReviewResultID)
+	reviewOperation := Operation{}
+	if review != nil {
+		if found := r.runOperation(review.OperationID); found != nil {
+			reviewOperation = *found
+		}
+	}
+	if review == nil || !reviewOperation.valid() || review.Status != ResultSucceeded || review.State != evidence.State || review.Basis != evidence.Basis || reviewOperation.Kind != OperationReview || reviewOperation.Basis != evidence.Basis {
+		return fmt.Errorf("%w: final review does not prove accepted state", ErrInvalidState)
+	}
 	return nil
 }
 
@@ -589,12 +758,13 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 		}
 	}
 	for _, operation := range assignment.Operations {
-		if !operation.valid() || !assignment.hasBrief(operation.BriefID) {
+		if !operation.valid() || operation.BriefID == "" || !assignment.hasBrief(operation.BriefID) {
 			return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 		}
 	}
 	for _, result := range assignment.Results {
-		if !result.valid() || assignment.operation(result.OperationID) == nil {
+		operation := assignment.operation(result.OperationID)
+		if !result.valid() || operation == nil || result.Basis != operation.Basis {
 			return fmt.Errorf("%w: invalid result", ErrInvalidState)
 		}
 	}
@@ -607,7 +777,7 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 		}
 	}
 	if assignment.Status == AssignmentCommitted {
-		if assignment.Acceptance == nil || assignment.accept(*assignment.Acceptance) != nil || assignment.Commit == nil || !assignment.Commit.valid() || !matchesIntent(*assignment.Commit, assignment.Acceptance.PendingCommit) || assignment.Commit.State != assignment.Acceptance.State {
+		if assignment.Acceptance == nil || assignment.accept(*assignment.Acceptance) != nil || assignment.Commit == nil || !assignment.Commit.valid() || !matchesIntent(*assignment.Commit, assignment.Acceptance.PendingCommit) || assignment.Commit.State != assignment.Acceptance.State || assignment.Commit.Basis != assignment.Acceptance.Basis {
 			return fmt.Errorf("%w: invalid committed assignment", ErrInvalidState)
 		}
 	}
@@ -615,17 +785,17 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 }
 
 func (a *Assignment) accept(e AcceptanceEvidence) error {
-	if !e.State.valid() || !e.PendingCommit.valid() || !a.hasBrief(e.BriefID) || len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
+	if !e.State.valid() || !e.Basis.valid() || !e.PendingCommit.valid() || !a.hasBrief(e.BriefID) || len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
 		return fmt.Errorf("%w: incomplete acceptance evidence", ErrInvalidState)
 	}
 	for _, resultID := range e.CheckResultIDs {
 		result := a.result(resultID)
-		if result == nil || result.Status != ResultSucceeded || result.State != e.State || a.operation(result.OperationID).Kind != OperationCheck || a.operation(result.OperationID).BriefID != e.BriefID {
+		if result == nil || result.Status != ResultSucceeded || result.State != e.State || result.Basis != e.Basis || a.operation(result.OperationID).Kind != OperationCheck || a.operation(result.OperationID).BriefID != e.BriefID || a.operation(result.OperationID).Basis != e.Basis {
 			return fmt.Errorf("%w: check result %q does not prove accepted state", ErrInvalidState, resultID)
 		}
 	}
 	review := a.result(e.ReviewResultID)
-	if review == nil || review.Status != ResultSucceeded || review.State != e.State || a.operation(review.OperationID).Kind != OperationReview || a.operation(review.OperationID).BriefID != e.BriefID {
+	if review == nil || review.Status != ResultSucceeded || review.State != e.State || review.Basis != e.Basis || a.operation(review.OperationID).Kind != OperationReview || a.operation(review.OperationID).BriefID != e.BriefID || a.operation(review.OperationID).Basis != e.Basis {
 		return fmt.Errorf("%w: review result does not prove accepted state", ErrInvalidState)
 	}
 	return nil
@@ -679,6 +849,10 @@ func (r *Run) children(id TaskID) []Task {
 	return children
 }
 
+func (r *Run) currentBasis() AcceptanceBasis {
+	return AcceptanceBasis{Specification: r.Identity.Specification, Configuration: r.Identity.Configuration}
+}
+
 func (r *Run) allLeafTasks() []TaskID {
 	var leaves []TaskID
 	for _, task := range r.Tasks {
@@ -704,7 +878,7 @@ func (r *Run) operationExists(id OperationID) bool {
 			return true
 		}
 	}
-	return false
+	return r.runOperation(id) != nil
 }
 
 func (r *Run) resultExists(id ResultID) bool {
@@ -713,7 +887,25 @@ func (r *Run) resultExists(id ResultID) bool {
 			return true
 		}
 	}
-	return false
+	return r.runResult(id) != nil
+}
+
+func (r *Run) runOperation(id OperationID) *Operation {
+	for index := range r.RunOperations {
+		if r.RunOperations[index].ID == id {
+			return &r.RunOperations[index]
+		}
+	}
+	return nil
+}
+
+func (r *Run) runResult(id ResultID) *OperationResult {
+	for index := range r.RunResults {
+		if r.RunResults[index].ID == id {
+			return &r.RunResults[index]
+		}
+	}
+	return nil
 }
 
 func (a *Assignment) hasBrief(id BriefID) bool {
@@ -776,5 +968,11 @@ func cloneResult(result OperationResult) OperationResult {
 
 func cloneAcceptance(evidence AcceptanceEvidence) *AcceptanceEvidence {
 	evidence.CheckResultIDs = slices.Clone(evidence.CheckResultIDs)
+	return &evidence
+}
+
+func cloneFinalAcceptance(evidence FinalAcceptanceEvidence) *FinalAcceptanceEvidence {
+	evidence.CheckResultIDs = slices.Clone(evidence.CheckResultIDs)
+	evidence.OpenFindingIDs = slices.Clone(evidence.OpenFindingIDs)
 	return &evidence
 }

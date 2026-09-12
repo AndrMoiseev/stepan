@@ -22,7 +22,7 @@ func TestAssignmentTransitionsRequireAcceptanceThenCommit(t *testing.T) {
 		t.Fatalf("Succeed() before commit error = %v, want transition error", err)
 	}
 
-	commit := CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState()}
+	commit := CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}
 	if err := run.CommitAssignment("assignment-1", commit); err != nil {
 		t.Fatalf("CommitAssignment() error = %v", err)
 	}
@@ -56,20 +56,20 @@ func TestAcceptanceRequiresResultsForSameBriefAndExactState(t *testing.T) {
 	if err := run.AddBriefVersion("assignment-1", testBrief()); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddOperation("assignment-1", Operation{ID: "check", Kind: OperationCheck, BriefID: "brief-1"}); err != nil {
+	if err := run.AddOperation("assignment-1", Operation{ID: "check", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddOperation("assignment-1", Operation{ID: "review", Kind: OperationReview, BriefID: "brief-1"}); err != nil {
+	if err := run.AddOperation("assignment-1", Operation{ID: "review", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddResult("assignment-1", OperationResult{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: acceptedState()}); err != nil {
+	if err := run.AddResult("assignment-1", OperationResult{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}); err != nil {
 		t.Fatal(err)
 	}
 	wrongState := EvidenceRef{ID: "code-2", Digest: "digest-2"}
-	if err := run.AddResult("assignment-1", OperationResult{ID: "review-result", OperationID: "review", Status: ResultSucceeded, State: wrongState}); err != nil {
+	if err := run.AddResult("assignment-1", OperationResult{ID: "review-result", OperationID: "review", Status: ResultSucceeded, State: wrongState, Basis: testBasis()}); err != nil {
 		t.Fatal(err)
 	}
-	evidence := AcceptanceEvidence{BriefID: "brief-1", State: acceptedState(), CheckResultIDs: []ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: testCommitIntent()}
+	evidence := AcceptanceEvidence{BriefID: "brief-1", State: acceptedState(), Basis: testBasis(), CheckResultIDs: []ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: testCommitIntent()}
 	if err := run.AcceptAssignment("assignment-1", evidence); !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("AcceptAssignment() error = %v, want invalid exact-state evidence", err)
 	}
@@ -104,6 +104,118 @@ func TestSucceedRejectsTasksWithoutCommitEvidence(t *testing.T) {
 	}
 }
 
+func TestCommitRejectsAcceptedEvidenceAfterSpecificationOrConfigurationChanges(t *testing.T) {
+	for _, replace := range []struct {
+		name  string
+		apply func(*Run)
+	}{
+		{"specification", func(run *Run) { run.Identity.Specification = EvidenceRef{ID: "spec-2", Digest: "spec-digest-2"} }},
+		{"configuration", func(run *Run) { run.Identity.Configuration = EvidenceRef{ID: "config-2", Digest: "config-digest-2"} }},
+	} {
+		t.Run(replace.name, func(t *testing.T) {
+			run := newSingleTaskRun(t)
+			if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+				t.Fatal(err)
+			}
+			prepareAcceptedAssignment(t, run, "assignment-1")
+			replace.apply(run)
+			if err := run.Validate(); !errors.Is(err, ErrInvalidState) {
+				t.Fatalf("Validate() stale pending acceptance error = %v, want invalid state", err)
+			}
+			commit := CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}
+			if err := run.CommitAssignment("assignment-1", commit); !errors.Is(err, ErrInvalidTransition) {
+				t.Fatalf("CommitAssignment() stale basis error = %v, want transition error", err)
+			}
+		})
+	}
+}
+
+func TestValidatePreservesCommittedHistoricalEvidenceAfterInputsChange(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "assignment-1")
+	if err := run.CommitAssignment("assignment-1", CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	run.Identity.Configuration = EvidenceRef{ID: "config-2", Digest: "config-digest-2"}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("Validate() historical committed evidence error = %v", err)
+	}
+}
+
+func TestSucceedRequiresFinalChecksReviewAndNoOpenFindings(t *testing.T) {
+	run := newSingleTaskRun(t)
+	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "assignment-1")
+	if err := run.CommitAssignment("assignment-1", CommitEvidence{OperationID: "commit-1", CommitID: "commit-sha", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Succeed(); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("Succeed() without final evidence error = %v", err)
+	}
+	for _, operation := range []Operation{{ID: "final-check", Kind: OperationCheck, Basis: testBasis()}, {ID: "final-review", Kind: OperationReview, Basis: testBasis()}} {
+		if err := run.AddRunOperation(operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, result := range []OperationResult{{ID: "final-check-result", OperationID: "final-check", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}, {ID: "final-review-result", OperationID: "final-review", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}} {
+		if err := run.AddRunResult(result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withFinding := FinalAcceptanceEvidence{State: acceptedState(), Basis: testBasis(), CheckResultIDs: []ResultID{"final-check-result"}, ReviewResultID: "final-review-result", OpenFindingIDs: []EvidenceID{"finding-1"}}
+	if err := run.RecordFinalAcceptance(withFinding); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("RecordFinalAcceptance() open finding error = %v", err)
+	}
+	accepted := withFinding
+	accepted.OpenFindingIDs = nil
+	if err := run.RecordFinalAcceptance(accepted); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Succeed(); err != nil {
+		t.Fatalf("Succeed() with final evidence error = %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidRestoredLifecycleAndAssignmentOrdering(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		apply func(*Run)
+	}{
+		{"paused without reason", func(run *Run) { run.Status = RunPaused }},
+		{"closed without reason", func(run *Run) { run.Status = RunClosed }},
+		{"succeeded with pending leaf", func(run *Run) { run.Status = RunSucceeded }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := newTestRun(t)
+			test.apply(run)
+			if err := run.Validate(); !errors.Is(err, ErrInvalidState) {
+				t.Fatalf("Validate() error = %v, want invalid state", err)
+			}
+		})
+	}
+
+	run := newTestRun(t)
+	if err := run.StartAssignment("first", []TaskID{"task-a"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "first")
+	if err := run.CommitAssignment("first", CommitEvidence{OperationID: "commit-1", CommitID: "commit-a", ParentCommit: "base", Tree: "tree", Message: "implement tasks", State: acceptedState(), Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.StartAssignment("second", []TaskID{"task-b"}); err != nil {
+		t.Fatal(err)
+	}
+	run.Assignments[0], run.Assignments[1] = run.Assignments[1], run.Assignments[0]
+	if err := run.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Validate() open-before-committed assignment order error = %v", err)
+	}
+}
+
 func TestValidateRejectsPersistedParentStatusAndPartialLeaf(t *testing.T) {
 	run := newTestRun(t)
 	run.LeafStatus["parent"] = TaskComplete
@@ -132,22 +244,31 @@ func newTestRun(t *testing.T) *Run {
 	return run
 }
 
+func newSingleTaskRun(t *testing.T) *Run {
+	t.Helper()
+	run, err := NewRun(RunIdentity{ID: "run-1", Change: "change", Repository: "/repo", WorkCopy: "/repo", Branch: "feature", BaselineCommit: "base", Specification: testBasis().Specification, TaskList: EvidenceRef{ID: "tasks", Digest: "tasks-digest"}, Configuration: testBasis().Configuration}, []Task{{ID: "task", Order: 0, Title: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return run
+}
+
 func prepareAcceptedAssignment(t *testing.T, run *Run, assignmentID AssignmentID) {
 	t.Helper()
 	if err := run.AddBriefVersion(assignmentID, testBrief()); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []Operation{{ID: "check", Kind: OperationCheck, BriefID: "brief-1"}, {ID: "review", Kind: OperationReview, BriefID: "brief-1"}} {
+	for _, operation := range []Operation{{ID: "check", Kind: OperationCheck, BriefID: "brief-1", Basis: testBasis()}, {ID: "review", Kind: OperationReview, BriefID: "brief-1", Basis: testBasis()}} {
 		if err := run.AddOperation(assignmentID, operation); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, result := range []OperationResult{{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: acceptedState()}, {ID: "review-result", OperationID: "review", Status: ResultSucceeded, State: acceptedState()}} {
+	for _, result := range []OperationResult{{ID: "check-result", OperationID: "check", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}, {ID: "review-result", OperationID: "review", Status: ResultSucceeded, State: acceptedState(), Basis: testBasis()}} {
 		if err := run.AddResult(assignmentID, result); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := run.AcceptAssignment(assignmentID, AcceptanceEvidence{BriefID: "brief-1", State: acceptedState(), CheckResultIDs: []ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: testCommitIntent()}); err != nil {
+	if err := run.AcceptAssignment(assignmentID, AcceptanceEvidence{BriefID: "brief-1", State: acceptedState(), Basis: testBasis(), CheckResultIDs: []ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: testCommitIntent()}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -158,6 +279,10 @@ func testBrief() BriefVersion {
 
 func acceptedState() EvidenceRef {
 	return EvidenceRef{ID: "code-1", Digest: "digest-1"}
+}
+
+func testBasis() AcceptanceBasis {
+	return AcceptanceBasis{Specification: EvidenceRef{ID: "spec", Digest: "spec-digest"}, Configuration: EvidenceRef{ID: "config", Digest: "config-digest"}}
 }
 
 func testCommitIntent() CommitIntent {

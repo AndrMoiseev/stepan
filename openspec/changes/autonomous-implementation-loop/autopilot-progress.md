@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 8/65 implementation tasks complete; task 2.6 awaiting initial review; final review `not_started`.
+- Outcome: `in_progress`; 9/65 implementation tasks complete; task 3.1 awaiting initial review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -183,3 +183,12 @@ Task3.1 frozen candidate: dependency-free shared internal/implementationstate wi
 User steering: stop after current step. Coordinator interpreted current step as task3.1 through mandatorychecks/localcommit/independentreview and allowedcorrections; do not start3.2. Save final disposition and localprogress then yield. Fullchecks11654 currentlyrunning.
 
 Task3.1 stablemandatorychecks session11654 PASS TEST_EXIT=0 BUILD_EXIT=0; state0.020s architecture5.166s spec41.421s. Logs .tmp/task-3.1-{tests,build}.log; knownnonfatalstatcachewarning. Implementationcomplete, reviewawaiting_review; no corrections/cycles0. Nextlocalcommit/freshreview; stopafter3.1 peruser.
+
+Task3.1 implementationcommit verifieda57dccac5ea5171d4a5327b35662e0db4900b8f4, basefd914fbee861f7d63a6b57f69550c8a3ae11a97f. Clean tree aftercommit. Initialreviewpending, no corrections/completedcycles0. Stopaftertask3.1 peruser; no3.2 dispatch.
+Task3.1 reviewer /root/review_3_1 gpt-5.6-sol/xhigh created, initialreviewa57dcca pending.
+
+Task3.1 initialreview FAIL /root/review_3_1 on a57dcca: TASK-3.1-001 High/substantial staleacceptancebases: state.go180-188,617-631 onlybindbrief/codestate; mutate Identity.Specification or Configuration after acceptance to another validEvidenceRef, Validate/CommitAssignment accept oldresults. Must persist check/review/acceptance inputversions and rejectstalecommit; loop81-82/runstate7-10,119-122. TASK-3.1-002 High/substantial: Succeed546-567 permits successaftercommittedleaves without finalcheck/review/openfindings evidence; operations/results onlyunderAssignment and requireBriefID, cannotrepresent baseline/resume/finalrunlevel evidence. Model-level evidence/support required; actualexecution remains later10.4. TASK-3.1-003 Medium/substantial: Validate261-355 accepts recovered RunSucceeded withpendingleaves, paused/closedwithoutreasons, and openassignmentbeforelatercommittedones. Must enforce recoveredstateinvariants. Independent focused state0.018s/architecture4.083s PASS withisolatedcache; diffcheckclean. Allthreeaccepted, checkboxreopened; correctingcycle1, completedcycles0/no correctioncommit. Stopafter3.1 stillapplies.
+
+Task3.1 correction1 frozen: AcceptanceBasis persisted for operations/results/acceptance/commit; stalependingacceptance rejected byValidate/CommitAssignment, committedhistory retainsoldbasis. Runleveloperations/results and finalacceptance require successfulfinalchecks/review/noopenfindings plus completedleaves forSucceed. Statusreason/terminalcompletion/openassignmentordering recoveredinvariants strengthened. Regressiontests for001/002/003; focusedstate/architecturePASS,diffcheckPASS. Fullhelpertask-3.1-correction-1 session39136 running onstablecandidate; completedcycles0/nocorrectioncommit. Stopafter3.1 peruser.
+
+Task3.1 correction1 fullstablechecks session39136 PASS TEST_EXIT=0 BUILD_EXIT=0; state0.023s architecture5.190s spec41.209s. Logs .tmp/task-3.1-correction-1-{tests,build}.log; onlyknownnonfatalcachewarning. Checkboxcomplete/reviewawaiting_review; completedcycles0. Nextseparatecorrectioncommit/samereviewer.
