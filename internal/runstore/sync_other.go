@@ -31,9 +31,12 @@ func publishFinalFile(temporary, target string) error {
 // the new name.
 func replaceProjectionFile(temporary, target string) error {
 	if err := os.Rename(temporary, target); err != nil {
-		return err
+		return &projectionReplacementError{err: err}
 	}
-	return syncDirectory(filepath.Dir(target))
+	if err := syncReplacementDirectory(filepath.Dir(target)); err != nil {
+		return &projectionReplacementError{err: err, mainReplaced: true}
+	}
+	return nil
 }
 
 func syncProjectionFile(path string) error {

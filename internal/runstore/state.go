@@ -372,8 +372,14 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 		_ = db.Close()
 		return err
 	}
+	if beforeRecoveryReplayHook != nil {
+		if err := beforeRecoveryReplayHook(); err != nil {
+			_ = db.Close()
+			return err
+		}
+	}
 	rebuiltJournal, err := scanJournal(store.journalPath, func(_ int64, data []byte, event implementationstate.Event) error {
-		if err := replacement.applyCanonical(ctx, data, false); err != nil {
+		if err := replacement.applyCanonical(ctx, data, true); err != nil {
 			return fmt.Errorf("rebuild state projection at journal event %d: %w", event.Sequence, err)
 		}
 		return nil
@@ -426,6 +432,13 @@ func publishProjectionGroup(temporary, target string) error {
 		return err
 	}
 	if err := publishReplacementProjection(temporary, target); err != nil {
+		var replacementErr *projectionReplacementError
+		if errors.As(err, &replacementErr) && replacementErr.mainReplaced {
+			// The new main database already has its final name. Restoring a
+			// rollback journal beside it could roll old pages into the new
+			// projection, so leave the backups quarantined for explicit repair.
+			return err
+		}
 		return errors.Join(err, restoreProjectionSidecars(backups))
 	}
 	for _, backup := range backups {
@@ -436,6 +449,17 @@ func publishProjectionGroup(temporary, target string) error {
 	}
 	return nil
 }
+
+// projectionReplacementError distinguishes a failed replacement attempt from
+// a failed durability barrier after the main file already has its new name.
+// Only the former may safely restore the old SQLite sidecar group.
+type projectionReplacementError struct {
+	err          error
+	mainReplaced bool
+}
+
+func (e *projectionReplacementError) Error() string { return e.err.Error() }
+func (e *projectionReplacementError) Unwrap() error { return e.err }
 
 func projectionSidecars(target string) []string {
 	return []string{target + "-journal", target + "-wal", target + "-shm"}
@@ -783,8 +807,9 @@ func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
 // validateJournal performs a full streaming validation before any destructive
 // tail discard or projection replacement.
 func (s *StateStore) validateJournal() (journalContents, error) {
+	verified := make(map[implementationstate.EvidenceRef]struct{})
 	return scanJournal(s.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
-		if err := s.verifyStateReferences(event.State); err != nil {
+		if err := s.verifyStateReferencesSeen(event.State, verified); err != nil {
 			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
 		}
 		return nil
@@ -792,10 +817,13 @@ func (s *StateStore) validateJournal() (journalContents, error) {
 }
 
 func (s *StateStore) verifyStateReferences(state *implementationstate.Run) error {
+	return s.verifyStateReferencesSeen(state, make(map[implementationstate.EvidenceRef]struct{}))
+}
+
+func (s *StateStore) verifyStateReferencesSeen(state *implementationstate.Run, verified map[implementationstate.EvidenceRef]struct{}) error {
 	if state == nil || state.Identity.ID != s.run.ID() {
 		return ErrRunIdentity
 	}
-	verified := make(map[implementationstate.EvidenceRef]struct{})
 	for _, reference := range stateEvidenceRefs(state) {
 		if _, ok := verified[reference]; ok {
 			continue
@@ -896,3 +924,5 @@ var afterJournalSyncHook func() error
 var beforeProjectionTransactionHook func(implementationstate.Event) error
 var afterProjectionTransactionHook func(implementationstate.Event) error
 var publishReplacementProjection = replaceProjectionFile
+var beforeRecoveryReplayHook func() error
+var syncReplacementDirectory = syncDirectory

@@ -882,6 +882,40 @@ func TestPublishProjectionGroupRestoresSidecarsWhenMainPublicationFails(t *testi
 	}
 }
 
+func TestStateStoreRecoveryRechecksEvidenceImmediatelyBeforeReplay(t *testing.T) {
+	stateStoreTestHookMu.Lock()
+	defer stateStoreTestHookMu.Unlock()
+	original := beforeRecoveryReplayHook
+	defer func() { beforeRecoveryReplayHook = original }()
+
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	originalProjection := []byte("corrupt projection retained on failed recovery")
+	if err := os.WriteFile(state.DatabasePath(), originalProjection, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	beforeRecoveryReplayHook = func() error {
+		return os.WriteFile(run.filePath(model.Identity.TaskList.ID), []byte("altered after validation"), 0o600)
+	}
+	_, err = OpenState(run)
+	if !errors.Is(err, ErrStateReference) || !errors.Is(err, ErrReferenceIntegrity) {
+		t.Fatalf("OpenState() error = %v, want replay-time reference integrity failure", err)
+	}
+	if retained, err := os.ReadFile(state.DatabasePath()); err != nil || !bytes.Equal(retained, originalProjection) {
+		t.Fatalf("projection after failed replay = %q, error %v; want no publication", retained, err)
+	}
+}
+
 func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t *testing.T) {
 	for _, test := range []struct {
 		name   string
