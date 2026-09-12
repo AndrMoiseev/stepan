@@ -147,7 +147,7 @@ func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *t
 func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
-	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`, `"missing"`} {
+	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`} {
 		_, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{MainBranch: json.RawMessage(mainBranch)})
 		if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 			t.Fatalf("main_branch %s error = %v", mainBranch, err)
@@ -166,17 +166,44 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 		}
 	})
 
-	t.Run("tag alone is not a main branch", func(t *testing.T) {
+	t.Run("tag alone does not invalidate configured branch name", func(t *testing.T) {
 		repository := newGitWorkspace(t)
 		git(t, repository, "tag", "main")
 		switchToBranch(t, repository, "implementation")
 		git(t, repository, "branch", "--delete", "main")
 
-		_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
-		if !errors.Is(err, ErrMainUnknown) {
-			t.Fatalf("error = %v", err)
+		workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+		if err != nil || workspace.MainBranch != "main" {
+			t.Fatalf("workspace = %#v, error = %v", workspace, err)
 		}
 	})
+}
+
+func TestValidateNewStartAcceptsConfiguredMainBranchWithoutLocalRef(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		remoteRef bool
+	}{
+		{name: "feature-only checkout"},
+		{name: "remote-only main", remoteRef: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newGitWorkspace(t)
+			if test.remoteRef {
+				git(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+			}
+			switchToBranch(t, repository, "implementation")
+			git(t, repository, "branch", "--delete", "main")
+
+			workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if workspace.Branch != "implementation" || workspace.MainBranch != "main" {
+				t.Fatalf("workspace = %#v", workspace)
+			}
+		})
+	}
 }
 
 func TestValidateNewStartIgnoresRepositorySelectingGitEnvironment(t *testing.T) {

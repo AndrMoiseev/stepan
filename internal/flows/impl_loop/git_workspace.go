@@ -148,9 +148,6 @@ func localBranchName(ctx context.Context, root, configured string) (string, erro
 	if output, err := runGit(ctx, root, "check-ref-format", "--branch", branch); err != nil || strings.TrimSpace(string(output)) != branch {
 		return "", fmt.Errorf("%w: project implementation.main_branch is not a valid local branch name", ErrMainUnknown)
 	}
-	if _, err := runGit(ctx, root, "show-ref", "--verify", "--quiet", localPrefix+branch); err != nil {
-		return "", fmt.Errorf("%w: project implementation.main_branch does not name a local branch", ErrMainUnknown)
-	}
 	return branch, nil
 }
 
