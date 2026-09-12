@@ -1,0 +1,200 @@
+package implementationconfig
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
+// Configuration is the effective implementation configuration after the user
+// and project sections have been merged. Check-related values deliberately
+// remain raw project JSON: their command schema is handled separately.
+type Configuration struct {
+	Profiles       map[string]json.RawMessage
+	Roles          map[string]string
+	Limits         map[string]json.RawMessage
+	Checks         json.RawMessage
+	RequiredChecks json.RawMessage
+	RulesFile      json.RawMessage
+	MainBranch     json.RawMessage
+}
+
+// Merge combines user settings with project settings. Project role assignments
+// and individual limits replace only their corresponding entries. A project
+// profile replaces the user profile as a whole; a null project profile removes
+// its inherited profile.
+func Merge(sources Sources) (Configuration, error) {
+	user, err := parseSection("user", sources.User)
+	if err != nil {
+		return Configuration{}, err
+	}
+	project, err := parseSection("project", sources.Project)
+	if err != nil {
+		return Configuration{}, err
+	}
+
+	if err := rejectUserProjectFields(user); err != nil {
+		return Configuration{}, err
+	}
+
+	configuration := Configuration{
+		Profiles:       copyRawValues(user.profiles),
+		Roles:          copyStrings(user.roles),
+		Limits:         copyRawValues(user.limits),
+		Checks:         copyRaw(project.checks),
+		RequiredChecks: copyRaw(project.requiredChecks),
+		RulesFile:      copyRaw(project.rulesFile),
+		MainBranch:     copyRaw(project.mainBranch),
+	}
+	for name, profile := range project.profiles {
+		if isNull(profile) {
+			delete(configuration.Profiles, name)
+			continue
+		}
+		configuration.Profiles[name] = copyRaw(profile)
+	}
+	for role, profile := range project.roles {
+		configuration.Roles[role] = profile
+	}
+	for name, limit := range project.limits {
+		configuration.Limits[name] = copyRaw(limit)
+	}
+	if err := validateRoleProfiles(configuration); err != nil {
+		return Configuration{}, err
+	}
+	return configuration, nil
+}
+
+type section struct {
+	profiles       map[string]json.RawMessage
+	roles          map[string]string
+	limits         map[string]json.RawMessage
+	checks         json.RawMessage
+	requiredChecks json.RawMessage
+	rulesFile      json.RawMessage
+	mainBranch     json.RawMessage
+	present        map[string]bool
+}
+
+func parseSection(level string, raw json.RawMessage) (section, error) {
+	section := section{present: make(map[string]bool)}
+	if raw == nil {
+		return section, nil
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return section, configurationError(level, "expected an implementation object")
+	}
+	for name := range fields {
+		section.present[name] = true
+	}
+
+	var err error
+	if section.profiles, err = rawObject(level, "profiles", fields["profiles"], section.present["profiles"], level == "project"); err != nil {
+		return section, err
+	}
+	if section.roles, err = stringObject(level, "roles", fields["roles"], section.present["roles"]); err != nil {
+		return section, err
+	}
+	if section.limits, err = rawObject(level, "limits", fields["limits"], section.present["limits"], false); err != nil {
+		return section, err
+	}
+	section.checks = fields["checks"]
+	section.requiredChecks = fields["required_checks"]
+	section.rulesFile = fields["rules_file"]
+	section.mainBranch = fields["main_branch"]
+	return section, nil
+}
+
+func rawObject(level, field string, raw json.RawMessage, present, allowNullValues bool) (map[string]json.RawMessage, error) {
+	if !present {
+		return map[string]json.RawMessage{}, nil
+	}
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
+		return nil, configurationError(level, field+" must be an object")
+	}
+	for name, value := range values {
+		if !allowNullValues && isNull(value) {
+			return nil, configurationError(level, field+"."+name+" must not be null")
+		}
+		if field == "profiles" && !isNull(value) && !isObject(value) {
+			return nil, configurationError(level, field+"."+name+" must be an object")
+		}
+	}
+	return values, nil
+}
+
+func stringObject(level, field string, raw json.RawMessage, present bool) (map[string]string, error) {
+	if !present {
+		return map[string]string{}, nil
+	}
+	var rawValues map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawValues); err != nil || rawValues == nil {
+		return nil, configurationError(level, field+" must be an object of profile names")
+	}
+	values := make(map[string]string, len(rawValues))
+	for name, value := range rawValues {
+		if isNull(value) {
+			return nil, configurationError(level, field+" must be an object of profile names")
+		}
+		var profile string
+		if err := json.Unmarshal(value, &profile); err != nil {
+			return nil, configurationError(level, field+" must be an object of profile names")
+		}
+		values[name] = profile
+	}
+	return values, nil
+}
+
+func rejectUserProjectFields(user section) error {
+	for _, field := range []string{"checks", "required_checks", "rules_file", "main_branch"} {
+		if user.present[field] {
+			return configurationError("user", field+" is project-only")
+		}
+	}
+	return nil
+}
+
+func validateRoleProfiles(configuration Configuration) error {
+	for role, profile := range configuration.Roles {
+		if _, ok := configuration.Profiles[profile]; !ok {
+			return fmt.Errorf("implementation configuration: role %q references missing profile %q", role, profile)
+		}
+	}
+	return nil
+}
+
+func configurationError(level, reason string) error {
+	return fmt.Errorf("%s implementation configuration: %s", level, reason)
+}
+
+func isNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+func isObject(raw json.RawMessage) bool {
+	var value map[string]json.RawMessage
+	return json.Unmarshal(raw, &value) == nil && value != nil
+}
+
+func copyRawValues(values map[string]json.RawMessage) map[string]json.RawMessage {
+	copy := make(map[string]json.RawMessage, len(values))
+	for name, value := range values {
+		copy[name] = copyRaw(value)
+	}
+	return copy
+}
+
+func copyStrings(values map[string]string) map[string]string {
+	copy := make(map[string]string, len(values))
+	for name, value := range values {
+		copy[name] = value
+	}
+	return copy
+}
+
+func copyRaw(raw json.RawMessage) json.RawMessage {
+	return append(json.RawMessage(nil), raw...)
+}

@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 3/65 implementation tasks complete; final review `not_started`.
+- Outcome: `in_progress`; 4/65 implementation tasks complete; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -56,7 +56,24 @@ Task1.2 accepted by independent reviewer with no findings, zero correction cycle
 
 - Base: `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`; dependencies: foundational boundaries accepted.
 - Acceptance: tasks.md2.1; implementation-configuration requirement levels/format and preserve authorization; read implementation from user and project settings, cover missing files/malformed JSON, never disclose auth in diagnostics.
-- Implementation complete, review `awaiting_review`; implementer `/root/implement_2_1` (`gpt-5.6-terra`/`high`); no commits/corrections, completed cycles0, findings none.
+- Implementation complete, review `accepted`; implementer `/root/implement_2_1` (`gpt-5.6-terra`/`high`); no commits/corrections, completed cycles0, findings none.
 - Scope excludes merging profiles, validation/defaults/rules/path resolution scheduled2.2–2.6. Next: fresh implementer, focused tests, full stable checks and commit/review.
 Task2.1 candidate ready: new internal/implementationconfig loader returns raw separate User/Project sections, no sibling authorization data or writes. Targeted `go test ./internal/implementationconfig ./internal/usersettings ./internal/architecture` PASS; diff check PASS. Coordinator full stable check running via `.tmp/autopilot-validate.ps1 -CheckId task-2.1`, session86185; logs `.tmp/task-2.1-tests.log` and `.tmp/task-2.1-build.log`. Do not edit source or duplicate suite until exit.
 Task2.1 full stable checks completed session86185 exit0: TEST_EXIT=0 and BUILD_EXIT=0. All packages passed (flows/spec41.478s, implementationconfig0.035s); Windows build passed. Logs retained at stated paths. Only known nonfatal telemetry/module-cache warnings. Next: commit, independent review. No manual cases.
+
+Task2.1 implementation commit verified: efeeb98eb14b130d9c9c85190a6b46553d144c85; base0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d. Initial review pending; no correction commits, completed cycles0.
+
+Task2.1 reviewer: /root/review_2_1 (gpt-5.6-sol/xhigh), reviewing efeeb98. Next action remains initial review; source stable.
+
+Task2.1 review accepted /root/review_2_1: no findings; zero correction cycles.
+
+### 2.2 — configuration inheritance
+
+- Base `efeeb98eb14b130d9c9c85190a6b46553d144c85`; dependency2.1 accepted.
+- Acceptance: tasks.md2.2 and implementation-configuration levels/format; project precedence for roles and individual limits, whole-profile replacement/null deletion; project-only checks, required_checks, rules_file, main_branch rejected at user level; remaining references to missing/deleted profiles rejected.
+- Implementation complete; review `awaiting_review`; implementer `/root/implement_2_2` (`gpt-5.6-terra`/`high`). No commits/corrections; completed cycles0; findings none.
+- Defaults, command schema/platform validation, path resolution and rules traversal remain tasks2.3–2.6. Next: merge model and meaningful tests, full validation, commit, review.
+Future task14.3 prerequisite question asked asynchronously: full paths for Claude/Nessy CLIs not found in current PATH; answer pending. This does not block current configuration implementation. No authorization secrets requested.
+
+Task2.2 stable candidate ready: internal/implementationconfig/merge.go and merge_test.go only. Focused `go test ./internal/implementationconfig -count=1` PASS (0.032s). Covered inheritance, per-key roles/limits overrides, full profile replacement, null deletion, missing-profile refs, all four user project-only keys incl null, malformed structures and raw project check preservation. Coordinator full validation `.tmp/autopilot-validate.ps1 -CheckId task-2.2` running session47408; logs `.tmp/task-2.2-tests.log`, `.tmp/task-2.2-build.log`. Do not duplicate or edit source until exit.
+Task2.2 mandatory stable checks session47408 exited0: TEST_EXIT=0 and BUILD_EXIT=0. All packages passed (flows/spec41.779s, implementationconfig0.036s), Windows build passed. Only known nonfatal telemetry/module-cache warnings. No manual cases. Next: implementation commit and initial independent review.
