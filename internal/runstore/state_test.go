@@ -1,7 +1,9 @@
 package runstore
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -140,6 +142,87 @@ func TestStateStoreAppliesIdenticalEventOnceAndRollsBackFailedTransaction(t *tes
 	}
 	if sequence != 1 {
 		t.Fatalf("current sequence = %d, want 1", sequence)
+	}
+}
+
+func TestStateStoreReappliesCanonicalJournalEventExactlyOnce(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	if _, err := state.Record(context.Background(), newStoredModel(t, run)); err != nil {
+		t.Fatal(err)
+	}
+	journalData, err := os.ReadFile(state.JournalPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, beforeSequence, err := state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeData, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state.writer.Lock()
+	state.mu.Lock()
+	err = state.apply(context.Background(), journalData)
+	state.mu.Unlock()
+	state.writer.Unlock()
+	if err != nil {
+		t.Fatalf("reapply canonical journal event: %v", err)
+	}
+	assertStateStoreProjectionUnchanged(t, state, beforeData, beforeSequence)
+
+	conflicting, err := eventFromData(journalData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conflicting.State.Pause("conflicting same-sequence event"); err != nil {
+		t.Fatal(err)
+	}
+	conflictingData, err := marshalEvent(conflicting)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.writer.Lock()
+	state.mu.Lock()
+	err = state.apply(context.Background(), conflictingData)
+	state.mu.Unlock()
+	state.writer.Unlock()
+	if !errors.Is(err, ErrJournalSequence) {
+		t.Fatalf("apply conflicting event error = %v, want ErrJournalSequence", err)
+	}
+	assertStateStoreProjectionUnchanged(t, state, beforeData, beforeSequence)
+}
+
+func assertStateStoreProjectionUnchanged(t *testing.T, state *StateStore, wantData []byte, wantSequence uint64) {
+	t.Helper()
+	var count int
+	if err := state.db.QueryRow("SELECT COUNT(*) FROM applied_events").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("applied events = %d, want 1", count)
+	}
+	current, sequence, err := state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sequence != wantSequence {
+		t.Fatalf("current sequence = %d, want %d", sequence, wantSequence)
+	}
+	currentData, err := json.Marshal(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(currentData, wantData) {
+		t.Fatalf("current projection changed: got %s, want %s", currentData, wantData)
 	}
 }
 
