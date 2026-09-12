@@ -95,7 +95,7 @@ func TestValidateRulesFileRejectsMarkdownReachedThroughJunctionOutsideRulesRoot(
 	}
 }
 
-func TestValidateRulesFileTerminatesDirectoryLinkCycle(t *testing.T) {
+func TestValidateRulesFileRejectsDirectoryLinkCycle(t *testing.T) {
 	repository := t.TempDir()
 	rules := filepath.Join(repository, "rules")
 	writeRulesFixture(t, filepath.Join(rules, "index.md"), "# index\n")
@@ -103,7 +103,24 @@ func TestValidateRulesFileTerminatesDirectoryLinkCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := rulesConfiguration("rules/index.md").ValidateRulesFile(repository); err != nil {
-		t.Fatalf("directory link cycle was not handled: %v", err)
+	if _, err := rulesConfiguration("rules/index.md").ValidateRulesFile(repository); err == nil {
+		t.Fatal("directory link cycle succeeded")
+	}
+}
+
+func TestValidateRulesFileRejectsReachableJunctionCycleWithAliasRelativeTarget(t *testing.T) {
+	repository := t.TempDir()
+	rules := filepath.Join(repository, "rules")
+	writeRulesFixture(t, filepath.Join(repository, "source.go"), "package repository\n")
+	writeRulesFixture(t, filepath.Join(rules, "index.md"), "[source](../source.go)\n[cycle](nested/cycle/index.md)\n")
+	if err := os.MkdirAll(filepath.Join(rules, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := makeRulesDirectoryLink(filepath.Join(rules, "nested", "cycle"), rules); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := rulesConfiguration("rules/index.md").ValidateRulesFile(repository); err == nil {
+		t.Fatal("reachable junction cycle with an invalid alias-relative target succeeded")
 	}
 }

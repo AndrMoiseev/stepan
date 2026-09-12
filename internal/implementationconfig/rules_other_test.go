@@ -104,3 +104,29 @@ func TestValidateRulesFileRejectsNativeMarkdownFileLinkEscape(t *testing.T) {
 		t.Fatal("native Markdown file link escaping rules root succeeded")
 	}
 }
+
+func TestValidateRulesFileRejectsNativeDirectoryLinkCycle(t *testing.T) {
+	repository := t.TempDir()
+	rules := filepath.Join(repository, "rules")
+	writeRulesFixture(t, filepath.Join(rules, "index.md"), "# index\n")
+	makeNativeRulesLink(t, filepath.Join(rules, "cycle"), rules)
+
+	if _, err := rulesConfiguration("rules/index.md").ValidateRulesFile(repository); err == nil {
+		t.Fatal("native directory link cycle succeeded")
+	}
+}
+
+func TestValidateRulesFileRejectsReachableNativeLinkCycleWithAliasRelativeTarget(t *testing.T) {
+	repository := t.TempDir()
+	rules := filepath.Join(repository, "rules")
+	writeRulesFixture(t, filepath.Join(repository, "source.go"), "package repository\n")
+	writeRulesFixture(t, filepath.Join(rules, "index.md"), "[source](../source.go)\n[cycle](nested/cycle/index.md)\n")
+	if err := os.MkdirAll(filepath.Join(rules, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	makeNativeRulesLink(t, filepath.Join(rules, "nested", "cycle"), rules)
+
+	if _, err := rulesConfiguration("rules/index.md").ValidateRulesFile(repository); err == nil {
+		t.Fatal("reachable native link cycle with an invalid alias-relative target succeeded")
+	}
+}

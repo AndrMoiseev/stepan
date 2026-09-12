@@ -84,10 +84,11 @@ func (validator *rulesValidator) scanDirectory(directory string) error {
 	}
 	key := rulesPathKey(canonical)
 	// Keep aliases as distinct lexical document contexts: their relative links
-	// can resolve differently. Only a directory already on this branch is a
-	// cycle and may be skipped safely.
+	// can resolve differently. A directory already on this branch has infinitely
+	// many lexical descendants, so a complete recursive validation cannot safely
+	// accept it.
 	if _, ok := validator.ancestors[key]; ok {
-		return nil
+		return fmt.Errorf("rules directory %q forms a symbolic link cycle", directory)
 	}
 	validator.ancestors[key] = struct{}{}
 	defer delete(validator.ancestors, key)
