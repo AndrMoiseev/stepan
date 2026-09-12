@@ -35,13 +35,14 @@ type RunIdentity struct {
 	WorkCopy       string
 	Branch         string
 	BaselineCommit string
+	BaselineState  EvidenceRef
 	Specification  EvidenceRef
 	TaskList       EvidenceRef
 	Configuration  EvidenceRef
 }
 
 func (i RunIdentity) validate() error {
-	if i.ID == "" || i.Change == "" || i.Repository == "" || i.WorkCopy == "" || i.Branch == "" || i.BaselineCommit == "" || !i.Specification.valid() || !i.TaskList.valid() || !i.Configuration.valid() {
+	if i.ID == "" || i.Change == "" || i.Repository == "" || i.WorkCopy == "" || i.Branch == "" || i.BaselineCommit == "" || !i.BaselineState.valid() || !i.Specification.valid() || !i.TaskList.valid() || !i.Configuration.valid() {
 		return fmt.Errorf("%w: run identity is incomplete", ErrInvalidState)
 	}
 	return nil
@@ -235,14 +236,15 @@ func (c CommitEvidence) valid() bool {
 // contiguous block of leaf tasks. A selected task is not accepted or complete
 // until its respective transition is applied.
 type Assignment struct {
-	ID         AssignmentID
-	TaskIDs    []TaskID
-	Status     AssignmentStatus
-	Briefs     []BriefVersion
-	Operations []Operation
-	Results    []OperationResult
-	Acceptance *AcceptanceEvidence
-	Commit     *CommitEvidence
+	ID                AssignmentID
+	TaskIDs           []TaskID
+	Status            AssignmentStatus
+	Briefs            []BriefVersion
+	Operations        []Operation
+	Results           []OperationResult
+	Acceptance        *AcceptanceEvidence
+	AcceptanceHistory []AcceptanceEvidence
+	Commit            *CommitEvidence
 }
 
 // FinalAcceptanceEvidence proves completion of the run rather than of one
@@ -259,22 +261,24 @@ type FinalAcceptanceEvidence struct {
 // Run is the portable in-memory representation for future JSONL and SQLite
 // stores. Markdown checkbox state is deliberately absent.
 type Run struct {
-	Identity        RunIdentity
-	Status          RunStatus
-	Tasks           []Task
-	LeafStatus      map[TaskID]TaskStatus
-	Assignments     []Assignment
-	RunOperations   []Operation
-	RunResults      []OperationResult
-	FinalAcceptance *FinalAcceptanceEvidence
-	PauseReason     string
-	CloseReason     string
+	Identity               RunIdentity
+	Status                 RunStatus
+	CurrentState           EvidenceRef
+	Tasks                  []Task
+	LeafStatus             map[TaskID]TaskStatus
+	Assignments            []Assignment
+	RunOperations          []Operation
+	RunResults             []OperationResult
+	FinalAcceptance        *FinalAcceptanceEvidence
+	FinalAcceptanceHistory []FinalAcceptanceEvidence
+	PauseReason            string
+	CloseReason            string
 }
 
 // NewRun validates the extracted ordered hierarchy and creates a new active
 // run. All leaf tasks start pending.
 func NewRun(identity RunIdentity, tasks []Task) (*Run, error) {
-	run := &Run{Identity: identity, Status: RunActive, Tasks: slices.Clone(tasks)}
+	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, Tasks: slices.Clone(tasks)}
 	if err := run.validateStructure(); err != nil {
 		return nil, err
 	}
@@ -289,7 +293,7 @@ func NewRun(identity RunIdentity, tasks []Task) (*Run, error) {
 
 // Validate checks serializable state loaded by a future store.
 func (r *Run) Validate() error {
-	if r == nil || r.Identity.validate() != nil || !r.Status.valid() {
+	if r == nil || r.Identity.validate() != nil || !r.Status.valid() || !r.CurrentState.valid() {
 		return fmt.Errorf("%w: invalid run", ErrInvalidState)
 	}
 	if err := r.validateStructure(); err != nil {
@@ -406,7 +410,12 @@ func (r *Run) Validate() error {
 		results[result.ID] = true
 	}
 	if r.FinalAcceptance != nil {
-		if err := r.validateFinalAcceptance(*r.FinalAcceptance, false); err != nil {
+		if err := r.validateFinalAcceptance(*r.FinalAcceptance, true); err != nil {
+			return err
+		}
+	}
+	for _, evidence := range r.FinalAcceptanceHistory {
+		if err := r.validateFinalAcceptance(evidence, false); err != nil {
 			return err
 		}
 	}
@@ -525,6 +534,7 @@ func (r *Run) StartAssignment(id AssignmentID, taskIDs []TaskID) error {
 	if len(taskIDs) == 0 || len(taskIDs) > len(pending) || !slices.Equal(taskIDs, pending[:len(taskIDs)]) {
 		return fmt.Errorf("%w: assignment must select a contiguous pending leaf prefix", ErrInvalidState)
 	}
+	r.invalidateFinalAcceptance()
 	r.Assignments = append(r.Assignments, Assignment{ID: id, TaskIDs: slices.Clone(taskIDs), Status: AssignmentActive})
 	return nil
 }
@@ -576,9 +586,9 @@ func (r *Run) AcceptAssignment(assignmentID AssignmentID, evidence AcceptanceEvi
 	if err != nil {
 		return err
 	}
-	if err := assignment.accept(evidence); err != nil || evidence.Basis != r.currentBasis() {
+	if err := assignment.accept(evidence); err != nil || evidence.Basis != r.currentBasis() || evidence.State != r.CurrentState {
 		if err == nil {
-			err = fmt.Errorf("%w: acceptance basis is stale", ErrInvalidState)
+			err = fmt.Errorf("%w: acceptance basis or code state is stale", ErrInvalidState)
 		}
 		return err
 	}
@@ -600,15 +610,81 @@ func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidenc
 		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
 	}
 	assignment := &r.Assignments[index]
-	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !evidence.valid() || !matchesIntent(evidence, assignment.Acceptance.PendingCommit) || evidence.State != assignment.Acceptance.State || evidence.Basis != assignment.Acceptance.Basis || evidence.Basis != r.currentBasis() {
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !evidence.valid() || !matchesIntent(evidence, assignment.Acceptance.PendingCommit) || evidence.State != assignment.Acceptance.State || evidence.State != r.CurrentState || evidence.Basis != assignment.Acceptance.Basis || evidence.Basis != r.currentBasis() {
 		return fmt.Errorf("%w: assignment is not accepted for this commit state", ErrInvalidTransition)
 	}
 	assignment.Commit = &evidence
 	assignment.Status = AssignmentCommitted
+	r.CurrentState = evidence.State
+	r.invalidateFinalAcceptance()
 	for _, taskID := range assignment.TaskIDs {
 		r.LeafStatus[taskID] = TaskComplete
 	}
 	return nil
+}
+
+// ReopenAssignment invalidates a pending acceptance when either its inputs or
+// observed code state changed. It retains every prior operation, result, and
+// acceptance record while returning its selected leaves to pending.
+func (r *Run) ReopenAssignment(assignmentID AssignmentID, observedState EvidenceRef) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	index := r.assignmentIndex(assignmentID)
+	if index < 0 {
+		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
+	}
+	assignment := &r.Assignments[index]
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !observedState.valid() {
+		return fmt.Errorf("%w: assignment cannot reopen", ErrInvalidTransition)
+	}
+	if assignment.Acceptance.Basis == r.currentBasis() && assignment.Acceptance.State == observedState {
+		return fmt.Errorf("%w: accepted assignment is still current", ErrInvalidTransition)
+	}
+	r.CurrentState = observedState
+	r.reopenAssignment(assignment)
+	return nil
+}
+
+// ObserveCodeState records a controller-observed code state. A changed state
+// automatically invalidates an accepted assignment and any final acceptance.
+func (r *Run) ObserveCodeState(state EvidenceRef) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if !state.valid() {
+		return fmt.Errorf("%w: invalid observed code state", ErrInvalidState)
+	}
+	if state == r.CurrentState {
+		return nil
+	}
+	r.CurrentState = state
+	r.invalidateFinalAcceptance()
+	for index := range r.Assignments {
+		assignment := &r.Assignments[index]
+		if assignment.Status == AssignmentAcceptedAwaitingCommit && assignment.Acceptance != nil && assignment.Acceptance.State != state {
+			r.reopenAssignment(assignment)
+		}
+	}
+	return nil
+}
+
+func (r *Run) reopenAssignment(assignment *Assignment) {
+	assignment.AcceptanceHistory = append(assignment.AcceptanceHistory, *cloneAcceptance(*assignment.Acceptance))
+	assignment.Acceptance = nil
+	assignment.Status = AssignmentActive
+	for _, taskID := range assignment.TaskIDs {
+		r.LeafStatus[taskID] = TaskPending
+	}
+	r.invalidateFinalAcceptance()
+}
+
+func (r *Run) invalidateFinalAcceptance() {
+	if r.FinalAcceptance == nil {
+		return
+	}
+	r.FinalAcceptanceHistory = append(r.FinalAcceptanceHistory, *cloneFinalAcceptance(*r.FinalAcceptance))
+	r.FinalAcceptance = nil
 }
 
 // AddRunOperation records baseline, resume, or final work that is not tied to
@@ -711,6 +787,19 @@ func (r *Run) validateFinalAcceptance(evidence FinalAcceptanceEvidence, current 
 	if current && evidence.Basis != r.currentBasis() {
 		return fmt.Errorf("%w: final acceptance basis is stale", ErrInvalidState)
 	}
+	if current && evidence.State != r.CurrentState {
+		return fmt.Errorf("%w: final acceptance code state is stale", ErrInvalidState)
+	}
+	if current {
+		if r.hasOpenAssignment() {
+			return fmt.Errorf("%w: final acceptance has open assignment", ErrInvalidState)
+		}
+		for _, status := range r.LeafStatus {
+			if status != TaskComplete {
+				return fmt.Errorf("%w: final acceptance has unfinished task", ErrInvalidState)
+			}
+		}
+	}
 	for _, resultID := range evidence.CheckResultIDs {
 		result := r.runResult(resultID)
 		operation := Operation{}
@@ -768,6 +857,11 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 			return fmt.Errorf("%w: invalid result", ErrInvalidState)
 		}
 	}
+	for _, evidence := range assignment.AcceptanceHistory {
+		if assignment.validateAcceptance(evidence, false) != nil {
+			return fmt.Errorf("%w: invalid historical acceptance", ErrInvalidState)
+		}
+	}
 	if assignment.Status == AssignmentActive && (assignment.Acceptance != nil || assignment.Commit != nil) {
 		return fmt.Errorf("%w: active assignment has terminal evidence", ErrInvalidState)
 	}
@@ -785,7 +879,11 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 }
 
 func (a *Assignment) accept(e AcceptanceEvidence) error {
-	if !e.State.valid() || !e.Basis.valid() || !e.PendingCommit.valid() || !a.hasBrief(e.BriefID) || len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
+	return a.validateAcceptance(e, true)
+}
+
+func (a *Assignment) validateAcceptance(e AcceptanceEvidence, requireCurrentBrief bool) error {
+	if !e.State.valid() || !e.Basis.valid() || !e.PendingCommit.valid() || !a.hasBrief(e.BriefID) || (requireCurrentBrief && (len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID)) || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
 		return fmt.Errorf("%w: incomplete acceptance evidence", ErrInvalidState)
 	}
 	for _, resultID := range e.CheckResultIDs {
