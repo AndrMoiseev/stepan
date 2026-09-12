@@ -1,6 +1,7 @@
 package impl_loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,7 +23,7 @@ func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workspace, err := ValidateNewStart(context.Background(), nested, configurationWithMain("main"))
+	workspace, err := ValidateNewStart(context.Background(), nested, configurationWithMain("refs/heads/main"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,11 +147,108 @@ func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *t
 func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
-	for _, mainBranch := range []string{"null", `""`, "[]"} {
+	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`, `"missing"`} {
 		_, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{MainBranch: json.RawMessage(mainBranch)})
 		if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 			t.Fatalf("main_branch %s error = %v", mainBranch, err)
 		}
+	}
+}
+
+func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
+	t.Run("local branch wins over tag", func(t *testing.T) {
+		repository := newGitWorkspace(t)
+		git(t, repository, "tag", "main")
+
+		_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+		if !errors.Is(err, ErrMainBranch) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("tag alone is not a main branch", func(t *testing.T) {
+		repository := newGitWorkspace(t)
+		git(t, repository, "tag", "main")
+		switchToBranch(t, repository, "implementation")
+		git(t, repository, "branch", "--delete", "main")
+
+		_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+		if !errors.Is(err, ErrMainUnknown) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func TestValidateNewStartIgnoresRepositorySelectingGitEnvironment(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		value func(string, string) string
+	}{
+		{name: "GIT_DIR", value: func(_, alternateGit string) string { return alternateGit }},
+		{name: "GIT_WORK_TREE", value: func(alternate, _ string) string { return alternate }},
+		{name: "GIT_COMMON_DIR", value: func(_, alternateGit string) string { return alternateGit }},
+		{name: "GIT_INDEX_FILE", value: func(_, alternateGit string) string { return filepath.Join(alternateGit, "index") }},
+		{name: "GIT_OBJECT_DIRECTORY", value: func(_, alternateGit string) string { return filepath.Join(alternateGit, "objects") }},
+		{name: "GIT_ALTERNATE_OBJECT_DIRECTORIES", value: func(_, alternateGit string) string { return filepath.Join(alternateGit, "objects") }},
+		{name: "GIT_NAMESPACE", value: func(string, string) string { return "redirected" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			target := newGitWorkspace(t)
+			switchToBranch(t, target, "implementation")
+			alternate := newGitWorkspace(t)
+			writeGitWorkspaceFile(t, filepath.Join(alternate, "tracked.txt"), "dirty alternative\n")
+			alternateGit := strings.TrimSpace(git(t, alternate, "rev-parse", "--absolute-git-dir"))
+			targetIndex := strings.TrimSpace(git(t, target, "rev-parse", "--git-path", "index"))
+			if !filepath.IsAbs(targetIndex) {
+				targetIndex = filepath.Join(target, targetIndex)
+			}
+			before, err := os.ReadFile(targetIndex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(test.name, test.value(alternate, alternateGit))
+
+			workspace, err := ValidateNewStart(context.Background(), target, configurationWithMain("main"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if workspace.Branch != "implementation" || workspace.MainBranch != "main" || workspace.Root != target {
+				t.Fatalf("workspace = %#v, want target %q implementation/main", workspace, target)
+			}
+			after, err := os.ReadFile(targetIndex)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatal("preflight changed the real Git index")
+			}
+		})
+	}
+}
+
+func TestValidateNewStartDoesNotHonorConfiguredSubmoduleIgnores(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		ignore string
+		mutate func(*testing.T, string)
+	}{
+		{name: "content ignored as all", ignore: "all", mutate: dirtySubmoduleContent},
+		{name: "content ignored as dirty", ignore: "dirty", mutate: dirtySubmoduleContent},
+		{name: "commit ignored as all", ignore: "all", mutate: advanceSubmoduleCommit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, submodule := newGitWorkspaceWithSubmodule(t)
+			git(t, repository, "config", "submodule.module.ignore", test.ignore)
+			test.mutate(t, submodule)
+			if ignored := git(t, repository, "status", "--porcelain=v1"); ignored != "" {
+				t.Fatalf("fixture is not ignored by policy %q: %q", test.ignore, ignored)
+			}
+
+			_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+			if !errors.Is(err, ErrNewStartDirty) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
@@ -185,6 +283,39 @@ func newGitWorkspace(t *testing.T) string {
 	git(t, repository, "add", "--", "tracked.txt")
 	git(t, repository, "commit", "--quiet", "-m", "initial")
 	return repository
+}
+
+func newGitWorkspaceWithSubmodule(t *testing.T) (string, string) {
+	t.Helper()
+	repository := newGitWorkspace(t)
+	submodule := filepath.Join(repository, "modules", "module")
+	git(t, repository, "init", "--quiet", "--initial-branch=main", submodule)
+	git(t, submodule, "config", "user.name", "Stepan Tests")
+	git(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
+	writeGitWorkspaceFile(t, filepath.Join(submodule, "tracked.txt"), "initial\n")
+	git(t, submodule, "add", "--", "tracked.txt")
+	git(t, submodule, "commit", "--quiet", "-m", "initial")
+	head := strings.TrimSpace(git(t, submodule, "rev-parse", "HEAD"))
+	writeGitWorkspaceFile(t, filepath.Join(repository, ".gitmodules"), "[submodule \"module\"]\n\tpath = modules/module\n\turl = ./module\n")
+	git(t, repository, "add", "--", ".gitmodules")
+	git(t, repository, "update-index", "--add", "--cacheinfo", "160000,"+head+",modules/module")
+	git(t, repository, "commit", "--quiet", "-m", "add module")
+	switchToBranch(t, repository, "implementation")
+	return repository, submodule
+}
+
+func dirtySubmoduleContent(t *testing.T, submodule string) {
+	t.Helper()
+	writeGitWorkspaceFile(t, filepath.Join(submodule, "tracked.txt"), "dirty content\n")
+}
+
+func advanceSubmoduleCommit(t *testing.T, submodule string) {
+	t.Helper()
+	writeGitWorkspaceFile(t, filepath.Join(submodule, "tracked.txt"), "next commit\n")
+	git(t, submodule, "config", "user.name", "Stepan Tests")
+	git(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
+	git(t, submodule, "add", "--", "tracked.txt")
+	git(t, submodule, "commit", "--quiet", "-m", "next")
 }
 
 func switchToBranch(t *testing.T, repository, branch string) {
