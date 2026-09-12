@@ -16,7 +16,11 @@ import (
 
 func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(t *testing.T) {
 	storeRoot := t.TempDir()
-	workCopy := t.TempDir()
+	workCopy := newGitWorkspace(t)
+	nestedWorkCopy := filepath.Join(workCopy, "real", "subdirectory")
+	if err := os.MkdirAll(nestedWorkCopy, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	store := mustControllerStore(t, storeRoot)
 	mustRecordControllerRun(t, store, "paused-run", workCopy, implementationstate.RunPaused)
 	pausedRun, err := store.Open("paused-run")
@@ -29,7 +33,7 @@ func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(
 	}
 
 	command := exec.Command(os.Args[0], "-test.run=^TestControllerLockHelper$")
-	command.Env = append(os.Environ(), "STEPAN_LOCK_HELPER=1", "STEPAN_LOCK_STORE="+storeRoot, "STEPAN_LOCK_WORK_COPY="+workCopy)
+	command.Env = append(os.Environ(), "STEPAN_LOCK_HELPER=1", "STEPAN_LOCK_STORE="+storeRoot, "STEPAN_LOCK_WORK_COPY="+nestedWorkCopy)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +58,7 @@ func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(
 	if !scanner.Scan() || scanner.Text() != "LOCKED" {
 		t.Fatalf("helper did not acquire lock: %q (%v)", scanner.Text(), scanner.Err())
 	}
-	if _, err := AcquireController(store, workCopy); !errors.Is(err, ErrControllerBusy) {
+	if _, err := AcquireController(context.Background(), store, workCopy); !errors.Is(err, ErrControllerBusy) {
 		t.Fatalf("second controller error = %v", err)
 	}
 	current, err := FindUnclosedRun(context.Background(), store, workCopy)
@@ -72,7 +76,7 @@ func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(
 	}
 	finished = true
 
-	lease, err := AcquireController(store, workCopy)
+	lease, err := AcquireController(context.Background(), store, workCopy)
 	if err != nil {
 		t.Fatalf("lock after helper exit: %v", err)
 	}
@@ -89,7 +93,7 @@ func TestControllerLockHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := AcquireController(store, os.Getenv("STEPAN_LOCK_WORK_COPY"))
+	lease, err := AcquireController(context.Background(), store, os.Getenv("STEPAN_LOCK_WORK_COPY"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,13 +107,17 @@ func TestAcquireNewRunControllerEnforcesPausedAndActiveButAllowsTerminalRuns(t *
 	for _, status := range []implementationstate.RunStatus{implementationstate.RunActive, implementationstate.RunPaused} {
 		t.Run(string(status), func(t *testing.T) {
 			store := mustControllerStore(t, t.TempDir())
-			workCopy := t.TempDir()
+			workCopy := newGitWorkspace(t)
+			nested := filepath.Join(workCopy, "real", "subdirectory")
+			if err := os.MkdirAll(nested, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			mustRecordControllerRun(t, store, "open-run", workCopy, status)
-			if _, err := AcquireNewRunController(context.Background(), store, workCopy); !errors.Is(err, ErrOpenRun) {
+			if _, err := AcquireNewRunController(context.Background(), store, nested); !errors.Is(err, ErrOpenRun) {
 				t.Fatalf("error = %v", err)
 			}
 			// Failed new-start checking must not retain the process lock.
-			lease, err := AcquireController(store, workCopy)
+			lease, err := AcquireController(context.Background(), store, workCopy)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -119,7 +127,7 @@ func TestAcquireNewRunControllerEnforcesPausedAndActiveButAllowsTerminalRuns(t *
 	for _, status := range []implementationstate.RunStatus{implementationstate.RunClosed} {
 		t.Run(string(status), func(t *testing.T) {
 			store := mustControllerStore(t, t.TempDir())
-			workCopy := t.TempDir()
+			workCopy := newGitWorkspace(t)
 			mustRecordControllerRun(t, store, "terminal-run", workCopy, status)
 			lease, err := AcquireNewRunController(context.Background(), store, workCopy)
 			if err != nil {
@@ -132,12 +140,12 @@ func TestAcquireNewRunControllerEnforcesPausedAndActiveButAllowsTerminalRuns(t *
 
 func TestControllerLocksForDifferentWorkingCopiesAreIndependent(t *testing.T) {
 	store := mustControllerStore(t, t.TempDir())
-	first, err := AcquireController(store, t.TempDir())
+	first, err := AcquireController(context.Background(), store, newGitWorkspace(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
-	second, err := AcquireController(store, t.TempDir())
+	second, err := AcquireController(context.Background(), store, newGitWorkspace(t))
 	if err != nil {
 		t.Fatalf("second repository lock: %v", err)
 	}
@@ -151,6 +159,19 @@ func mustControllerStore(t *testing.T, root string) *runstore.Store {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func onlyControllerLockEntry(t *testing.T, store *runstore.Store) string {
+	t.Helper()
+	directory := filepath.Join(store.Root(), "controller-locks")
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("lock entries = %d, want 1", len(entries))
+	}
+	return filepath.Join(directory, entries[0].Name())
 }
 
 func mustRecordControllerRun(t *testing.T, store *runstore.Store, id implementationstate.RunID, workCopy string, status implementationstate.RunStatus) {
@@ -197,9 +218,13 @@ func mustRecordControllerRun(t *testing.T, store *runstore.Store, id implementat
 
 func TestFindUnclosedRunCanonicalizesWorkingCopy(t *testing.T) {
 	store := mustControllerStore(t, t.TempDir())
-	workCopy := t.TempDir()
+	workCopy := newGitWorkspace(t)
+	nested := filepath.Join(workCopy, "nested", "directory")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	mustRecordControllerRun(t, store, "run", workCopy, implementationstate.RunActive)
-	state, err := FindUnclosedRun(context.Background(), store, filepath.Join(workCopy, "."))
+	state, err := FindUnclosedRun(context.Background(), store, nested)
 	if err != nil || state == nil {
 		t.Fatalf("state = %#v, error = %v", state, err)
 	}

@@ -15,6 +15,8 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
+var beforeControllerLockOpenHook func(string)
+
 var (
 	ErrControllerBusy = errors.New("another controller owns this working copy")
 	ErrOpenRun        = errors.New("working copy already has an unclosed implementation run")
@@ -45,11 +47,11 @@ func (l *ControllerLease) Close() error {
 
 // AcquireController takes controller ownership for one canonical working copy.
 // It does not inspect run status, which permits resume to acquire the same lock.
-func AcquireController(store *runstore.Store, workCopy string) (*ControllerLease, error) {
+func AcquireController(ctx context.Context, store *runstore.Store, workCopy string) (*ControllerLease, error) {
 	if store == nil {
 		return nil, fmt.Errorf("acquire controller: nil run store")
 	}
-	canonical, err := canonicalWorkCopy(workCopy)
+	canonical, err := FindGitRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -57,12 +59,8 @@ func AcquireController(store *runstore.Store, workCopy string) (*ControllerLease
 	if err := os.MkdirAll(locks, 0o700); err != nil {
 		return nil, fmt.Errorf("create controller lock directory: %w", err)
 	}
-	info, err := os.Lstat(locks)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, fmt.Errorf("controller lock directory is unsafe: %s", locks)
-	}
 	sum := sha256.Sum256([]byte(lockIdentity(canonical)))
-	file, err := os.OpenFile(filepath.Join(locks, hex.EncodeToString(sum[:])+".lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	file, err := openControllerLockFile(locks, filepath.Join(locks, hex.EncodeToString(sum[:])+".lock"))
 	if err != nil {
 		return nil, fmt.Errorf("open controller lock: %w", err)
 	}
@@ -79,7 +77,7 @@ func AcquireController(store *runstore.Store, workCopy string) (*ControllerLease
 // AcquireNewRunController atomically reserves controller ownership and rejects
 // a new run if an active or paused durable run already names this working copy.
 func AcquireNewRunController(ctx context.Context, store *runstore.Store, workCopy string) (*ControllerLease, error) {
-	lease, err := AcquireController(store, workCopy)
+	lease, err := AcquireController(ctx, store, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +97,7 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	canonical, err := canonicalWorkCopy(workCopy)
+	canonical, err := FindGitRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +120,7 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 		if err != nil {
 			return nil, fmt.Errorf("read run %s status: %w", id, err)
 		}
-		stateWorkCopy, err := canonicalWorkCopy(state.Identity.WorkCopy)
+		stateWorkCopy, err := FindGitRoot(ctx, state.Identity.WorkCopy)
 		if err != nil {
 			return nil, fmt.Errorf("run %s has invalid working copy: %w", id, err)
 		}
@@ -133,24 +131,53 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 	return nil, nil
 }
 
-func canonicalWorkCopy(path string) (string, error) {
-	if strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("working copy path is empty")
-	}
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve working copy: %w", err)
-	}
-	canonical, err := filepath.EvalSymlinks(absolute)
-	if err != nil {
-		return "", fmt.Errorf("canonicalize working copy: %w", err)
-	}
-	return filepath.Clean(canonical), nil
-}
-
 func lockIdentity(path string) string {
 	if runtime.GOOS == "windows" {
 		return strings.ToLower(path)
 	}
 	return path
+}
+
+func openControllerLockFile(directory, path string) (*os.File, error) {
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return nil, fmt.Errorf("open controller lock directory: %w", err)
+	}
+	defer directoryHandle.Close()
+	openedDirectory, err := directoryHandle.Stat()
+	if err != nil || !openedDirectory.IsDir() {
+		return nil, fmt.Errorf("opened controller lock directory is unsafe: %s", directory)
+	}
+	pathDirectory, err := os.Lstat(directory)
+	if err != nil || pathDirectory.Mode()&os.ModeSymlink != 0 || !pathDirectory.IsDir() || !os.SameFile(openedDirectory, pathDirectory) {
+		return nil, fmt.Errorf("controller lock directory is unsafe: %s", directory)
+	}
+	if entry, err := os.Lstat(path); err == nil {
+		if entry.Mode()&os.ModeSymlink != 0 || !entry.Mode().IsRegular() {
+			return nil, fmt.Errorf("controller lock entry is unsafe: %s", path)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect controller lock entry: %w", err)
+	}
+	if beforeControllerLockOpenHook != nil {
+		beforeControllerLockOpenHook(path)
+	}
+	file, err := openControllerFileNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	closeOnError := func(err error) (*os.File, error) { _ = file.Close(); return nil, err }
+	openedEntry, err := file.Stat()
+	if err != nil || !openedEntry.Mode().IsRegular() {
+		return closeOnError(fmt.Errorf("opened controller lock entry is unsafe: %s", path))
+	}
+	pathEntry, err := os.Lstat(path)
+	if err != nil || pathEntry.Mode()&os.ModeSymlink != 0 || !pathEntry.Mode().IsRegular() || !os.SameFile(openedEntry, pathEntry) {
+		return closeOnError(fmt.Errorf("controller lock entry changed while opening: %s", path))
+	}
+	afterDirectory, err := os.Lstat(directory)
+	if err != nil || afterDirectory.Mode()&os.ModeSymlink != 0 || !afterDirectory.IsDir() || !os.SameFile(openedDirectory, afterDirectory) {
+		return closeOnError(fmt.Errorf("controller lock directory changed while opening: %s", directory))
+	}
+	return file, nil
 }
