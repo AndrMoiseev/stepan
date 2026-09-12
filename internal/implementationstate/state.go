@@ -247,7 +247,7 @@ func (p LimitPause) valid() bool {
 		return p.AssignmentID == "" && p.Episode == ""
 	}
 	if p.Counter == CycleCounterExplorer {
-		return p.AssignmentID != "" && strings.TrimSpace(p.Episode) != ""
+		return strings.TrimSpace(p.Episode) != ""
 	}
 	return p.AssignmentID != "" && p.Episode == ""
 }
@@ -420,9 +420,14 @@ type Run struct {
 	FinalAcceptanceHistory []FinalAcceptanceEvidence
 	FinalReviewRounds      uint64
 	FinalReviewCycle       uint64
-	PauseReason            string
-	LimitPause             *LimitPause
-	CloseReason            string
+	// RunExplorerCounters are Explorer budgets for sources that have no
+	// assignment or brief yet (for example the initial briefer, final reviewer,
+	// and bootstrapper). They remain independent per source episode.
+	RunExplorerCounters map[string]uint64 `json:"run_explorer_counters,omitempty"`
+	RunExplorerCycles   map[string]uint64 `json:"run_explorer_cycles,omitempty"`
+	PauseReason         string
+	LimitPause          *LimitPause
+	CloseReason         string
 }
 
 // EventKind identifies one durable state transition. New event kinds can be
@@ -1004,8 +1009,8 @@ func (r *Run) StartRunAttempt(operationID OperationID) (OperationAttempt, error)
 	return r.startRunAttempt(operation)
 }
 
-// StartRunAttemptWithLimits applies the final-review and per-operation
-// technical limits before reserving the durable attempt.
+// StartRunAttemptWithLimits applies final-review, run-level Explorer, and
+// per-operation technical limits before reserving the durable attempt.
 func (r *Run) StartRunAttemptWithLimits(operationID OperationID, limits CycleLimits) (OperationAttempt, error) {
 	if !limits.valid() {
 		return OperationAttempt{}, fmt.Errorf("%w: invalid cycle limits", ErrInvalidState)
@@ -1022,6 +1027,9 @@ func (r *Run) StartRunAttemptWithLimits(operationID OperationID, limits CycleLim
 	}
 	if operation.Counter == CycleCounterFinalReview && r.FinalReviewRounds >= uint64(limits.FinalReview) {
 		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterFinalReview, OperationID: operationID})
+	}
+	if operation.Counter == CycleCounterExplorer && r.RunExplorerCounters[operation.Episode] >= uint64(limits.Explorer) {
+		return OperationAttempt{}, r.pauseForLimit(LimitPause{Counter: CycleCounterExplorer, OperationID: operationID, Episode: operation.Episode})
 	}
 	return r.startRunAttempt(operation)
 }
@@ -1095,7 +1103,18 @@ func (r *Run) resetLimitPause(limit LimitPause) error {
 	}
 	if limit.Counter == CycleCounterFinalReview {
 		r.FinalReviewRounds = 0
-		r.FinalReviewCycle++
+		r.FinalReviewCycle = nextCycle(r.FinalReviewCycle)
+		return nil
+	}
+	if limit.Counter == CycleCounterExplorer && limit.AssignmentID == "" {
+		if r.RunExplorerCounters == nil {
+			r.RunExplorerCounters = make(map[string]uint64)
+		}
+		if r.RunExplorerCycles == nil {
+			r.RunExplorerCycles = make(map[string]uint64)
+		}
+		r.RunExplorerCounters[limit.Episode] = 0
+		r.RunExplorerCycles[limit.Episode] = nextCycle(r.RunExplorerCycles[limit.Episode])
 		return nil
 	}
 	assignment := r.assignment(limit.AssignmentID)
@@ -1178,6 +1197,27 @@ func (r *Run) EndExplorerEpisode(assignmentID AssignmentID, episode string) erro
 	}
 	assignment.Counters.Explorer[episode] = 0
 	assignment.Counters.ExplorerCycle[episode] = nextCycle(assignment.Counters.ExplorerCycle[episode])
+	return nil
+}
+
+// EndRunExplorerEpisode opens a fresh Explorer budget for a run-level source
+// after it returns or moves to a new stage. This covers sources before an
+// assignment brief exists as well as the final reviewer and bootstrapper.
+func (r *Run) EndRunExplorerEpisode(episode string) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(episode) == "" {
+		return fmt.Errorf("%w: invalid run explorer episode boundary", ErrInvalidState)
+	}
+	if r.RunExplorerCounters == nil {
+		r.RunExplorerCounters = make(map[string]uint64)
+	}
+	if r.RunExplorerCycles == nil {
+		r.RunExplorerCycles = make(map[string]uint64)
+	}
+	r.RunExplorerCounters[episode] = 0
+	r.RunExplorerCycles[episode] = nextCycle(r.RunExplorerCycles[episode])
 	return nil
 }
 
@@ -1370,14 +1410,20 @@ func validAssignmentCounter(counter CycleCounter) bool {
 }
 
 func validRunCounter(counter CycleCounter) bool {
-	return counter == CycleCounterNone || counter == CycleCounterFinalReview
+	return counter == CycleCounterNone || counter == CycleCounterFinalReview || counter == CycleCounterExplorer
 }
 
 func (r *Run) validateCounters() error {
 	finalRounds := make(map[uint64]uint64)
 	var currentFinalReviews uint64
+	runExplorerRounds := make(map[string]uint64)
+	wantRunExplorer := make(map[string]uint64)
 	for _, operation := range r.RunOperations {
-		if operation.Counter == CycleCounterFinalReview && len(operation.Attempts) != 0 {
+		if len(operation.Attempts) == 0 {
+			continue
+		}
+		switch operation.Counter {
+		case CycleCounterFinalReview:
 			cycle := operation.SemanticCycle
 			if cycle == 0 {
 				return fmt.Errorf("%w: final review lacks semantic cycle", ErrInvalidState)
@@ -1389,10 +1435,26 @@ func (r *Run) validateCounters() error {
 			if cycle == currentCycle(r.FinalReviewCycle) {
 				currentFinalReviews++
 			}
+		case CycleCounterExplorer:
+			cycle := operation.SemanticCycle
+			if cycle == 0 {
+				return fmt.Errorf("%w: run explorer lacks semantic cycle", ErrInvalidState)
+			}
+			key := operation.Episode + "\x00" + fmt.Sprint(cycle)
+			runExplorerRounds[key]++
+			if operation.Attempts[0].SemanticRound != runExplorerRounds[key] {
+				return fmt.Errorf("%w: run explorer semantic rounds are not sequential", ErrInvalidState)
+			}
+			if cycle == currentCycle(r.RunExplorerCycles[operation.Episode]) {
+				wantRunExplorer[operation.Episode]++
+			}
 		}
 	}
 	if r.FinalReviewRounds != currentFinalReviews {
 		return fmt.Errorf("%w: final review counter does not match attempts", ErrInvalidState)
+	}
+	if !mapsEqual(r.RunExplorerCounters, wantRunExplorer) {
+		return fmt.Errorf("%w: run explorer counters do not match attempts", ErrInvalidState)
 	}
 	for _, assignment := range r.Assignments {
 		want := CycleCounters{Explorer: make(map[string]uint64)}
@@ -1503,13 +1565,26 @@ func (a *Assignment) startAttempt(operation *Operation) (OperationAttempt, error
 
 func (r *Run) startRunAttempt(operation *Operation) (OperationAttempt, error) {
 	if operation == nil || !validRunCounter(operation.Counter) || operation.UncountedResumeCheck {
-		return OperationAttempt{}, fmt.Errorf("%w: invalid final review attempt", ErrInvalidState)
+		return OperationAttempt{}, fmt.Errorf("%w: invalid run attempt", ErrInvalidState)
 	}
 	attempt := OperationAttempt{Number: uint64(len(operation.Attempts) + 1)}
-	if len(operation.Attempts) == 0 && operation.Counter == CycleCounterFinalReview {
-		r.FinalReviewRounds++
-		attempt.SemanticRound = r.FinalReviewRounds
-		operation.SemanticCycle = currentCycle(r.FinalReviewCycle)
+	if len(operation.Attempts) == 0 {
+		switch operation.Counter {
+		case CycleCounterFinalReview:
+			r.FinalReviewRounds++
+			attempt.SemanticRound = r.FinalReviewRounds
+			operation.SemanticCycle = currentCycle(r.FinalReviewCycle)
+		case CycleCounterExplorer:
+			if r.RunExplorerCounters == nil {
+				r.RunExplorerCounters = make(map[string]uint64)
+			}
+			if r.RunExplorerCycles == nil {
+				r.RunExplorerCycles = make(map[string]uint64)
+			}
+			r.RunExplorerCounters[operation.Episode]++
+			attempt.SemanticRound = r.RunExplorerCounters[operation.Episode]
+			operation.SemanticCycle = currentCycle(r.RunExplorerCycles[operation.Episode])
+		}
 	} else if len(operation.Attempts) != 0 {
 		attempt.SemanticRound = operation.Attempts[0].SemanticRound
 	}

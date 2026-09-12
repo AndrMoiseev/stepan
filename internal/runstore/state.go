@@ -259,6 +259,8 @@ func (s *StateStore) RecordAssignmentAttemptStartWithLimits(ctx context.Context,
 		return candidate.StartAssignmentAttemptWithLimits(assignmentID, operationID, limits)
 	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
 		return assignmentLastAttempt(current, assignmentID, operationID)
+	}, func(current *implementationstate.Run) bool {
+		return limitPauseMatches(current, assignmentID, operationID)
 	})
 }
 
@@ -280,6 +282,8 @@ func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state 
 		return candidate.StartRunAttemptWithLimits(operationID, limits)
 	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
 		return runLastAttempt(current, operationID)
+	}, func(current *implementationstate.Run) bool {
+		return limitPauseMatches(current, "", operationID)
 	})
 }
 
@@ -311,7 +315,7 @@ func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementati
 	return attempt, event, err
 }
 
-func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool)) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool), matchesLimitPause func(*implementationstate.Run) bool) (implementationstate.OperationAttempt, implementationstate.Event, error) {
 	if state == nil {
 		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
 	}
@@ -319,9 +323,15 @@ func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *imple
 		if err != nil {
 			return implementationstate.OperationAttempt{}, event, err
 		}
+		if matchesLimitPause(state) {
+			return implementationstate.OperationAttempt{}, event, implementationstate.ErrLimitExceeded
+		}
 		if attempt, found := last(state); found {
 			return attempt, event, nil
 		}
+	}
+	if matchesLimitPause(state) {
+		return implementationstate.OperationAttempt{}, implementationstate.Event{}, implementationstate.ErrLimitExceeded
 	}
 	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
 	if err != nil {
@@ -340,6 +350,10 @@ func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *imple
 		return attempt, event, errors.Join(startErr, recordErr)
 	}
 	return attempt, event, recordErr
+}
+
+func limitPauseMatches(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) bool {
+	return state != nil && state.Status == implementationstate.RunPaused && state.LimitPause != nil && state.LimitPause.AssignmentID == assignmentID && state.LimitPause.OperationID == operationID
 }
 
 func assignmentLastAttempt(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {

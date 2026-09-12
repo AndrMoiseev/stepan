@@ -255,6 +255,54 @@ func TestTechnicalLimitResumesTheSameOperationWithoutCreatingSemanticRound(t *te
 	}
 }
 
+func TestRunExplorerLimitsCoverPreBriefAndFinalReviewerEpisodes(t *testing.T) {
+	run := newSingleTaskRun(t)
+	for _, operation := range []Operation{
+		{ID: "final-explorer", Kind: OperationAgent, Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "final-reviewer"},
+		{ID: "brief-explorer-1", Kind: OperationAgent, Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "initial-briefer"},
+		{ID: "brief-explorer-2", Kind: OperationAgent, Basis: testBasis(), Counter: CycleCounterExplorer, Episode: "initial-briefer"},
+	} {
+		if err := run.AddRunOperation(operation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 3, FinalReview: 3}
+	for _, operationID := range []OperationID{"final-explorer", "brief-explorer-1"} {
+		if got, err := run.StartRunAttemptWithLimits(operationID, limits); err != nil || got.SemanticRound != 1 {
+			t.Fatalf("last permitted run explorer %s = %#v, %v", operationID, got, err)
+		}
+	}
+	if _, err := run.StartRunAttemptWithLimits("brief-explorer-2", limits); !errors.Is(err, ErrLimitExceeded) || run.LimitPause == nil || run.LimitPause.Episode != "initial-briefer" {
+		t.Fatalf("pre-brief Explorer limit = %v, pause=%#v", err, run.LimitPause)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("paused run Explorer state is invalid: %v", err)
+	}
+	if err := run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if run.RunExplorerCounters["initial-briefer"] != 0 || run.RunExplorerCounters["final-reviewer"] != 1 {
+		t.Fatalf("run Explorer reset was not episode-specific: %#v", run.RunExplorerCounters)
+	}
+	if got, err := run.StartRunAttemptWithLimits("brief-explorer-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("run Explorer after reset = %#v, %v", got, err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("resumed run Explorer state is invalid: %v", err)
+	}
+	data, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restarted Run
+	if err := json.Unmarshal(data, &restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Validate(); err != nil {
+		t.Fatalf("persisted run Explorer state is invalid: %v", err)
+	}
+}
+
 func TestCounterNoneStillRecordsTechnicalAttemptsAndRequiresStartForResults(t *testing.T) {
 	run := newSingleTaskRun(t)
 	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {

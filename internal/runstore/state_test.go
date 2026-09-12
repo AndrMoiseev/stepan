@@ -1133,6 +1133,136 @@ func TestRecordExplorerLimitPauseResetsOnlyItsEpisodeOnResume(t *testing.T) {
 	}
 }
 
+func TestFinalReviewLimitResumeUsesNewCycleAcrossStoreRecovery(t *testing.T) {
+	run := newStoredRun(t)
+	state, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := newStoredModel(t, run)
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, operationID := range []implementationstate.OperationID{"final-1", "final-2"} {
+		if err := model.AddRunOperation(implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationReview, Basis: basis, Counter: implementationstate.CycleCounterFinalReview}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 1}
+	if _, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "final-1", limits); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "final-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) {
+		t.Fatalf("second final review = %v", err)
+	}
+	if err := model.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.Validate(); err != nil {
+		t.Fatalf("resumed final-review state is invalid: %v", err)
+	}
+	if _, err := state.Record(context.Background(), model); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Validate(); err != nil {
+		t.Fatalf("reopened resumed final-review state is invalid: %v", err)
+	}
+	if got, _, err := reopened.RecordRunAttemptStartWithLimits(context.Background(), current, "final-2", limits); err != nil || got.SemanticRound != 1 {
+		t.Fatalf("new final-review cycle = %#v, %v", got, err)
+	}
+	if err := current.Validate(); err != nil {
+		t.Fatalf("new final-review round state is invalid: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err = OpenState(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	current, _, err = reopened.Current(context.Background())
+	if err != nil || current.FinalReviewRounds != 1 || current.FinalReviewCycle != 2 {
+		t.Fatalf("reopened next final-review cycle = state %#v, error %v", current, err)
+	}
+	if err := current.Validate(); err != nil {
+		t.Fatalf("reopened next final-review state is invalid: %v", err)
+	}
+}
+
+func TestRecordLimitedAttemptPendingPauseIsIdempotent(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int)
+	}{
+		{
+			name: "semantic",
+			setup: func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int) {
+				t.Helper()
+				basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+				for _, operationID := range []implementationstate.OperationID{"review-1", "review-2"} {
+					if err := model.AddOperation("assignment", implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				limits := implementationstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+				return "review-1", "review-2", limits, func(state *implementationstate.Run) int { return len(state.Assignments[0].Operations[2].Attempts) }
+			},
+		},
+		{
+			name: "technical",
+			setup: func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int) {
+				t.Helper()
+				limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 1, FinalReview: 3}
+				return "agent", "agent", limits, func(state *implementationstate.Run) int { return len(state.Assignments[0].Operations[0].Attempts) }
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := newStoredRun(t)
+			state, err := OpenState(run)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			model := attemptStartModel(t, run)
+			first, blocked, limits, attempts := test.setup(t, model)
+			if _, _, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", first, limits); err != nil {
+				t.Fatalf("last permitted attempt: %v", err)
+			}
+			injected := errors.New("injected projection failure")
+			replaceBeforeProjectionCommitHook(t, func(event implementationstate.Event) error {
+				if event.Sequence == 2 {
+					return injected
+				}
+				return nil
+			})
+			if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || !errors.Is(err, injected) || event.Sequence != 2 {
+				t.Fatalf("durable limit pause = event %#v, error %v", event, err)
+			}
+			if model.Status != implementationstate.RunPaused || attempts(model) != 0 && test.name == "semantic" || attempts(model) != 1 && test.name == "technical" {
+				t.Fatalf("limit pause dispatched another action: state=%#v, attempts=%d", model, attempts(model))
+			}
+			beforeProjectionCommitHook = nil
+			if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || attempt != (implementationstate.OperationAttempt{}) || event.Sequence != 2 {
+				t.Fatalf("pending pause retry = attempt %#v, event %#v, error %v", attempt, event, err)
+			}
+			if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 2 {
+				t.Fatalf("pending pause retry appended journal: sequence=%d, error=%v", sequence, err)
+			}
+		})
+	}
+}
+
 func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)
