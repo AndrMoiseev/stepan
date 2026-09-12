@@ -20,9 +20,10 @@ func TestDependencies(t *testing.T) {
 
 func TestDependencyEvaluatorAllowsSharedInfrastructureForImplementationFlow(t *testing.T) {
 	result := evaluateFixture(t, loadConfig(t), map[string]string{
-		"internal/agentruntime/doc.go":          "package agentruntime\n",
-		"internal/flows/spec/doc.go":            "package specflow\n",
-		"internal/flows/impl_loop/impl_loop.go": "package impl_loop\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/agentruntime\"\n",
+		"internal/agentruntime/doc.go":              "package agentruntime\n",
+		"internal/implementationconfig/doc.go":      "package implementationconfig\n",
+		"internal/flows/spec/doc.go":                "package specflow\n",
+		"internal/flows/impl_loop/impl_loop.go":     "package impl_loop\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/agentruntime\"\nimport _ \"github.com/AndrMoiseev/stepan/internal/implementationconfig\"\n",
 	})
 	assertPackagePasses(t, result, modulePath+"/internal/flows/impl_loop")
 }

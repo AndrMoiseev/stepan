@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 2/65 implementation tasks complete; final review `not_started`.
+- Outcome: `in_progress`; 3/65 implementation tasks complete; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -41,12 +41,22 @@ Committed candidate 35c7ad8: macOS/arm64 CGO_ENABLED=0 cross-build passed, outpu
 
 - Base: `35c7ad8f4e9a0aa002aaa12cdf4417850ebbbec4`; dependency 1.1 accepted.
 - Acceptance: tasks.md 1.2 and design Migration Plan; create `internal/flows/impl_loop` (`package impl_loop`), distinct OpenSpec/storage/check components, infrastructure outside flows, tests proving permitted imports and rejecting flow-to-flow dependencies.
-- Implementation: complete; review `awaiting_review`. Implementer: `/root/implement_1_2`; reviewer pending.
-- No implementation/correction commits; completed correction cycles 0; findings none.
+- Implementation: complete; review `accepted`. Implementer: `/root/implement_1_2`; reviewer `/root/review_1_2` initial review PASS with no findings on `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`.
+- Implementation commit `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`; no correction commits; completed correction cycles 0; findings none.
 - Next: fresh implementer prepares boundaries; required full tests, Windows build, architecture tests.
 Future verification prerequisite (14.3): Get-Command found Codex executable in PATH, but did not find claude or nessy in this process environment. Availability/authentication and real smoke remain unverified; recheck at task14.3. No secrets inspected.
 
 Task1.2 precommit acceptance refinement: infrastructure packages placed outside flows at internal/openspec, internal/runstore, internal/checkexec. Negative architectural coverage must use real configured cross-flow rules in both directions, plus allowed shared dependencies, rather than an invented ban on agentruntime. Research helper `/root/research_archgo_fixture` (`gpt-5.6-luna`/`medium`) investigating evaluator fixture API read-only.
 Task1.2 check-execution incident: implementer launched three overlapping full suites because only nested tool output text was retained and session IDs were lost. No source edits occurred between those launches. These attempts have uncollected outcomes and are not acceptance evidence. Waiting for their processes to finish; final stable candidate suite must preserve session ID and output after coverage refinement. No implementation commit yet.
 Task1.2 refinement research completed: real temporary GOPATH module with actual repository config is suitable; assertions strengthened to require all applicable positive rules and the specific cross-flow restriction in separate one-way negative fixtures. Artificial Controller field removed. Prior suites became stale during these test refinements. Coordinator terminated only verified task-owned Go process trees 3240/22540/16452 (names/start times checked), with successful auto-reviewed escalation after sandbox denied taskkill. No result from these abandoned attempts is counted. Fresh stable validation pending, with complete exec result/session IDs and retained logs required.
-Task1.2 final stable candidate: focused architecture tests PASS, full `go test ./...` PASS (tracked session73668 exited0), `go build -o stepan.exe ./cmd/stepan` PASS, `git diff --check` PASS. Logs: `.tmp/task-1.2-architecture.log`, `.tmp/task-1.2-go-test.log`, `.tmp/task-1.2-build.log` (ignored local evidence). Same Go1.26.5/windows-amd64 and cache environment as1.1; nonfatal telemetry/module-cache warnings. No platform behavior changed; cross-build not required for this structural task. No manual case needed. Researcher completed; no outstanding research. Pending implementation commit, then initial independent review.
+Task1.2 final stable candidate: focused architecture tests PASS, full `go test ./...` PASS (tracked session73668 exited0), `go build -o stepan.exe ./cmd/stepan` PASS, `git diff --check` PASS. Logs: `.tmp/task-1.2-architecture.log`, `.tmp/task-1.2-go-test.log`, `.tmp/task-1.2-build.log` (ignored local evidence). Same Go1.26.5/windows-amd64 and cache environment as1.1; nonfatal telemetry/module-cache warnings. No platform behavior changed; cross-build not required for this structural task. No manual case needed. Researcher completed; no outstanding research. Implementation commit verified: `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`; initial independent review pending.
+Task1.2 accepted by independent reviewer with no findings, zero correction cycles. Current source HEAD `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`.
+
+### 2.1 — configuration input
+
+- Base: `0f21d1aa7afe70b9fc7aff9b1a9767c41a775d0d`; dependencies: foundational boundaries accepted.
+- Acceptance: tasks.md2.1; implementation-configuration requirement levels/format and preserve authorization; read implementation from user and project settings, cover missing files/malformed JSON, never disclose auth in diagnostics.
+- Implementation complete, review `awaiting_review`; implementer `/root/implement_2_1` (`gpt-5.6-terra`/`high`); no commits/corrections, completed cycles0, findings none.
+- Scope excludes merging profiles, validation/defaults/rules/path resolution scheduled2.2–2.6. Next: fresh implementer, focused tests, full stable checks and commit/review.
+Task2.1 candidate ready: new internal/implementationconfig loader returns raw separate User/Project sections, no sibling authorization data or writes. Targeted `go test ./internal/implementationconfig ./internal/usersettings ./internal/architecture` PASS; diff check PASS. Coordinator full stable check running via `.tmp/autopilot-validate.ps1 -CheckId task-2.1`, session86185; logs `.tmp/task-2.1-tests.log` and `.tmp/task-2.1-build.log`. Do not edit source or duplicate suite until exit.
+Task2.1 full stable checks completed session86185 exit0: TEST_EXIT=0 and BUILD_EXIT=0. All packages passed (flows/spec41.478s, implementationconfig0.035s); Windows build passed. Logs retained at stated paths. Only known nonfatal telemetry/module-cache warnings. Next: commit, independent review. No manual cases.
