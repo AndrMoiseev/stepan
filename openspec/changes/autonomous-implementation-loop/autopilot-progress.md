@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 5/65 implementation tasks complete; final review `not_started`.
+- Outcome: `in_progress`; 6/65 implementation tasks complete; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -105,3 +105,15 @@ Task2.3 initial review /root/review_2_3: TASK-2.3-001, Medium, substantial speci
 Task2.3 correction1 candidate ready: TASK-2.3-001 addressed with presence-aware parsing for all declared common/platform commands, strict program/args/env types, explicit empty args preserved across copy/JSON. Focused tests PASS(0.030s). Full helper task-2.3-correction-1 running session21658, logs .tmp/task-2.3-correction-1-tests.log/build.log. Pending correctioncommit, completed cycles still0.
 
 Task2.3 correction1 full checks session21658 exited0 TEST_EXIT=0 BUILD_EXIT=0, allpackages PASS (flows/spec41.328s config0.038s), Windows build PASS. Required commandargs shape validated; implementation checkbox complete again, awaiting rereview. Next: separate correction commit then same reviewer; completed cycles remains0 until rereview returns.
+
+Task2.3 correction commit verified2683ac4c65073644180cfb60e4ab4651eb5f8d82. Pending rereview cycle1 on this candidate by /root/review_2_3; originalbase4b513475e3a9e66c2c6a9308202f2cf51ebce727. Completed correction cycles0; TASK-2.3-001 implemented fix awaiting reviewer verification.
+
+Task2.3 rereview cycle1 by /root/review_2_3: PASS, no remaining/new findings. TASK-2.3-001 resolved by2683ac4c65073644180cfb60e4ab4651eb5f8d82. Completed correction cycles1; no pending cycle; review accepted. Env JSON roundtrip is not a current production contract and does not create a finding. Next task2.4.
+
+### 2.4 — repository-relative configuration paths
+
+- Base2683ac4c65073644180cfb60e4ab4651eb5f8d82; dependencies2.1–2.3 accepted.
+- Acceptance tasks.md2.4 / implementation-configuration path requirement: cwd defaults to repository root; relative cwd/rules_file resolve from root, absolute paths supported, tilde/environment syntax remains literal. Rules boundary/access validation belongs to2.5.
+- Implementation/review implementing; implementer /root/implement_2_4 (gpt-5.6-terra/high); reviewer not_started. No commits/findings/correction cycles. Next implementation, full tests, Windows and macOS cross-build, commit and review.
+Task2.4 stable candidate paths.go/paths_test.go: SelectChecksIn/SelectHostChecksIn and ResolveRulesFile require absolute supplied Git root, resolve default/dot/relative/absolute/literal paths; no changes to program/args/env. Windows drive-relative/current-volume-rooted ambiguous forms rejected; null rules_file rejected as non-string, missing field optional. Targeted config tests and diff-check PASS. Coordinator full helper task-2.4 -CrossBuild session95567 running; source stable. No manual case for pure path resolution.
+Task2.4 mandatory stable validation session95567 exited0: TEST_EXIT=0, BUILD_EXIT=0, CROSS_BUILD_EXIT=0. All packages passed (flows/spec41.081s, implementationconfig0.040s); macOS compilation only. Logs .tmp/task-2.4-tests.log, task-2.4-build.log, task-2.4-cross-build.log. Known nonfatal telemetry/module-cache warnings. Implementation complete; review awaiting_review; completed correction cycles0. Next commit then independent task review.
