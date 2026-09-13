@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -146,13 +147,38 @@ func Diff(ctx context.Context, repository string, before, after Snapshot) (Diffe
 		return Difference{}, err
 	}
 	return Difference{
-		Paths:             paths,
+		Paths:             mergeChangedPaths(paths, before.worktreeFiles, after.worktreeFiles),
 		HeadChanged:       before.HeadOID != after.HeadOID,
 		HeadRefChanged:    before.HeadRef != after.HeadRef,
 		IndexChanged:      before.IndexHash != after.IndexHash,
 		StatusChanged:     before.StatusHash != after.StatusHash,
 		SubmodulesChanged: before.SubmodulesHash != after.SubmodulesHash,
 	}, nil
+}
+
+func mergeChangedPaths(paths []string, before, after map[string]worktreeFile) []string {
+	seen := make(map[string]struct{}, len(paths)+len(before)+len(after))
+	for _, path := range paths {
+		seen[path] = struct{}{}
+	}
+	for path, beforeFile := range before {
+		afterFile, found := after[path]
+		if !found || !sameWorktreeFile(beforeFile, afterFile) {
+			seen[path] = struct{}{}
+		}
+	}
+	for path, afterFile := range after {
+		beforeFile, found := before[path]
+		if !found || !sameWorktreeFile(beforeFile, afterFile) {
+			seen[path] = struct{}{}
+		}
+	}
+	merged := make([]string, 0, len(seen))
+	for path := range seen {
+		merged = append(merged, path)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 // EnsureUnchanged verifies the complete repository fingerprint before the next

@@ -72,6 +72,34 @@ func TestObserveAgentCallPreservesExecutorAllowedWorkAndRestoresProtectedFile(t 
 	}
 }
 
+func TestObserveAgentCallRestoresNormalizedProtectedBytes(t *testing.T) {
+	for _, test := range []struct {
+		name, attribute string
+		configure       func(*testing.T, string)
+	}{
+		{"autocrlf", "protected.txt text\n", func(t *testing.T, r string) { runSnapshotGit(t, r, "config", "core.autocrlf", "true") }},
+		{"clean filter", "protected.txt filter=stepan\n", func(t *testing.T, r string) {
+			runSnapshotGit(t, r, "config", "filter.stepan.clean", "tr -d '\\r'")
+			runSnapshotGit(t, r, "config", "filter.stepan.smudge", "cat")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newSnapshotRepository(t)
+			test.configure(t, repository)
+			writeAgentFile(t, repository, ".gitattributes", test.attribute)
+			writeAgentFile(t, repository, "protected.txt", "before\r\n")
+			runSnapshotGit(t, repository, "add", ".gitattributes", "protected.txt")
+			runSnapshotGit(t, repository, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "filtered")
+			run, journal := newAgentCallRun(t)
+			outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{Role: AgentRoleExecutor, CallID: test.name, AllowUnprotected: true, ProtectedPaths: []string{"protected.txt"}}, run, journal, func() error { writeAgentFile(t, repository, "protected.txt", "agent\n"); return nil })
+			if err != nil || outcome.Disposition != CallRetry {
+				t.Fatalf("outcome=%#v err=%v", outcome, err)
+			}
+			assertAgentFile(t, repository, "protected.txt", "before\r\n")
+		})
+	}
+}
+
 func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *testing.T) {
 	repository := newSnapshotRepository(t)
 	run, journal := newAgentCallRun(t)
