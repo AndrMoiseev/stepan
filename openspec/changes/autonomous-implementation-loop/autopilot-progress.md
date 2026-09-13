@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 28/65 tasks accepted; task 7.1 correcting after initial review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.1 correction cycle 1; final review `not_started`.
+- Outcome: `in_progress`; 29/65 tasks accepted and task 7.2 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.2 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -107,6 +107,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Correction cycle 1 commit verified: `d759cbe918e9dbc87718789a3c8804ed743fbf0b`; rereview pending with `/root/review_7_1`. Completed correction cycles remain 0 until response. This post-commit checkpoint is an uncommitted planning record.
 - Rereview cycle 1 resolved `SPEC-7.1-001`; `SPEC-7.1-002` remains because validators accept non-placeholder fields from other actions and bootstrap configuration proposals allow only one of the two required levels. No new findings. Completed correction cycles: 1. Checkbox reopened; review `correcting`; next correction cycle 2 with the same pair.
 - Correction cycle 2 frozen candidate defines a closed set of normalized semantic fields for every response kind and rejects any populated field outside it before required-field validation. Bootstrap configuration proposals now require explicit nonblank user and project representations plus explanation; tests reject extraneous scalar/slice fields and either one-sided proposal while preserving meaningful valid fixtures. Implementer focused/full tests, Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview. Next: separate correction commit and same reviewer.
+- Correction cycle 2 commit verified: `4210284aa673be6ba42419833a5a4dee091f689b`; rereview pending with `/root/review_7_1`. Completed correction cycles remain 1 until response. This post-commit checkpoint is an uncommitted planning record.
+- Rereview cycle 2 PASS: `SPEC-7.1-001` and `SPEC-7.1-002` resolved; no remaining/new critical findings and no technical debt. Task 7.1 accepted after two completed correction cycles; next task 7.2.
+
+### 7.2 — role instructions and initial context assembly
+
+- Base: `4210284aa673be6ba42419833a5a4dee091f689b`; dependency 7.1 accepted.
+- Acceptance: tasks.md 7.2; provide self-contained implementer/reviewer briefs, progressive-disclosure rules index, orchestrator context, and independent final-review context while excluding full specification from implementers and round history from final reviewers.
+- Implementer: `/root/implement_7_2` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds typed role contexts and instructions, a repository-relative validated Markdown rules index, shared assignment brief/check catalog context, orchestrator OpenSpec/task/run summaries, and final-review full-spec/rules/final-diff context with no review history. Thread configuration binds the selected immutable response schema. No manual check.
+- Implementer focused contract tests and `go test ./... -count=1 -timeout 9m` passed (slowest `impl_loop` 132.539s), plus Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`. The tracked cross-build artifact will be restored before commit. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
