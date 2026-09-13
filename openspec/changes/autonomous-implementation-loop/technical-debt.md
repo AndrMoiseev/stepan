@@ -99,3 +99,13 @@
 - Expected impact: downstream orchestration may record an ordinary runtime shutdown as an operator interruption and select the wrong recovery reason.
 - Classification: technical debt because the result depends on a narrow timing interleaving and neither an explicit deterministic-close guarantee nor evidence of a serious highly likely typical-use failure was established.
 - Possible follow-up: classify cancellation with priority `interrupted` then `closed`, and add a deterministic active-turn `Close()` regression.
+
+## TD-6.4-001 — Nessy production write-policy wiring lacks integration coverage
+
+- Origin: task 6.4 initial review; affected locations: `internal/agentruntime/nessyapp/thread.go`, `preflight.go`, `conformance_test.go`, and `permissions_test.go`.
+- Status: `open`.
+- Potential problem: conformance exercises the file policy directly and the two-session regression manually configures it, so a future regression in the production `StartThread` → process → connection handoff could escape those tests.
+- Evidence: changing the `WorkspaceWriteAllowed` value passed by `thread.go` would not fail the new direct policy tests, although a real write-enabled session could become read-only or vice versa.
+- Expected impact: reduced regression protection for the authority handoff and session correlation, including the separately preserved authorization environment.
+- Classification: technical debt because current production wiring is correct by inspection, local permission correlation and connection isolation are tested, and real-provider smoke is explicitly deferred to task 14.3.
+- Possible follow-up: add a fake-ACP integration test creating writer and reader threads through `Runtime.StartThread`, driving real permission requests, and checking correlation, ArtifactRoot separation, and authorization environment preservation.
