@@ -20,11 +20,11 @@ func CheckWorkspaceBeforeOperation(ctx context.Context, repository string, expec
 		return errors.New("implementation run is required")
 	}
 	if err := gitsnapshot.EnsureUnchanged(ctx, repository, expected); err != nil {
-		if !errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
-			return fmt.Errorf("verify working copy: %w", err)
-		}
 		if pauseErr := run.Pause(unexpectedWorkspaceChangePauseReason); pauseErr != nil {
 			return fmt.Errorf("pause after unexpected working copy change: %w", pauseErr)
+		}
+		if !errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
+			return fmt.Errorf("verify working copy: %w", err)
 		}
 		return gitsnapshot.ErrRepositoryDiverged
 	}

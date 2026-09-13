@@ -208,10 +208,15 @@ func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expected := mustCapture(t, repo)
-	write(t, filepath.Join(repo, "nested", "tracked.txt"), "manual edit\n")
-	if err := EnsureUnchanged(context.Background(), repo, expected); !errors.Is(err, ErrRepositoryDiverged) {
+	clean := mustCapture(t, repo)
+	write(t, filepath.Join(repo, "nested", "tracked.txt"), "first manual edit\n")
+	if err := EnsureUnchanged(context.Background(), repo, clean); !errors.Is(err, ErrRepositoryDiverged) {
 		t.Fatalf("error = %v", err)
+	}
+	expected := mustCapture(t, repo)
+	write(t, filepath.Join(repo, "nested", "tracked.txt"), "second manual edit\n")
+	if err := EnsureUnchanged(context.Background(), repo, expected); !errors.Is(err, ErrRepositoryDiverged) {
+		t.Fatalf("dirty submodule mutation error = %v", err)
 	}
 
 	after := mustCapture(t, repo)
@@ -219,8 +224,73 @@ func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(difference.Paths) != 0 || !difference.StatusChanged || difference.HeadChanged || difference.IndexChanged {
+	if len(difference.Paths) != 0 || difference.StatusChanged || !difference.SubmodulesChanged || difference.HeadChanged || difference.HeadRefChanged || difference.IndexChanged {
 		t.Fatalf("difference = %+v", difference)
+	}
+}
+
+func TestCaptureFingerprintsSymbolicHEAD(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*testing.T, string)
+	}{
+		{"same OID branch switch", func(t *testing.T, repo string) {
+			runGit(t, repo, "checkout", "--quiet", "-b", "same-oid")
+		}},
+		{"same OID detach", func(t *testing.T, repo string) {
+			runGit(t, repo, "checkout", "--quiet", "--detach")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newRepository(t)
+			before := mustCapture(t, repo)
+			test.change(t, repo)
+			after := mustCapture(t, repo)
+			if before.HeadOID != after.HeadOID || before.HeadRef == after.HeadRef {
+				t.Fatalf("before = %+v, after = %+v", before, after)
+			}
+			if err := EnsureUnchanged(context.Background(), repo, before); !errors.Is(err, ErrRepositoryDiverged) {
+				t.Fatalf("EnsureUnchanged() error = %v", err)
+			}
+			difference, err := Diff(context.Background(), repo, before, after)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if difference.HeadChanged || !difference.HeadRefChanged || difference.IndexChanged || difference.StatusChanged || difference.SubmodulesChanged || len(difference.Paths) != 0 {
+				t.Fatalf("difference = %+v", difference)
+			}
+			if _, err := Compare(context.Background(), repo, before, after); !errors.Is(err, ErrRepositoryDiverged) {
+				t.Fatalf("Compare() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCaptureUsesGitRootForSubdirectory(t *testing.T) {
+	repo := newRepository(t)
+	subdirectory := filepath.Join(repo, "nested", "directory")
+	if err := os.MkdirAll(subdirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(repo, "outside.txt"), "before operation\n")
+	fromRoot := mustCapture(t, repo)
+	fromSubdirectory := mustCapture(t, subdirectory)
+	if fromRoot != fromSubdirectory {
+		t.Fatalf("root snapshot = %+v, subdirectory snapshot = %+v", fromRoot, fromSubdirectory)
+	}
+
+	write(t, filepath.Join(repo, "outside.txt"), "changed during operation\n")
+	after := mustCapture(t, subdirectory)
+	difference, err := Diff(context.Background(), subdirectory, fromSubdirectory, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"outside.txt"}; !reflect.DeepEqual(difference.Paths, want) {
+		t.Fatalf("paths = %q, want %q", difference.Paths, want)
+	}
+	if err := EnsureUnchanged(context.Background(), subdirectory, fromSubdirectory); !errors.Is(err, ErrRepositoryDiverged) {
+		t.Fatalf("EnsureUnchanged() error = %v", err)
 	}
 }
 

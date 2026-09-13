@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
@@ -35,6 +36,12 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 			runSnapshotGit(t, repository, "add", "tracked.txt")
 			runSnapshotGit(t, repository, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "unexpected")
 		}},
+		{"same OID branch switch", func(t *testing.T, repository string) {
+			runSnapshotGit(t, repository, "checkout", "--quiet", "-b", "same-oid")
+		}},
+		{"same OID detach", func(t *testing.T, repository string) {
+			runSnapshotGit(t, repository, "checkout", "--quiet", "--detach")
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -58,6 +65,29 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 	}
 }
 
+func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing.T) {
+	repository := newSnapshotRepository(t)
+	expected, err := gitsnapshot.Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPath := strings.TrimSpace(runSnapshotGitOutput(t, repository, "rev-parse", "--git-path", "index"))
+	if !filepath.IsAbs(indexPath) {
+		indexPath = filepath.Join(repository, indexPath)
+	}
+	if err := os.WriteFile(indexPath, []byte("not a Git index\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := &implementationstate.Run{Status: implementationstate.RunActive}
+	err = CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run)
+	if err == nil || errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
+		t.Fatalf("error = %v, want meaningful verification failure", err)
+	}
+	if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
+		t.Fatalf("run was not paused for unverifiable index: %#v", run)
+	}
+}
+
 func newSnapshotRepository(t *testing.T) string {
 	t.Helper()
 	repository := t.TempDir()
@@ -72,10 +102,17 @@ func newSnapshotRepository(t *testing.T) string {
 
 func runSnapshotGit(t *testing.T, repository string, args ...string) {
 	t.Helper()
+	_ = runSnapshotGitOutput(t, repository, args...)
+}
+
+func runSnapshotGitOutput(t *testing.T, repository string, args ...string) string {
+	t.Helper()
 	command := exec.Command("git", args...)
 	command.Dir = repository
 	command.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0")
-	if output, err := command.CombinedOutput(); err != nil {
+	output, err := command.CombinedOutput()
+	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, output)
 	}
+	return string(output)
 }
