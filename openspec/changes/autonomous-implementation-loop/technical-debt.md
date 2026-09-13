@@ -119,3 +119,13 @@
 - Expected impact: a future role addition could be validated without runtime preflight or required at runtime without being accepted by configuration.
 - Classification: technical debt because the lists currently agree and no present behavior is broken.
 - Possible follow-up: expose an immutable copy of one canonical role list and use it in both stages.
+
+## TD-6.5-002 — Nessy preflight defers envelope-schema validation
+
+- Origin: task 6.5 rereview cycle 1; affected locations: `internal/agentruntime/nessyapp/config.go`, `runtime.go`, and `internal/implementationruntime/factories.go`.
+- Status: `open`.
+- Potential problem: Nessy `ValidateRuntimeConfig` omits `EnvelopeSchema`, although `StartRuntime` later validates it.
+- Evidence: with an installed CLI and otherwise valid configuration, an empty or malformed controller-owned schema can pass role preparation and fail only when `PreparedRole.Start` creates the runtime.
+- Expected impact: a configuration error may be discovered after the intended all-role preflight rather than before implementation starts.
+- Classification: technical debt because the envelope schema is controller-owned and response-schema integration is scheduled in later tasks; no ordinary user configuration currently supplies this value.
+- Possible follow-up: reuse full schema-object validation in `ValidateRuntimeConfig` and cover malformed and empty envelope schemas.

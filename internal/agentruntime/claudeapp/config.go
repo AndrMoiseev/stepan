@@ -80,8 +80,8 @@ func ValidateRuntimeConfig(config Config) error {
 }
 
 func supportedReasoning(value string) bool {
-	switch value {
-	case "low", "medium", "high", "max":
+	switch claudecode.EffortLevel(value) {
+	case claudecode.EffortLow, claudecode.EffortMedium, claudecode.EffortHigh, claudecode.EffortXHigh, claudecode.EffortMax:
 		return true
 	default:
 		return false
