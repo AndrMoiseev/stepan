@@ -107,6 +107,14 @@ type CheckResultReporter interface {
 	ReportCheck(context.Context, string, checkexec.Command, checkexec.Result, time.Duration) (CheckPresentation, error)
 }
 
+// CheckLifecycleReporter optionally observes the workspace immediately before
+// a configured command starts.  The optional boundary keeps the basic check
+// runner small while allowing the controller to attribute generator and build
+// side effects to the assignment that requested them.
+type CheckLifecycleReporter interface {
+	BeforeCheck(context.Context, string, checkexec.Command) error
+}
+
 // RunRequestedChecks rejects every unknown name before starting a command, then
 // runs exactly the supplied configured names in exactly that order. It accepts
 // additional checks as well as required checks and intentionally does not sort
@@ -165,6 +173,13 @@ func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementatio
 		}
 
 		command := checkCommand(check)
+		if lifecycle, ok := reporter.(CheckLifecycleReporter); ok {
+			if err := lifecycle.BeforeCheck(ctx, name, command); err != nil {
+				set.Results[index] = CheckSetResult{Name: name, Status: CheckFailed, Command: command, Err: err}
+				markNotRun(set.Results[index+1:])
+				return set, err
+			}
+		}
 		started := time.Now()
 		result, err := runner.RunCheck(ctx, command)
 		duration := time.Since(started)
@@ -180,10 +195,13 @@ func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementatio
 			persistenceContext, cancelPersistence := context.WithTimeout(context.Background(), checkResultPersistenceTimeout)
 			presentation, reportErr := reporter.ReportCheck(persistenceContext, name, command, result, duration)
 			cancelPersistence()
+			set.Results[index].Presentation = &presentation
 			if reportErr != nil {
+				set.Results[index].Status = CheckFailed
+				set.Results[index].Err = reportErr
+				markNotRun(set.Results[index+1:])
 				return set, fmt.Errorf("persist check %q result: %w", name, reportErr)
 			}
-			set.Results[index].Presentation = &presentation
 		}
 		if set.Results[index].Status != CheckSucceeded {
 			markNotRun(set.Results[index+1:])
