@@ -1,0 +1,216 @@
+package impl_loop
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"sync"
+	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+)
+
+func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
+	factory := &sessionRuntimeFactory{}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+
+	orchestrator, err := owner.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same, err := owner.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); err != nil || same != orchestrator {
+		t.Fatalf("orchestrator session = %p, %v; want continued %p", same, err, orchestrator)
+	}
+
+	assignmentA := implementationstate.AssignmentID("assignment-a")
+	brieferA, err := owner.Assignment(context.Background(), assignmentA, ResponseRoleBriefer, sessionStartContext(t, ResponseRoleBriefer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementerA, err := owner.Assignment(context.Background(), assignmentA, ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewerA, err := owner.Assignment(context.Background(), assignmentA, ResponseRoleTaskReviewer, sessionStartContext(t, ResponseRoleTaskReviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if brieferA == implementerA || implementerA == reviewerA || brieferA == reviewerA {
+		t.Fatal("assignment roles unexpectedly share one session")
+	}
+	if _, err := implementerA.RunTurn("implement"); err != nil {
+		t.Fatal(err)
+	}
+	explorerOne, err := owner.Explorer(context.Background(), sessionStartContext(t, ResponseRoleExplorer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := explorerOne.RunTurn("research"); err != nil {
+		t.Fatal(err)
+	}
+	if same, err := owner.Assignment(context.Background(), assignmentA, ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer)); err != nil || same != implementerA {
+		t.Fatalf("implementer after explorer = %p, %v; want continued %p", same, err, implementerA)
+	}
+	if _, err := implementerA.RunTurn("apply research result"); err != nil {
+		t.Fatal(err)
+	}
+	explorerTwo, err := owner.Explorer(context.Background(), sessionStartContext(t, ResponseRoleExplorer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explorerTwo == explorerOne {
+		t.Fatal("two Explorer requests reused a session")
+	}
+
+	finalOne, err := owner.FinalReviewer(context.Background(), "round-1", sessionStartContext(t, ResponseRoleFinalReviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same, err := owner.FinalReviewer(context.Background(), "round-1", sessionStartContext(t, ResponseRoleFinalReviewer)); err != nil || same != finalOne {
+		t.Fatalf("final-review round session = %p, %v; want continued %p", same, err, finalOne)
+	}
+	if next, err := owner.FinalReviewer(context.Background(), "round-2", sessionStartContext(t, ResponseRoleFinalReviewer)); err != nil || next == finalOne {
+		t.Fatalf("next final-review round = %p, %v; want fresh session", next, err)
+	}
+
+	assignmentB := implementationstate.AssignmentID("assignment-b")
+	for _, role := range []ResponseRole{ResponseRoleBriefer, ResponseRoleImplementer, ResponseRoleTaskReviewer} {
+		next, err := owner.Assignment(context.Background(), assignmentB, role, sessionStartContext(t, role))
+		if err != nil {
+			t.Fatal(err)
+		}
+		previous := map[ResponseRole]*AgentSession{ResponseRoleBriefer: brieferA, ResponseRoleImplementer: implementerA, ResponseRoleTaskReviewer: reviewerA}[role]
+		if next == previous {
+			t.Fatalf("next assignment reused %s session", role)
+		}
+	}
+
+	if got := factory.turns(implementerA); got != 2 {
+		t.Fatalf("implementer turns = %d, want continuation with 2 turns", got)
+	}
+	for _, config := range factory.configurations() {
+		role := roleFromBootstrap(config.BootstrapInstructions)
+		wantWrite := role == ResponseRoleOrchestrator || role == ResponseRoleImplementer
+		if config.WorkspaceWriteAllowed != wantWrite {
+			t.Fatalf("%s workspace write = %t, want %t", role, config.WorkspaceWriteAllowed, wantWrite)
+		}
+	}
+}
+
+func TestSessionOwnerRejectsInvalidScopesAndClosedOwner(t *testing.T) {
+	factory := &sessionRuntimeFactory{}
+	owner := newSessionOwnerForTest(t, factory)
+	if _, err := owner.Assignment(context.Background(), "", ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer)); err == nil {
+		t.Fatal("empty assignment ID was accepted")
+	}
+	if _, err := owner.Assignment(context.Background(), "assignment", ResponseRoleExplorer, sessionStartContext(t, ResponseRoleExplorer)); err == nil {
+		t.Fatal("Explorer was accepted as an assignment session")
+	}
+	if _, err := owner.FinalReviewer(context.Background(), "", sessionStartContext(t, ResponseRoleFinalReviewer)); err == nil {
+		t.Fatal("empty final-review round was accepted")
+	}
+	if _, err := owner.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleBriefer)); err == nil {
+		t.Fatal("mismatched role context was accepted")
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := owner.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); !errors.Is(err, ErrSessionOwnerClosed) {
+		t.Fatalf("closed owner error = %v", err)
+	}
+}
+
+func newSessionOwnerForTest(t *testing.T, factory RuntimeFactory) *SessionOwner {
+	t.Helper()
+	roles := make(map[string]PreparedRole, len(loopRuntimeRoles))
+	for _, role := range loopRuntimeRoles {
+		roles[role] = PreparedRole{Role: role, Profile: implementationconfig.RuntimeProfile{Name: role}, Factory: factory}
+	}
+	owner, err := NewSessionOwner(PreparedRuntimes{roles: roles}, agentruntime.ThreadConfig{Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return owner
+}
+
+func sessionStartContext(t *testing.T, role ResponseRole) RoleStartContext {
+	t.Helper()
+	start, err := newRoleStartContext(role, "session owner test context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return start
+}
+
+type sessionRuntimeFactory struct {
+	mu       sync.Mutex
+	runtimes []*sessionRuntime
+}
+
+func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error {
+	return nil
+}
+
+func (factory *sessionRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+	runtime := &sessionRuntime{}
+	factory.mu.Lock()
+	factory.runtimes = append(factory.runtimes, runtime)
+	factory.mu.Unlock()
+	return runtime, nil
+}
+
+func (factory *sessionRuntimeFactory) configurations() []agentruntime.ThreadConfig {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	var configurations []agentruntime.ThreadConfig
+	for _, runtime := range factory.runtimes {
+		configurations = append(configurations, runtime.configurations...)
+	}
+	return configurations
+}
+
+func (factory *sessionRuntimeFactory) turns(session *AgentSession) int {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	for _, runtime := range factory.runtimes {
+		if runtime == session.runtime {
+			return runtime.turnCount
+		}
+	}
+	return 0
+}
+
+type sessionRuntime struct {
+	configurations []agentruntime.ThreadConfig
+	turnCount      int
+}
+
+func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	runtime.configurations = append(runtime.configurations, config.Clone())
+	return len(runtime.configurations), nil
+}
+
+func (runtime *sessionRuntime) RunTurn(agentruntime.Thread, string) (json.RawMessage, error) {
+	runtime.turnCount++
+	return json.RawMessage(`{"kind":"implementation_ready"}`), nil
+}
+
+func (runtime *sessionRuntime) CloseThread(agentruntime.Thread) error { return nil }
+func (runtime *sessionRuntime) Interrupt() error                      { return nil }
+func (runtime *sessionRuntime) Close() error                          { return nil }
+
+func roleFromBootstrap(instructions string) ResponseRole {
+	for _, role := range []ResponseRole{
+		ResponseRoleOrchestrator, ResponseRoleBriefer, ResponseRoleImplementer, ResponseRoleTaskReviewer,
+		ResponseRoleExplorer, ResponseRoleFinalReviewer,
+	} {
+		roleInstructions, _ := RoleInstructions(role)
+		if len(roleInstructions) > 0 && len(instructions) >= len(roleInstructions) && instructions[:len(roleInstructions)] == roleInstructions {
+			return role
+		}
+	}
+	return "unknown"
+}

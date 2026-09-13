@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 29/65 tasks accepted; task 7.2 correcting after initial review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.2 correction cycle 1; final review `not_started`.
+- Outcome: `in_progress`; 30/65 tasks accepted and task 7.3 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.3 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -120,6 +120,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementation commit verified: `7722c4ebbaf2d4bce33d57b0e358d1660963da86`; initial independent review pending. This post-commit checkpoint is an uncommitted planning record.
 - Initial review by `/root/review_7_2` returned FAIL on critical `SPEC-7.2-001` through `SPEC-7.2-003`: start messages omit the mandatory rules entry content, orchestrator instructions incorrectly route tasks.md edits through the controller instead of granting the required direct selected-file edit, and role instructions omit the flat placeholder/per-kind response protocol needed to avoid typical semantic-binding failures. No technical debt. Checkbox reopened; review `correcting`; correction cycle 1 assigned to the same pair; completed correction cycles: 0.
 - Correction cycle 1 frozen candidate carries the current rules entry content and path in start messages while linked Markdown bodies remain indexed only; grants the orchestrator direct edit access only to the selected change's tasks.md; and renders exact role-specific flat transport placeholders, allowed kinds, required semantic fields, and parallel-array constraints. Contract tests prove unique entry content is embedded, nested content omitted, file authority bounded, and representative executor/reviewer/escalation/orchestrator protocols documented. Implementer focused/full tests, Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Checkbox complete; review `awaiting_review`; completed correction cycles remain 0 until rereview. Next: correction commit and same reviewer.
+- Correction cycle 1 commit verified: `8ff8dd205f9fac71c7ab519d5624e20a98ea3483`; rereview pending with `/root/review_7_2`. Completed correction cycles remain 0 until response. This post-commit checkpoint is an uncommitted planning record.
+- Rereview cycle 1 PASS: `SPEC-7.2-001` through `SPEC-7.2-003` resolved; no remaining/new critical findings and no technical debt. Task 7.2 accepted after one completed correction cycle; next task 7.3.
+
+### 7.3 — agent session ownership
+
+- Base: `8ff8dd205f9fac71c7ab519d5624e20a98ea3483`; dependency 7.2 accepted.
+- Acceptance: tasks.md 7.3; own an orchestrator session for the running process, assignment-scoped briefer/implementer/reviewer sessions, request-scoped Explorer sessions, and round-scoped final reviewer sessions; preserve source sessions after auxiliary work and create fresh sessions for the next unit.
+- Implementer: `/root/implement_7_3` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds `SessionOwner` with role/scope keyed session reuse and fresh Explorer requests. Tests cover orchestrator reuse, same-assignment reuse, assignment rollover, final-round rollover, auxiliary Explorer continuation, schema/context propagation, and write authority only for orchestrator/implementer. Restart creates a new owner and therefore fresh provider sessions. No manual check.
+- Implementer focused `impl_loop` tests, `go test ./... -count=1 -timeout 9m`, Windows build, and `git diff --check` passed. No provider/platform code changed, so task-specific cross-build was not required. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
