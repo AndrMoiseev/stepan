@@ -229,6 +229,36 @@ func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
 	}
 }
 
+func TestCaptureNestedSubmodulesUsesLinearGitCalls(t *testing.T) {
+	const depth = 4
+	repository := nestedRepositoryChain(t, depth)
+	var calls int
+	replaceBeforeGitCommandHook(t, func() { calls++ })
+	mustCapture(t, repository)
+
+	// Each hierarchy pass performs a fixed number of Git calls per populated
+	// repository. The old recurrence grew exponentially at this depth.
+	if limit := 25*depth + 2; calls > limit {
+		t.Fatalf("git calls = %d, want at most %d for depth %d", calls, limit, depth)
+	}
+}
+
+func TestCaptureRejectsCanonicalSubmoduleCycle(t *testing.T) {
+	repository := newRepository(t)
+	root, err := repositoryRoot(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaceFindPopulatedSubmodules(t, func(context.Context, string) ([]populatedSubmodule, error) {
+		return []populatedSubmodule{{path: "cycle", root: root}}, nil
+	})
+	_, err = Capture(context.Background(), repository)
+	var cycle *SubmoduleCycleError
+	if !errors.As(err, &cycle) || !errors.Is(err, ErrSubmoduleCycle) || cycle.Root != root {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCaptureFingerprintsSymbolicHEAD(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -458,6 +488,39 @@ func newRepository(t *testing.T) string {
 		t.Fatalf("git commit: %v: %s", err, output)
 	}
 	return repo
+}
+
+func nestedRepositoryChain(t *testing.T, depth int) string {
+	t.Helper()
+	if depth < 1 {
+		t.Fatal("nested repository depth must be positive")
+	}
+	repository := newRepository(t)
+	for level := 1; level < depth; level++ {
+		parent := newRepository(t)
+		childHead := strings.TrimSpace(runGit(t, repository, "rev-parse", "HEAD"))
+		runGit(t, parent, "update-index", "--add", "--cacheinfo", "160000,"+childHead+",nested")
+		runGit(t, parent, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "add nested repository")
+		if err := os.Rename(repository, filepath.Join(parent, "nested")); err != nil {
+			t.Fatal(err)
+		}
+		repository = parent
+	}
+	return repository
+}
+
+func replaceBeforeGitCommandHook(t *testing.T, replacement func()) {
+	t.Helper()
+	original := beforeGitCommandHook
+	beforeGitCommandHook = replacement
+	t.Cleanup(func() { beforeGitCommandHook = original })
+}
+
+func replaceFindPopulatedSubmodules(t *testing.T, replacement func(context.Context, string) ([]populatedSubmodule, error)) {
+	t.Helper()
+	original := findPopulatedSubmodules
+	findPopulatedSubmodules = replacement
+	t.Cleanup(func() { findPopulatedSubmodules = original })
 }
 
 func mustCapture(t *testing.T, repo string) Snapshot {

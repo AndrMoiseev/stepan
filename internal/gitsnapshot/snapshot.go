@@ -14,6 +14,19 @@ import (
 
 var ErrRepositoryDiverged = errors.New("REPOSITORY_DIVERGED")
 var ErrOutsideBoundary = errors.New("changes outside allowed root")
+var ErrSubmoduleCycle = errors.New("submodule worktree cycle")
+
+// SubmoduleCycleError reports a repeated canonical repository root while a
+// populated submodule hierarchy is being fingerprinted.
+type SubmoduleCycleError struct {
+	Root string
+}
+
+func (err *SubmoduleCycleError) Error() string {
+	return fmt.Sprintf("%v: %s", ErrSubmoduleCycle, err.Root)
+}
+
+func (err *SubmoduleCycleError) Unwrap() error { return ErrSubmoduleCycle }
 
 type Snapshot struct {
 	HeadOID        string `json:"head_oid"`
@@ -54,6 +67,16 @@ type repositoryState struct {
 	indexExists bool
 	status      []byte
 }
+
+type populatedSubmodule struct {
+	path string
+	root string
+}
+
+var (
+	findPopulatedSubmodules = populatedSubmodules
+	beforeGitCommandHook    func()
+)
 
 func Capture(ctx context.Context, repository string) (Snapshot, error) {
 	return capture(ctx, repository, nil)
@@ -187,11 +210,71 @@ func capture(ctx context.Context, repository string, betweenCaptures func() erro
 	if err != nil {
 		return Snapshot{}, err
 	}
-	before, err := readState(ctx, root)
+	before, err := captureHierarchy(ctx, root, make(map[string]bool), make(map[string]Snapshot))
 	if err != nil {
 		return Snapshot{}, err
 	}
-	beforeSubmodules, err := captureSubmodules(ctx, root)
+	if betweenCaptures != nil {
+		if err := betweenCaptures(); err != nil {
+			return Snapshot{}, err
+		}
+	}
+	after, err := captureHierarchy(ctx, root, make(map[string]bool), make(map[string]Snapshot))
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if before != after {
+		return Snapshot{}, ErrRepositoryDiverged
+	}
+	return before, nil
+}
+
+// captureHierarchy takes one complete, depth-first fingerprint of a populated
+// submodule tree. Capture invokes it twice, so each repository is visited once
+// per pass rather than recursively recapturing each descendant at every level.
+func captureHierarchy(ctx context.Context, repository string, active map[string]bool, visited map[string]Snapshot) (Snapshot, error) {
+	root, err := repositoryRoot(ctx, repository)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if active[root] {
+		return Snapshot{}, &SubmoduleCycleError{Root: root}
+	}
+	if snapshot, ok := visited[root]; ok {
+		return snapshot, nil
+	}
+	active[root] = true
+	defer delete(active, root)
+
+	snapshot, err := captureLocal(ctx, root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	children, err := findPopulatedSubmodules(ctx, root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	hash := sha256.New()
+	for _, child := range children {
+		if active[child.root] {
+			return Snapshot{}, &SubmoduleCycleError{Root: child.root}
+		}
+		childSnapshot, err := captureHierarchy(ctx, child.root, active, visited)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("capture submodule %q: %w", child.path, err)
+		}
+		writeSnapshotFingerprint(hash, child.path, childSnapshot)
+	}
+	snapshot.SubmodulesHash = fmt.Sprintf("%x", hash.Sum(nil))
+	visited[root] = snapshot
+	return snapshot, nil
+}
+
+// captureLocal fingerprints one repository without descending into its
+// submodules. capture compares two complete hierarchy observations, so every
+// local fingerprint participates in both linear passes.
+func captureLocal(ctx context.Context, repository string) (Snapshot, error) {
+	before, err := readState(ctx, repository)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -201,47 +284,23 @@ func capture(ctx context.Context, repository string, betweenCaptures func() erro
 	}
 	defer os.RemoveAll(tempDir)
 	index := filepath.Join(tempDir, "index")
-	captureTree := func() ([]byte, error) {
-		// Reset stat data so same-size/timestamp changes are hashed again.
-		if _, err := git(ctx, root, index, "read-tree", before.head); err != nil {
-			return nil, err
-		}
-		if _, err := git(ctx, root, index, "add", "-A", "--", "."); err != nil {
-			return nil, err
-		}
-		return git(ctx, root, index, "write-tree")
-	}
-	tree, err := captureTree()
-	if err != nil {
+	// Reset stat data so same-size/timestamp changes are hashed again.
+	if _, err := git(ctx, repository, index, "read-tree", before.head); err != nil {
 		return Snapshot{}, err
 	}
-	if betweenCaptures != nil {
-		if err := betweenCaptures(); err != nil {
-			return Snapshot{}, err
-		}
-	}
-	confirmedTree, err := captureTree()
-	if err != nil {
+	if _, err := git(ctx, repository, index, "add", "-A", "--", "."); err != nil {
 		return Snapshot{}, err
 	}
-	after, err := readState(ctx, root)
+	tree, err := git(ctx, repository, index, "write-tree")
 	if err != nil {
 		return Snapshot{}, err
-	}
-	afterSubmodules, err := captureSubmodules(ctx, root)
-	if err != nil {
-		return Snapshot{}, err
-	}
-	if !bytes.Equal(tree, confirmedTree) || before.head != after.head || before.headRef != after.headRef || before.indexExists != after.indexExists || !bytes.Equal(before.index, after.index) || !bytes.Equal(before.status, after.status) || beforeSubmodules != afterSubmodules {
-		return Snapshot{}, ErrRepositoryDiverged
 	}
 	return Snapshot{
-		HeadOID:        before.head,
-		HeadRef:        before.headRef,
-		TreeOID:        strings.TrimSpace(string(confirmedTree)),
-		IndexHash:      hashIndex(before.index, before.indexExists),
-		StatusHash:     hashStatus(before.status),
-		SubmodulesHash: beforeSubmodules,
+		HeadOID:    before.head,
+		HeadRef:    before.headRef,
+		TreeOID:    strings.TrimSpace(string(tree)),
+		IndexHash:  hashIndex(before.index, before.indexExists),
+		StatusHash: hashStatus(before.status),
 	}, nil
 }
 
@@ -284,15 +343,15 @@ func repositoryRoot(ctx context.Context, repository string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-// captureSubmodules recursively fingerprints every populated submodule. A
-// superproject's status only records that a submodule is dirty; it cannot
-// distinguish two different dirty states inside that submodule.
-func captureSubmodules(ctx context.Context, repository string) (string, error) {
+// populatedSubmodules lists populated direct submodules. A superproject's
+// status only records that a submodule is dirty; hierarchy capture supplies
+// the distinct recursive fingerprints.
+func populatedSubmodules(ctx context.Context, repository string) ([]populatedSubmodule, error) {
 	entries, err := git(ctx, repository, "", "ls-files", "--stage", "-z")
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	hash := sha256.New()
+	children := make([]populatedSubmodule, 0)
 	for _, entry := range bytes.Split(entries, []byte{0}) {
 		if len(entry) == 0 {
 			continue
@@ -303,7 +362,7 @@ func captureSubmodules(ctx context.Context, repository string) (string, error) {
 		}
 		path, err := normalizeRelativePath(string(fields[1]))
 		if err != nil {
-			return "", fmt.Errorf("invalid submodule path %q: %w", fields[1], err)
+			return nil, fmt.Errorf("invalid submodule path %q: %w", fields[1], err)
 		}
 		child := filepath.Join(repository, filepath.FromSlash(path))
 		childRoot, err := repositoryRoot(ctx, child)
@@ -313,31 +372,21 @@ func captureSubmodules(ctx context.Context, repository string) (string, error) {
 		}
 		canonicalChild, err := filepath.EvalSymlinks(child)
 		if err != nil {
-			return "", fmt.Errorf("canonicalize submodule %q: %w", path, err)
+			return nil, fmt.Errorf("canonicalize submodule %q: %w", path, err)
 		}
 		if filepath.Clean(canonicalChild) != childRoot {
 			continue
 		}
-		snapshot, err := capture(ctx, childRoot, nil)
-		if err != nil {
-			return "", fmt.Errorf("capture submodule %q: %w", path, err)
-		}
-		_, _ = hash.Write([]byte(path))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.HeadOID))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.HeadRef))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.TreeOID))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.IndexHash))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.StatusHash))
-		_, _ = hash.Write([]byte{0})
-		_, _ = hash.Write([]byte(snapshot.SubmodulesHash))
+		children = append(children, populatedSubmodule{path: path, root: childRoot})
+	}
+	return children, nil
+}
+
+func writeSnapshotFingerprint(hash interface{ Write([]byte) (int, error) }, path string, snapshot Snapshot) {
+	for _, value := range []string{path, snapshot.HeadOID, snapshot.HeadRef, snapshot.TreeOID, snapshot.IndexHash, snapshot.StatusHash, snapshot.SubmodulesHash} {
+		_, _ = hash.Write([]byte(value))
 		_, _ = hash.Write([]byte{0})
 	}
-	return fmt.Sprintf("%x", hash.Sum(nil)), nil
 }
 
 func readState(ctx context.Context, repository string) (repositoryState, error) {
@@ -373,6 +422,9 @@ func readState(ctx context.Context, repository string) (repositoryState, error) 
 }
 
 func git(ctx context.Context, repository, index string, args ...string) ([]byte, error) {
+	if beforeGitCommandHook != nil {
+		beforeGitCommandHook()
+	}
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = repository
 	command.Env = gitEnvironment(index)

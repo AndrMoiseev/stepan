@@ -11,6 +11,8 @@ import (
 
 const unexpectedWorkspaceChangePauseReason = "unexpected working copy change between operations"
 
+var ensureWorkspaceUnchanged = gitsnapshot.EnsureUnchanged
+
 // CheckWorkspaceBeforeOperation pauses an active run when the working copy no
 // longer matches the fingerprint accepted after the previous operation. The
 // caller remains responsible for durably recording the mutated run before
@@ -19,7 +21,7 @@ func CheckWorkspaceBeforeOperation(ctx context.Context, repository string, expec
 	if run == nil {
 		return errors.New("implementation run is required")
 	}
-	if err := gitsnapshot.EnsureUnchanged(ctx, repository, expected); err != nil {
+	if err := ensureWorkspaceUnchanged(ctx, repository, expected); err != nil {
 		if pauseErr := run.Pause(unexpectedWorkspaceChangePauseReason); pauseErr != nil {
 			return fmt.Errorf("pause after unexpected working copy change: %w", pauseErr)
 		}
