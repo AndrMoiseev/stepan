@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -71,12 +72,12 @@ func TestCaptureIsStableAndIgnoresIgnoredFiles(t *testing.T) {
 	indexBefore := readIndex(t, repo)
 	first := mustCapture(t, repo)
 	second := mustCapture(t, repo)
-	if first != second {
+	if !sameSnapshot(first, second) {
 		t.Fatalf("snapshots differ: %+v, %+v", first, second)
 	}
 	write(t, filepath.Join(repo, "ignored.tmp"), "ignored\n")
 	third := mustCapture(t, repo)
-	if third != first {
+	if !sameSnapshot(third, first) {
 		t.Fatalf("ignored file changed snapshot: %+v, %+v", first, third)
 	}
 	if !bytes.Equal(indexBefore, readIndex(t, repo)) {
@@ -239,6 +240,66 @@ func TestDiffReportsHeadAndIndexFingerprints(t *testing.T) {
 	})
 }
 
+func TestRestorePathsPreservesExactBytesAcrossGitFilters(t *testing.T) {
+	repository := newRepository(t)
+	runGit(t, repository, "config", "core.autocrlf", "true")
+	runGit(t, repository, "config", "filter.stepan.clean", "tr -d '\\r'")
+	runGit(t, repository, "config", "filter.stepan.smudge", "cat")
+	write(t, filepath.Join(repository, ".gitattributes"), "crlf.txt text\nfiltered.txt filter=stepan\n")
+	write(t, filepath.Join(repository, "crlf.txt"), "crlf before\r\n")
+	write(t, filepath.Join(repository, "filtered.txt"), "filter before\r\n")
+	runGit(t, repository, "add", ".gitattributes", "crlf.txt", "filtered.txt")
+	runGit(t, repository, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "filtered baseline")
+
+	before := mustCapture(t, repository)
+	for _, path := range []string{"crlf.txt", "filtered.txt"} {
+		if blob := runGit(t, repository, "show", before.TreeOID+":"+path); strings.Contains(blob, "\r") {
+			t.Fatalf("filtered synthetic blob for %s retained CRLF: %q", path, blob)
+		}
+	}
+	write(t, filepath.Join(repository, "crlf.txt"), "agent changed\n")
+	write(t, filepath.Join(repository, "filtered.txt"), "agent changed\n")
+	after := mustCapture(t, repository)
+	if _, err := RestorePaths(context.Background(), repository, before, after, []string{"crlf.txt", "filtered.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []struct {
+		path, contents string
+	}{{"crlf.txt", "crlf before\r\n"}, {"filtered.txt", "filter before\r\n"}} {
+		contents, err := os.ReadFile(filepath.Join(repository, expected.path))
+		if err != nil || string(contents) != expected.contents {
+			t.Fatalf("restored %s = %q, %v; want exact %q", expected.path, contents, err, expected.contents)
+		}
+	}
+}
+
+func TestRestorePathsRestoresExecutableMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not expose Unix executable mode")
+	}
+	repository := newRepository(t)
+	path := filepath.Join(repository, "executable.sh")
+	write(t, path, "#!/bin/sh\necho before\n")
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repository, "add", "executable.sh")
+	runGit(t, repository, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "executable baseline")
+	before := mustCapture(t, repository)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	write(t, path, "#!/bin/sh\necho changed\n")
+	after := mustCapture(t, repository)
+	if _, err := RestorePaths(context.Background(), repository, before, after, []string{"executable.sh"}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("restored mode = %o, %v; want 755", info.Mode().Perm(), err)
+	}
+}
+
 func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
 	repo := newRepository(t)
 	child := newRepository(t)
@@ -250,6 +311,9 @@ func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
 	}
 
 	clean := mustCapture(t, repo)
+	if _, recordedAsFile := clean.worktreeFiles["nested"]; recordedAsFile {
+		t.Fatal("gitlink was incorrectly recorded as a restorable regular file")
+	}
 	write(t, filepath.Join(repo, "nested", "tracked.txt"), "first manual edit\n")
 	if err := EnsureUnchanged(context.Background(), repo, clean); !errors.Is(err, ErrRepositoryDiverged) {
 		t.Fatalf("error = %v", err)
@@ -347,7 +411,7 @@ func TestCaptureUsesGitRootForSubdirectory(t *testing.T) {
 	write(t, filepath.Join(repo, "outside.txt"), "before operation\n")
 	fromRoot := mustCapture(t, repo)
 	fromSubdirectory := mustCapture(t, subdirectory)
-	if fromRoot != fromSubdirectory {
+	if !sameSnapshot(fromRoot, fromSubdirectory) {
 		t.Fatalf("root snapshot = %+v, subdirectory snapshot = %+v", fromRoot, fromSubdirectory)
 	}
 

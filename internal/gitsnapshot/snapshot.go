@@ -35,6 +35,16 @@ type Snapshot struct {
 	IndexHash      string `json:"index_hash"`
 	StatusHash     string `json:"status_hash"`
 	SubmodulesHash string `json:"submodules_hash"`
+	// worktreeFiles is deliberately not serialized. It is the in-memory,
+	// byte-exact pre-operation material needed only for a targeted rollback.
+	// TreeOID remains the filtered Git-oriented representation used for diffs.
+	worktreeFiles map[string]worktreeFile
+}
+
+type worktreeFile struct {
+	contents []byte
+	mode     os.FileMode
+	regular  bool
 }
 
 // Difference describes every repository dimension changed during one
@@ -152,7 +162,7 @@ func EnsureUnchanged(ctx context.Context, repository string, expected Snapshot) 
 	if err != nil {
 		return err
 	}
-	if actual != expected {
+	if !sameGitSnapshot(actual, expected) {
 		return ErrRepositoryDiverged
 	}
 	return nil
@@ -177,7 +187,7 @@ func RestorePaths(ctx context.Context, repository string, before, expectedCurren
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if current != expectedCurrent {
+	if !sameSnapshot(current, expectedCurrent) {
 		return Snapshot{}, ErrRepositoryDiverged
 	}
 
@@ -191,11 +201,8 @@ func RestorePaths(ctx context.Context, repository string, before, expectedCurren
 			continue
 		}
 		seen[path] = struct{}{}
-		entry, err := treeEntry(ctx, root, before.TreeOID, path)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if err := restorePath(ctx, root, path, entry); err != nil {
+		entry, known := before.worktreeFiles[path]
+		if err := restorePath(root, path, entry, known); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -208,58 +215,18 @@ func RestorePaths(ctx context.Context, repository string, before, expectedCurren
 		return Snapshot{}, ErrRepositoryDiverged
 	}
 	for path := range seen {
-		want, err := treeEntry(ctx, root, before.TreeOID, path)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		got, err := treeEntry(ctx, root, restored.TreeOID, path)
-		if err != nil {
-			return Snapshot{}, err
-		}
-		if !sameTreeFile(want, got) {
+		if !sameWorktreeFile(before.worktreeFiles[path], restored.worktreeFiles[path]) {
 			return Snapshot{}, ErrRepositoryDiverged
 		}
 	}
 	return restored, nil
 }
 
-type treeFile struct {
-	mode string
-	oid  string
-}
-
-func sameTreeFile(left, right *treeFile) bool {
-	if left == nil || right == nil {
-		return left == right
+func restorePath(root, path string, entry worktreeFile, known bool) error {
+	if known && !entry.regular {
+		return fmt.Errorf("%w: pre-call file %q is not a regular file", ErrRestoreUnsafe, path)
 	}
-	return left.mode == right.mode && left.oid == right.oid
-}
-
-func treeEntry(ctx context.Context, repository, tree, path string) (*treeFile, error) {
-	output, err := git(ctx, repository, "", "ls-tree", "-z", tree, "--", path)
-	if err != nil {
-		return nil, err
-	}
-	if len(output) == 0 {
-		return nil, nil
-	}
-	if output[len(output)-1] != 0 {
-		return nil, errors.New("git ls-tree returned a non-NUL-terminated entry")
-	}
-	entry := strings.TrimSuffix(string(output), "\x00")
-	metadata, entryPath, found := strings.Cut(entry, "\t")
-	if !found || filepath.ToSlash(entryPath) != path {
-		return nil, fmt.Errorf("invalid tree entry for %q", path)
-	}
-	fields := strings.Fields(metadata)
-	if len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") {
-		return nil, fmt.Errorf("%w: unsupported tree entry for %q", ErrRestoreUnsafe, path)
-	}
-	return &treeFile{mode: fields[0], oid: fields[2]}, nil
-}
-
-func restorePath(ctx context.Context, root, path string, entry *treeFile) error {
-	target, err := safeRepositoryPath(root, path, entry != nil)
+	target, err := safeRepositoryPath(root, path, entry.regular)
 	if err != nil {
 		return err
 	}
@@ -270,7 +237,7 @@ func restorePath(ctx context.Context, root, path string, entry *treeFile) error 
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("inspect restoration target %q: %w", path, err)
 	}
-	if entry == nil {
+	if !entry.regular {
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -279,25 +246,17 @@ func restorePath(ctx context.Context, root, path string, entry *treeFile) error 
 		}
 		return nil
 	}
-	contents, err := git(ctx, root, "", "cat-file", "-p", entry.oid)
-	if err != nil {
-		return fmt.Errorf("read restoration content for %q: %w", path, err)
-	}
 	temporary, err := os.CreateTemp(filepath.Dir(target), ".stepan-restore-*")
 	if err != nil {
 		return fmt.Errorf("create restoration temporary for %q: %w", path, err)
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
-	permissions := os.FileMode(0o644)
-	if entry.mode == "100755" {
-		permissions = 0o755
-	}
-	if err := temporary.Chmod(permissions); err != nil {
+	if err := temporary.Chmod(entry.mode); err != nil {
 		temporary.Close()
 		return fmt.Errorf("set restoration mode for %q: %w", path, err)
 	}
-	if _, err := temporary.Write(contents); err != nil {
+	if _, err := temporary.Write(entry.contents); err != nil {
 		temporary.Close()
 		return fmt.Errorf("write restoration content for %q: %w", path, err)
 	}
@@ -407,7 +366,7 @@ func capture(ctx context.Context, repository string, betweenCaptures func() erro
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if before != after {
+	if !sameGitSnapshot(before, after) {
 		return Snapshot{}, ErrRepositoryDiverged
 	}
 	return before, nil
@@ -482,13 +441,96 @@ func captureLocal(ctx context.Context, repository string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return Snapshot{
+	snapshot := Snapshot{
 		HeadOID:    before.head,
 		HeadRef:    before.headRef,
 		TreeOID:    strings.TrimSpace(string(tree)),
 		IndexHash:  hashIndex(before.index, before.indexExists),
 		StatusHash: hashStatus(before.status),
-	}, nil
+	}
+	snapshot.worktreeFiles, err = captureWorktreeFiles(ctx, repository, snapshot.TreeOID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
+}
+
+// captureWorktreeFiles records direct bytes from the working tree after the
+// synthetic tree has established the observable path set. In particular, it
+// does not read blobs back through Git: clean filters and line-ending
+// conversion may make those bytes differ from what existed before the call.
+func captureWorktreeFiles(ctx context.Context, repository, tree string) (map[string]worktreeFile, error) {
+	output, err := git(ctx, repository, "", "ls-tree", "-r", "-z", tree)
+	if err != nil {
+		return nil, err
+	}
+	files := make(map[string]worktreeFile)
+	for _, raw := range bytes.Split(output, []byte{0}) {
+		if len(raw) == 0 {
+			continue
+		}
+		metadata, rawPath, found := bytes.Cut(raw, []byte{'\t'})
+		fields := bytes.Fields(metadata)
+		if !found || len(fields) != 3 {
+			return nil, errors.New("git ls-tree returned an invalid entry")
+		}
+		// A gitlink is represented as a commit rather than a blob. Its dirty
+		// state belongs to the recursive submodule fingerprint and it is never
+		// a regular superproject worktree file that targeted restoration can
+		// safely own.
+		if bytes.Equal(fields[1], []byte("commit")) && bytes.Equal(fields[0], []byte("160000")) {
+			continue
+		}
+		if !bytes.Equal(fields[1], []byte("blob")) {
+			return nil, errors.New("git ls-tree returned an invalid entry")
+		}
+		path, err := normalizeRelativePath(string(rawPath))
+		if err != nil {
+			return nil, fmt.Errorf("invalid observed path %q: %w", rawPath, err)
+		}
+		if !bytes.Equal(fields[0], []byte("100644")) && !bytes.Equal(fields[0], []byte("100755")) {
+			files[path] = worktreeFile{}
+			continue
+		}
+		target, err := safeRepositoryPath(repository, path, false)
+		if err != nil {
+			return nil, err
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			return nil, fmt.Errorf("inspect observed file %q: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: observed file %q is not a regular file", ErrRestoreUnsafe, path)
+		}
+		contents, err := os.ReadFile(target)
+		if err != nil {
+			return nil, fmt.Errorf("read observed file %q: %w", path, err)
+		}
+		files[path] = worktreeFile{contents: contents, mode: info.Mode().Perm(), regular: true}
+	}
+	return files, nil
+}
+
+func sameGitSnapshot(left, right Snapshot) bool {
+	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
+}
+
+func sameSnapshot(left, right Snapshot) bool {
+	if !sameGitSnapshot(left, right) || len(left.worktreeFiles) != len(right.worktreeFiles) {
+		return false
+	}
+	for path, leftFile := range left.worktreeFiles {
+		rightFile, found := right.worktreeFiles[path]
+		if !found || !sameWorktreeFile(leftFile, rightFile) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameWorktreeFile(left, right worktreeFile) bool {
+	return left.regular == right.regular && left.mode == right.mode && bytes.Equal(left.contents, right.contents)
 }
 
 // verifyLocalState brackets temporary-index and submodule traversal work with
