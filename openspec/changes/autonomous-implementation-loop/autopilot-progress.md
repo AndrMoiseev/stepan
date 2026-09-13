@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 17/65 tasks accepted; task 4.3 accepted with technical debt after the user's requirement interpretation; next task 4.4; final review `not_started`.
+- Outcome: `in_progress`; 18/65 tasks accepted; tasks 4.3 and 4.4 accepted with technical debt; next task 5.1; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -467,6 +467,18 @@ Task 4.4 correction cycle 1 frozen candidate addresses `TASK-4.4-001` by retaini
 Task 4.4 correction cycle 1 rereview completed. `TASK-4.4-001` is resolved for paths that reach targeted restoration. Rereview returned new critical `TASK-4.4-002` (High): `Diff.Paths` is still derived only from the filtered synthetic `TreeOID`, so a prohibited CRLF-to-LF rewrite under `core.autocrlf=true`, a custom filter-equivalent byte change, or a non-Git mode change can alter `worktreeFiles` while leaving `TreeOID` and status unchanged; the guard then returns accepted and never restores or journals the prohibited edit. Correction must merge exact file byte/mode additions, deletions, and changes into `Difference.Paths`, retaining the Git tree for ordinary attribution, with guard-level regressions. No new technical debt. Checkbox reopened; review `correcting`; completed correction cycles: 1. Correction cycle 2 assigned to the same pair.
 
 Task 4.4 correction cycle 2 frozen candidate addresses `TASK-4.4-002` by merging exact worktree byte/mode additions, deletions, and modifications into `Difference.Paths` alongside filtered-tree changes. Guard-level regressions require detection, journal/retry disposition, and exact restoration for CRLF-to-LF and custom clean-filter-equivalent prohibited edits. Implementer focused test and diff check passed. Coordinator mandatory validation passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview. Next: separate correction commit and same reviewer.
+
+Task 4.4 correction cycle 2 commit verified: `6747a3553deb0334836b49dd9611dba95bb2e8cb`; rereview returned `PASS with technical debt`. `TASK-4.4-001` and `TASK-4.4-002` are resolved; no remaining or new critical findings. `TASK-4.4-003` is a Medium technical-debt test-coverage gap: the guard regression changes normalized content as well as raw bytes, so it does not independently prove the filter-equivalent detection path even though the production merge logic is correct by inspection. Finding saved in `technical-debt.md`. Task 4.4 accepted with technical debt after two completed correction cycles. Next task 5.1 `not_started`.
+
+### 5.1 — direct non-interactive check execution
+
+- Base: `6747a3553deb0334836b49dd9611dba95bb2e8cb`; dependency 4.4 accepted with technical debt.
+- Acceptance: execute resolved `program` and literal `args` directly without shell parsing, in configured `cwd`, with a fresh inherited environment plus command-local overrides, closed stdin and non-terminal buffered streams; preserve exit code/output and prevent `GOOS`/`GOARCH` or private command environment from leaking to later commands.
+- Implementer `/root/implement_5_1` (`gpt-5.6-terra`/`high`); reviewer `not_started`; review `awaiting_review`; completed correction cycles: 0.
+
+Task 5.1 frozen candidate adds `internal/checkexec` with direct `exec.Command(program, args...)`, explicit working directory, per-invocation environment construction including Windows case-insensitive key replacement, nil stdin, buffered non-terminal stdout/stderr, and preserved non-zero exit results. Helper-process fixtures cover literal arguments with spaces and shell metacharacters, no implicit shell, configured cwd, stdin EOF, environment overrides, and absence of `GOOS`/`GOARCH` or private-variable leakage across calls. Timeout/cancellation/process-tree handling remains for task 5.2; log storage/truncation remains for task 5.4. No manual check.
+
+Implementer `go test -count=20 ./internal/checkexec`, full vet, both builds and diff check passed; its sequential full-suite attempt stalled in existing long Git fixtures and was not counted. Coordinator mandatory validation with isolated workspace Go cache passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh independent reviewer.
 
 Task 4.3 correction cycle 1 commit verified: `815ee13fdfa775092e5fb7eb1563428624207b0f`; implementation `f6507bcc1b99c2500e06406ed7cdf85c5bec3a6e`, original base `9db95d5c77c33d1ab63af9082d9eaa41274a6898`. Working tree and index were clean immediately after commit. Rereview cycle 1 pending with `/root/review_4_3`; completed cycles remain 0 until its response.
 
