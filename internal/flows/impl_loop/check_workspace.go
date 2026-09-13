@@ -48,10 +48,12 @@ type WorkspaceCheckObserver struct {
 	diff           AssignmentDiff
 	before         gitsnapshot.Snapshot
 	pending        bool
-	// restoredCandidateChanged distinguishes a protected-only violation from
-	// one command that also produced permitted generated/code output. The
-	// latter must still invalidate prior acceptance after restoration.
-	restoredCandidateChanged bool
+	// candidateChanged is the mutation produced by the most recently observed
+	// command after any protected paths have been restored. mutationGeneration
+	// is monotonic so a required set that changes then reverts a file still
+	// cannot be accepted as stable.
+	candidateChanged   bool
+	mutationGeneration uint64
 }
 
 // NewWorkspaceCheckObserver captures the assignment's initial candidate
@@ -122,43 +124,37 @@ func (r *WorkspaceCheckReporter) BeforeCheck(ctx context.Context, name string, c
 	return r.Observer.BeforeCheck(ctx, name, command)
 }
 
-// ReportCheck publishes output and checked state, then records the command's
-// workspace delta. A protected write is restored after its diagnostic state
-// is published but is returned as a failed check and cannot be accepted.
+// ReportCheck observes the command workspace before publishing it. This order
+// is essential: output-artifact publication may fail, but it must never skip
+// protected-path restoration, violation journaling, or candidate attribution.
 func (r *WorkspaceCheckReporter) ReportCheck(ctx context.Context, name string, command checkexec.Command, result checkexec.Result, duration time.Duration) (CheckPresentation, error) {
 	if r == nil || r.Observer == nil || r.Publisher == nil {
 		return CheckPresentation{}, errors.New("workspace check reporter requires observer and publisher")
 	}
-	presentation, err := r.Publisher.ReportCheck(ctx, name, command, result, duration)
-	if err != nil {
-		r.Observer.pending = false
-		return presentation, err
-	}
-	if err := r.Observer.AfterCheck(ctx, name, presentation); err != nil {
-		if errors.Is(err, ErrCheckWorkspaceViolation) {
-			// The first publication describes the violating state. Publish a
-			// second state only after targeted restoration so any later model
-			// transition can reference the actual surviving candidate, never
-			// the protected mutation that was rejected.
-			restoredPresentation, publishErr := r.Publisher.ReportCheck(ctx, name, command, result, duration)
-			if publishErr != nil {
-				return presentation, errors.Join(err, fmt.Errorf("publish restored checked state: %w", publishErr))
-			}
-			if stateErr := r.Observer.ObserveRestoredCheckedState(restoredPresentation.CheckedState.Reference); stateErr != nil {
-				return restoredPresentation, errors.Join(err, stateErr)
-			}
-			return restoredPresentation, err
+	observeErr := r.Observer.AfterCheck(ctx, name)
+	presentation, publishErr := r.Publisher.ReportCheck(ctx, name, command, result, duration)
+	if publishErr != nil {
+		// A changed candidate without a durable checked-state reference cannot
+		// refresh model state. Pause rather than inventing an EvidenceRef.
+		if r.Observer.candidateChanged {
+			publishErr = r.Observer.block(fmt.Errorf("publish changed checked state: %w", publishErr))
 		}
-		return presentation, err
+		return presentation, errors.Join(observeErr, publishErr)
 	}
-	return presentation, nil
+	if r.Observer.candidateChanged {
+		if stateErr := r.Observer.ObserveCheckedState(presentation.CheckedState.Reference); stateErr != nil {
+			return presentation, errors.Join(observeErr, stateErr)
+		}
+	}
+	return presentation, observeErr
 }
 
-func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string, presentation CheckPresentation) error {
+func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string) error {
 	if o == nil || !o.pending {
 		return errors.New("configured check has no captured pre-command state")
 	}
 	o.pending = false
+	o.candidateChanged = false
 	after, err := gitsnapshot.Capture(ctx, o.repository)
 	if err != nil {
 		return o.block(fmt.Errorf("capture after configured check: %w", err))
@@ -172,7 +168,6 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string, pr
 	}
 	protected := protectedCheckPaths(difference.Paths, o.protectedPaths)
 	if len(protected) != 0 {
-		o.restoredCandidateChanged = false
 		restored, restoreErr := gitsnapshot.RestorePaths(ctx, o.repository, o.before, after, protected)
 		result := "restored"
 		if restoreErr != nil {
@@ -199,7 +194,10 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string, pr
 		if err != nil {
 			return o.block(fmt.Errorf("compare restored configured-check changes: %w", err))
 		}
-		o.restoredCandidateChanged = len(remaining.Paths) != 0
+		o.candidateChanged = len(remaining.Paths) != 0
+		if o.candidateChanged {
+			o.mutationGeneration++
+		}
 		return fmt.Errorf("%w: %s", ErrCheckWorkspaceViolation, strings.Join(protected, ", "))
 	}
 
@@ -207,24 +205,22 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string, pr
 	if err := o.refreshDiff(ctx); err != nil {
 		return o.block(err)
 	}
-	if len(difference.Paths) != 0 && o.run != nil {
-		if err := o.run.ObserveCodeState(presentation.CheckedState.Reference); err != nil {
-			return o.block(fmt.Errorf("record changed checked state: %w", err))
-		}
+	o.candidateChanged = len(difference.Paths) != 0
+	if o.candidateChanged {
+		o.mutationGeneration++
 	}
 	return nil
 }
 
-// ObserveRestoredCheckedState updates freshness after a prohibited command
-// was repaired but retained other permitted output. It deliberately does not
-// make a protected-only failed check stale by itself.
-func (o *WorkspaceCheckObserver) ObserveRestoredCheckedState(state implementationstate.EvidenceRef) error {
-	if o == nil || !o.restoredCandidateChanged || o.run == nil {
+// ObserveCheckedState records the durable state only after publishing it. A
+// publisher failure is deliberately handled by the caller as execution
+// blocked, never by creating a synthetic or missing EvidenceRef.
+func (o *WorkspaceCheckObserver) ObserveCheckedState(state implementationstate.EvidenceRef) error {
+	if o == nil || !o.candidateChanged || o.run == nil {
 		return nil
 	}
-	o.restoredCandidateChanged = false
 	if err := o.run.ObserveCodeState(state); err != nil {
-		return o.block(fmt.Errorf("record restored changed checked state: %w", err))
+		return o.block(fmt.Errorf("record changed checked state: %w", err))
 	}
 	return nil
 }
@@ -286,18 +282,13 @@ func RunRequiredChecksUntilStable(ctx context.Context, selection implementationc
 	}
 	convergence := RequiredCheckConvergence{}
 	for cycle := 1; cycle <= maxCycles; cycle++ {
-		before := reporter.Observer.diff.Current
+		beforeMutation := reporter.Observer.mutationGeneration
 		set, err := RunRequiredChecksWithReporter(ctx, selection, runner, reporter)
-		after := reporter.Observer.diff.Current
-		difference, diffErr := gitsnapshot.Diff(ctx, reporter.Observer.repository, before, after)
-		changed := diffErr == nil && len(difference.Paths) != 0
+		changed := reporter.Observer.mutationGeneration != beforeMutation
 		convergence.Cycles = append(convergence.Cycles, RequiredCheckCycle{Number: cycle, Set: set, Changed: changed})
 		convergence.Diff = reporter.Observer.AssignmentDiff()
 		if err != nil {
 			return convergence, err
-		}
-		if diffErr != nil {
-			return convergence, reporter.Observer.block(fmt.Errorf("compare required-check cycle: %w", diffErr))
 		}
 		if !set.Succeeded() {
 			return convergence, nil

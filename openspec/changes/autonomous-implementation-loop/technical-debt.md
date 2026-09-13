@@ -70,6 +70,16 @@
 - Classification: technical debt because correct idiomatic callers remain safe and publication failures are uncommon.
 - Possible follow-up: mark the current result failed/unusable and the tail not-run on reporter errors, and test failures after partial publication and on the final check.
 
+## TASK-5.5-003 — mixed protected-and-allowed restoration lacks direct coverage
+
+- Origin: task 5.5 initial review; affected location: `internal/flows/impl_loop/check_workspace_test.go`.
+- Status: `open`.
+- Potential problem: the protected-write regression changes only a protected path, so it does not directly cover one command changing both protected and allowed files.
+- Evidence: production appears to preserve the allowed output, republish restored state, update assignment diff, and invalidate acceptance, but the combined path is not guarded by a test despite progress originally claiming it.
+- Expected impact: preservation of allowed output and freshness after protected restoration could regress unnoticed.
+- Classification: technical debt because review found no current production defect in this path.
+- Possible follow-up: assert that a mixed write restores/journals the protected path, retains the allowed path in assignment diff, and reopens acceptance against restored final state.
+
 ## TASK-5.2-005 — Darwin processjob test can mishandle an empty PID file
 
 - Origin: task 5.2 rereview cycle 2; affected location: `internal/processjob/job_darwin_test.go`.
