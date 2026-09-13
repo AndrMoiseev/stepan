@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 27/65 tasks accepted; task 6.5 correcting after initial review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, and 6.4 accepted with technical debt; next action task 6.5 correction cycle 1; final review `not_started`.
+- Outcome: `in_progress`; 28/65 tasks accepted and task 7.1 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.1 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -91,6 +91,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Correction cycle 1 commit verified: `61b827460a7441122e283a693bd117aa28924388`; rereview pending with `/root/review_6_5`. Completed correction cycles remain 0 until response. This post-commit checkpoint is an uncommitted planning record.
 - Rereview cycle 1 resolved `SPEC-6.5-001` but found new critical `SPEC-6.5-002`: Claude SDK v0.6.22 supports `xhigh`, while adapter validation rejects it and blocks valid configured profiles. New `TD-6.5-002` records that Nessy preflight defers EnvelopeSchema validation until runtime creation; existing `TD-6.5-001` remains. Completed correction cycles: 1. Checkbox reopened; review `correcting`; next correction cycle 2 with the same pair.
 - Correction cycle 2 frozen candidate accepts Claude `xhigh` using the pinned SDK's exported effort constants, verifies exact positive forwarding, and retains a genuinely unknown value for negative validation. Coordinator `go test ./... -count=1 -timeout 9m` passed in about 130 seconds; Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview. Next: separate correction commit and same reviewer.
+- Correction cycle 2 commit verified: `4140a7aabab7b580444c9feb0f4c27556c6584a2`; rereview pending with `/root/review_6_5`. Completed correction cycles remain 1 until response. This post-commit checkpoint is an uncommitted planning record.
+- Rereview cycle 2 PASS: `SPEC-6.5-001` and `SPEC-6.5-002` resolved; no remaining/new critical findings and no new technical debt. `TD-6.5-001` and `TD-6.5-002` remain open. Task 6.5 accepted after two completed correction cycles; next task 7.1.
+
+### 7.1 — structured role responses and controller binding
+
+- Base: `4140a7aabab7b580444c9feb0f4c27556c6584a2`; dependency 6.5 accepted with technical debt.
+- Acceptance: tasks.md 7.1 and response-schema requirements; define each role's allowed `kind`, orchestrator and bootstrapper results, flat object schemas with every property required, semantic normalization of empty transport placeholders, state/role validation, and controller-bound call/run/assignment/brief/evidence versions.
+- Implementer: `/root/implement_7_1` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds immutable per-role flat schemas without `oneOf`, strict response decoding/normalization, role/state/kind validation, and controller binding of identifiers and versions. Tests enumerate allowed role/kind combinations and reject unknown kinds, wrong role/state, malformed payloads, and incomplete bindings. No manual check.
+- Implementer focused tests and required `go test ./... -count=1 -timeout 9m` passed (slowest `impl_loop` 131.466s), plus Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`. Nonfatal module stat-cache permission warnings did not affect exits. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
