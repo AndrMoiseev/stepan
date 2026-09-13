@@ -17,13 +17,14 @@ import (
 
 var ErrInvalidRoleContext = errors.New("invalid implementation role context")
 
-// RulesIndex names the entry point and every validated Markdown document in a
-// project's rules directory. It intentionally contains paths, not document
-// bodies: agents read the entry point first and disclose related rules only
-// when their work requires them.
+// RulesIndex carries the current full entry document and names every validated
+// Markdown document in a project's rules directory. Related document bodies
+// are deliberately absent: agents disclose them only when their work needs
+// them.
 type RulesIndex struct {
-	EntryFile string
-	Documents []string
+	EntryFile    string
+	EntryContent string
+	Documents    []string
 }
 
 // BuildRulesIndex makes a progressive-disclosure index from a rules file that
@@ -72,7 +73,11 @@ func BuildRulesIndex(repositoryRoot string, rules implementationconfig.RulesFile
 	if !slices.Contains(documents, entry) {
 		return RulesIndex{}, fmt.Errorf("%w: rules entry is not a Markdown document", ErrInvalidRoleContext)
 	}
-	return RulesIndex{EntryFile: entry, Documents: documents}, nil
+	contents, err := os.ReadFile(rules.File)
+	if err != nil {
+		return RulesIndex{}, fmt.Errorf("%w: read rules entry: %v", ErrInvalidRoleContext, err)
+	}
+	return RulesIndex{EntryFile: entry, EntryContent: string(contents), Documents: documents}, nil
 }
 
 func contextRelativePath(root, path string) (string, error) {
@@ -152,6 +157,9 @@ func buildTaskRoleStartContext(role ResponseRole, input TaskRoleStartInput) (Rol
 			return RoleStartContext{}, fmt.Errorf("%w: check catalog has an incomplete entry", ErrInvalidRoleContext)
 		}
 	}
+	if err := validateRulesIndex(input.Rules); err != nil {
+		return RoleStartContext{}, err
+	}
 	data := strings.Builder{}
 	fmt.Fprintf(&data, "# Assignment contract\n\nAssignment: %s\nBrief version: %s\n\n## Current brief\n\n%s\n\n", input.AssignmentID, input.BriefID, strings.TrimSpace(input.Brief))
 	renderRulesIndex(&data, input.Rules)
@@ -194,6 +202,9 @@ func BuildFinalReviewerStartContext(input FinalReviewerStartInput) (RoleStartCon
 	if strings.TrimSpace(input.Specification) == "" || strings.TrimSpace(input.Diff) == "" {
 		return RoleStartContext{}, fmt.Errorf("%w: specification and aggregate diff are required", ErrInvalidRoleContext)
 	}
+	if err := validateRulesIndex(input.Rules); err != nil {
+		return RoleStartContext{}, err
+	}
 	data := strings.Builder{}
 	fmt.Fprintf(&data, "# Current complete specification\n\n%s\n\n", strings.TrimSpace(input.Specification))
 	renderRulesIndex(&data, input.Rules)
@@ -207,11 +218,24 @@ func renderRulesIndex(builder *strings.Builder, index RulesIndex) {
 		builder.WriteString("No project rules file is configured.\n")
 		return
 	}
-	fmt.Fprintf(builder, "Read `%s` first. It is the rules entry point. Read another indexed rules document only when the current work needs it; the index is not rule content.\n\n", index.EntryFile)
+	fmt.Fprintf(builder, "The current full rules entry document is `%s`:\n\n```markdown\n%s\n```\n\nRead another indexed rules document only when the current work needs it; the index does not include those document bodies.\n\n", index.EntryFile, index.EntryContent)
 	builder.WriteString("Indexed Markdown rules:\n")
 	for _, document := range index.Documents {
 		fmt.Fprintf(builder, "- `%s`\n", document)
 	}
+}
+
+func validateRulesIndex(index RulesIndex) error {
+	if index.EntryFile == "" {
+		if len(index.Documents) != 0 || index.EntryContent != "" {
+			return fmt.Errorf("%w: rules index has no entry file", ErrInvalidRoleContext)
+		}
+		return nil
+	}
+	if !slices.Contains(index.Documents, index.EntryFile) {
+		return fmt.Errorf("%w: rules entry is absent from its index", ErrInvalidRoleContext)
+	}
+	return nil
 }
 
 func newRoleStartContext(role ResponseRole, data string) (RoleStartContext, error) {
@@ -230,7 +254,7 @@ func RoleInstructions(role ResponseRole) (string, error) {
 	var specific string
 	switch role {
 	case ResponseRoleOrchestrator:
-		specific = "Work only with the OpenSpec package, machine task list, run state, and concise stage results. Do not research code. You may request changes only to tasks.md of the selected change through the controller."
+		specific = "Work only with the OpenSpec package, machine task list, run state, and concise stage results. Do not research code. You may directly edit only tasks.md of the selected change. Machine state, Git metadata and operations, and every other file are controller-owned."
 	case ResponseRoleBriefer:
 		specific = "Select complete ordered tasks and produce a self-contained brief from the complete specification. Resolve only unambiguous requirements; escalate material gaps or conflicts."
 	case ResponseRoleImplementer:
@@ -246,7 +270,62 @@ func RoleInstructions(role ResponseRole) (string, error) {
 	default:
 		return "", fmt.Errorf("%w: unsupported role %q", ErrInvalidRoleContext, role)
 	}
-	return specific + "\n\n" + common, nil
+	return specific + "\n\n" + responseTransportInstructions(role) + "\n\n" + common, nil
+}
+
+func responseTransportInstructions(role ResponseRole) string {
+	kinds := responseKindsByRole[role]
+	var instructions strings.Builder
+	instructions.WriteString("Response transport: return exactly one flat JSON object. Every schema property is required: `")
+	instructions.WriteString(strings.Join(responseTransportFields, "`, `"))
+	instructions.WriteString("`. Set `kind` to one allowed value. For every field not used by that action, use the required transport placeholder: `\"\"` for strings and `[]` for arrays. Populate no field from another action.\n\nAllowed kinds and semantic fields:\n")
+	for _, kind := range kinds {
+		fmt.Fprintf(&instructions, "- `%s`: %s\n", kind, responseKindInstruction(kind))
+	}
+	return strings.TrimSpace(instructions.String())
+}
+
+func responseKindInstruction(kind ResponseKind) string {
+	fields := allowedSemanticFields[kind]
+	text := "populate " + quotedFields(fields)
+	switch kind {
+	case ResponseBriefReady:
+		return text + "; task_ids is non-empty and brief is non-empty."
+	case ResponseImplementationReady:
+		return text + "; message is non-empty."
+	case ResponseChecksRequested:
+		return text + "; check_names is a non-empty list of configured names."
+	case ResponseReviewPassed:
+		return text + "; message and references are non-empty."
+	case ResponseChangesRequested:
+		return text + "; every finding array is non-empty and finding_ids, findings, locations, bases, and expected_results have equal lengths."
+	case ResponseReviewDisputed:
+		return text + "; finding_ids has exactly one item; message and references are non-empty."
+	case ResponseExplorationRequested:
+		return text + "; question, context, boundaries, and known_facts are non-empty."
+	case ResponseExplorationResult:
+		return text + "; message, known_facts, unknowns, and references are non-empty."
+	case ResponseClarificationNeeded:
+		return text + "; question, context, boundaries, and references are non-empty; options and recommendation are optional only when genuinely available."
+	case ResponseExecutionBlocked:
+		return text + "; blocked_action, diagnostic, attempts, and required_user_action are non-empty."
+	case ResponseTasksExtracted, ResponseTasksAdded:
+		return text + "; task_ids and task_payloads are non-empty and have equal lengths."
+	case ResponseProgressReflected:
+		return text + "; task_ids is non-empty."
+	case ResponseConfigurationProposed:
+		return text + "; user_implementation, project_implementation, and explanation are non-empty."
+	default:
+		return text + "."
+	}
+}
+
+func quotedFields(fields []string) string {
+	quoted := make([]string, len(fields))
+	for index, field := range fields {
+		quoted[index] = "`" + field + "`"
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // ThreadConfigForRoleContext binds a complete start context and the matching

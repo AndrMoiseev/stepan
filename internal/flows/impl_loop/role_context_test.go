@@ -15,8 +15,8 @@ import (
 
 func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *testing.T) {
 	repository := t.TempDir()
-	writeRoleContextFile(t, filepath.Join(repository, "rules", "index.md"), "# entry\n")
-	writeRoleContextFile(t, filepath.Join(repository, "rules", "nested", "testing.md"), "# testing\n")
+	writeRoleContextFile(t, filepath.Join(repository, "rules", "index.md"), "# entry\nENTRY-RULE-MARKER\n")
+	writeRoleContextFile(t, filepath.Join(repository, "rules", "nested", "testing.md"), "# testing\nNESTED-RULE-MARKER\n")
 	rules, err := BuildRulesIndex(repository, implementationconfig.RulesFileValidation{
 		File: filepath.Join(repository, "rules", "index.md"),
 		Root: filepath.Join(repository, "rules"),
@@ -24,7 +24,7 @@ func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := rules, (RulesIndex{EntryFile: "rules/index.md", Documents: []string{"rules/index.md", "rules/nested/testing.md"}}); !reflect.DeepEqual(got, want) {
+	if got, want := rules, (RulesIndex{EntryFile: "rules/index.md", EntryContent: "# entry\nENTRY-RULE-MARKER\n", Documents: []string{"rules/index.md", "rules/nested/testing.md"}}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("rules index = %#v, want %#v", got, want)
 	}
 
@@ -43,14 +43,16 @@ func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *test
 	for _, context := range []RoleStartContext{executor, reviewer} {
 		for _, required := range []string{
 			"Assignment: assignment-7", "Brief version: brief-7", input.Brief,
-			"Read `rules/index.md` first", "rules/nested/testing.md", "unit - tests (required)",
+			"rules/index.md", "ENTRY-RULE-MARKER", "rules/nested/testing.md", "unit - tests (required)",
 		} {
 			if !strings.Contains(context.StartMessage, required) {
 				t.Fatalf("%s start context does not contain %q\n%s", context.Role, required, context.StartMessage)
 			}
 		}
-		if strings.Contains(context.StartMessage, "COMPLETE-SPECIFICATION-MARKER") {
-			t.Fatalf("%s unexpectedly received complete specification\n%s", context.Role, context.StartMessage)
+		for _, forbidden := range []string{"COMPLETE-SPECIFICATION-MARKER", "NESTED-RULE-MARKER"} {
+			if strings.Contains(context.StartMessage, forbidden) {
+				t.Fatalf("%s unexpectedly received complete specification\n%s", context.Role, context.StartMessage)
+			}
 		}
 	}
 	if !strings.Contains(executor.Instructions, "Do not execute commands") || !strings.Contains(executor.Instructions, "request configured checks") {
@@ -59,14 +61,14 @@ func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *test
 }
 
 func TestRunRoleContextsKeepOrchestratorAndFinalReviewBoundaries(t *testing.T) {
-	rules := RulesIndex{EntryFile: "rules/index.md", Documents: []string{"rules/index.md"}}
+	rules := RulesIndex{EntryFile: "rules/index.md", EntryContent: "FINAL-ENTRY-RULE-MARKER", Documents: []string{"rules/index.md"}}
 	orchestrator, err := BuildOrchestratorStartContext(OrchestratorStartInput{
 		OpenSpecPackage: "complete change package", MachineTaskList: "machine tasks", RunState: "active", StageResults: []string{"baseline passed"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"complete change package", "machine tasks", "active", "baseline passed", "Do not research code"} {
+	for _, required := range []string{"complete change package", "machine tasks", "active", "baseline passed", "Do not research code", "directly edit only tasks.md of the selected change", "Machine state, Git metadata and operations, and every other file are controller-owned"} {
 		if !strings.Contains(orchestrator.StartMessage, required) {
 			t.Fatalf("orchestrator context does not contain %q\n%s", required, orchestrator.StartMessage)
 		}
@@ -78,7 +80,7 @@ func TestRunRoleContextsKeepOrchestratorAndFinalReviewBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"COMPLETE-SPECIFICATION-MARKER", "FINAL-DIFF-MARKER", "rules/index.md", "unavailable prior rounds or check history"} {
+	for _, required := range []string{"COMPLETE-SPECIFICATION-MARKER", "FINAL-DIFF-MARKER", "rules/index.md", "FINAL-ENTRY-RULE-MARKER", "unavailable prior rounds or check history"} {
 		if !strings.Contains(final.StartMessage, required) {
 			t.Fatalf("final reviewer context does not contain %q\n%s", required, final.StartMessage)
 		}
@@ -127,6 +129,35 @@ func TestRoleInstructionsAndThreadConfigCoverEveryRole(t *testing.T) {
 	}
 	if schema["type"] != "object" {
 		t.Fatalf("schema type = %#v", schema["type"])
+	}
+}
+
+func TestRoleInstructionsDescribeFlatTransportAndRoleSpecificSemantics(t *testing.T) {
+	tests := []struct {
+		role     ResponseRole
+		required []string
+	}{
+		{ResponseRoleImplementer, []string{"`implementation_ready`: populate `message`", "`checks_requested`: populate `check_names`", "`clarification_required`: populate `question`, `context`, `boundaries`, `references`"}},
+		{ResponseRoleTaskReviewer, []string{"`review_passed`: populate `message`, `references`", "`changes_requested`: populate `finding_ids`, `findings`, `locations`, `bases`, `expected_results`", "have equal lengths"}},
+		{ResponseRoleOrchestrator, []string{"`tasks_extracted`: populate `task_ids`, `task_payloads`", "`tasks_added`: populate `task_ids`, `task_payloads`", "`progress_reflected`: populate `task_ids`", "`clarification_required`: populate `question`, `context`, `boundaries`, `references`"}},
+	}
+	for _, test := range tests {
+		t.Run(string(test.role), func(t *testing.T) {
+			instructions, err := RoleInstructions(test.role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range responseTransportFields {
+				if !strings.Contains(instructions, "`"+field+"`") {
+					t.Fatalf("instructions omit required transport field %q\n%s", field, instructions)
+				}
+			}
+			for _, required := range append(test.required, "flat JSON object", "`\"\"` for strings and `[]` for arrays", "Populate no field from another action") {
+				if !strings.Contains(instructions, required) {
+					t.Fatalf("instructions omit %q\n%s", required, instructions)
+				}
+			}
+		})
 	}
 }
 
