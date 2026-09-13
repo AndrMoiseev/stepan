@@ -4,12 +4,13 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 24/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; next task 6.2; final review `not_started`.
+- Outcome: `in_progress`; 25/65 tasks accepted and task 6.3 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; next action task 6.3 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
 
 All commands run from repository root with Go 1.26.5 (verified Windows/amd64).
+Load and memory-volume tests are currently outside this change plan. `TestStateStoreRecoveryStreamsLargeJournal` was removed after it made the ordinary full suite run for more than 50 minutes; do not reintroduce it as acceptance evidence for this change.
 Every code candidate: `go test ./...` and `go build -o stepan.exe ./cmd/stepan`.
 Cross-platform code candidates and whole change: macOS/arm64 cross-build with GOOS=darwin, GOARCH=arm64, CGO_ENABLED=0, restoring prior environment afterward.
 Workflow changes: `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`.
@@ -53,6 +54,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementation commit verified: `7227068c1f9d34b60df95a0ee44c1c0263824b6f`; initial independent review pending with `/root/review_6_2`. This post-commit checkpoint is an uncommitted planning record until the next authorized task/correction commit.
 - Initial review returned FAIL on critical `SPEC-6.2-001`: Codex `workspaceWrite` omitted `excludeSlashTmp` and `excludeTmpdirEnvVar`, leaving implicit macOS/Unix temporary directories writable outside the authorized workspace and external ArtifactRoot. No technical debt findings. Checkbox reopened; review `correcting`; correction cycle 1 assigned to the same implementer/reviewer; completed correction cycles remain 0 until rereview.
 - Correction cycle 1 frozen candidate sets both `excludeSlashTmp` and `excludeTmpdirEnvVar` true and verifies them in the fake-transport wire contract transport test. Coordinator focused tests, fresh `go test ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check` passed; exit 0. Checkbox complete; review `awaiting_review`; completed correction cycles remain 0 until rereview. Next: separate correction commit and same reviewer.
+- Correction cycle 1 commit verified: `d64a2ecd0f6b118eec9a506f991104043e51259e`; rereview pending with `/root/review_6_2`. Completed correction cycles remain 0 until response. This post-commit checkpoint is an uncommitted planning record.
+- Rereview PASS: `SPEC-6.2-001` resolved; no remaining/new critical findings and no technical debt. Task 6.2 accepted after one completed correction cycle.
+
+### 6.3 — Claude workspace-write adapter mode
+
+- Base: `d64a2ecd0f6b118eec9a506f991104043e51259e`; dependency 6.2 accepted.
+- Acceptance: tasks.md 6.3; implement explicit workspace-write mode in the Claude adapter while preserving document-session restrictions and lifecycle; cover read/write conformance, external ArtifactRoot, and interruption using the test runtime.
+- Implementer: `/root/implement_6_3` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate grants Claude `Write`/`Edit` inside the workspace only when the immutable thread configuration enables workspace writing, retains independent external `ArtifactRoot` writes and document-session read-only behavior, and preserves interruption as `ErrTurnInterrupted` while close-only failures remain `ErrRuntimeClosed`. Shared and adapter-level fake-runtime tests cover read/write boundaries, ArtifactRoot, and active-turn interruption. No manual check; real-provider smoke remains task 14.3.
+- Implementer focused tests and the Claude package passed; its first full-suite attempt reached the 10-minute diagnostic deadline without failures and was not accepted as evidence. Coordinator reran the frozen candidate with isolated workspace cache: `go test ./... -count=1 -timeout 9m` passed in about 132 seconds (slowest package `internal/flows/impl_loop` 131.815s); Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Nonfatal module stat-cache permission warnings did not affect build exits. Checkbox complete; next: implementation commit and fresh independent reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

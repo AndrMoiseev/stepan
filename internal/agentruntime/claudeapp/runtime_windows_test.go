@@ -54,7 +54,7 @@ func TestPermissionEvaluatorAcceptsShortRootAliases(t *testing.T) {
 
 	shortWorkspace := shortPathForTest(t, workspace)
 	shortArtifact := shortPathForTest(t, artifact)
-	policy := activePolicy{artifactRoot: shortArtifact, writableRoot: shortArtifact}
+	policy := activePolicy{artifactRoot: shortArtifact}
 	if err := permitTool("Read", map[string]any{"file_path": filepath.Join(shortWorkspace, filepath.Base(input))}, policy, shortWorkspace); err != nil {
 		t.Fatalf("read through short workspace alias: %v", err)
 	}

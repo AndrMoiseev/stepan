@@ -50,6 +50,7 @@ type Runtime struct {
 	activePolicy *activePolicy
 	activeQuery  *responseQuery
 	unhealthy    bool
+	interrupted  bool
 	closed       bool
 	closeOnce    sync.Once
 	closeErr     error
@@ -64,9 +65,8 @@ type responseQuery struct {
 }
 
 type activePolicy struct {
-	writableRoot string
-	workspace    string
-	artifactRoot string
+	workspaceWriteAllowed bool
+	artifactRoot          string
 }
 
 var _ agentruntime.Runtime = (*Runtime)(nil)
@@ -161,7 +161,13 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json
 	if _, err := decodeJSONObject(item.config.OutputSchema); err != nil {
 		return nil, fmt.Errorf("output schema: %w", err)
 	}
-	policy := activePolicy{workspace: runtime.workspace, artifactRoot: item.config.ArtifactRoot, writableRoot: item.config.ArtifactRoot}
+	// The thread configuration is the only authority that can grant project
+	// writes.  Keep ArtifactRoot independently writable so document sessions
+	// retain their existing external-artifact contract.
+	policy := activePolicy{
+		workspaceWriteAllowed: item.config.WorkspaceWriteAllowed,
+		artifactRoot:          item.config.ArtifactRoot,
+	}
 	if !runtime.turnMu.TryLock() {
 		return nil, agentruntime.ErrTurnInProgress
 	}
@@ -290,6 +296,9 @@ func (runtime *Runtime) CloseThread(handle agentruntime.Thread) error {
 func (runtime *Runtime) Interrupt() error {
 	runtime.stateMu.Lock()
 	closed := runtime.closed
+	if !closed {
+		runtime.interrupted = true
+	}
 	runtime.stateMu.Unlock()
 	if closed {
 		return nil
@@ -390,8 +399,14 @@ func (runtime *Runtime) failResponse(err error) {
 }
 
 func (runtime *Runtime) runtimeError(action string, err error) error {
-	if errors.Is(err, context.Canceled) {
+	runtime.stateMu.Lock()
+	interrupted := runtime.interrupted
+	runtime.stateMu.Unlock()
+	if interrupted || errors.Is(err, context.Canceled) {
 		return fmt.Errorf("%s: %w", action, agentruntime.ErrTurnInterrupted)
+	}
+	if errors.Is(err, agentruntime.ErrRuntimeClosed) {
+		return fmt.Errorf("%s: %w", action, agentruntime.ErrRuntimeClosed)
 	}
 	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
 }
@@ -424,21 +439,18 @@ func permitTool(name string, input map[string]any, policy activePolicy, workspac
 			return err
 		}
 	}
-	if policy.writableRoot != "" {
-		policy.writableRoot, err = canonicalDirectory(policy.writableRoot)
-		if err != nil {
-			return err
-		}
-	}
 	candidate, err := resolveAllowedPath(workspace, policy.artifactRoot, path)
 	if err != nil {
 		return err
 	}
 	if name == "Write" || name == "Edit" {
-		if policy.writableRoot == "" {
-			return errors.New("write denied in read-only turn")
+		if policy.workspaceWriteAllowed && pathWithin(workspace, candidate) {
+			return nil
 		}
-		return pathWithinRoot(policy.writableRoot, candidate)
+		if policy.artifactRoot != "" && pathWithin(policy.artifactRoot, candidate) {
+			return nil
+		}
+		return errors.New("write denied outside configured roots")
 	}
 	if name != "Read" && name != "Glob" && name != "Grep" {
 		return fmt.Errorf("tool %q is not allowed", name)

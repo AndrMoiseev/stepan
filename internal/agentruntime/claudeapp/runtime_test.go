@@ -39,18 +39,102 @@ func TestClaudeProviderParity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return conformance.Fixture{
+		fixture := conformance.Fixture{
 			Runtime: runtime, Workspace: config.Workspace, OutputSchema: specflow.DialogueSchema(),
 			Decode: func(raw json.RawMessage) (conformance.DomainEnvelope, error) {
 				envelope, err := specflow.DecodeEnvelope(raw)
 				return conformance.DomainEnvelope{Kind: string(envelope.Kind), Message: envelope.Message, DecisionCount: len(envelope.Decisions)}, err
 			},
 			WriteAllowed: func(threadConfig agentruntime.ThreadConfig, target string) bool {
-				policy := activePolicy{workspace: threadConfig.Workspace, artifactRoot: threadConfig.ArtifactRoot, writableRoot: threadConfig.ArtifactRoot}
+				policy := activePolicy{
+					workspaceWriteAllowed: threadConfig.WorkspaceWriteAllowed,
+					artifactRoot:          threadConfig.ArtifactRoot,
+				}
 				return permitTool("Write", map[string]any{"file_path": target}, policy, threadConfig.Workspace) == nil
 			},
 		}
+		workspaceWrite := agentruntime.ThreadConfig{
+			Workspace:             config.Workspace,
+			WorkspaceWriteAllowed: true,
+			ArtifactRoot:          t.TempDir(),
+			OutputSchema:          specflow.DialogueSchema(),
+		}
+		conformance.WorkspaceWriteSessionPolicy(t, fixture, workspaceWrite)
+		return fixture
 	})
+}
+
+func TestClaudeRuntimeAppliesSessionWritePolicyDuringTurn(t *testing.T) {
+	for _, test := range []struct {
+		name                  string
+		workspaceWriteAllowed bool
+		tool                  string
+		target                func(workspace, artifact string) string
+		wantAllowed           bool
+	}{
+		{
+			name:                  "workspace writes require explicit permission",
+			workspaceWriteAllowed: true,
+			tool:                  "Write",
+			target:                func(workspace, _ string) string { return filepath.Join(workspace, "source.go") },
+			wantAllowed:           true,
+		},
+		{
+			name:   "document sessions keep workspace writes denied",
+			tool:   "Edit",
+			target: func(workspace, _ string) string { return filepath.Join(workspace, "source.go") },
+		},
+		{
+			name:        "document sessions retain workspace reads",
+			tool:        "Read",
+			target:      func(workspace, _ string) string { return filepath.Join(workspace, "source.go") },
+			wantAllowed: true,
+		},
+		{
+			name:        "external artifact root remains independently writable",
+			tool:        "Write",
+			target:      func(_, artifact string) string { return filepath.Join(artifact, "artifact.md") },
+			wantAllowed: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := testConfig(t)
+			artifact := t.TempDir()
+			fake := &fakeClient{messages: []claudecode.Message{
+				&claudecode.ResultMessage{StructuredOutput: map[string]any{"status": "READY_TO_WRITE"}},
+			}}
+			var options *claudecode.Options
+			runtime, err := startRuntime(context.Background(), config, func(_ context.Context, items ...claudecode.Option) client {
+				options = claudecode.NewOptions(items...)
+				return fake
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer runtime.Close()
+
+			fake.queryHook = func(ctx context.Context) {
+				result, err := options.CanUseTool(ctx, test.tool, map[string]any{"file_path": test.target(config.Workspace, artifact)}, claudecode.ToolPermissionContext{})
+				if err != nil {
+					t.Fatalf("permission callback: %v", err)
+				}
+				_, allowed := result.(claudecode.PermissionResultAllow)
+				if allowed != test.wantAllowed {
+					t.Fatalf("%s permission allowed = %t, want %t (%#v)", test.tool, allowed, test.wantAllowed, result)
+				}
+			}
+			threadConfig := testThreadConfig(config)
+			threadConfig.WorkspaceWriteAllowed = test.workspaceWriteAllowed
+			threadConfig.ArtifactRoot = artifact
+			handle, err := runtime.StartThread(threadConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runtime.RunTurn(handle, "exercise session permissions"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestClaudeApplicationParity(t *testing.T) {
@@ -492,6 +576,56 @@ func TestClaudeRuntimeInterruptThenClosesOnce(t *testing.T) {
 	}
 }
 
+func TestClaudeRuntimeInterruptsActiveWorkspaceWriteTurn(t *testing.T) {
+	config := testConfig(t)
+	started := make(chan struct{})
+	fake := &fakeClient{}
+	var options *claudecode.Options
+	runtime, err := startRuntime(context.Background(), config, func(_ context.Context, items ...claudecode.Option) client {
+		options = claudecode.NewOptions(items...)
+		return fake
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadConfig := testThreadConfig(config)
+	threadConfig.WorkspaceWriteAllowed = true
+	handle, err := runtime.StartThread(threadConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.queryHook = func(ctx context.Context) {
+		result, err := options.CanUseTool(ctx, "Write", map[string]any{"file_path": filepath.Join(config.Workspace, "source.go")}, claudecode.ToolPermissionContext{})
+		if err != nil {
+			close(started)
+			t.Errorf("permission callback: %v", err)
+			return
+		}
+		if _, ok := result.(claudecode.PermissionResultAllow); !ok {
+			close(started)
+			t.Errorf("workspace write during active turn = %#v, want allow", result)
+			return
+		}
+		close(started)
+		<-ctx.Done()
+	}
+	turnDone := make(chan error, 1)
+	go func() {
+		_, err := runtime.RunTurn(handle, "start interruptible workspace edit")
+		turnDone <- err
+	}()
+	<-started
+	if err := runtime.Interrupt(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-turnDone; !errors.Is(err, agentruntime.ErrTurnInterrupted) {
+		t.Fatalf("interrupted workspace-write turn = %v", err)
+	}
+	if fake.interrupts != 1 || fake.disconnects != 1 {
+		t.Fatalf("interrupt lifecycle = interrupts %d disconnects %d, want 1 each", fake.interrupts, fake.disconnects)
+	}
+}
+
 func TestStartRuntimeDoesNotCreateClientForCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -554,7 +688,7 @@ func TestPermissionEvaluatorFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	readOnly := activePolicy{}
-	write := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
+	write := activePolicy{artifactRoot: writeRoot}
 	if err := permitTool("Read", map[string]any{"file_path": inside}, readOnly, workspace); err != nil {
 		t.Fatalf("read inside: %v", err)
 	}
@@ -581,7 +715,7 @@ func TestPermissionEvaluatorResolvesEveryPathFromWorkspace(t *testing.T) {
 	if err := os.MkdirAll(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	active := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
+	active := activePolicy{artifactRoot: writeRoot}
 	readOnly := activePolicy{}
 
 	if err := permitTool("Write", map[string]any{"file_path": "specification.md"}, active, workspace); err == nil {
@@ -627,7 +761,7 @@ func TestPermissionEvaluatorRejectsMalformedToolPaths(t *testing.T) {
 	if err := os.Mkdir(writeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	active := activePolicy{writableRoot: writeRoot, artifactRoot: writeRoot}
+	active := activePolicy{artifactRoot: writeRoot}
 	for _, tool := range []string{"Read", "Write", "Edit", "Glob", "Grep"} {
 		field := "file_path"
 		other := "path"
@@ -710,6 +844,7 @@ type fakeClient struct {
 	batches          [][]claudecode.Message
 	queries          int
 	keepEmptySession bool
+	queryHook        func(context.Context)
 }
 
 func (client *fakeClient) Connect(context.Context, ...claudecode.StreamMessage) error {
@@ -730,7 +865,7 @@ func (client *fakeClient) Disconnect() error {
 	client.disconnects++
 	return client.disconnectErr
 }
-func (client *fakeClient) QueryWithSession(_ context.Context, prompt string, session string) error {
+func (client *fakeClient) QueryWithSession(ctx context.Context, prompt string, session string) error {
 	client.mu.Lock()
 	client.sessions = append(client.sessions, session)
 	client.prompts = append(client.prompts, prompt)
@@ -750,7 +885,11 @@ func (client *fakeClient) QueryWithSession(_ context.Context, prompt string, ses
 		}
 	}
 	responses := client.responses
+	hook := client.queryHook
 	client.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
 	for _, message := range messages {
 		responses <- message
 	}

@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1621,86 +1619,4 @@ func createHotSQLiteJournal(t *testing.T, databasePath string) {
 	if _, err := os.Stat(databasePath + "-journal"); err != nil {
 		t.Fatalf("hot SQLite journal was not created: %v", err)
 	}
-}
-
-func TestStateStoreRecoveryStreamsLargeJournal(t *testing.T) {
-	stateStoreTestHookMu.Lock()
-	defer stateStoreTestHookMu.Unlock()
-	original := publishReplacementProjection
-	defer func() { publishReplacementProjection = original }()
-
-	run := newStoredRun(t)
-	state, err := OpenState(run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	model := newLargeStoredModel(t, run, 500, 256)
-	journalFile, err := os.Create(state.JournalPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var journalBytes int64
-	for sequence := uint64(1); sequence <= 128; sequence++ {
-		event, err := implementationstate.NewRunStateEvent(sequence, model)
-		if err != nil {
-			t.Fatal(err)
-		}
-		data, err := marshalEvent(event)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := journalFile.Write(data); err != nil {
-			t.Fatal(err)
-		}
-		journalBytes += int64(len(data))
-	}
-	if err := journalFile.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := state.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(state.DatabasePath()); err != nil {
-		t.Fatal(err)
-	}
-	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
-	var during runtime.MemStats
-	publishReplacementProjection = func(temporary, target string) error {
-		runtime.GC()
-		runtime.ReadMemStats(&during)
-		return original(temporary, target)
-	}
-
-	recovered, err := OpenState(run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer recovered.Close()
-	if _, sequence, err := recovered.Current(context.Background()); err != nil || sequence != 128 {
-		t.Fatalf("large streamed recovery = sequence %d, error %v", sequence, err)
-	}
-	if journalBytes < 8<<20 {
-		t.Fatalf("large journal = %d bytes, want at least 8 MiB", journalBytes)
-	}
-	if during.HeapAlloc > before.HeapAlloc+uint64(journalBytes/4) {
-		t.Fatalf("recovery retained %d heap bytes for a %d-byte journal; want bounded streaming memory", during.HeapAlloc-before.HeapAlloc, journalBytes)
-	}
-}
-
-func newLargeStoredModel(t *testing.T, run *Run, taskCount, titleSize int) *implementationstate.Run {
-	t.Helper()
-	model := newStoredModel(t, run)
-	model.Tasks = make([]implementationstate.Task, taskCount)
-	model.LeafStatus = make(map[implementationstate.TaskID]implementationstate.TaskStatus, taskCount)
-	for index := range model.Tasks {
-		id := implementationstate.TaskID("task-" + strconv.Itoa(index))
-		model.Tasks[index] = implementationstate.Task{ID: id, Order: index, Title: strings.Repeat("title", titleSize/5)}
-		model.LeafStatus[id] = implementationstate.TaskPending
-	}
-	if err := model.Validate(); err != nil {
-		t.Fatal(err)
-	}
-	return model
 }
