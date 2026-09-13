@@ -9,10 +9,23 @@ import (
 
 func TestThreadConfigCloneAndValidation(t *testing.T) {
 	schema := []byte(`{"type":"object"}`)
-	config := ThreadConfig{Workspace: t.TempDir(), OutputSchema: schema}.Clone()
+	config := ThreadConfig{Workspace: t.TempDir(), WorkspaceWriteAllowed: true, OutputSchema: schema}.Clone()
 	schema[0] = '['
 	if string(config.OutputSchema) != `{"type":"object"}` {
 		t.Fatalf("schema was not copied: %q", config.OutputSchema)
+	}
+	if !config.WorkspaceWriteAllowed {
+		t.Fatal("workspace write permission was not retained by clone")
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestThreadConfigWorkspaceIsReadOnlyByDefault(t *testing.T) {
+	config := ThreadConfig{Workspace: t.TempDir(), OutputSchema: json.RawMessage(`{"type":"object"}`)}
+	if config.WorkspaceWriteAllowed {
+		t.Fatal("zero-value workspace write permission grants access")
 	}
 	if err := config.Validate(); err != nil {
 		t.Fatal(err)

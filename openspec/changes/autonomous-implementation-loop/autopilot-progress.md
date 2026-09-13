@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 22/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, and 5.4 accepted with technical debt; next task 5.5; final review `not_started`.
+- Outcome: `in_progress`; 23/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; task 6.1 implementing; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -32,6 +32,14 @@ All remaining tasks retain their exact order and unchecked state in tasks.md; re
 
 Final candidate/review: pending. Manual plan consolidation: pending task preparation.
 Human execution: `not_run`. No publication, synchronization, or archiving authorized.
+
+### 6.1 — provider-neutral workspace-write contract
+
+- Base: `676523ac1aeff92ffa9e3489529529efa7699506`; dependency 5.5 accepted with technical debt.
+- Acceptance: tasks.md 6.1 and implementation-agent-control workspace-write requirement; extend `agentruntime.ThreadConfig` with an explicit immutable-at-session-creation workspace-write permission, retain read-only default and a distinct external `ArtifactRoot`, and cover validation, configuration cloning, and the existing document-session contract through shared conformance tests.
+- Implementer: `/root/implement_6_1` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds `ThreadConfig.WorkspaceWriteAllowed`, retaining the zero-value read-only default and separate external `ArtifactRoot`; clone/validation tests and reusable conformance boundaries preserve the legacy document-session contract while preparing provider-specific enforcement for tasks 6.2–6.4. No manual check.
+- Coordinator validation from repository root with Go 1.26.5 and workspace-local build cache passed `go test ./internal/agentruntime/...`, `go test ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`; exit 0. Nonfatal telemetry/module stat-cache permission warnings did not affect exits. Checkbox complete; next: implementation commit and fresh independent reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
@@ -543,6 +551,8 @@ Task 5.5 implementation commit verified: `45a11fa`; initial independent review r
 Implementer focused tests, vet, Windows/Darwin builds and diff check passed; its full suite attempt lacked final evidence and was not counted. Coordinator mandatory validation with isolated workspace Go cache passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Telemetry/module stat-cache permission warnings were nonfatal. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh reviewer; per user direction, stop after task 5.5 disposition.
 
 Task 5.5 correction cycle 1 frozen candidate addresses `TASK-5.5-001` by performing post-command capture, protected restoration, journaling and diff accounting before result publication; publication errors are combined after observation, and a changed candidate without durable evidence pauses fail-closed rather than inventing a reference. Regressions inject publication failure for protected-only and protected-plus-generated writes, requiring restoration, journal evidence, surviving allowed diff, and fail-closed state. `TASK-5.5-002` is addressed with a monotonic per-command mutation generation: convergence is stable only if no required command changed the candidate, even when the set's net diff is zero. A two-check `A→B→A` regression requires every cycle to restart from the first check and exhaust the bound. Implementer focused tests, vet, both builds and diff check passed. Coordinator mandatory validation with isolated workspace Go cache passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Telemetry/module stat-cache warnings were nonfatal. Checkbox complete; review `awaiting_review`; completed correction cycles remain 0 until rereview. Next: separate correction commit and same reviewer; then pause by user direction.
+
+Task 5.5 correction cycle 1 commit verified: `676523ac1aeff92ffa9e3489529529efa7699506`; rereview returned `PASS with existing technical debt`. `TASK-5.5-001` and `TASK-5.5-002` are resolved; no remaining or new critical findings and no new debt. Existing `TASK-5.5-003` remains a normal-path mixed-write coverage gap; production behavior is correct by inspection. Task 5.5 accepted after one completed correction cycle. Per explicit user direction, outcome is `paused_by_user`; task 6.1 and all later tasks remain unstarted, and final review remains `not_started`.
 
 Task 4.3 correction cycle 1 commit verified: `815ee13fdfa775092e5fb7eb1563428624207b0f`; implementation `f6507bcc1b99c2500e06406ed7cdf85c5bec3a6e`, original base `9db95d5c77c33d1ab63af9082d9eaa41274a6898`. Working tree and index were clean immediately after commit. Rereview cycle 1 pending with `/root/review_4_3`; completed cycles remain 0 until its response.
 

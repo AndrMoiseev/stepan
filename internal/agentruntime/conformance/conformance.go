@@ -86,9 +86,10 @@ type PathCase struct {
 	WantAllowed bool
 }
 
-// WritePathCases defines the common path boundary exercised by provider
-// adapters. The existing artifact fixture is named existing.md; all other
-// targets may be absent so adapters must validate newly-created paths too.
+// WritePathCases defines the common document-session path boundary exercised
+// by provider adapters. The existing artifact fixture is named existing.md;
+// all other targets may be absent so adapters must validate newly-created
+// paths too.
 func WritePathCases(roots PathRoots) []PathCase {
 	return []PathCase{
 		{Name: "workspace", Target: filepath.Join(roots.WorkspaceRoot, "source.go")},
@@ -98,6 +99,16 @@ func WritePathCases(roots PathRoots) []PathCase {
 		{Name: "external", Target: filepath.Join(roots.ExternalRoot, "other.md")},
 		{Name: "link escape", Target: filepath.Join(roots.LinkRoot, "new.md")},
 	}
+}
+
+// WorkspaceWritePathCases defines the same boundary for a session whose
+// immutable configuration explicitly permits workspace writes. ArtifactRoot
+// remains independently writable; sibling, external, and link-escape paths
+// remain denied.
+func WorkspaceWritePathCases(roots PathRoots) []PathCase {
+	cases := WritePathCases(roots)
+	cases[0].WantAllowed = true
+	return cases
 }
 
 // ClosedThread verifies a lifecycle rule shared by every provider: a closed
@@ -144,7 +155,7 @@ func ProviderParity(t *testing.T, factory ScriptFactory) {
 
 	intentRoot := externalArtifactRoot(t, fixture.Workspace)
 	intentConfig := roleConfig(fixture, "effective intent-author prompt", intentRoot)
-	assertWorkspacePolicy(t, fixture, intentConfig)
+	DocumentSessionWritePolicy(t, fixture, intentConfig)
 	intentAuthor := startRole(t, fixture, intentConfig)
 	assertEnvelope(t, fixture, intentAuthor, "intent dialogue", "message", "intent question", 1)
 	writeArtifact(t, intentRoot, "intent.md", "# Intent\n")
@@ -253,10 +264,16 @@ func startRole(t *testing.T, fixture Fixture, config agentruntime.ThreadConfig) 
 	return thread
 }
 
-func assertWorkspacePolicy(t *testing.T, fixture Fixture, config agentruntime.ThreadConfig) {
+// DocumentSessionWritePolicy verifies the legacy document-session contract:
+// the workspace stays read-only while the external artifact root remains the
+// only writable location. Provider parity suites call it for every adapter.
+func DocumentSessionWritePolicy(t *testing.T, fixture Fixture, config agentruntime.ThreadConfig) {
 	t.Helper()
 	if fixture.WriteAllowed == nil {
 		t.Fatal("provider fixture does not expose its write policy")
+	}
+	if config.WorkspaceWriteAllowed {
+		t.Fatal("document session unexpectedly permits workspace writes")
 	}
 	if fixture.WriteAllowed(config, filepath.Join(config.Workspace, "intent.md")) {
 		t.Fatal("provider can write a project artifact directly")
@@ -266,6 +283,29 @@ func assertWorkspacePolicy(t *testing.T, fixture Fixture, config agentruntime.Th
 	}
 	if fixture.WriteAllowed(config, filepath.Join(filepath.Dir(config.ArtifactRoot), "escape.md")) {
 		t.Fatal("provider can write outside its external artifact root")
+	}
+}
+
+// WorkspaceWriteSessionPolicy verifies the provider-neutral write boundary
+// for a session configured at creation time to edit the workspace. It is
+// intentionally separate from DocumentSessionWritePolicy so document flows
+// continue to exercise their original read-only contract.
+func WorkspaceWriteSessionPolicy(t *testing.T, fixture Fixture, config agentruntime.ThreadConfig) {
+	t.Helper()
+	if fixture.WriteAllowed == nil {
+		t.Fatal("provider fixture does not expose its write policy")
+	}
+	if !config.WorkspaceWriteAllowed {
+		t.Fatal("workspace-write session lacks explicit write permission")
+	}
+	if !fixture.WriteAllowed(config, filepath.Join(config.Workspace, "source.go")) {
+		t.Fatal("workspace-write session cannot write the workspace")
+	}
+	if config.ArtifactRoot != "" && !fixture.WriteAllowed(config, filepath.Join(config.ArtifactRoot, "artifact.md")) {
+		t.Fatal("workspace-write session cannot write its external artifact root")
+	}
+	if config.ArtifactRoot != "" && fixture.WriteAllowed(config, filepath.Join(filepath.Dir(config.ArtifactRoot), "escape.md")) {
+		t.Fatal("workspace-write session can write outside its artifact root")
 	}
 }
 

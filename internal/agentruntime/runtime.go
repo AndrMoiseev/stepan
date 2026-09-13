@@ -59,12 +59,16 @@ func MarkThreadFailed(cause error) error {
 type Thread any
 
 // ThreadConfig is immutable security and conversation setup for a logical
-// thread. Workspace is readable, ArtifactRoot (when present) is the exact
-// single writable directory, and everything else is denied by adapters.
+// thread. Workspace is readable by default. WorkspaceWriteAllowed grants
+// writes to Workspace and its descendants for this whole thread; it is set
+// only when the thread is created and cannot be expanded by a turn.
+// ArtifactRoot (when present) remains a separate exact writable directory,
+// and everything else is denied by adapters.
 type ThreadConfig struct {
 	BootstrapInstructions string
 	OutputSchema          json.RawMessage
 	Workspace             string
+	WorkspaceWriteAllowed bool
 	ArtifactRoot          string
 }
 
