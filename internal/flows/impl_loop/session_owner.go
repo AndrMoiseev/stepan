@@ -184,6 +184,17 @@ func (session *AgentSession) RunTurn(message string) (json.RawMessage, error) {
 	return session.runtime.RunTurn(session.thread, message)
 }
 
+// Interrupt asks the provider to stop this session's active turn. Each
+// implementation session owns its runtime, so this does not interrupt a
+// different role's conversation. It intentionally does not take the turn
+// mutex: RunTurn holds that mutex while the provider is running.
+func (session *AgentSession) Interrupt() error {
+	if session == nil || session.runtime == nil {
+		return ErrSessionClosed
+	}
+	return session.runtime.Interrupt()
+}
+
 // Close releases every session opened by this owner. It is safe to call more
 // than once. A closed owner cannot reopen old provider conversations.
 func (owner *SessionOwner) Close() error {

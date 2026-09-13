@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 30/65 tasks accepted and task 7.3 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.3 implementation commit and review; final review `not_started`.
+- Outcome: `in_progress`; 31/65 tasks accepted and task 7.4 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action task 7.4 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -130,6 +130,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementer: `/root/implement_7_3` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
 - Frozen candidate adds `SessionOwner` with role/scope keyed session reuse and fresh Explorer requests. Tests cover orchestrator reuse, same-assignment reuse, assignment rollover, final-round rollover, auxiliary Explorer continuation, schema/context propagation, and write authority only for orchestrator/implementer. Restart creates a new owner and therefore fresh provider sessions. No manual check.
 - Implementer focused `impl_loop` tests, `go test ./... -count=1 -timeout 9m`, Windows build, and `git diff --check` passed. No provider/platform code changed, so task-specific cross-build was not required. Checkbox complete; next: implementation commit and fresh reviewer.
+- Implementation commit verified: `3f27cc36508247b323dd3e8b87a54eae919c3d5e`; initial independent review pending. This post-commit checkpoint is an uncommitted planning record.
+- Independent review by `/root/review_7_3` returned PASS with no critical or technical-debt findings. Task 7.3 accepted with zero correction cycles; next task 7.4.
+
+### 7.4 — controlled agent invocation
+
+- Base: `3f27cc36508247b323dd3e8b87a54eae919c3d5e`; dependency 7.3 accepted.
+- Acceptance: tasks.md 7.4; invoke agents through one controller with a 1800-second default timeout, durable technical attempts, structured binding, and file postchecks; cover crash, malformed response, timeout, cancellation, and retry after restored prohibited edits without accepting the prior response.
+- Implementer: `/root/implement_7_4` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate reserves technical attempts before dispatch, runs the owned session with timeout/cancellation interruption, binds the structured response, applies the existing agent-call Git guard, and returns the post-call snapshot. Restored violations produce diagnostics and a technical retry while discarding the offending response. Minimal deterministic tests cover all specified failure modes. No manual check.
+- Implementer focused controlled-call tests (18.7s), `go test ./... -count=1 -timeout 9m`, Windows build, and `git diff --check` passed. No platform implementation changed, so task-specific cross-build was not required. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
