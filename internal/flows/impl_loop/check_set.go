@@ -45,11 +45,13 @@ const (
 // every requested check. NotRun entries deliberately have no command result:
 // they make the skipped tail of a fail-fast set explicit.
 type CheckSetResult struct {
-	Name    string
-	Status  CheckStatus
-	Command checkexec.Command
-	Result  checkexec.Result
-	Err     error
+	Name         string             `json:"name"`
+	Status       CheckStatus        `json:"status"`
+	Command      checkexec.Command  `json:"-"`
+	Result       checkexec.Result   `json:"-"`
+	Duration     time.Duration      `json:"duration"`
+	Presentation *CheckPresentation `json:"presentation,omitempty"`
+	Err          error              `json:"-"`
 }
 
 // CheckSet is the ordered outcome of one requested or required set.
@@ -91,32 +93,54 @@ func (DirectCheckRunner) RunCheck(ctx context.Context, command checkexec.Command
 	return checkexec.RunContext(ctx, command)
 }
 
+// CheckResultReporter receives every command that was actually started while
+// its observed code state is still current. Reporters persist full logs and
+// return the bounded, agent-facing presentation; they never receive not-run
+// or platform-inapplicable entries.
+type CheckResultReporter interface {
+	ReportCheck(context.Context, string, checkexec.Command, checkexec.Result, time.Duration) (CheckPresentation, error)
+}
+
 // RunRequestedChecks rejects every unknown name before starting a command, then
 // runs exactly the supplied configured names in exactly that order. It accepts
 // additional checks as well as required checks and intentionally does not sort
 // or deduplicate names.
 func RunRequestedChecks(ctx context.Context, selection implementationconfig.CheckSelection, names []string, runner CheckRunner) (CheckSet, error) {
+	return RunRequestedChecksWithReporter(ctx, selection, names, runner, nil)
+}
+
+// RunRequestedChecksWithReporter has the same ordering and fail-fast behavior
+// as RunRequestedChecks and additionally persists/presents every check that
+// starts. A reporter error is returned after the command result is retained;
+// callers must not create a durable state event that claims that result.
+func RunRequestedChecksWithReporter(ctx context.Context, selection implementationconfig.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	for _, name := range names {
 		if _, ok := selection.Checks[name]; !ok {
 			return CheckSet{Kind: CheckSetRequested}, fmt.Errorf("%w %q", ErrUnknownCheck, name)
 		}
 	}
-	return runCheckSet(ctx, CheckSetRequested, selection, append([]string(nil), names...), runner)
+	return runCheckSet(ctx, CheckSetRequested, selection, append([]string(nil), names...), runner, reporter)
 }
 
 // RunRequiredChecks runs every configured required check in project order. It
 // never reuses a prior requested result and it does not accept caller-selected
 // names, filters, parameters, or commands.
 func RunRequiredChecks(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner) (CheckSet, error) {
+	return RunRequiredChecksWithReporter(ctx, selection, runner, nil)
+}
+
+// RunRequiredChecksWithReporter has the same behavior as RunRequiredChecks
+// while publishing a report for every command that starts.
+func RunRequiredChecksWithReporter(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	for _, name := range selection.Required {
 		if _, ok := selection.Checks[name]; !ok {
 			return CheckSet{Kind: CheckSetRequired}, fmt.Errorf("%w %q", ErrUnknownCheck, name)
 		}
 	}
-	return runCheckSet(ctx, CheckSetRequired, selection, append([]string(nil), selection.Required...), runner)
+	return runCheckSet(ctx, CheckSetRequired, selection, append([]string(nil), selection.Required...), runner, reporter)
 }
 
-func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementationconfig.CheckSelection, names []string, runner CheckRunner) (CheckSet, error) {
+func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementationconfig.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	if runner == nil {
 		return CheckSet{Kind: kind}, fmt.Errorf("%w: check runner is required", ErrInvalidCheckSet)
 	}
@@ -135,13 +159,23 @@ func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementatio
 		}
 
 		command := checkCommand(check)
+		started := time.Now()
 		result, err := runner.RunCheck(ctx, command)
+		duration := time.Since(started)
 		set.Results[index] = CheckSetResult{
-			Name:    name,
-			Status:  checkStatus(result, err),
-			Command: command,
-			Result:  result,
-			Err:     err,
+			Name:     name,
+			Status:   checkStatus(result, err),
+			Command:  command,
+			Result:   result,
+			Duration: duration,
+			Err:      err,
+		}
+		if reporter != nil {
+			presentation, reportErr := reporter.ReportCheck(ctx, name, command, result, duration)
+			if reportErr != nil {
+				return set, fmt.Errorf("persist check %q result: %w", name, reportErr)
+			}
+			set.Results[index].Presentation = &presentation
 		}
 		if set.Results[index].Status != CheckSucceeded {
 			markNotRun(set.Results[index+1:])

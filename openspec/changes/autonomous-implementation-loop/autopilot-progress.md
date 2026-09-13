@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 20/65 tasks accepted; tasks 4.3, 4.4, 5.1, and 5.2 accepted with technical debt; next task 5.3; final review `not_started`.
+- Outcome: `in_progress`; 21/65 tasks accepted; tasks 4.3, 4.4, 5.1, and 5.2 accepted with technical debt; next task 5.4; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -511,6 +511,18 @@ Task 5.2 correction cycle 2 commit verified: `d149548`; rereview returned `PASS 
 Task 5.3 frozen candidate adds an `impl_loop` check-set coordinator with requested/required kinds, preflight rejection of unknown names before execution, exact caller/project ordering, direct `checkexec` integration, fail-fast status, an explicit inapplicable result, and preserved command/result/error diagnostics. Deterministic tests cover a narrow additional check, mixed request order, pre-execution rejection, required order after prior requested success, platform-inapplicable commands, first failure, retained stderr, and explicit unrun remainder. Empty requested lists remain permitted because this task's approved requirements do not require non-empty transport; later response-schema validation may narrow that input. No manual check.
 
 Implementer focused stress, full tests, vet, both builds and diff check passed. Coordinator's first full run had two unrelated Nessy conformance failures and was rejected as evidence; both isolated tests then passed 10/10. A fresh full mandatory validation passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh reviewer.
+
+### 5.4 — durable full logs and bounded agent diagnostics
+
+- Base: `2a4533464f4482d010a267a4283338434e9f0c0d`; dependency 5.3 accepted.
+- Acceptance: publish complete byte-exact stdout/stderr and post-check Git state before any event may reference them; return name, rendered direct command without environment, exit/failure, duration, Unicode-safe diagnostics capped at 20000 runes with both ends, verified artifact references/paths/hashes, and keep full logs outside serialized machine state.
+- Implementer `/root/implement_5_4` (`gpt-5.6-terra`/`high`); reviewer `not_started`; review `awaiting_review`; completed correction cycles: 0.
+
+Task 5.4 frozen candidate adds reporter-enabled check sets, per-command duration, a durable `CheckResultPublisher`, verified `ArtifactPath`, complete stdout/stderr artifacts, serialized checked-state evidence, safe quoted program/args rendering, and a JSON-safe agent presentation that excludes raw command env/result/error. Unicode diagnostics deterministically replace invalid UTF-8 and retain equalized beginning/end around an omission marker within exactly 20000 runes. Tests cover large multibyte output, boundary length, invalid bytes, unchanged small output, artifact integrity and direct reads, state-event references without log duplication, reporter integration, and duration. No manual check.
+
+Implementer focused tests, runstore integrity, vet, both builds and diff check passed; its full suite was interrupted and not counted. Coordinator mandatory validation with isolated workspace Go cache passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh reviewer.
+
+Task 5.3 implementation commit verified: `2a4533464f4482d010a267a4283338434e9f0c0d`; independent review returned `PASS` with no critical or technical-debt findings. Requested order, required project order, preflight rejection, fail-fast behavior, platform inapplicability, diagnostics, and explicit `not_run` remainder conform. Task 5.3 accepted with zero correction cycles. Next task 5.4 `not_started`.
 
 Task 4.3 correction cycle 1 commit verified: `815ee13fdfa775092e5fb7eb1563428624207b0f`; implementation `f6507bcc1b99c2500e06406ed7cdf85c5bec3a6e`, original base `9db95d5c77c33d1ab63af9082d9eaa41274a6898`. Working tree and index were clean immediately after commit. Rereview cycle 1 pending with `/root/review_4_3`; completed cycles remain 0 until its response.
 

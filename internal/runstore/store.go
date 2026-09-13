@@ -305,6 +305,17 @@ func (r *Run) Read(reference implementationstate.EvidenceRef) ([]byte, error) {
 	return r.readVerified(reference)
 }
 
+// ArtifactPath returns the absolute path of a published immutable artifact.
+// The complete reference is verified before exposing the path, so callers can
+// present only durable run-local files to agents or users. Consumers that need
+// bytes must still use Read, which verifies the file digest through one handle.
+func (r *Run) ArtifactPath(reference implementationstate.EvidenceRef) (string, error) {
+	if err := r.VerifyReference(reference); err != nil {
+		return "", err
+	}
+	return r.filePath(reference.ID), nil
+}
+
 func (r *Run) publishTemporary(temporary, target, digest string) error {
 	lock := artifactLock(target)
 	lock.Lock()
