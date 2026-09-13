@@ -109,3 +109,13 @@
 - Expected impact: reduced regression protection for the authority handoff and session correlation, including the separately preserved authorization environment.
 - Classification: technical debt because current production wiring is correct by inspection, local permission correlation and connection isolation are tested, and real-provider smoke is explicitly deferred to task 14.3.
 - Possible follow-up: add a fake-ACP integration test creating writer and reader threads through `Runtime.StartThread`, driving real permission requests, and checking correlation, ArtifactRoot separation, and authorization environment preservation.
+
+## TD-6.5-001 — implementation-loop role lists are duplicated
+
+- Origin: task 6.5 initial review; affected locations: `internal/implementationconfig/merge.go` and `internal/flows/impl_loop/runtime_factory.go`.
+- Status: `open`.
+- Potential problem: the six loop roles are independently listed for configuration validation and runtime preparation.
+- Evidence: both current lists contain the same roles, but there is no shared canonical source or compile-time/test relationship between them.
+- Expected impact: a future role addition could be validated without runtime preflight or required at runtime without being accepted by configuration.
+- Classification: technical debt because the lists currently agree and no present behavior is broken.
+- Possible follow-up: expose an immutable copy of one canonical role list and use it in both stages.

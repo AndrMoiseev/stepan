@@ -343,7 +343,7 @@ func assertRealCLIStartup(t *testing.T, backend *nessyThread, fixture realCLIFix
 	if process.command.Dir != fixture.workspace || process.artifactRoot != root || process.job == nil || process.command.Process == nil {
 		t.Fatal("launcher roots or containment are incomplete")
 	}
-	want := nessyArgs(JSONContract, root)
+	want := nessyArgs(JSONContract, root, "")
 	if len(process.command.Args) != len(want)+1 {
 		t.Fatal("launcher argument count differs from the fixed startup profile")
 	}

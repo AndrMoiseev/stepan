@@ -35,7 +35,13 @@ type Runtime struct {
 }
 
 func StartRuntime(executable, workspace string) (*Runtime, error) {
-	process := NewProcess(executable, workspace)
+	return StartRuntimeWithConfig(RuntimeConfig{Executable: executable, Workspace: workspace})
+}
+
+// StartRuntimeWithConfig starts a Codex App Server with an explicit model and
+// reasoning selection for one runtime.
+func StartRuntimeWithConfig(config RuntimeConfig) (*Runtime, error) {
+	process := NewProcessWithConfig(config)
 	if err := process.Start(); err != nil {
 		_ = process.Close()
 		return nil, err
@@ -45,7 +51,7 @@ func StartRuntime(executable, workspace string) (*Runtime, error) {
 		_ = process.Close()
 		return nil, err
 	}
-	runtime := &Runtime{process: process, connection: connection, workspace: workspace, grace: interruptGracePeriod, closed: make(chan struct{})}
+	runtime := &Runtime{process: process, connection: connection, workspace: config.Workspace, grace: interruptGracePeriod, closed: make(chan struct{})}
 	go func() {
 		waitErr := process.Wait()
 		runtime.mu.Lock()

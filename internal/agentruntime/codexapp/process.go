@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
@@ -25,6 +26,50 @@ var appServerArgs = []string{"app-server", "--stdio", "--strict-config", "-c", `
 // AppServerArgs returns the pinned App Server invocation shared by the runtime
 // and diagnostic probe.
 func AppServerArgs() []string { return append([]string(nil), appServerArgs...) }
+
+// RuntimeConfig selects the immutable process-wide Codex runtime settings.
+// Empty Model and Reasoning retain the CLI's existing defaults for callers
+// outside the implementation loop.
+type RuntimeConfig struct {
+	Executable string
+	Workspace  string
+	Model      string
+	Reasoning  string
+}
+
+func validateRuntimeConfig(config RuntimeConfig) error {
+	if config.Reasoning != "" && !supportedReasoning(config.Reasoning) {
+		return fmt.Errorf("unsupported Codex reasoning %q", config.Reasoning)
+	}
+	if _, err := preflight(config.Executable, config.Workspace); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateRuntimeConfig performs the non-interactive checks used before an
+// implementation role is started.
+func ValidateRuntimeConfig(config RuntimeConfig) error { return validateRuntimeConfig(config) }
+
+func supportedReasoning(value string) bool {
+	switch value {
+	case "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func runtimeArgs(config RuntimeConfig) []string {
+	args := AppServerArgs()
+	if config.Model != "" {
+		args = append(args, "-c", "model="+strconv.Quote(config.Model))
+	}
+	if config.Reasoning != "" {
+		args = append(args, "-c", "model_reasoning_effort="+strconv.Quote(config.Reasoning))
+	}
+	return args
+}
 
 func ResolveExecutable(name string) (string, error) {
 	if name == "" {
@@ -61,6 +106,8 @@ func ResolveExecutable(name string) (string, error) {
 type Process struct {
 	executable string
 	workspace  string
+	model      string
+	reasoning  string
 	stderrCopy io.Writer
 
 	mu         sync.Mutex
@@ -84,17 +131,24 @@ type Process struct {
 }
 
 func NewProcess(executable, workspace string) *Process {
-	return newProcess(executable, workspace, nil)
+	return NewProcessWithConfig(RuntimeConfig{Executable: executable, Workspace: workspace})
+}
+
+// NewProcessWithConfig creates a process using explicit model and reasoning
+// settings. It is used by role runtime factories; the legacy constructor keeps
+// the document-flow defaults unchanged.
+func NewProcessWithConfig(config RuntimeConfig) *Process {
+	return newProcess(config.Executable, config.Workspace, config.Model, config.Reasoning, nil)
 }
 
 // NewProcessWithStderrCopy additionally records raw stderr while preserving the
 // bounded diagnostic buffer and process-tree containment.
 func NewProcessWithStderrCopy(executable, workspace string, stderrCopy io.Writer) *Process {
-	return newProcess(executable, workspace, stderrCopy)
+	return newProcess(executable, workspace, "", "", stderrCopy)
 }
 
-func newProcess(executable, workspace string, stderrCopy io.Writer) *Process {
-	return &Process{executable: executable, workspace: workspace, stderrCopy: stderrCopy, waitDone: make(chan struct{})}
+func newProcess(executable, workspace, model, reasoning string, stderrCopy io.Writer) *Process {
+	return &Process{executable: executable, workspace: workspace, model: model, reasoning: reasoning, stderrCopy: stderrCopy, waitDone: make(chan struct{})}
 }
 
 func (process *Process) Start() error {
@@ -110,12 +164,17 @@ func (process *Process) Start() error {
 		return errors.New("App Server process already started")
 	}
 
-	executable, err := preflight(process.executable, process.workspace)
+	config := RuntimeConfig{Executable: process.executable, Workspace: process.workspace, Model: process.model, Reasoning: process.reasoning}
+	if err := validateRuntimeConfig(config); err != nil {
+		process.startErr = err
+		return err
+	}
+	executable, err := ResolveExecutable(process.executable)
 	if err != nil {
 		process.startErr = err
 		return err
 	}
-	command := exec.Command(executable, appServerArgs...)
+	command := exec.Command(executable, runtimeArgs(config)...)
 	command.Dir = process.workspace
 	stdin, err := command.StdinPipe()
 	if err != nil {

@@ -14,7 +14,6 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
 
@@ -135,7 +134,7 @@ func (process *Process) Start() error {
 	sensitiveValues = append(sensitiveValues, process.config.JSONContract, process.config.AuthToken)
 	process.diagnostic.setSecrets(sensitiveValues)
 
-	command := process.deps.command(executable, nessyArgs(process.config.JSONContract, artifact)...)
+	command := process.deps.command(executable, nessyArgs(process.config.JSONContract, artifact, process.config.Model)...)
 	if command == nil {
 		process.startErr = fmt.Errorf("%w: command factory returned nil", ErrStartup)
 		process.closePartial()
@@ -190,21 +189,11 @@ func (process *Process) Start() error {
 }
 
 func (process *Process) preflight() (executable, workspace, artifact string, owned bool, err error) {
-	if err = validateAuthToken(process.config.AuthToken); err != nil {
+	if err = ValidateRuntimeConfig(process.config); err != nil {
 		return "", "", "", false, err
 	}
-	if err = platformsupport.Validate(runtime.GOOS, runtime.GOARCH); err != nil {
-		return "", "", "", false, err
-	}
-	if strings.TrimSpace(process.config.JSONContract) == "" {
-		return "", "", "", false, errors.New("Nessy JSON contract is required")
-	}
-	if executable, err = ResolveExecutable(); err != nil {
-		return "", "", "", false, err
-	}
-	if workspace, err = canonicalGitRoot(process.config.Workspace); err != nil {
-		return "", "", "", false, err
-	}
+	executable, _ = ResolveExecutable()
+	workspace, _ = canonicalGitRoot(process.config.Workspace)
 	if process.artifactRoot != "" {
 		artifact, err = canonicalDirectory(process.artifactRoot, "Nessy artifact root")
 		if err != nil {
@@ -240,8 +229,8 @@ func (process *Process) preflight() (executable, workspace, artifact string, own
 	return executable, workspace, artifact, true, nil
 }
 
-func nessyArgs(contract, artifactRoot string) []string {
-	return []string{
+func nessyArgs(contract, artifactRoot, model string) []string {
+	args := []string{
 		"--approval-mode", "default",
 		"--core-tools", allowedToolsCSV,
 		"--exclude-tools", excludedToolsCSV,
@@ -250,6 +239,10 @@ func nessyArgs(contract, artifactRoot string) []string {
 		"--include-directories", artifactRoot,
 		"--acp",
 	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
 }
 
 func isolatedEnv(base []string, token string) []string {

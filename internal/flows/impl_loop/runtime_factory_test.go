@@ -1,11 +1,13 @@
 package impl_loop
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 )
 
@@ -21,6 +23,10 @@ func (factory *recordingRuntimeFactory) Preflight(profile implementationconfig.R
 		return factory.reasoningError
 	}
 	return factory.err
+}
+
+func (factory *recordingRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+	return nil, factory.err
 }
 
 func TestPrepareRuntimesRejectsMissingFinalReviewerBeforeProviderPreflight(t *testing.T) {

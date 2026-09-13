@@ -26,9 +26,14 @@ type Config struct {
 	Executable     string
 	Workspace      string
 	EnvelopeSchema json.RawMessage
+	Model          string
+	Reasoning      string
 }
 
 func validateConfig(config Config) (Config, map[string]any, error) {
+	if config.Reasoning != "" && !supportedReasoning(config.Reasoning) {
+		return Config{}, nil, fmt.Errorf("unsupported Claude reasoning %q", config.Reasoning)
+	}
 	name := config.Executable
 	if name == "" {
 		name = "claude"
@@ -64,6 +69,23 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	config.Workspace = workspace
 	config.EnvelopeSchema = append(json.RawMessage(nil), config.EnvelopeSchema...)
 	return config, schema, nil
+}
+
+// ValidateRuntimeConfig performs all configuration checks without starting a
+// Claude client, allowing the implementation loop to fail before any role
+// begins.
+func ValidateRuntimeConfig(config Config) error {
+	_, _, err := validateConfig(config)
+	return err
+}
+
+func supportedReasoning(value string) bool {
+	switch value {
+	case "low", "medium", "high", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 // normalizeTransportSchema builds a permissive flat transport envelope for the
@@ -150,7 +172,7 @@ func omitSchemaDialectDeclarations(value any) {
 }
 
 func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUseToolCallback, stderr func(string)) []claudecode.Option {
-	return []claudecode.Option{
+	options := []claudecode.Option{
 		claudecode.WithCLIPath(config.Executable),
 		claudecode.WithCwd(config.Workspace),
 		claudecode.WithTools("Read", "Write", "Edit", "Glob", "Grep"),
@@ -162,4 +184,11 @@ func claudeOptions(config Config, schema map[string]any, canUse claudecode.CanUs
 		claudecode.WithJSONSchema(schema),
 		claudecode.WithStderrCallback(stderr),
 	}
+	if config.Model != "" {
+		options = append(options, claudecode.WithModel(config.Model))
+	}
+	if config.Reasoning != "" {
+		options = append(options, claudecode.WithEffort(claudecode.EffortLevel(config.Reasoning)))
+	}
+	return options
 }

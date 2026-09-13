@@ -3,10 +3,14 @@ package nessyapp
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 )
 
 const (
@@ -36,6 +40,34 @@ type Config struct {
 	Workspace      string
 	JSONContract   string
 	EnvelopeSchema json.RawMessage
+	Model          string
+	Reasoning      string
+}
+
+// ValidateRuntimeConfig performs the non-interactive portion of Nessy's
+// runtime preflight. Nessy exposes model selection through --model, but its
+// ACP/session contract has no reasoning option, so an explicit reasoning
+// value is rejected rather than silently ignored.
+func ValidateRuntimeConfig(config Config) error {
+	if err := validateAuthToken(config.AuthToken); err != nil {
+		return err
+	}
+	if err := platformsupport.Validate(runtime.GOOS, runtime.GOARCH); err != nil {
+		return err
+	}
+	if strings.TrimSpace(config.JSONContract) == "" {
+		return errors.New("Nessy JSON contract is required")
+	}
+	if config.Reasoning != "" {
+		return errors.New("Nessy does not support configured reasoning")
+	}
+	if _, err := ResolveExecutable(); err != nil {
+		return err
+	}
+	if _, err := canonicalGitRoot(config.Workspace); err != nil {
+		return err
+	}
+	return nil
 }
 
 type processJob interface {

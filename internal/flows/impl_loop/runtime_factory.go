@@ -1,8 +1,10 @@
 package impl_loop
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 )
 
@@ -15,6 +17,23 @@ import (
 // single preflight boundary for every role.
 type RuntimeFactory interface {
 	Preflight(implementationconfig.RuntimeProfile) error
+	Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error)
+}
+
+// Start constructs a fresh provider runtime for this role using the profile
+// already checked during PrepareRuntimes.
+func (role PreparedRole) Start(ctx context.Context) (agentruntime.Runtime, error) {
+	if role.Factory == nil {
+		return nil, fmt.Errorf("implementation runtime factory is missing for role %q", role.Role)
+	}
+	runtime, err := role.Factory.Create(ctx, role.Profile)
+	if err != nil {
+		return nil, fmt.Errorf("start implementation role %q profile %q: %w", role.Role, role.Profile.Name, err)
+	}
+	if runtime == nil {
+		return nil, fmt.Errorf("start implementation role %q profile %q: runtime factory returned nil", role.Role, role.Profile.Name)
+	}
+	return runtime, nil
 }
 
 // PreparedRole binds a role to the exact decoded profile and provider factory

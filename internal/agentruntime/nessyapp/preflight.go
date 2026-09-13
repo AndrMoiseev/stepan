@@ -48,7 +48,7 @@ func validateProcessStartupContract(process *Process) (string, string, error) {
 		process.workspaceRoot == "" || process.artifactRoot == "" {
 		return "", "", fmt.Errorf("%w: contained process is not started", ErrIncompatible)
 	}
-	expectedArgs := nessyArgs(process.config.JSONContract, process.artifactRoot)
+	expectedArgs := nessyArgs(process.config.JSONContract, process.artifactRoot, process.config.Model)
 	if process.command.Dir != process.workspaceRoot || len(process.command.Args) != len(expectedArgs)+1 {
 		return "", "", withDiagnosticContext(fmt.Errorf("%w: Nessy startup-root contract", ErrIncompatible), diagnosticStartupRoot)
 	}
