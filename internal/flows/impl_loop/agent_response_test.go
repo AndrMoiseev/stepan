@@ -181,6 +181,53 @@ func TestBindAgentResponseRejectsIncompleteSemanticResults(t *testing.T) {
 	}
 }
 
+func TestBindAgentResponseRejectsUnexpectedSemanticFields(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		kind   ResponseKind
+		mutate func(map[string]any)
+	}{
+		{"implementation ready check names", ResponseImplementationReady, func(p map[string]any) { p["check_names"] = []string{"unit"} }},
+		{"implementation ready findings", ResponseImplementationReady, func(p map[string]any) { p["findings"] = []string{"unrelated"} }},
+		{"implementation ready configuration proposal", ResponseImplementationReady, func(p map[string]any) { p["project_implementation"] = "{}" }},
+		{"exploration result blocked diagnostic", ResponseExplorationResult, func(p map[string]any) { p["diagnostic"] = "unrelated" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := responsePayloadMap(test.kind)
+			test.mutate(payload)
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := BindAgentResponse(expectationFor(roleForKind(test.kind), test.kind), raw); !errors.Is(err, ErrResponseSemantics) {
+				t.Fatalf("unexpected field error = %v", err)
+			}
+		})
+	}
+}
+
+func TestBindAgentResponseRequiresBothBootstrapProposals(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		remove string
+	}{
+		{"missing user proposal", "user_implementation"},
+		{"missing project proposal", "project_implementation"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := responsePayloadMap(ResponseConfigurationProposed)
+			payload[test.remove] = ""
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := BindAgentResponse(expectationFor(ResponseRoleBootstrapper, ResponseConfigurationProposed), raw); !errors.Is(err, ErrResponseSemantics) {
+				t.Fatalf("one-sided bootstrap proposal error = %v", err)
+			}
+		})
+	}
+}
+
 func expectationFor(role ResponseRole, kind ResponseKind) ResponseExpectation {
 	state := ResponseStateImplementing
 	switch role {
@@ -265,7 +312,7 @@ func responsePayloadMap(kind ResponseKind) map[string]any {
 	case ResponseProgressReflected:
 		payload["task_ids"] = []string{"task-1"}
 	case ResponseConfigurationProposed:
-		payload["project_implementation"], payload["explanation"] = "{\"checks\":{}}", "detected project checks"
+		payload["user_implementation"], payload["project_implementation"], payload["explanation"] = "{\"profiles\":{}}", "{\"checks\":{}}", "detected project checks"
 	}
 	return payload
 }

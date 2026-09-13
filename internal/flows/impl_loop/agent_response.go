@@ -475,6 +475,9 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 // nil. This keeps the provider schema compatible with flat-object transports
 // while preventing an empty success result from advancing the controller.
 func validateResponseSemantics(response AgentResponse) error {
+	if err := rejectUnexpectedSemanticFields(response); err != nil {
+		return err
+	}
 	requireText := func(name string, value *string) error {
 		if value == nil || strings.TrimSpace(*value) == "" {
 			return fmt.Errorf("%w: %s is required", ErrResponseSemantics, name)
@@ -605,23 +608,73 @@ func validateResponseSemantics(response AgentResponse) error {
 	case ResponseProgressReflected:
 		return requireTaskIDs()
 	case ResponseConfigurationProposed:
-		if response.UserImplementation == nil && response.ProjectImplementation == nil {
-			return fmt.Errorf("%w: a configuration proposal is required", ErrResponseSemantics)
+		if err := requireText("user_implementation", response.UserImplementation); err != nil {
+			return err
 		}
-		if response.UserImplementation != nil {
-			if err := requireText("user_implementation", response.UserImplementation); err != nil {
-				return err
-			}
-		}
-		if response.ProjectImplementation != nil {
-			if err := requireText("project_implementation", response.ProjectImplementation); err != nil {
-				return err
-			}
+		if err := requireText("project_implementation", response.ProjectImplementation); err != nil {
+			return err
 		}
 		return requireText("explanation", response.Explanation)
 	default:
 		return fmt.Errorf("%w: unsupported kind %q", ErrResponseSemantics, response.Kind)
 	}
+}
+
+// rejectUnexpectedSemanticFields gives every action a closed domain shape.
+// The transport schema must carry placeholders for all fields, but a
+// non-placeholder field from another action is a malformed domain result,
+// rather than optional metadata the controller might accidentally ignore.
+func rejectUnexpectedSemanticFields(response AgentResponse) error {
+	present := map[string]bool{
+		"message":                response.Message != nil,
+		"task_ids":               len(response.TaskIDs) != 0,
+		"task_payloads":          len(response.TaskPayloads) != 0,
+		"brief":                  response.Brief != nil,
+		"check_names":            len(response.CheckNames) != 0,
+		"finding_ids":            len(response.FindingIDs) != 0,
+		"findings":               len(response.Findings) != 0,
+		"question":               response.Question != nil,
+		"context":                response.Context != nil,
+		"boundaries":             response.Boundaries != nil,
+		"known_facts":            len(response.KnownFacts) != 0,
+		"unknowns":               len(response.Unknowns) != 0,
+		"references":             len(response.References) != 0,
+		"locations":              len(response.Locations) != 0,
+		"bases":                  len(response.Bases) != 0,
+		"expected_results":       len(response.ExpectedResults) != 0,
+		"options":                len(response.Options) != 0,
+		"recommendation":         response.Recommendation != nil,
+		"blocked_action":         response.BlockedAction != nil,
+		"diagnostic":             response.Diagnostic != nil,
+		"attempts":               len(response.Attempts) != 0,
+		"required_user_action":   response.RequiredUserAction != nil,
+		"user_implementation":    response.UserImplementation != nil,
+		"project_implementation": response.ProjectImplementation != nil,
+		"explanation":            response.Explanation != nil,
+	}
+	for name, isPresent := range present {
+		if isPresent && !slices.Contains(allowedSemanticFields[response.Kind], name) {
+			return fmt.Errorf("%w: field %s is not allowed for kind %q", ErrResponseSemantics, name, response.Kind)
+		}
+	}
+	return nil
+}
+
+var allowedSemanticFields = map[ResponseKind][]string{
+	ResponseBriefReady:            {"task_ids", "brief"},
+	ResponseImplementationReady:   {"message"},
+	ResponseChecksRequested:       {"check_names"},
+	ResponseReviewPassed:          {"message", "references"},
+	ResponseChangesRequested:      {"finding_ids", "findings", "locations", "bases", "expected_results"},
+	ResponseReviewDisputed:        {"finding_ids", "message", "references"},
+	ResponseExplorationRequested:  {"question", "context", "boundaries", "known_facts"},
+	ResponseExplorationResult:     {"message", "known_facts", "unknowns", "references"},
+	ResponseClarificationNeeded:   {"question", "context", "boundaries", "references", "options", "recommendation"},
+	ResponseExecutionBlocked:      {"blocked_action", "diagnostic", "attempts", "required_user_action"},
+	ResponseTasksExtracted:        {"task_ids", "task_payloads"},
+	ResponseTasksAdded:            {"task_ids", "task_payloads"},
+	ResponseProgressReflected:     {"task_ids"},
+	ResponseConfigurationProposed: {"user_implementation", "project_implementation", "explanation"},
 }
 
 func optionalString(value string) *string {
