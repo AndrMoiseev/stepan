@@ -127,6 +127,47 @@ func TestCaptureDetectsMutationAndRecalculation(t *testing.T) {
 	}
 }
 
+func TestCaptureDetectsRealStateMutationDuringSecondHierarchyPass(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{"index only", func(t *testing.T, repository string) {
+			runGit(t, repository, "update-index", "--assume-unchanged", "tracked.txt")
+		}},
+		{"symbolic HEAD only", func(t *testing.T, repository string) {
+			runGit(t, repository, "branch", "same-oid")
+			gitDirectory := strings.TrimSpace(runGit(t, repository, "rev-parse", "--absolute-git-dir"))
+			if err := os.WriteFile(filepath.Join(gitDirectory, "HEAD"), []byte("ref: refs/heads/same-oid\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newRepository(t)
+			statusReads := 0
+			mutated := false
+			replaceBeforeGitCommandHook(t, func(_ string, index string, args []string) {
+				if index == "" && len(args) != 0 && args[0] == "status" {
+					statusReads++
+				}
+				// The third status command is the second hierarchy pass's initial
+				// readState. Mutating before its temporary-index read-tree models
+				// the exact race that the closing verification must reject.
+				if !mutated && statusReads == 3 && index != "" && len(args) != 0 && args[0] == "read-tree" {
+					mutated = true
+					test.mutate(t, repository)
+				}
+			})
+			_, err := Capture(context.Background(), repository)
+			if !mutated || !errors.Is(err, ErrRepositoryDiverged) {
+				t.Fatalf("mutated = %t, error = %v", mutated, err)
+			}
+		})
+	}
+}
+
 func TestCompareAndCheckBoundary(t *testing.T) {
 	repo := newRepository(t)
 	write(t, filepath.Join(repo, "outside-before.txt"), "dirty before baseline\n")
@@ -233,12 +274,12 @@ func TestCaptureNestedSubmodulesUsesLinearGitCalls(t *testing.T) {
 	const depth = 4
 	repository := nestedRepositoryChain(t, depth)
 	var calls int
-	replaceBeforeGitCommandHook(t, func() { calls++ })
+	replaceBeforeGitCommandHook(t, func(string, string, []string) { calls++ })
 	mustCapture(t, repository)
 
 	// Each hierarchy pass performs a fixed number of Git calls per populated
 	// repository. The old recurrence grew exponentially at this depth.
-	if limit := 25*depth + 2; calls > limit {
+	if limit := 30*depth + 2; calls > limit {
 		t.Fatalf("git calls = %d, want at most %d for depth %d", calls, limit, depth)
 	}
 }
@@ -509,7 +550,7 @@ func nestedRepositoryChain(t *testing.T, depth int) string {
 	return repository
 }
 
-func replaceBeforeGitCommandHook(t *testing.T, replacement func()) {
+func replaceBeforeGitCommandHook(t *testing.T, replacement func(repository, index string, args []string)) {
 	t.Helper()
 	original := beforeGitCommandHook
 	beforeGitCommandHook = replacement

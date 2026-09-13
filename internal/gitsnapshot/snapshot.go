@@ -75,7 +75,7 @@ type populatedSubmodule struct {
 
 var (
 	findPopulatedSubmodules = populatedSubmodules
-	beforeGitCommandHook    func()
+	beforeGitCommandHook    func(repository, index string, args []string)
 )
 
 func Capture(ctx context.Context, repository string) (Snapshot, error) {
@@ -265,6 +265,9 @@ func captureHierarchy(ctx context.Context, repository string, active map[string]
 		}
 		writeSnapshotFingerprint(hash, child.path, childSnapshot)
 	}
+	if err := verifyLocalState(ctx, root, snapshot); err != nil {
+		return Snapshot{}, err
+	}
 	snapshot.SubmodulesHash = fmt.Sprintf("%x", hash.Sum(nil))
 	visited[root] = snapshot
 	return snapshot, nil
@@ -302,6 +305,20 @@ func captureLocal(ctx context.Context, repository string) (Snapshot, error) {
 		IndexHash:  hashIndex(before.index, before.indexExists),
 		StatusHash: hashStatus(before.status),
 	}, nil
+}
+
+// verifyLocalState brackets temporary-index and submodule traversal work with
+// a second observation of the real repository state. The synthetic index must
+// never hide a HEAD, ref, index, or status mutation that races this pass.
+func verifyLocalState(ctx context.Context, repository string, snapshot Snapshot) error {
+	after, err := readState(ctx, repository)
+	if err != nil {
+		return err
+	}
+	if snapshot.HeadOID != after.head || snapshot.HeadRef != after.headRef || snapshot.IndexHash != hashIndex(after.index, after.indexExists) || snapshot.StatusHash != hashStatus(after.status) {
+		return ErrRepositoryDiverged
+	}
+	return nil
 }
 
 func hashIndex(index []byte, exists bool) string {
@@ -423,7 +440,7 @@ func readState(ctx context.Context, repository string) (repositoryState, error) 
 
 func git(ctx context.Context, repository, index string, args ...string) ([]byte, error) {
 	if beforeGitCommandHook != nil {
-		beforeGitCommandHook()
+		beforeGitCommandHook(repository, index, args)
 	}
 	command := exec.CommandContext(ctx, "git", args...)
 	command.Dir = repository
