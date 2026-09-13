@@ -50,6 +50,12 @@ type Difference struct {
 	SubmodulesChanged bool
 }
 
+// ErrRestoreUnsafe means that a targeted working-tree restoration could not
+// be completed without following a link or replacing something other than a
+// regular file.  Callers must treat this as an execution blockage, rather
+// than falling back to a broad checkout or reset.
+var ErrRestoreUnsafe = errors.New("targeted working-tree restoration is unsafe")
+
 type BoundaryError struct {
 	Paths []string
 }
@@ -150,6 +156,184 @@ func EnsureUnchanged(ctx context.Context, repository string, expected Snapshot) 
 		return ErrRepositoryDiverged
 	}
 	return nil
+}
+
+// RestorePaths restores just paths changed during one observed operation to
+// their contents in before.  expectedCurrent is a mandatory compare-and-swap
+// observation: if the worktree no longer equals it, nothing is restored and
+// ErrRepositoryDiverged is returned.  The function never changes HEAD or the
+// real index and deliberately does not offer a whole-worktree restore.
+//
+// The synthetic tree captured by Capture includes both tracked and untracked
+// non-ignored files, so it also preserves a caller's dirty work from before
+// the operation.  Ignored files, symlinks, Git metadata, and concurrent
+// editors remain outside this first-version recovery boundary.
+func RestorePaths(ctx context.Context, repository string, before, expectedCurrent Snapshot, paths []string) (Snapshot, error) {
+	root, err := repositoryRoot(ctx, repository)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	current, err := Capture(ctx, root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if current != expectedCurrent {
+		return Snapshot{}, ErrRepositoryDiverged
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	for _, candidate := range paths {
+		path, err := normalizeRelativePath(candidate)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("invalid restoration path %q: %w", candidate, err)
+		}
+		if _, duplicate := seen[path]; duplicate {
+			continue
+		}
+		seen[path] = struct{}{}
+		entry, err := treeEntry(ctx, root, before.TreeOID, path)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if err := restorePath(ctx, root, path, entry); err != nil {
+			return Snapshot{}, err
+		}
+	}
+
+	restored, err := Capture(ctx, root)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if restored.HeadOID != expectedCurrent.HeadOID || restored.HeadRef != expectedCurrent.HeadRef || restored.IndexHash != expectedCurrent.IndexHash || restored.SubmodulesHash != expectedCurrent.SubmodulesHash {
+		return Snapshot{}, ErrRepositoryDiverged
+	}
+	for path := range seen {
+		want, err := treeEntry(ctx, root, before.TreeOID, path)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		got, err := treeEntry(ctx, root, restored.TreeOID, path)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if !sameTreeFile(want, got) {
+			return Snapshot{}, ErrRepositoryDiverged
+		}
+	}
+	return restored, nil
+}
+
+type treeFile struct {
+	mode string
+	oid  string
+}
+
+func sameTreeFile(left, right *treeFile) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return left.mode == right.mode && left.oid == right.oid
+}
+
+func treeEntry(ctx context.Context, repository, tree, path string) (*treeFile, error) {
+	output, err := git(ctx, repository, "", "ls-tree", "-z", tree, "--", path)
+	if err != nil {
+		return nil, err
+	}
+	if len(output) == 0 {
+		return nil, nil
+	}
+	if output[len(output)-1] != 0 {
+		return nil, errors.New("git ls-tree returned a non-NUL-terminated entry")
+	}
+	entry := strings.TrimSuffix(string(output), "\x00")
+	metadata, entryPath, found := strings.Cut(entry, "\t")
+	if !found || filepath.ToSlash(entryPath) != path {
+		return nil, fmt.Errorf("invalid tree entry for %q", path)
+	}
+	fields := strings.Fields(metadata)
+	if len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") {
+		return nil, fmt.Errorf("%w: unsupported tree entry for %q", ErrRestoreUnsafe, path)
+	}
+	return &treeFile{mode: fields[0], oid: fields[2]}, nil
+}
+
+func restorePath(ctx context.Context, root, path string, entry *treeFile) error {
+	target, err := safeRepositoryPath(root, path, entry != nil)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(target)
+	if err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
+		return fmt.Errorf("%w: restoration target %q is not a regular file", ErrRestoreUnsafe, path)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect restoration target %q: %w", path, err)
+	}
+	if entry == nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err := os.Remove(target); err != nil {
+			return fmt.Errorf("remove restoration target %q: %w", path, err)
+		}
+		return nil
+	}
+	contents, err := git(ctx, root, "", "cat-file", "-p", entry.oid)
+	if err != nil {
+		return fmt.Errorf("read restoration content for %q: %w", path, err)
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(target), ".stepan-restore-*")
+	if err != nil {
+		return fmt.Errorf("create restoration temporary for %q: %w", path, err)
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	permissions := os.FileMode(0o644)
+	if entry.mode == "100755" {
+		permissions = 0o755
+	}
+	if err := temporary.Chmod(permissions); err != nil {
+		temporary.Close()
+		return fmt.Errorf("set restoration mode for %q: %w", path, err)
+	}
+	if _, err := temporary.Write(contents); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write restoration content for %q: %w", path, err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync restoration content for %q: %w", path, err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close restoration content for %q: %w", path, err)
+	}
+	if err := os.Rename(temporaryName, target); err != nil {
+		return fmt.Errorf("publish restoration content for %q: %w", path, err)
+	}
+	return nil
+}
+
+func safeRepositoryPath(root, path string, createParents bool) (string, error) {
+	parts := strings.Split(path, "/")
+	directory := root
+	for _, part := range parts[:len(parts)-1] {
+		directory = filepath.Join(directory, part)
+		info, err := os.Lstat(directory)
+		if os.IsNotExist(err) && createParents {
+			if err := os.Mkdir(directory, 0o755); err != nil && !os.IsExist(err) {
+				return "", fmt.Errorf("create restoration directory %q: %w", path, err)
+			}
+			info, err = os.Lstat(directory)
+		}
+		if err != nil {
+			return "", fmt.Errorf("inspect restoration directory %q: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("%w: restoration directory %q is unsafe", ErrRestoreUnsafe, path)
+		}
+	}
+	return filepath.Join(directory, parts[len(parts)-1]), nil
 }
 
 func parseChangedPaths(output []byte) ([]string, error) {
