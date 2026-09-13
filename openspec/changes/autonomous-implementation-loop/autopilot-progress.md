@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 19/65 tasks accepted; tasks 4.3, 4.4, and 5.1 accepted with technical debt; next task 5.2; final review `not_started`.
+- Outcome: `in_progress`; 20/65 tasks accepted; tasks 4.3, 4.4, 5.1, and 5.2 accepted with technical debt; next task 5.3; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -499,6 +499,18 @@ Task 5.2 correction cycle 1 frozen candidate addresses `TASK-5.2-001` by signali
 Task 5.2 correction cycle 1 commit verified: `d8c6646`; rereview confirms production `TASK-5.2-001` resolved but returns new critical `TASK-5.2-004` (High): the Darwin regression's descendant leaves stdout/stderr nil, which Go connects to `DevNull`, so it does not retain the check pipes and native macOS normally observes successful leader completion before timeout. The cancellation case likewise does not prove cancellation after leader exit. Correction must wire the descendant to inherited stdout/stderr, synchronize cancellation after confirmed parent exit, and preferably add a direct Darwin processjob regression. No new technical debt. Checkbox reopened; review `correcting`; completed correction cycles: 1. Correction cycle 2 assigned to the same pair.
 
 Task 5.2 correction cycle 2 frozen candidate addresses `TASK-5.2-004` by explicitly wiring the descendant to inherited stdout/stderr, publishing an atomic leader-exit marker immediately before exit, waiting for that marker and a still-live descendant before cancellation, and adding a direct Darwin processjob regression that reaps the leader before closing the job and requires the remaining group member to die. An initial coordinator run exposed a Windows readiness-file publication race in an existing cancellation fixture; the uncommitted candidate was corrected with atomic temp-file rename and bounded empty-content retry. That failed run was not acceptance evidence and did not consume a cycle. Fresh coordinator mandatory validation then passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, Darwin/arm64 test compilation for `checkexec` and `processjob`, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Native Darwin runtime remains `not_run`. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview. Next: separate correction commit and same reviewer.
+
+Task 5.2 correction cycle 2 commit verified: `d149548`; rereview returned `PASS with technical debt`. `TASK-5.2-001` and `TASK-5.2-004` are resolved; no remaining or new critical findings. `TASK-5.2-002` and `TASK-5.2-003` remain open debt. New Low debt `TASK-5.2-005` records a rare empty-PID-file polling flaw in the direct Darwin regression only; production is unaffected. Task 5.2 accepted after two completed correction cycles. Next task 5.3 `not_started`.
+
+### 5.3 — ordered fail-fast check sets
+
+- Base: `d149548`; dependency 5.2 accepted with technical debt.
+- Acceptance: requested sets execute only configured names in caller order; required acceptance sets execute all `required_checks` in project order independently of prior requested success; both stop at first failure or inapplicable command and explicitly mark the remaining entries `not_run`.
+- Implementer `/root/implement_5_3` (`gpt-5.6-terra`/`high`); reviewer `not_started`; review `awaiting_review`; completed correction cycles: 0.
+
+Task 5.3 frozen candidate adds an `impl_loop` check-set coordinator with requested/required kinds, preflight rejection of unknown names before execution, exact caller/project ordering, direct `checkexec` integration, fail-fast status, an explicit inapplicable result, and preserved command/result/error diagnostics. Deterministic tests cover a narrow additional check, mixed request order, pre-execution rejection, required order after prior requested success, platform-inapplicable commands, first failure, retained stderr, and explicit unrun remainder. Empty requested lists remain permitted because this task's approved requirements do not require non-empty transport; later response-schema validation may narrow that input. No manual check.
+
+Implementer focused stress, full tests, vet, both builds and diff check passed. Coordinator's first full run had two unrelated Nessy conformance failures and was rejected as evidence; both isolated tests then passed 10/10. A fresh full mandatory validation passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh reviewer.
 
 Task 4.3 correction cycle 1 commit verified: `815ee13fdfa775092e5fb7eb1563428624207b0f`; implementation `f6507bcc1b99c2500e06406ed7cdf85c5bec3a6e`, original base `9db95d5c77c33d1ab63af9082d9eaa41274a6898`. Working tree and index were clean immediately after commit. Rereview cycle 1 pending with `/root/review_4_3`; completed cycles remain 0 until its response.
 

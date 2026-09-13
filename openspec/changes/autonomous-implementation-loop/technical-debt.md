@@ -49,3 +49,13 @@
 - Expected impact: later orchestration could route a rare supervisor failure inconsistently depending on whether it reads the result or error chain.
 - Classification: technical debt because supervisor-close failures are uncommon and no ordinary supported-use reproduction was established.
 - Possible follow-up: make infrastructure the primary result failure while preserving cancellation as secondary diagnostic context, and inject supervisor/process launch for tests.
+
+## TASK-5.2-005 — Darwin processjob test can mishandle an empty PID file
+
+- Origin: task 5.2 rereview cycle 2; affected location: `internal/processjob/job_darwin_test.go`.
+- Status: `open`.
+- Potential problem: when `ReadFile` succeeds with temporarily empty content, the polling helper falls through to `t.Fatal(nil)` instead of continuing.
+- Evidence: the shell redirection creates/truncates the PID file before `printf` writes, leaving a short observable empty-file interval.
+- Expected impact: low-probability native Darwin test flake; production behavior is unaffected and deferred cleanup still runs.
+- Classification: technical debt because the race window is very short and no evidence establishes typical incidence.
+- Possible follow-up: continue polling on empty trimmed content and fail only on a non-nil error other than `IsNotExist` or malformed non-empty content.
