@@ -224,15 +224,7 @@ func assertTerminationDiagnostics(t *testing.T, result Result) {
 func assertHelperTreeStopped(t *testing.T, parentReady, childReady string) {
 	t.Helper()
 	awaitFile(t, childReady)
-	data, err := os.ReadFile(parentReady)
-	if err != nil {
-		t.Fatal(err)
-	}
-	childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatalf("child PID %q: %v", data, err)
-	}
-	assertProcessStopped(t, childPID)
+	assertProcessStopped(t, awaitHelperPID(t, parentReady))
 }
 
 func awaitFile(t *testing.T, path string) {
@@ -250,6 +242,34 @@ func awaitFile(t *testing.T, path string) {
 		select {
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for %s", path)
+		case <-poll.C:
+		}
+	}
+}
+
+func awaitHelperPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			value := strings.TrimSpace(string(data))
+			if value != "" {
+				pid, err := strconv.Atoi(value)
+				if err != nil || pid <= 1 {
+					t.Fatalf("child PID %q: %v", data, err)
+				}
+				return pid
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for complete child PID at %s", path)
 		case <-poll.C:
 		}
 	}
@@ -307,6 +327,10 @@ func runHelperProcess() int {
 		}
 		child := exec.Command(os.Args[0], "--", "--hang-child-ready="+childReady)
 		child.Env = append(os.Environ(), helperEnvironment+"=1")
+		// The regression needs the descendant to retain the check's output
+		// pipes after this helper (the process-group leader) exits.
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
 		if err := child.Start(); err != nil {
 			return 29
 		}
@@ -316,8 +340,17 @@ func runHelperProcess() int {
 		defer poll.Stop()
 		for {
 			if _, err := os.Stat(childReady); err == nil {
-				if err := os.WriteFile(parentReady, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+				if err := publishHelperFile(parentReady, []byte(strconv.Itoa(child.Process.Pid))); err != nil {
 					return 30
+				}
+				if leaderExiting := argumentValue(arguments, "--leader-exiting="); leaderExiting != "" {
+					if err := publishHelperFile(leaderExiting, []byte("exiting")); err != nil {
+						return 33
+					}
+					// The cancellation regression observes this final hand-off and
+					// then waits for a still-live descendant; nothing in this helper
+					// can run after the marker is visible.
+					os.Exit(0)
 				}
 				return 0
 			} else if !os.IsNotExist(err) {
@@ -348,7 +381,7 @@ func runHelperProcess() int {
 		defer poll.Stop()
 		for {
 			if _, err := os.Stat(childReady); err == nil {
-				if err := os.WriteFile(parentReady, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+				if err := publishHelperFile(parentReady, []byte(strconv.Itoa(child.Process.Pid))); err != nil {
 					return 24
 				}
 				time.Sleep(24 * time.Hour)
@@ -364,7 +397,7 @@ func runHelperProcess() int {
 		}
 	}
 	if ready := argumentValue(arguments, "--hang-child-ready="); ready != "" {
-		if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+		if err := publishHelperFile(ready, []byte("ready")); err != nil {
 			return 20
 		}
 		time.Sleep(24 * time.Hour)
@@ -411,4 +444,17 @@ func argumentValue(arguments []string, prefix string) string {
 		}
 	}
 	return ""
+}
+
+func publishHelperFile(path string, data []byte) (err error) {
+	temporary := path + ".tmp-" + strconv.Itoa(os.Getpid())
+	defer func() {
+		if err != nil {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if err = os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, path)
 }
