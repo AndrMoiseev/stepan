@@ -29,3 +29,23 @@
 - Expected impact: weakened regression protection for diagnostics used by later log/reporting tasks.
 - Classification: technical debt because current production behavior is correct by inspection and the gap is limited to test coverage.
 - Possible follow-up: emit distinct stdout/stderr payloads before non-zero exit and assert both byte-for-byte with the exit code and error.
+
+## TASK-5.2-002 — pre-canceled context can still launch a command
+
+- Origin: task 5.2 initial review; affected location: `internal/checkexec/checkexec.go`.
+- Status: `open`.
+- Potential problem: `RunContext` checks the context only after starting and assigning the process, so an already-canceled or expired context can permit brief command side effects.
+- Evidence: the start path precedes the select on `runContext.Done`; Windows assignment resumes the suspended process before cancellation is observed.
+- Expected impact: a narrow pause/cancel-before-dispatch interleaving may run a command briefly.
+- Classification: technical debt because review found no evidence that this narrow transition is typical or causes a serious supported-use failure.
+- Possible follow-up: reject pre-canceled and pre-expired contexts before creating or starting the child, with deterministic tests.
+
+## TASK-5.2-003 — supervisor failure has inconsistent result/error classification
+
+- Origin: task 5.2 initial review; affected location: `internal/checkexec/checkexec.go`.
+- Status: `open`.
+- Potential problem: after cancellation, a `job.Close` error returns `ErrInfrastructure` while `Result.Failure` remains timeout or canceled.
+- Evidence: supervisor-close failure overrides the returned error classification after the result was populated from the initiating context; no injectable regression covers this path.
+- Expected impact: later orchestration could route a rare supervisor failure inconsistently depending on whether it reads the result or error chain.
+- Classification: technical debt because supervisor-close failures are uncommon and no ordinary supported-use reproduction was established.
+- Possible follow-up: make infrastructure the primary result failure while preserving cancellation as secondary diagnostic context, and inject supervisor/process launch for tests.

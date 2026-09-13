@@ -298,6 +298,38 @@ func runHelperProcess() int {
 			return 23
 		}
 	}
+	if parentReady, childReady := argumentValue(arguments, "--exit-parent-ready="), argumentValue(arguments, "--hang-child-ready="); parentReady != "" && childReady != "" {
+		if _, err := os.Stdout.WriteString("stdout before leader exit\n"); err != nil {
+			return 27
+		}
+		if _, err := os.Stderr.WriteString("stderr before leader exit\n"); err != nil {
+			return 28
+		}
+		child := exec.Command(os.Args[0], "--", "--hang-child-ready="+childReady)
+		child.Env = append(os.Environ(), helperEnvironment+"=1")
+		if err := child.Start(); err != nil {
+			return 29
+		}
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		poll := time.NewTicker(10 * time.Millisecond)
+		defer poll.Stop()
+		for {
+			if _, err := os.Stat(childReady); err == nil {
+				if err := os.WriteFile(parentReady, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+					return 30
+				}
+				return 0
+			} else if !os.IsNotExist(err) {
+				return 31
+			}
+			select {
+			case <-deadline.C:
+				return 32
+			case <-poll.C:
+			}
+		}
+	}
 	if parentReady, childReady := argumentValue(arguments, "--hang-parent-ready="), argumentValue(arguments, "--hang-child-ready="); parentReady != "" && childReady != "" {
 		if _, err := os.Stdout.WriteString("stdout before interruption\n"); err != nil {
 			return 21

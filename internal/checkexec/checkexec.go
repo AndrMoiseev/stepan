@@ -6,11 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/processjob"
@@ -41,6 +43,11 @@ const (
 	FailureCanceled       FailureKind = "canceled"
 	FailureLaunch         FailureKind = "launch"
 	FailureInfrastructure FailureKind = "infrastructure"
+)
+
+const (
+	postTerminationWait         = 2 * time.Second
+	postTerminationFallbackWait = 2 * time.Second
 )
 
 var (
@@ -97,25 +104,40 @@ func RunContext(ctx context.Context, command Command) (Result, error) {
 	// reads see EOF and the command cannot consume Stepan's terminal input.
 	child.Stdin = nil
 
-	var stdout, stderr bytes.Buffer
-	child.Stdout = &stdout
-	child.Stderr = &stderr
+	stdoutPipe, err := child.StdoutPipe()
+	if err != nil {
+		return Result{ExitCode: -1, Failure: FailureInfrastructure}, checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("create stdout pipe: %w", err))
+	}
+	stderrPipe, err := child.StderrPipe()
+	if err != nil {
+		_ = stdoutPipe.Close()
+		return Result{ExitCode: -1, Failure: FailureInfrastructure}, checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("create stderr pipe: %w", err))
+	}
+	var stdout, stderr outputBuffer
 
 	job, err := processjob.New()
 	if err != nil {
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
 		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("create process supervisor: %w", err))
 	}
 	if err := job.Prepare(child); err != nil {
 		_ = job.Close()
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
 		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("prepare process supervisor: %w", err))
 	}
 	if err := child.Start(); err != nil {
 		_ = job.Close()
+		_ = stdoutPipe.Close()
+		_ = stderrPipe.Close()
 		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureLaunch), checkError(command, FailureLaunch, ErrLaunch, err)
 	}
+	stdoutDone := copyOutput(&stdout, stdoutPipe)
+	stderrDone := copyOutput(&stderr, stderrPipe)
 	if err := job.Assign(child.Process); err != nil {
 		_ = job.Close()
-		killAndWait(child)
+		killAndWait(child, stdoutPipe, stderrPipe, stdoutDone, stderrDone)
 		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("assign process supervisor: %w", err))
 	}
 
@@ -125,8 +147,7 @@ func RunContext(ctx context.Context, command Command) (Result, error) {
 	}
 	defer stopTimeout()
 
-	wait := make(chan error, 1)
-	go func() { wait <- child.Wait() }()
+	wait := waitForCommand(child, stdoutDone, stderrDone)
 
 	select {
 	case err := <-wait:
@@ -141,7 +162,7 @@ func RunContext(ctx context.Context, command Command) (Result, error) {
 		default:
 		}
 		closeErr := job.Close()
-		waitErr := <-wait
+		waitErr := waitAfterTermination(child, stdoutPipe, stderrPipe, wait)
 		result := resultFrom(child, stdout.Bytes(), stderr.Bytes(), cancellationFailure(ctx, runContext))
 		if closeErr != nil {
 			return result, checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("terminate process tree: %w", closeErr))
@@ -189,15 +210,84 @@ func cancellationFailure(parent, combined context.Context) FailureKind {
 	return FailureCanceled
 }
 
-func killAndWait(command *exec.Cmd) {
+func copyOutput(destination io.Writer, source io.ReadCloser) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(destination, source)
+		close(done)
+	}()
+	return done
+}
+
+func waitForCommand(command *exec.Cmd, stdoutDone, stderrDone <-chan struct{}) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		<-stdoutDone
+		<-stderrDone
+		done <- command.Wait()
+	}()
+	return done
+}
+
+func waitAfterTermination(command *exec.Cmd, stdout, stderr io.ReadCloser, wait <-chan error) error {
+	timer := time.NewTimer(postTerminationWait)
+	defer timer.Stop()
+	select {
+	case err := <-wait:
+		return err
+	case <-timer.C:
+		// A descendant can retain the inherited pipe after its group leader has
+		// exited. Closing our read sides unblocks their copy goroutines, then a
+		// direct root kill is a final reaping fallback if supervision failed.
+		_ = stdout.Close()
+		_ = stderr.Close()
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		fallback := time.NewTimer(postTerminationFallbackWait)
+		defer fallback.Stop()
+		select {
+		case err := <-wait:
+			return err
+		case <-fallback.C:
+			// The waiter remains responsible for calling Cmd.Wait and eventually
+			// reaping the root. Return now rather than holding the controller
+			// forever on a broken pipe or unreapable child.
+			return errors.New("check did not exit after forced termination")
+		}
+	}
+}
+
+func killAndWait(command *exec.Cmd, stdout, stderr io.ReadCloser, stdoutDone, stderrDone <-chan struct{}) {
 	if command.Process != nil {
 		_ = command.Process.Kill()
 	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	<-stdoutDone
+	<-stderrDone
 	_ = command.Wait()
 }
 
 func checkError(command Command, kind FailureKind, sentinel, cause error) error {
 	return fmt.Errorf("run check %q (%s): %w", command.Program, kind, errors.Join(sentinel, cause))
+}
+
+type outputBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (buffer *outputBuffer) Write(data []byte) (int, error) {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return buffer.buffer.Write(data)
+}
+
+func (buffer *outputBuffer) Bytes() []byte {
+	buffer.mu.Lock()
+	defer buffer.mu.Unlock()
+	return append([]byte(nil), buffer.buffer.Bytes()...)
 }
 
 func commandEnvironment(base []string, overrides map[string]string) []string {
