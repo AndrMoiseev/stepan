@@ -37,12 +37,39 @@ const (
 	ResponseStateExtractingTasks ResponseState = "extracting_tasks"
 	ResponseStateAddingTasks     ResponseState = "adding_tasks"
 	ResponseStateReflectingTasks ResponseState = "reflecting_tasks"
-	ResponseStateBriefing        ResponseState = "briefing"
+	// Initial briefing is run-scoped; a refinement belongs to an already
+	// selected assignment and its current brief version.
+	ResponseStateInitialBriefing ResponseState = "initial_briefing"
+	ResponseStateBriefRefinement ResponseState = "brief_refinement"
 	ResponseStateImplementing    ResponseState = "implementing"
 	ResponseStateTaskReview      ResponseState = "task_review"
 	ResponseStateFinalReview     ResponseState = "final_review"
 	ResponseStateExploring       ResponseState = "exploring"
 	ResponseStateBootstrapping   ResponseState = "bootstrapping"
+)
+
+// ResponseScope identifies the durable controller object that owns a call.
+// It prevents a run-level call from inventing an assignment merely to satisfy
+// a generic response contract.
+type ResponseScope string
+
+const (
+	ResponseScopeRun        ResponseScope = "run"
+	ResponseScopeAssignment ResponseScope = "assignment"
+	ResponseScopeBootstrap  ResponseScope = "bootstrap"
+)
+
+// ExplorerSource identifies the paused role whose request an Explorer call
+// serves. The source is controller-owned, just like every other binding.
+type ExplorerSource string
+
+const (
+	ExplorerSourceInitialBriefing ExplorerSource = "initial_briefing"
+	ExplorerSourceBriefRefinement ExplorerSource = "brief_refinement"
+	ExplorerSourceImplementer     ExplorerSource = "implementer"
+	ExplorerSourceTaskReviewer    ExplorerSource = "task_reviewer"
+	ExplorerSourceFinalReviewer   ExplorerSource = "final_reviewer"
+	ExplorerSourceBootstrapper    ExplorerSource = "bootstrapper"
 )
 
 // ResponseKind names one next action. An agent can never choose an arbitrary
@@ -78,6 +105,7 @@ var (
 	ErrResponseRole           = errors.New("implementation agent response is not allowed for role")
 	ErrResponseState          = errors.New("implementation agent response is not allowed for state")
 	ErrResponseBinding        = errors.New("implementation agent response binding is incomplete")
+	ErrResponseSemantics      = errors.New("implementation agent response has invalid semantic fields")
 )
 
 // ResponseBinding is made by the controller after a transport response has
@@ -91,15 +119,21 @@ type ResponseBinding struct {
 	Specification implementationstate.EvidenceRef
 	Configuration implementationstate.EvidenceRef
 	TaskList      implementationstate.EvidenceRef
+	// Bootstrap captures each editable configuration input independently so a
+	// proposal cannot be applied to a configuration the agent did not inspect.
+	UserConfiguration    implementationstate.EvidenceRef
+	ProjectConfiguration implementationstate.EvidenceRef
 }
 
 // ResponseExpectation is the controller's immutable context for one call.
 // Bootstrap has no implementation run or assignment; its CallID still binds a
 // proposal to the controller action that requested it.
 type ResponseExpectation struct {
-	Role    ResponseRole
-	State   ResponseState
-	Binding ResponseBinding
+	Role           ResponseRole
+	State          ResponseState
+	Scope          ResponseScope
+	ExplorerSource ExplorerSource
+	Binding        ResponseBinding
 }
 
 // AgentResponse is the normalized domain result. Nil string fields and nil
@@ -119,7 +153,11 @@ type AgentResponse struct {
 	Context               *string
 	Boundaries            *string
 	KnownFacts            []string
+	Unknowns              []string
 	References            []string
+	Locations             []string
+	Bases                 []string
+	ExpectedResults       []string
 	Options               []string
 	Recommendation        *string
 	BlockedAction         *string
@@ -161,7 +199,11 @@ func ResponseSchema(role ResponseRole) (json.RawMessage, error) {
 			"context":                map[string]any{"type": "string"},
 			"boundaries":             map[string]any{"type": "string"},
 			"known_facts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"unknowns":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"references":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"locations":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"bases":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"expected_results":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"options":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"recommendation":         map[string]any{"type": "string"},
 			"blocked_action":         map[string]any{"type": "string"},
@@ -203,7 +245,11 @@ func BindAgentResponse(expectation ResponseExpectation, raw json.RawMessage) (Ag
 	if !responseAllowedInState(kind, expectation) {
 		return AgentResponse{}, fmt.Errorf("%w: kind %q for %q", ErrResponseState, kind, expectation.State)
 	}
-	return normalizedResponse(kind, transport, expectation.Binding), nil
+	response := normalizedResponse(kind, transport, expectation.Binding)
+	if err := validateResponseSemantics(response); err != nil {
+		return AgentResponse{}, err
+	}
+	return response, nil
 }
 
 type responseTransport struct {
@@ -219,7 +265,11 @@ type responseTransport struct {
 	Context               string   `json:"context"`
 	Boundaries            string   `json:"boundaries"`
 	KnownFacts            []string `json:"known_facts"`
+	Unknowns              []string `json:"unknowns"`
 	References            []string `json:"references"`
+	Locations             []string `json:"locations"`
+	Bases                 []string `json:"bases"`
+	ExpectedResults       []string `json:"expected_results"`
 	Options               []string `json:"options"`
 	Recommendation        string   `json:"recommendation"`
 	BlockedAction         string   `json:"blocked_action"`
@@ -232,7 +282,7 @@ type responseTransport struct {
 }
 
 var responseTransportFields = []string{
-	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "question", "context", "boundaries", "known_facts", "references", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_implementation", "project_implementation", "explanation",
+	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "question", "context", "boundaries", "known_facts", "unknowns", "references", "locations", "bases", "expected_results", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_implementation", "project_implementation", "explanation",
 }
 
 var responseKindsByRole = map[ResponseRole][]ResponseKind{
@@ -249,18 +299,37 @@ func validateExpectation(expectation ResponseExpectation) error {
 	if _, ok := responseKindsByRole[expectation.Role]; !ok || !stateBelongsToRole(expectation.State, expectation.Role) {
 		return fmt.Errorf("%w: role %q and state %q", ErrResponseRole, expectation.Role, expectation.State)
 	}
+	if expected := scopeForExpectation(expectation); expectation.Scope != expected {
+		return fmt.Errorf("%w: role %q state %q requires %q scope", ErrResponseBinding, expectation.Role, expectation.State, expected)
+	}
+	if expectation.Role == ResponseRoleExplorer {
+		if !validExplorerSource(expectation.ExplorerSource) || explorerSourceScope(expectation.ExplorerSource) != expectation.Scope {
+			return fmt.Errorf("%w: explorer source %q does not match %q scope", ErrResponseBinding, expectation.ExplorerSource, expectation.Scope)
+		}
+	} else if expectation.ExplorerSource != "" {
+		return fmt.Errorf("%w: only Explorer calls have an explorer source", ErrResponseBinding)
+	}
 	binding := expectation.Binding
 	if strings.TrimSpace(binding.CallID) == "" {
 		return fmt.Errorf("%w: call ID is required", ErrResponseBinding)
 	}
-	if expectation.Role == ResponseRoleBootstrapper {
+	if expectation.Scope == ResponseScopeBootstrap {
+		if !validEvidence(binding.UserConfiguration) || !validEvidence(binding.ProjectConfiguration) {
+			return fmt.Errorf("%w: bootstrap configuration inputs are required", ErrResponseBinding)
+		}
+		if binding.RunID != "" || binding.AssignmentID != "" || binding.BriefID != "" {
+			return fmt.Errorf("%w: bootstrap calls must not carry implementation identifiers", ErrResponseBinding)
+		}
 		return nil
 	}
 	if binding.RunID == "" || !validEvidence(binding.Specification) || !validEvidence(binding.Configuration) || !validEvidence(binding.TaskList) {
 		return fmt.Errorf("%w: run and input versions are required", ErrResponseBinding)
 	}
-	if expectation.Role != ResponseRoleOrchestrator && (binding.AssignmentID == "" || binding.BriefID == "") {
+	if expectation.Scope == ResponseScopeAssignment && (binding.AssignmentID == "" || binding.BriefID == "") {
 		return fmt.Errorf("%w: assignment and brief IDs are required", ErrResponseBinding)
+	}
+	if expectation.Scope == ResponseScopeRun && (binding.AssignmentID != "" || binding.BriefID != "") {
+		return fmt.Errorf("%w: run-scoped calls must not carry assignment or brief IDs", ErrResponseBinding)
 	}
 	return nil
 }
@@ -273,7 +342,7 @@ func stateBelongsToRole(state ResponseState, role ResponseRole) bool {
 	switch state {
 	case ResponseStateExtractingTasks, ResponseStateAddingTasks, ResponseStateReflectingTasks:
 		return role == ResponseRoleOrchestrator
-	case ResponseStateBriefing:
+	case ResponseStateInitialBriefing, ResponseStateBriefRefinement:
 		return role == ResponseRoleBriefer
 	case ResponseStateImplementing:
 		return role == ResponseRoleImplementer
@@ -287,6 +356,39 @@ func stateBelongsToRole(state ResponseState, role ResponseRole) bool {
 		return role == ResponseRoleBootstrapper
 	default:
 		return false
+	}
+}
+
+func scopeForExpectation(expectation ResponseExpectation) ResponseScope {
+	switch expectation.Role {
+	case ResponseRoleBootstrapper:
+		return ResponseScopeBootstrap
+	case ResponseRoleOrchestrator, ResponseRoleFinalReviewer:
+		return ResponseScopeRun
+	case ResponseRoleBriefer:
+		if expectation.State == ResponseStateInitialBriefing {
+			return ResponseScopeRun
+		}
+		return ResponseScopeAssignment
+	case ResponseRoleExplorer:
+		return explorerSourceScope(expectation.ExplorerSource)
+	default:
+		return ResponseScopeAssignment
+	}
+}
+
+func validExplorerSource(source ExplorerSource) bool {
+	return source == ExplorerSourceInitialBriefing || source == ExplorerSourceBriefRefinement || source == ExplorerSourceImplementer || source == ExplorerSourceTaskReviewer || source == ExplorerSourceFinalReviewer || source == ExplorerSourceBootstrapper
+}
+
+func explorerSourceScope(source ExplorerSource) ResponseScope {
+	switch source {
+	case ExplorerSourceInitialBriefing, ExplorerSourceFinalReviewer:
+		return ResponseScopeRun
+	case ExplorerSourceBootstrapper:
+		return ResponseScopeBootstrap
+	default:
+		return ResponseScopeAssignment
 	}
 }
 
@@ -304,7 +406,7 @@ func responseAllowedInState(kind ResponseKind, expectation ResponseExpectation) 
 		return kind == ResponseTasksAdded
 	case ResponseStateReflectingTasks:
 		return kind == ResponseProgressReflected
-	case ResponseStateBriefing:
+	case ResponseStateInitialBriefing, ResponseStateBriefRefinement:
 		return kind == ResponseBriefReady
 	case ResponseStateImplementing:
 		return kind == ResponseImplementationReady || kind == ResponseChecksRequested || kind == ResponseReviewDisputed
@@ -341,7 +443,7 @@ func decodeResponseTransport(raw json.RawMessage) (responseTransport, error) {
 	if decoder.More() {
 		return responseTransport{}, fmt.Errorf("%w: response has trailing values", ErrMalformedAgentResponse)
 	}
-	if result.TaskIDs == nil || result.TaskPayloads == nil || result.CheckNames == nil || result.FindingIDs == nil || result.Findings == nil || result.KnownFacts == nil || result.References == nil || result.Options == nil || result.Attempts == nil {
+	if result.TaskIDs == nil || result.TaskPayloads == nil || result.CheckNames == nil || result.FindingIDs == nil || result.Findings == nil || result.KnownFacts == nil || result.Unknowns == nil || result.References == nil || result.Locations == nil || result.Bases == nil || result.ExpectedResults == nil || result.Options == nil || result.Attempts == nil {
 		return responseTransport{}, fmt.Errorf("%w: array placeholders must be arrays", ErrMalformedAgentResponse)
 	}
 	return result, nil
@@ -353,7 +455,8 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 		TaskPayloads: optionalStrings(input.TaskPayloads), CheckNames: optionalStrings(input.CheckNames),
 		FindingIDs: optionalStrings(input.FindingIDs), Findings: optionalStrings(input.Findings),
 		Question: optionalString(input.Question), Context: optionalString(input.Context), Boundaries: optionalString(input.Boundaries),
-		KnownFacts: optionalStrings(input.KnownFacts), References: optionalStrings(input.References), Options: optionalStrings(input.Options),
+		KnownFacts: optionalStrings(input.KnownFacts), Unknowns: optionalStrings(input.Unknowns), References: optionalStrings(input.References),
+		Locations: optionalStrings(input.Locations), Bases: optionalStrings(input.Bases), ExpectedResults: optionalStrings(input.ExpectedResults), Options: optionalStrings(input.Options),
 		Recommendation: optionalString(input.Recommendation), BlockedAction: optionalString(input.BlockedAction), Diagnostic: optionalString(input.Diagnostic),
 		Attempts: optionalStrings(input.Attempts), RequiredUserAction: optionalString(input.RequiredUserAction),
 		UserImplementation: optionalString(input.UserImplementation), ProjectImplementation: optionalString(input.ProjectImplementation), Explanation: optionalString(input.Explanation),
@@ -366,6 +469,159 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 		}
 	}
 	return result
+}
+
+// validateResponseSemantics runs after required transport placeholders become
+// nil. This keeps the provider schema compatible with flat-object transports
+// while preventing an empty success result from advancing the controller.
+func validateResponseSemantics(response AgentResponse) error {
+	requireText := func(name string, value *string) error {
+		if value == nil || strings.TrimSpace(*value) == "" {
+			return fmt.Errorf("%w: %s is required", ErrResponseSemantics, name)
+		}
+		return nil
+	}
+	requireValues := func(name string, values []string) error {
+		if len(values) == 0 {
+			return fmt.Errorf("%w: %s is required", ErrResponseSemantics, name)
+		}
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("%w: %s must not contain blank values", ErrResponseSemantics, name)
+			}
+		}
+		return nil
+	}
+	requireTaskIDs := func() error {
+		if len(response.TaskIDs) == 0 {
+			return fmt.Errorf("%w: task_ids is required", ErrResponseSemantics)
+		}
+		for _, id := range response.TaskIDs {
+			if strings.TrimSpace(string(id)) == "" {
+				return fmt.Errorf("%w: task_ids must not contain blank values", ErrResponseSemantics)
+			}
+		}
+		return nil
+	}
+	sameLength := func(fields ...[]string) error {
+		for _, field := range fields[1:] {
+			if len(field) != len(fields[0]) {
+				return fmt.Errorf("%w: associated finding fields have different lengths", ErrResponseSemantics)
+			}
+		}
+		return nil
+	}
+
+	switch response.Kind {
+	case ResponseBriefReady:
+		if err := requireTaskIDs(); err != nil {
+			return err
+		}
+		return requireText("brief", response.Brief)
+	case ResponseImplementationReady:
+		return requireText("message", response.Message)
+	case ResponseChecksRequested:
+		return requireValues("check_names", response.CheckNames)
+	case ResponseReviewPassed:
+		if err := requireText("message", response.Message); err != nil {
+			return err
+		}
+		return requireValues("references", response.References)
+	case ResponseChangesRequested:
+		for _, value := range []struct {
+			name   string
+			values []string
+		}{{"finding_ids", response.FindingIDs}, {"findings", response.Findings}, {"locations", response.Locations}, {"bases", response.Bases}, {"expected_results", response.ExpectedResults}} {
+			if err := requireValues(value.name, value.values); err != nil {
+				return err
+			}
+		}
+		return sameLength(response.FindingIDs, response.Findings, response.Locations, response.Bases, response.ExpectedResults)
+	case ResponseReviewDisputed:
+		if len(response.FindingIDs) != 1 {
+			return fmt.Errorf("%w: review_disputed requires exactly one finding ID", ErrResponseSemantics)
+		}
+		if err := requireValues("finding_ids", response.FindingIDs); err != nil {
+			return err
+		}
+		if err := requireText("message", response.Message); err != nil {
+			return err
+		}
+		return requireValues("references", response.References)
+	case ResponseExplorationRequested:
+		for _, value := range []struct {
+			name  string
+			value *string
+		}{{"question", response.Question}, {"context", response.Context}, {"boundaries", response.Boundaries}} {
+			if err := requireText(value.name, value.value); err != nil {
+				return err
+			}
+		}
+		return requireValues("known_facts", response.KnownFacts)
+	case ResponseExplorationResult:
+		if err := requireText("message", response.Message); err != nil {
+			return err
+		}
+		for _, value := range []struct {
+			name   string
+			values []string
+		}{{"known_facts", response.KnownFacts}, {"references", response.References}, {"unknowns", response.Unknowns}} {
+			if err := requireValues(value.name, value.values); err != nil {
+				return err
+			}
+		}
+		return nil
+	case ResponseClarificationNeeded:
+		for _, value := range []struct {
+			name  string
+			value *string
+		}{{"question", response.Question}, {"context", response.Context}, {"boundaries", response.Boundaries}} {
+			if err := requireText(value.name, value.value); err != nil {
+				return err
+			}
+		}
+		return requireValues("references", response.References)
+	case ResponseExecutionBlocked:
+		for _, value := range []struct {
+			name  string
+			value *string
+		}{{"blocked_action", response.BlockedAction}, {"diagnostic", response.Diagnostic}, {"required_user_action", response.RequiredUserAction}} {
+			if err := requireText(value.name, value.value); err != nil {
+				return err
+			}
+		}
+		return requireValues("attempts", response.Attempts)
+	case ResponseTasksExtracted, ResponseTasksAdded:
+		if err := requireTaskIDs(); err != nil {
+			return err
+		}
+		if err := requireValues("task_payloads", response.TaskPayloads); err != nil {
+			return err
+		}
+		if len(response.TaskIDs) != len(response.TaskPayloads) {
+			return fmt.Errorf("%w: task_ids and task_payloads have different lengths", ErrResponseSemantics)
+		}
+		return nil
+	case ResponseProgressReflected:
+		return requireTaskIDs()
+	case ResponseConfigurationProposed:
+		if response.UserImplementation == nil && response.ProjectImplementation == nil {
+			return fmt.Errorf("%w: a configuration proposal is required", ErrResponseSemantics)
+		}
+		if response.UserImplementation != nil {
+			if err := requireText("user_implementation", response.UserImplementation); err != nil {
+				return err
+			}
+		}
+		if response.ProjectImplementation != nil {
+			if err := requireText("project_implementation", response.ProjectImplementation); err != nil {
+				return err
+			}
+		}
+		return requireText("explanation", response.Explanation)
+	default:
+		return fmt.Errorf("%w: unsupported kind %q", ErrResponseSemantics, response.Kind)
+	}
 }
 
 func optionalString(value string) *string {
