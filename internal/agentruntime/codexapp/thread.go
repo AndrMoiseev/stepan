@@ -172,9 +172,11 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 		// independently writable rather than becoming an implicit workspace
 		// subdirectory.
 		sandboxPolicy = map[string]any{
-			"type":          "workspaceWrite",
-			"writableRoots": append([]string(nil), writable...),
-			"networkAccess": false,
+			"type":                "workspaceWrite",
+			"writableRoots":       append([]string(nil), writable...),
+			"excludeSlashTmp":     true,
+			"excludeTmpdirEnvVar": true,
+			"networkAccess":       false,
 		}
 	}
 	params := map[string]any{

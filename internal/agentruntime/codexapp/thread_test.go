@@ -142,9 +142,11 @@ func serveWorkspaceWriteTurn(t *testing.T, server *Transport, result chan<- erro
 	var params struct {
 		ThreadID string `json:"threadId"`
 		Sandbox  struct {
-			Type          string   `json:"type"`
-			WritableRoots []string `json:"writableRoots"`
-			NetworkAccess bool     `json:"networkAccess"`
+			Type                string   `json:"type"`
+			WritableRoots       []string `json:"writableRoots"`
+			ExcludeSlashTmp     bool     `json:"excludeSlashTmp"`
+			ExcludeTmpdirEnvVar bool     `json:"excludeTmpdirEnvVar"`
+			NetworkAccess       bool     `json:"networkAccess"`
 		} `json:"sandboxPolicy"`
 		Schema json.RawMessage `json:"outputSchema"`
 	}
@@ -153,6 +155,9 @@ func serveWorkspaceWriteTurn(t *testing.T, server *Transport, result chan<- erro
 	}
 	if err == nil && (request.Method != "turn/start" || params.ThreadID != "thread" || params.Sandbox.Type != test.wantSandbox || params.Sandbox.NetworkAccess || len(params.Sandbox.WritableRoots) != test.wantWritableRootCount) {
 		err = fmt.Errorf("turn/start policy = %s", request.Params)
+	}
+	if err == nil && params.Sandbox.Type == "workspaceWrite" && (!params.Sandbox.ExcludeSlashTmp || !params.Sandbox.ExcludeTmpdirEnvVar) {
+		err = fmt.Errorf("workspace-write turn omitted temporary-directory exclusions: %s", request.Params)
 	}
 	if err == nil && test.wantWritableRootCount != 0 && (params.Sandbox.WritableRoots[0] != workspace || test.wantWritableRootCount == 2 && params.Sandbox.WritableRoots[1] != artifact) {
 		err = fmt.Errorf("turn/start writable roots = %v", params.Sandbox.WritableRoots)
