@@ -3,6 +3,7 @@ package gitsnapshot
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -15,8 +16,19 @@ var ErrRepositoryDiverged = errors.New("REPOSITORY_DIVERGED")
 var ErrOutsideBoundary = errors.New("changes outside allowed root")
 
 type Snapshot struct {
-	HeadOID string `json:"head_oid"`
-	TreeOID string `json:"tree_oid"`
+	HeadOID    string `json:"head_oid"`
+	TreeOID    string `json:"tree_oid"`
+	IndexHash  string `json:"index_hash"`
+	StatusHash string `json:"status_hash"`
+}
+
+// Difference describes every repository dimension changed during one
+// operation. Paths exclude changes already present in the before snapshot.
+type Difference struct {
+	Paths         []string
+	HeadChanged   bool
+	IndexChanged  bool
+	StatusChanged bool
 }
 
 type BoundaryError struct {
@@ -52,6 +64,61 @@ func Compare(ctx context.Context, repository string, before, after Snapshot) ([]
 	if err != nil {
 		return nil, err
 	}
+	if len(output) == 0 {
+		return nil, nil
+	}
+	if output[len(output)-1] != 0 {
+		return nil, errors.New("git diff-tree returned a non-NUL-terminated path list")
+	}
+	parts := bytes.Split(output[:len(output)-1], []byte{0})
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		path, err := normalizeRelativePath(string(part))
+		if err != nil {
+			return nil, fmt.Errorf("invalid changed path %q: %w", part, err)
+		}
+		paths = append(paths, path)
+	}
+	return paths, nil
+}
+
+// Diff returns file, HEAD, and index changes attributable to the interval
+// between before and after. It permits a changed HEAD so callers can describe
+// operations that intentionally create a commit.
+func Diff(ctx context.Context, repository string, before, after Snapshot) (Difference, error) {
+	if !filepath.IsAbs(repository) {
+		return Difference{}, errors.New("repository path must be absolute")
+	}
+	output, err := git(ctx, repository, "", "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", before.TreeOID, after.TreeOID)
+	if err != nil {
+		return Difference{}, err
+	}
+	paths, err := parseChangedPaths(output)
+	if err != nil {
+		return Difference{}, err
+	}
+	return Difference{
+		Paths:         paths,
+		HeadChanged:   before.HeadOID != after.HeadOID,
+		IndexChanged:  before.IndexHash != after.IndexHash,
+		StatusChanged: before.StatusHash != after.StatusHash,
+	}, nil
+}
+
+// EnsureUnchanged verifies the complete repository fingerprint before the next
+// operation. It reports divergence without attempting repair.
+func EnsureUnchanged(ctx context.Context, repository string, expected Snapshot) error {
+	actual, err := Capture(ctx, repository)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return ErrRepositoryDiverged
+	}
+	return nil
+}
+
+func parseChangedPaths(output []byte) ([]string, error) {
 	if len(output) == 0 {
 		return nil, nil
 	}
@@ -148,7 +215,28 @@ func capture(ctx context.Context, repository string, betweenCaptures func() erro
 	if !bytes.Equal(tree, confirmedTree) || before.head != after.head || before.indexExists != after.indexExists || !bytes.Equal(before.index, after.index) || !bytes.Equal(before.status, after.status) {
 		return Snapshot{}, ErrRepositoryDiverged
 	}
-	return Snapshot{HeadOID: before.head, TreeOID: strings.TrimSpace(string(confirmedTree))}, nil
+	return Snapshot{
+		HeadOID:    before.head,
+		TreeOID:    strings.TrimSpace(string(confirmedTree)),
+		IndexHash:  hashIndex(before.index, before.indexExists),
+		StatusHash: hashStatus(before.status),
+	}, nil
+}
+
+func hashIndex(index []byte, exists bool) string {
+	marker := byte(0)
+	if exists {
+		marker = 1
+	}
+	hash := sha256.New()
+	_, _ = hash.Write([]byte{marker})
+	_, _ = hash.Write(index)
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func hashStatus(status []byte) string {
+	hash := sha256.Sum256(status)
+	return fmt.Sprintf("%x", hash[:])
 }
 
 func readState(ctx context.Context, repository string) (repositoryState, error) {
@@ -169,7 +257,10 @@ func readState(ctx context.Context, repository string) (repositoryState, error) 
 	if err != nil && !os.IsNotExist(err) {
 		return repositoryState{}, err
 	}
-	status, err := git(ctx, repository, "", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignored=matching")
+	// Status catches worktree state that a synthetic top-level tree cannot
+	// represent, notably a dirty nested submodule. Ignored files are omitted:
+	// they do not participate in the Git working-copy contract.
+	status, err := git(ctx, repository, "", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none")
 	if err != nil {
 		return repositoryState{}, err
 	}
@@ -189,13 +280,24 @@ func git(ctx context.Context, repository, index string, args ...string) ([]byte,
 }
 
 func gitEnvironment(index string) []string {
+	blocked := map[string]bool{
+		"GIT_DIR":                          true,
+		"GIT_WORK_TREE":                    true,
+		"GIT_COMMON_DIR":                   true,
+		"GIT_INDEX_FILE":                   true,
+		"GIT_OBJECT_DIRECTORY":             true,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES": true,
+		"GIT_NAMESPACE":                    true,
+		"GIT_REPLACE_REF_BASE":             true,
+		"GIT_SHALLOW_FILE":                 true,
+		"GIT_CEILING_DIRECTORIES":          true,
+		"GIT_OPTIONAL_LOCKS":               true,
+	}
 	environment := make([]string, 0, len(os.Environ())+2)
 	for _, item := range os.Environ() {
-		key := item
-		if separator := strings.IndexByte(item, '='); separator >= 0 {
-			key = item[:separator]
-		}
-		if strings.EqualFold(key, "GIT_INDEX_FILE") || strings.EqualFold(key, "GIT_OPTIONAL_LOCKS") {
+		key, _, _ := strings.Cut(item, "=")
+		key = strings.ToUpper(key)
+		if blocked[key] || strings.HasPrefix(key, "GIT_CONFIG_") || key == "GIT_CONFIG_PARAMETERS" {
 			continue
 		}
 		environment = append(environment, item)

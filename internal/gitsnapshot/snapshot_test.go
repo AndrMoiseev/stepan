@@ -146,6 +146,130 @@ func TestCompareAndCheckBoundary(t *testing.T) {
 	}
 }
 
+func TestDiffAttributesOnlyCurrentInvocationChanges(t *testing.T) {
+	repo := newRepository(t)
+	write(t, filepath.Join(repo, "prior-uncommitted.txt"), "belongs to user\n")
+	before := mustCapture(t, repo)
+
+	write(t, filepath.Join(repo, "current-invocation.txt"), "belongs to operation\n")
+	after := mustCapture(t, repo)
+	difference, err := Diff(context.Background(), repo, before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"current-invocation.txt"}; !reflect.DeepEqual(difference.Paths, want) {
+		t.Fatalf("paths = %q, want %q", difference.Paths, want)
+	}
+	if difference.HeadChanged || difference.IndexChanged || !difference.StatusChanged {
+		t.Fatalf("unexpected non-file difference: %+v", difference)
+	}
+}
+
+func TestDiffReportsHeadAndIndexFingerprints(t *testing.T) {
+	t.Run("index", func(t *testing.T) {
+		repo := newRepository(t)
+		write(t, filepath.Join(repo, "tracked.txt"), "unstaged\n")
+		before := mustCapture(t, repo)
+		runGit(t, repo, "add", "tracked.txt")
+		after := mustCapture(t, repo)
+		difference, err := Diff(context.Background(), repo, before, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(difference.Paths) != 0 || difference.HeadChanged || !difference.IndexChanged || !difference.StatusChanged {
+			t.Fatalf("difference = %+v", difference)
+		}
+	})
+
+	t.Run("head", func(t *testing.T) {
+		repo := newRepository(t)
+		before := mustCapture(t, repo)
+		write(t, filepath.Join(repo, "tracked.txt"), "committed\n")
+		runGit(t, repo, "add", "tracked.txt")
+		runGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "operation")
+		after := mustCapture(t, repo)
+		difference, err := Diff(context.Background(), repo, before, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"tracked.txt"}; !reflect.DeepEqual(difference.Paths, want) || !difference.HeadChanged || !difference.IndexChanged || difference.StatusChanged {
+			t.Fatalf("difference = %+v, want paths %q and changed fingerprints", difference, want)
+		}
+	})
+}
+
+func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
+	repo := newRepository(t)
+	child := newRepository(t)
+	childHead := strings.TrimSpace(runGit(t, child, "rev-parse", "HEAD"))
+	runGit(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+childHead+",nested")
+	runGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "add nested repository")
+	if err := os.Rename(child, filepath.Join(repo, "nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := mustCapture(t, repo)
+	write(t, filepath.Join(repo, "nested", "tracked.txt"), "manual edit\n")
+	if err := EnsureUnchanged(context.Background(), repo, expected); !errors.Is(err, ErrRepositoryDiverged) {
+		t.Fatalf("error = %v", err)
+	}
+
+	after := mustCapture(t, repo)
+	difference, err := Diff(context.Background(), repo, expected, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(difference.Paths) != 0 || !difference.StatusChanged || difference.HeadChanged || difference.IndexChanged {
+		t.Fatalf("difference = %+v", difference)
+	}
+}
+
+func TestCaptureIgnoresRepositorySelectionEnvironment(t *testing.T) {
+	target := newRepository(t)
+	alternate := newRepository(t)
+	write(t, filepath.Join(target, "tracked.txt"), "target\n")
+	write(t, filepath.Join(alternate, "tracked.txt"), "alternate\n")
+	t.Setenv("GIT_DIR", filepath.Join(alternate, ".git"))
+	t.Setenv("GIT_WORK_TREE", alternate)
+
+	snapshot := mustCapture(t, target)
+	content := runGit(t, target, "show", snapshot.TreeOID+":tracked.txt")
+	if content != "target\n" {
+		t.Fatalf("captured content = %q, want target repository", content)
+	}
+}
+
+func TestEnsureUnchangedDetectsUnexpectedChangesBetweenOperations(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(*testing.T, string)
+	}{
+		{"file", func(t *testing.T, repo string) { write(t, filepath.Join(repo, "unexpected.txt"), "manual edit\n") }},
+		{"index", func(t *testing.T, repo string) {
+			write(t, filepath.Join(repo, "tracked.txt"), "staged\n")
+			runGit(t, repo, "add", "tracked.txt")
+		}},
+		{"head", func(t *testing.T, repo string) {
+			write(t, filepath.Join(repo, "tracked.txt"), "committed\n")
+			runGit(t, repo, "add", "tracked.txt")
+			runGit(t, repo, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "unexpected")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repo := newRepository(t)
+			expected := mustCapture(t, repo)
+			if err := EnsureUnchanged(context.Background(), repo, expected); err != nil {
+				t.Fatalf("unchanged repository rejected: %v", err)
+			}
+			test.change(t, repo)
+			if err := EnsureUnchanged(context.Background(), repo, expected); !errors.Is(err, ErrRepositoryDiverged) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
 func TestCompareReportsAllOutsideChanges(t *testing.T) {
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
