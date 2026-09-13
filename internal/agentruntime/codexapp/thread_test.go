@@ -28,7 +28,7 @@ func TestCodexProviderParity(t *testing.T) {
 		root := canonicalTempDir(t)
 		connection, server, serverErr := threadTestConnection(t)
 		go serveConformanceScript(server, script.Outputs(), serverErr)
-		return conformance.Fixture{
+		fixture := conformance.Fixture{
 			Runtime:      &connectionRuntime{connection: connection, workspace: root},
 			Workspace:    root,
 			OutputSchema: specflow.DialogueSchema(),
@@ -40,14 +40,150 @@ func TestCodexProviderParity(t *testing.T) {
 				return <-serverErr
 			},
 			WriteAllowed: func(config agentruntime.ThreadConfig, target string) bool {
+				writable := make([]string, 0, 2)
+				if config.WorkspaceWriteAllowed {
+					writable = append(writable, config.Workspace)
+				}
+				if config.ArtifactRoot != "" {
+					writable = append(writable, config.ArtifactRoot)
+				}
 				evaluator, err := NewApprovalEvaluator(config.Workspace, AccessPolicy{
 					ReadableRoots: []string{config.Workspace, config.ArtifactRoot},
-					WritableRoots: []string{config.ArtifactRoot},
+					WritableRoots: writable,
 				})
 				return err == nil && allowedRequestedPath(evaluator.policy, target, evaluator.policy.WritableRoots)
 			},
 		}
+		workspaceWrite := agentruntime.ThreadConfig{
+			Workspace:             root,
+			WorkspaceWriteAllowed: true,
+			ArtifactRoot:          canonicalTempDir(t),
+			OutputSchema:          specflow.DialogueSchema(),
+		}
+		conformance.WorkspaceWriteSessionPolicy(t, fixture, workspaceWrite)
+		return fixture
 	})
+}
+
+type workspaceWriteTurnCase struct {
+	name                  string
+	workspaceWriteAllowed bool
+	withExternalArtifact  bool
+	target                func(workspace, artifact string) string
+	wantDecision          ApprovalDecision
+	wantSandbox           string
+	wantWritableRootCount int
+}
+
+func TestRunTurnWorkspaceWritePolicy(t *testing.T) {
+	for _, test := range []workspaceWriteTurnCase{
+		{
+			name:                  "workspace write is explicitly allowed",
+			workspaceWriteAllowed: true,
+			target:                func(workspace, _ string) string { return filepath.Join(workspace, "source.go") },
+			wantDecision:          DecisionAccept,
+			wantSandbox:           "workspaceWrite",
+			wantWritableRootCount: 1,
+		},
+		{
+			name:         "workspace write stays denied by default",
+			target:       func(workspace, _ string) string { return filepath.Join(workspace, "source.go") },
+			wantDecision: DecisionDecline,
+			wantSandbox:  "readOnly",
+		},
+		{
+			name:                  "external artifact root remains independently writable",
+			workspaceWriteAllowed: true,
+			withExternalArtifact:  true,
+			target:                func(_, artifact string) string { return filepath.Join(artifact, "artifact.md") },
+			wantDecision:          DecisionAccept,
+			wantSandbox:           "workspaceWrite",
+			wantWritableRootCount: 2,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := canonicalTempDir(t)
+			artifact := ""
+			if test.withExternalArtifact {
+				artifact = canonicalTempDir(t)
+			}
+			connection, server, serverErr := threadTestConnection(t)
+			go serveWorkspaceWriteTurn(t, server, serverErr, test, workspace, artifact)
+
+			config := testThreadConfig(workspace)
+			config.WorkspaceWriteAllowed = test.workspaceWriteAllowed
+			config.ArtifactRoot = artifact
+			thread, err := connection.StartThread(workspace, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := connection.RunTurn(thread, "edit files"); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-serverErr; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func serveWorkspaceWriteTurn(t *testing.T, server *Transport, result chan<- error, test workspaceWriteTurnCase, workspace, artifact string) {
+	t.Helper()
+	request, err := server.Read()
+	if err == nil && request.Method != "thread/start" {
+		err = fmt.Errorf("expected thread/start, got %q", request.Method)
+	}
+	if err == nil {
+		err = server.SendResult(request.ID, map[string]any{"thread": map[string]string{"id": "thread"}})
+	}
+	if err == nil {
+		request, err = server.Read()
+	}
+	var params struct {
+		ThreadID string `json:"threadId"`
+		Sandbox  struct {
+			Type          string   `json:"type"`
+			WritableRoots []string `json:"writableRoots"`
+			NetworkAccess bool     `json:"networkAccess"`
+		} `json:"sandboxPolicy"`
+		Schema json.RawMessage `json:"outputSchema"`
+	}
+	if err == nil && json.Unmarshal(request.Params, &params) != nil {
+		err = fmt.Errorf("invalid turn/start params: %s", request.Params)
+	}
+	if err == nil && (request.Method != "turn/start" || params.ThreadID != "thread" || params.Sandbox.Type != test.wantSandbox || params.Sandbox.NetworkAccess || len(params.Sandbox.WritableRoots) != test.wantWritableRootCount) {
+		err = fmt.Errorf("turn/start policy = %s", request.Params)
+	}
+	if err == nil && test.wantWritableRootCount != 0 && (params.Sandbox.WritableRoots[0] != workspace || test.wantWritableRootCount == 2 && params.Sandbox.WritableRoots[1] != artifact) {
+		err = fmt.Errorf("turn/start writable roots = %v", params.Sandbox.WritableRoots)
+	}
+	if err == nil {
+		err = validateCodexSchema(params.Schema)
+	}
+	if err == nil {
+		err = server.SendResult(request.ID, map[string]any{"turn": map[string]string{"id": "turn"}})
+	}
+	if err == nil {
+		target := test.target(workspace, artifact)
+		err = server.SendNotification("item/started", map[string]any{
+			"threadId": "thread", "turnId": "turn",
+			"item": map[string]any{"id": "edit", "type": "fileChange", "changes": []map[string]string{{"path": target}}},
+		})
+	}
+	if err == nil {
+		err = server.SendRequest(StringID("approval"), "item/fileChange/requestApproval", map[string]string{"threadId": "thread", "turnId": "turn", "itemId": "edit"})
+	}
+	if err == nil {
+		var response Message
+		response, err = server.Read()
+		if err == nil && (response.Error != nil || !resultHasDecision(response.Result, test.wantDecision)) {
+			err = fmt.Errorf("approval response = %+v", response)
+		}
+	}
+	if err == nil {
+		err = sendCompletedTurn(server, "thread", "turn", "final", `{"ok":true}`, `{"ok":true}`)
+	}
+	result <- err
 }
 
 func TestCodexApplicationParity(t *testing.T) {

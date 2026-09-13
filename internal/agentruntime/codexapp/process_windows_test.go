@@ -105,7 +105,7 @@ func TestRuntimeInterruptKillsTree(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			pidFile := filepath.Join(t.TempDir(), "pids.json")
 			t.Setenv("STEPAN_CODEXAPP_PID_FILE", pidFile)
-			runtime, _, turnErr := startRuntimeTurn(t, scenario)
+			runtime, _, turnErr := startRuntimeTurn(t, scenario, true)
 			if scenario == "runtime-interrupt-ignore" {
 				runtime.grace = 100 * time.Millisecond
 			}

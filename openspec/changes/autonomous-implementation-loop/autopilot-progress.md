@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 23/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; task 6.1 implementing; final review `not_started`.
+- Outcome: `in_progress`; 24/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; next task 6.2; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -40,6 +40,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementer: `/root/implement_6_1` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
 - Frozen candidate adds `ThreadConfig.WorkspaceWriteAllowed`, retaining the zero-value read-only default and separate external `ArtifactRoot`; clone/validation tests and reusable conformance boundaries preserve the legacy document-session contract while preparing provider-specific enforcement for tasks 6.2–6.4. No manual check.
 - Coordinator validation from repository root with Go 1.26.5 and workspace-local build cache passed `go test ./internal/agentruntime/...`, `go test ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`; exit 0. Nonfatal telemetry/module stat-cache permission warnings did not affect exits. Checkbox complete; next: implementation commit and fresh independent reviewer.
+- Implementation commit verified: `590138ed7d0f0d90d89aa727dac15b0145060f1f`; initial independent review pending with `/root/review_6_1`. This post-commit checkpoint is an uncommitted planning record until the next authorized task/correction commit.
+- Independent review by `/root/review_6_1` returned PASS with no critical or technical-debt findings. Task accepted; completed correction cycles: 0.
+
+### 6.2 — Codex workspace-write adapter mode
+
+- Base: `590138ed7d0f0d90d89aa727dac15b0145060f1f`; dependency 6.1 accepted.
+- Acceptance: tasks.md 6.2 and implementation-agent-control workspace-write requirement; enforce explicit workspace writing in the Codex adapter with available restrictions, preserve default denial and independent external `ArtifactRoot`, compatible flat object schemas without `oneOf` and with every property required, and cover interruption.
+- Implementer: `/root/implement_6_2` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate selects Codex App Server `workspaceWrite` with explicit workspace and external ArtifactRoot writable roots only when `WorkspaceWriteAllowed`; the zero-value session remains `readOnly`, network and command policy remain denied, and schema/interruption behavior is covered by adapter and shared conformance tests. No manual check; live App Server smoke remains outside this task's automatic evidence.
+- Coordinator validation: focused runtime tests passed; first full suite had a non-reproducing Codex conformance failure, then the Codex package passed 10/10 without code changes and a fresh `go test ./...` passed. Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check` passed; exit 0. Nonfatal telemetry/stat-cache warnings did not affect exits. Checkbox complete; next: commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

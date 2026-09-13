@@ -9,7 +9,10 @@ import (
 )
 
 func TestRuntimeInterruptAcknowledgedAndRepeatedClose(t *testing.T) {
-	runtime, thread, turnErr := startRuntimeTurn(t, "runtime-interrupt-ack")
+	runtime, thread, turnErr := startRuntimeTurn(t, "runtime-interrupt-ack", true)
+	if !thread.config.WorkspaceWriteAllowed {
+		t.Fatal("interrupted thread did not retain its workspace-write policy")
+	}
 	if err := runtime.Interrupt(); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +34,7 @@ func TestRuntimeInterruptAcknowledgedAndRepeatedClose(t *testing.T) {
 }
 
 func TestRuntimeCloseDuringTurnIsGracefulNotInterrupt(t *testing.T) {
-	runtime, _, turnErr := startRuntimeTurn(t, "runtime-interrupt-ignore")
+	runtime, _, turnErr := startRuntimeTurn(t, "runtime-interrupt-ignore", false)
 	started := time.Now()
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
@@ -45,7 +48,7 @@ func TestRuntimeCloseDuringTurnIsGracefulNotInterrupt(t *testing.T) {
 }
 
 func TestRuntimeInterruptUsesBoundedGrace(t *testing.T) {
-	runtime, _, turnErr := startRuntimeTurn(t, "runtime-interrupt-ignore")
+	runtime, _, turnErr := startRuntimeTurn(t, "runtime-interrupt-ignore", false)
 	runtime.grace = 100 * time.Millisecond
 	started := time.Now()
 	if err := runtime.Interrupt(); err != nil {
@@ -115,7 +118,7 @@ func TestRuntimeCrashRequiresNewRuntimeAndThread(t *testing.T) {
 	}
 }
 
-func startRuntimeTurn(t *testing.T, scenario string) (*Runtime, *Thread, <-chan error) {
+func startRuntimeTurn(t *testing.T, scenario string, workspaceWriteAllowed bool) (*Runtime, *Thread, <-chan error) {
 	t.Helper()
 	t.Setenv("GO_WANT_CODEXAPP_FAKE", scenario)
 	runtime, err := StartRuntime(os.Args[0], t.TempDir())
@@ -123,7 +126,9 @@ func startRuntimeTurn(t *testing.T, scenario string) (*Runtime, *Thread, <-chan 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	thread, err := runtime.StartThread(testThreadConfig(runtime.workspace))
+	config := testThreadConfig(runtime.workspace)
+	config.WorkspaceWriteAllowed = workspaceWriteAllowed
+	thread, err := runtime.StartThread(config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -129,8 +129,11 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 		readable = append(readable, thread.config.ArtifactRoot)
 	}
 	writable := []string(nil)
+	if thread.config.WorkspaceWriteAllowed {
+		writable = append(writable, thread.cwd)
+	}
 	if thread.config.ArtifactRoot != "" {
-		writable = []string{thread.config.ArtifactRoot}
+		writable = append(writable, thread.config.ArtifactRoot)
 	}
 	approvals, err := NewApprovalEvaluator(thread.cwd, AccessPolicy{ReadableRoots: readable, WritableRoots: writable})
 	if err != nil {
@@ -162,12 +165,24 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 			ID string `json:"id"`
 		} `json:"turn"`
 	}
+	sandboxPolicy := map[string]any{"type": "readOnly", "networkAccess": false}
+	if thread.config.WorkspaceWriteAllowed {
+		// workspaceWrite is the narrowest App Server sandbox that permits
+		// project edits. Keep the external ArtifactRoot explicit: it remains
+		// independently writable rather than becoming an implicit workspace
+		// subdirectory.
+		sandboxPolicy = map[string]any{
+			"type":          "workspaceWrite",
+			"writableRoots": append([]string(nil), writable...),
+			"networkAccess": false,
+		}
+	}
 	params := map[string]any{
 		"threadId":       thread.ID,
 		"input":          []map[string]string{{"type": "text", "text": prompt}},
 		"cwd":            thread.cwd,
 		"approvalPolicy": "on-request",
-		"sandboxPolicy":  map[string]any{"type": "readOnly", "networkAccess": false},
+		"sandboxPolicy":  sandboxPolicy,
 		"outputSchema":   json.RawMessage(thread.config.OutputSchema),
 	}
 	if err := connection.Call("turn/start", params, &started); err != nil {
