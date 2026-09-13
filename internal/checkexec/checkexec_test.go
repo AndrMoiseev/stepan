@@ -1,12 +1,20 @@
 package checkexec
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 const helperEnvironment = "STEPAN_CHECKEXEC_HELPER"
@@ -111,12 +119,138 @@ func TestRunReportsNonZeroExit(t *testing.T) {
 	if result.ExitCode != 23 {
 		t.Fatalf("exit code = %d, want 23", result.ExitCode)
 	}
+	if result.Failure != FailureExit || !errors.Is(err, ErrExit) {
+		t.Fatalf("failure = %q, error = %v", result.Failure, err)
+	}
 }
 
 func TestRunRejectsUnresolvedCommand(t *testing.T) {
 	for _, command := range []Command{{CWD: t.TempDir()}, {Program: os.Args[0]}} {
-		if _, err := Run(command); err == nil {
+		result, err := Run(command)
+		if err == nil {
 			t.Fatalf("Run(%#v) succeeded", command)
+		}
+		if result.Failure != FailureLaunch || !errors.Is(err, ErrLaunch) {
+			t.Fatalf("Run(%#v) failure = %q, error = %v", command, result.Failure, err)
+		}
+	}
+}
+
+func TestRunContextTimeoutTerminatesProcessTreeAndRetainsDiagnostics(t *testing.T) {
+	requireTreeTerminationSupport(t)
+	parentReady, childReady := readinessPaths(t)
+	result, err := RunContext(context.Background(), hangingHelperCommand(t, parentReady, childReady, time.Second))
+	if !errors.Is(err, ErrTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout error = %v\nstdout: %s\nstderr: %s", err, result.Stdout, result.Stderr)
+	}
+	if result.Failure != FailureTimeout {
+		t.Fatalf("failure = %q, want timeout", result.Failure)
+	}
+	assertTerminationDiagnostics(t, result)
+	assertHelperTreeStopped(t, parentReady, childReady)
+}
+
+func TestRunContextCancellationTerminatesProcessTreeAndRetainsDiagnostics(t *testing.T) {
+	requireTreeTerminationSupport(t)
+	parentReady, childReady := readinessPaths(t)
+	runContext, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	resultChannel := make(chan struct {
+		result Result
+		err    error
+	}, 1)
+	go func() {
+		result, err := RunContext(runContext, hangingHelperCommand(t, parentReady, childReady, 10*time.Second))
+		resultChannel <- struct {
+			result Result
+			err    error
+		}{result, err}
+	}()
+	awaitFile(t, parentReady)
+	cancel()
+	select {
+	case outcome := <-resultChannel:
+		if !errors.Is(outcome.err, ErrCanceled) || !errors.Is(outcome.err, context.Canceled) {
+			t.Fatalf("cancellation error = %v\nstdout: %s\nstderr: %s", outcome.err, outcome.result.Stdout, outcome.result.Stderr)
+		}
+		if outcome.result.Failure != FailureCanceled {
+			t.Fatalf("failure = %q, want canceled", outcome.result.Failure)
+		}
+		assertTerminationDiagnostics(t, outcome.result)
+	case <-time.After(5 * time.Second):
+		t.Fatal("canceled check did not return")
+	}
+	assertHelperTreeStopped(t, parentReady, childReady)
+}
+
+func requireTreeTerminationSupport(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("process-tree containment is supported by this check on Windows and macOS")
+	}
+}
+
+func readinessPaths(t *testing.T) (string, string) {
+	t.Helper()
+	directory := t.TempDir()
+	return filepath.Join(directory, "parent-ready"), filepath.Join(directory, "child-ready")
+}
+
+func hangingHelperCommand(t *testing.T, parentReady, childReady string, timeout time.Duration) Command {
+	t.Helper()
+	return Command{
+		Program: os.Args[0],
+		Args: []string{
+			"--",
+			"--hang-parent-ready=" + parentReady,
+			"--hang-child-ready=" + childReady,
+		},
+		Env:     map[string]string{helperEnvironment: "1"},
+		CWD:     t.TempDir(),
+		Timeout: timeout,
+	}
+}
+
+func assertTerminationDiagnostics(t *testing.T, result Result) {
+	t.Helper()
+	if !bytes.Contains(result.Stdout, []byte("stdout before interruption")) {
+		t.Fatalf("stdout lost pre-termination diagnostic: %q", result.Stdout)
+	}
+	if !bytes.Contains(result.Stderr, []byte("stderr before interruption")) {
+		t.Fatalf("stderr lost pre-termination diagnostic: %q", result.Stderr)
+	}
+}
+
+func assertHelperTreeStopped(t *testing.T, parentReady, childReady string) {
+	t.Helper()
+	awaitFile(t, childReady)
+	data, err := os.ReadFile(parentReady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		t.Fatalf("child PID %q: %v", data, err)
+	}
+	assertProcessStopped(t, childPID)
+}
+
+func awaitFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s", path)
+		case <-poll.C:
 		}
 	}
 }
@@ -158,10 +292,51 @@ func runHelperProcess() int {
 	if separator < 0 {
 		return 2
 	}
-	for _, argument := range args[separator+1:] {
+	arguments := args[separator+1:]
+	for _, argument := range arguments {
 		if argument == "--exit=23" {
 			return 23
 		}
+	}
+	if parentReady, childReady := argumentValue(arguments, "--hang-parent-ready="), argumentValue(arguments, "--hang-child-ready="); parentReady != "" && childReady != "" {
+		if _, err := os.Stdout.WriteString("stdout before interruption\n"); err != nil {
+			return 21
+		}
+		if _, err := os.Stderr.WriteString("stderr before interruption\n"); err != nil {
+			return 22
+		}
+		child := exec.Command(os.Args[0], "--", "--hang-child-ready="+childReady)
+		child.Env = append(os.Environ(), helperEnvironment+"=1")
+		if err := child.Start(); err != nil {
+			return 23
+		}
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		poll := time.NewTicker(10 * time.Millisecond)
+		defer poll.Stop()
+		for {
+			if _, err := os.Stat(childReady); err == nil {
+				if err := os.WriteFile(parentReady, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+					return 24
+				}
+				time.Sleep(24 * time.Hour)
+				return 0
+			} else if !os.IsNotExist(err) {
+				return 25
+			}
+			select {
+			case <-deadline.C:
+				return 26
+			case <-poll.C:
+			}
+		}
+	}
+	if ready := argumentValue(arguments, "--hang-child-ready="); ready != "" {
+		if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+			return 20
+		}
+		time.Sleep(24 * time.Hour)
+		return 0
 	}
 	stdin, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -195,4 +370,13 @@ func runHelperProcess() int {
 		return 7
 	}
 	return 0
+}
+
+func argumentValue(arguments []string, prefix string) string {
+	for _, argument := range arguments {
+		if value, found := strings.CutPrefix(argument, prefix); found {
+			return value
+		}
+	}
+	return ""
 }

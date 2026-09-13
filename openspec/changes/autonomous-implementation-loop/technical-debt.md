@@ -19,3 +19,13 @@
 - Expected impact: a future regression in filter-equivalent detection may not be caught at the guard integration layer.
 - Classification: technical debt because review found the production behavior correct and identified only an acceptance-coverage weakness, not a current implementation failure.
 - Possible follow-up: use CRLF-to-LF-only content and a custom filter mapping distinct raw inputs to the same blob; assert retry, journal evidence, and exact restoration.
+
+## TASK-5.1-001 — failed-command output lacks a dedicated assertion
+
+- Origin: task 5.1 initial review; affected location: `internal/checkexec/checkexec_test.go`.
+- Status: `open`.
+- Potential problem: the non-zero-exit fixture verifies exit code 23 but emits no stdout or stderr, so a future regression discarding or swapping failed-command output would not be caught.
+- Evidence: production `Run` copies both buffers before returning the wrapped process error; successful execution covers stdout indirectly, but failed stdout/stderr are not asserted.
+- Expected impact: weakened regression protection for diagnostics used by later log/reporting tasks.
+- Classification: technical debt because current production behavior is correct by inspection and the gap is limited to test coverage.
+- Possible follow-up: emit distinct stdout/stderr payloads before non-zero exit and assert both byte-for-byte with the exit code and error.

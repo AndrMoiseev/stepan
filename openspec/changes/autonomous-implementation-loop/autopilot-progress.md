@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 18/65 tasks accepted; tasks 4.3 and 4.4 accepted with technical debt; next task 5.1; final review `not_started`.
+- Outcome: `in_progress`; 19/65 tasks accepted; tasks 4.3, 4.4, and 5.1 accepted with technical debt; next task 5.2; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -479,6 +479,18 @@ Task 4.4 correction cycle 2 commit verified: `6747a3553deb0334836b49dd9611dba95b
 Task 5.1 frozen candidate adds `internal/checkexec` with direct `exec.Command(program, args...)`, explicit working directory, per-invocation environment construction including Windows case-insensitive key replacement, nil stdin, buffered non-terminal stdout/stderr, and preserved non-zero exit results. Helper-process fixtures cover literal arguments with spaces and shell metacharacters, no implicit shell, configured cwd, stdin EOF, environment overrides, and absence of `GOOS`/`GOARCH` or private-variable leakage across calls. Timeout/cancellation/process-tree handling remains for task 5.2; log storage/truncation remains for task 5.4. No manual check.
 
 Implementer `go test -count=20 ./internal/checkexec`, full vet, both builds and diff check passed; its sequential full-suite attempt stalled in existing long Git fixtures and was not counted. Coordinator mandatory validation with isolated workspace Go cache passed `go test ./...`, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh independent reviewer.
+
+Task 5.1 implementation commit verified: `92fd3b0`; independent review returned `PASS with technical debt` and no critical findings. Direct execution, literal args, cwd, fresh command-local environment, Windows environment-key semantics, stdin EOF, non-terminal buffers, exit-code preservation, and cross-call isolation conform. `TASK-5.1-001` is a Low test-coverage gap: failed-command stdout/stderr preservation is correct by inspection but not asserted with distinct payloads. Finding saved in `technical-debt.md`. Task 5.1 accepted; completed correction cycles: 0. Next task 5.2 `not_started`.
+
+### 5.2 — timeout, cancellation, and process-tree termination
+
+- Base: `92fd3b0`; dependency 5.1 accepted with technical debt.
+- Acceptance: apply per-command timeout and caller cancellation, terminate the complete child process tree on Windows and macOS through `processjob`, distinguish exit/timeout/canceled/launch/infrastructure failures, and retain stdout/stderr emitted before termination.
+- Implementer `/root/implement_5_2` (`gpt-5.6-terra`/`high`); reviewer `not_started`; review `awaiting_review`; completed correction cycles: 0.
+
+Task 5.2 frozen candidate adds `RunContext`, command timeout, typed failure classification, and `processjob` supervision around direct check execution. Timeout and caller cancellation close the Windows Job Object or macOS process group, wait for the root process, and preserve buffered diagnostics. Deterministic helper fixtures use readiness files and bounded liveness polling to cover hanging commands with descendants, timeout, explicit cancellation, pre-termination output, non-zero exit, and launch failure; platform test files provide Windows runtime liveness and Darwin compilation/runtime coverage. No manual check beyond the separately deferred native Apple Silicon acceptance.
+
+Implementer focused/stress `checkexec`, `processjob`, vet, Windows/Darwin builds, Darwin test compilation and diff check passed. Its sequential full-suite attempt stalled in an existing rollback fixture and was not acceptance evidence. Coordinator mandatory validation with isolated workspace Go cache passed standard `go test ./...` including that fixture, `go vet ./...`, Windows build, Darwin/arm64 CGO-disabled cross-build, Darwin/arm64 `checkexec` test compilation, and `git diff --check`; exit 0. Nonfatal module stat-cache warnings did not affect exits. Checkbox complete; review `awaiting_review`. Next: implementation commit and fresh reviewer.
 
 Task 4.3 correction cycle 1 commit verified: `815ee13fdfa775092e5fb7eb1563428624207b0f`; implementation `f6507bcc1b99c2500e06406ed7cdf85c5bec3a6e`, original base `9db95d5c77c33d1ab63af9082d9eaa41274a6898`. Working tree and index were clean immediately after commit. Rereview cycle 1 pending with `/root/review_4_3`; completed cycles remain 0 until its response.
 

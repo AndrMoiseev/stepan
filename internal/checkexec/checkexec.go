@@ -3,6 +3,7 @@ package checkexec
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,9 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/processjob"
 )
 
 // Command is the already-resolved command of one configured check. Program is
@@ -20,7 +24,32 @@ type Command struct {
 	Args    []string
 	Env     map[string]string
 	CWD     string
+	// Timeout bounds this invocation. A zero timeout leaves timeout selection to
+	// the caller (the configuration boundary supplies its 600-second default).
+	Timeout time.Duration
 }
+
+// FailureKind distinguishes the actionable reason an invocation did not
+// succeed. In particular, a stopped check is not reported as an ordinary
+// non-zero exit from the program that happened to be killed.
+type FailureKind string
+
+const (
+	FailureNone           FailureKind = ""
+	FailureExit           FailureKind = "exit"
+	FailureTimeout        FailureKind = "timeout"
+	FailureCanceled       FailureKind = "canceled"
+	FailureLaunch         FailureKind = "launch"
+	FailureInfrastructure FailureKind = "infrastructure"
+)
+
+var (
+	ErrExit           = errors.New("check exited unsuccessfully")
+	ErrTimeout        = errors.New("check timed out")
+	ErrCanceled       = errors.New("check canceled")
+	ErrLaunch         = errors.New("check launch failed")
+	ErrInfrastructure = errors.New("check process supervision failed")
+)
 
 // Result is the immediate outcome of one command invocation. It deliberately
 // keeps complete process output in memory; assigning logs to run storage and
@@ -29,6 +58,7 @@ type Result struct {
 	ExitCode int
 	Stdout   []byte
 	Stderr   []byte
+	Failure  FailureKind
 }
 
 // Run executes one configured command directly and waits for it to finish.
@@ -40,14 +70,24 @@ type Result struct {
 // stdout and stderr are pipes backed by non-terminal buffers.
 //
 // A non-zero child exit is returned as an error while preserving its exit code
-// and output in Result. Timeout, cancellation, and process-tree termination
-// intentionally belong to the later process-management task.
+// and output in Result.
 func Run(command Command) (Result, error) {
+	return RunContext(context.Background(), command)
+}
+
+// RunContext executes one configured command and stops its complete contained
+// process tree on timeout or caller cancellation. Windows uses a Job Object and
+// macOS uses a dedicated process group through processjob. Result retains all
+// stdout and stderr observed before termination.
+func RunContext(ctx context.Context, command Command) (Result, error) {
+	if ctx == nil {
+		return Result{ExitCode: -1, Failure: FailureInfrastructure}, checkError(command, FailureInfrastructure, ErrInfrastructure, errors.New("check context is required"))
+	}
 	if command.Program == "" {
-		return Result{}, errors.New("check program is required")
+		return Result{ExitCode: -1, Failure: FailureLaunch}, checkError(command, FailureLaunch, ErrLaunch, errors.New("check program is required"))
 	}
 	if command.CWD == "" {
-		return Result{}, errors.New("check working directory is required")
+		return Result{ExitCode: -1, Failure: FailureLaunch}, checkError(command, FailureLaunch, ErrLaunch, errors.New("check working directory is required"))
 	}
 
 	child := exec.Command(command.Program, command.Args...)
@@ -60,19 +100,104 @@ func Run(command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	err := child.Run()
+
+	job, err := processjob.New()
+	if err != nil {
+		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("create process supervisor: %w", err))
+	}
+	if err := job.Prepare(child); err != nil {
+		_ = job.Close()
+		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("prepare process supervisor: %w", err))
+	}
+	if err := child.Start(); err != nil {
+		_ = job.Close()
+		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureLaunch), checkError(command, FailureLaunch, ErrLaunch, err)
+	}
+	if err := job.Assign(child.Process); err != nil {
+		_ = job.Close()
+		killAndWait(child)
+		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("assign process supervisor: %w", err))
+	}
+
+	runContext, stopTimeout := context.WithCancel(ctx)
+	if command.Timeout > 0 {
+		runContext, stopTimeout = context.WithTimeout(ctx, command.Timeout)
+	}
+	defer stopTimeout()
+
+	wait := make(chan error, 1)
+	go func() { wait <- child.Wait() }()
+
+	select {
+	case err := <-wait:
+		closeErr := job.Close()
+		return completed(command, child, stdout.Bytes(), stderr.Bytes(), err, closeErr)
+	case <-runContext.Done():
+		// Prefer a completed command when its completion raced with cancellation.
+		select {
+		case err := <-wait:
+			closeErr := job.Close()
+			return completed(command, child, stdout.Bytes(), stderr.Bytes(), err, closeErr)
+		default:
+		}
+		closeErr := job.Close()
+		waitErr := <-wait
+		result := resultFrom(child, stdout.Bytes(), stderr.Bytes(), cancellationFailure(ctx, runContext))
+		if closeErr != nil {
+			return result, checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("terminate process tree: %w", closeErr))
+		}
+		if result.Failure == FailureTimeout {
+			return result, checkError(command, FailureTimeout, ErrTimeout, errors.Join(context.DeadlineExceeded, waitErr))
+		}
+		return result, checkError(command, FailureCanceled, ErrCanceled, errors.Join(context.Canceled, waitErr))
+	}
+}
+
+func completed(command Command, child *exec.Cmd, stdout, stderr []byte, waitErr, closeErr error) (Result, error) {
+	result := resultFrom(child, stdout, stderr, FailureNone)
+	if closeErr != nil {
+		result.Failure = FailureInfrastructure
+		return result, checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("close process supervisor: %w", closeErr))
+	}
+	if waitErr != nil {
+		result.Failure = FailureExit
+		return result, checkError(command, FailureExit, ErrExit, waitErr)
+	}
+	return result, nil
+}
+
+func resultFrom(child *exec.Cmd, stdout, stderr []byte, failure FailureKind) Result {
 	result := Result{
-		Stdout:   append([]byte(nil), stdout.Bytes()...),
-		Stderr:   append([]byte(nil), stderr.Bytes()...),
 		ExitCode: -1,
+		Stdout:   append([]byte(nil), stdout...),
+		Stderr:   append([]byte(nil), stderr...),
+		Failure:  failure,
 	}
 	if child.ProcessState != nil {
 		result.ExitCode = child.ProcessState.ExitCode()
 	}
-	if err != nil {
-		return result, fmt.Errorf("run check %q: %w", command.Program, err)
+	return result
+}
+
+func cancellationFailure(parent, combined context.Context) FailureKind {
+	if errors.Is(parent.Err(), context.Canceled) {
+		return FailureCanceled
 	}
-	return result, nil
+	if errors.Is(combined.Err(), context.DeadlineExceeded) || errors.Is(parent.Err(), context.DeadlineExceeded) {
+		return FailureTimeout
+	}
+	return FailureCanceled
+}
+
+func killAndWait(command *exec.Cmd) {
+	if command.Process != nil {
+		_ = command.Process.Kill()
+	}
+	_ = command.Wait()
+}
+
+func checkError(command Command, kind FailureKind, sentinel, cause error) error {
+	return fmt.Errorf("run check %q (%s): %w", command.Program, kind, errors.Join(sentinel, cause))
 }
 
 func commandEnvironment(base []string, overrides map[string]string) []string {
