@@ -50,6 +50,26 @@
 - Classification: technical debt because supervisor-close failures are uncommon and no ordinary supported-use reproduction was established.
 - Possible follow-up: make infrastructure the primary result failure while preserving cancellation as secondary diagnostic context, and inject supervisor/process launch for tests.
 
+## TASK-5.4-002 — full-log paths need a later read-only agent access seam
+
+- Origin: task 5.4 initial review; affected locations: `internal/flows/impl_loop/check_presentation.go`, `internal/runstore/store.go`, and later runtime adapters.
+- Status: `open`.
+- Potential problem: canonical log paths are inside the shared run files directory, while current adapters expose external paths through a writable ArtifactRoot or reject them. Granting that whole root would expose unrelated evidence; a normal per-session root leaves the paths unreadable, and Nessy readers reject non-UTF-8 logs.
+- Evidence: current task proves controller-side verified reads, but role/context integration is scheduled for later tasks and has no read-only selected-evidence view yet.
+- Expected impact: later integration could make full logs inaccessible to agents or grant overly broad artifact access.
+- Classification: technical debt because adapter/context integration is explicitly later and strict run-state isolation is deferred; current persistence behavior is correct.
+- Possible follow-up: add a controller-mediated verified reader or a dedicated read-only view containing only referenced logs, with cross-adapter conformance tests including invalid UTF-8.
+
+## TASK-5.4-003 — reporter failure can leave a structurally successful set
+
+- Origin: task 5.4 initial review; affected location: `internal/flows/impl_loop/check_set.go`.
+- Status: `open`.
+- Potential problem: when reporting fails after a successful command, the current result may remain `succeeded` and the tail is not marked `not_run`; `CheckSet.Succeeded()` can be true alongside the non-nil persistence error.
+- Evidence: no unpublished reference escapes and correct callers treat the error as authoritative, but no reporter-failure regression enforces the structural state.
+- Expected impact: later code that separates set inspection from error handling could treat unusable evidence as successful.
+- Classification: technical debt because correct idiomatic callers remain safe and publication failures are uncommon.
+- Possible follow-up: mark the current result failed/unusable and the tail not-run on reporter errors, and test failures after partial publication and on the final check.
+
 ## TASK-5.2-005 — Darwin processjob test can mishandle an empty PID file
 
 - Origin: task 5.2 rereview cycle 2; affected location: `internal/processjob/job_darwin_test.go`.

@@ -169,6 +169,89 @@ func TestRunRequestedChecksWithReporterAttachesPresentationAndMeasuresDuration(t
 	}
 }
 
+func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationContext(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		context func(*testing.T) (context.Context, func())
+		failure checkexec.FailureKind
+		err     error
+	}{
+		{
+			name: "canceled",
+			context: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithCancel(context.Background())
+				return ctx, cancel
+			},
+			failure: checkexec.FailureCanceled,
+			err:     context.Canceled,
+		},
+		{
+			name: "deadline",
+			context: func(t *testing.T) (context.Context, func()) {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+				return ctx, cancel
+			},
+			failure: checkexec.FailureTimeout,
+			err:     context.DeadlineExceeded,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newSnapshotRepository(t)
+			store, err := runstore.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := store.Create(implementationstate.RunID("run-" + test.name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			reporter, err := NewCheckResultPublisher(run, repository, "canceled-result")
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection := testCheckSelection(nil)
+			selection.Checks["test_auth"] = implementationCheck(repository, "test_auth")
+			selection.Checks["lint"] = implementationCheck(repository, "lint")
+			invocationContext, stopInvocation := test.context(t)
+			defer stopInvocation()
+			calls := 0
+			runner := CheckRunnerFunc(func(ctx context.Context, _ checkexec.Command) (checkexec.Result, error) {
+				calls++
+				if test.failure == checkexec.FailureCanceled {
+					stopInvocation()
+				}
+				select {
+				case <-ctx.Done():
+				case <-time.After(time.Second):
+					t.Fatal("invocation context did not cancel the command")
+				}
+				return checkexec.Result{ExitCode: -1, Failure: test.failure, Stdout: []byte("partial stdout " + test.name), Stderr: []byte("partial stderr " + test.name)}, test.err
+			})
+
+			set, err := RunRequestedChecksWithReporter(invocationContext, selection, []string{"test_auth", "lint"}, runner, reporter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || set.Results[0].Status != CheckFailed || set.Results[1].Status != CheckNotRun {
+				t.Fatalf("canceled set did not fail fast: calls=%d results=%#v", calls, set.Results)
+			}
+			presentation := set.Results[0].Presentation
+			if presentation == nil || presentation.Failure != test.failure || presentation.ExitCode != -1 || presentation.CheckedState.Reference.ID == "" {
+				t.Fatalf("canceled command presentation = %#v", presentation)
+			}
+			if got, err := run.Read(presentation.Stdout.Reference); err != nil || string(got) != "partial stdout "+test.name {
+				t.Fatalf("retained canceled stdout = %q, %v", got, err)
+			}
+			if got, err := run.Read(presentation.Stderr.Reference); err != nil || string(got) != "partial stderr "+test.name {
+				t.Fatalf("retained canceled stderr = %q, %v", got, err)
+			}
+			if _, err := run.Read(presentation.CheckedState.Reference); err != nil {
+				t.Fatalf("retained canceled checked state: %v", err)
+			}
+		})
+	}
+}
+
 func implementationCheck(repository, name string) implementationconfig.SelectedCheck {
 	return implementationconfig.SelectedCheck{Name: name, Kind: implementationconfig.CheckKindTests, Command: implementationconfig.CheckCommand{Program: name, Args: []string{"all"}}, CWD: repository, TimeoutSeconds: 600, Available: true}
 }

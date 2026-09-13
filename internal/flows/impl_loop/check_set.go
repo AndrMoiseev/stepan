@@ -20,6 +20,12 @@ var (
 	ErrInvalidCheckSet = errors.New("invalid check set")
 )
 
+// checkResultPersistenceTimeout matches the default configured check timeout.
+// It bounds the controller-owned post-termination capture/publication step
+// without inheriting a user pause, stop, or command deadline that has already
+// terminated the child process.
+const checkResultPersistenceTimeout = 600 * time.Second
+
 // CheckSetKind identifies why the controller is running a set of configured
 // checks. Requested sets use the caller's name order; required sets always use
 // the project-defined required order.
@@ -171,7 +177,9 @@ func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementatio
 			Err:      err,
 		}
 		if reporter != nil {
-			presentation, reportErr := reporter.ReportCheck(ctx, name, command, result, duration)
+			persistenceContext, cancelPersistence := context.WithTimeout(context.Background(), checkResultPersistenceTimeout)
+			presentation, reportErr := reporter.ReportCheck(persistenceContext, name, command, result, duration)
+			cancelPersistence()
 			if reportErr != nil {
 				return set, fmt.Errorf("persist check %q result: %w", name, reportErr)
 			}
