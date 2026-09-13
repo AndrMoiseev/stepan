@@ -89,3 +89,13 @@
 - Expected impact: low-probability native Darwin test flake; production behavior is unaffected and deferred cleanup still runs.
 - Classification: technical debt because the race window is very short and no evidence establishes typical incidence.
 - Possible follow-up: continue polling on empty trimmed content and fail only on a non-nil error other than `IsNotExist` or malformed non-empty content.
+
+## TD-6.3-001 — active Close can be classified as an operator interrupt
+
+- Origin: task 6.3 initial review; affected location: `internal/agentruntime/claudeapp/runtime.go` (`RunTurn` receive wait and `runtimeError`).
+- Status: `open`.
+- Potential problem: while a turn is active, a caller invoking `Close()` can receive either `ErrRuntimeClosed` or `ErrTurnInterrupted` depending on whether the response receiver or the canceled context wins the wait.
+- Evidence: `runtimeError` treats `context.Canceled` as interruption even when `Interrupt()` was not called; the task's new interruption test covers explicit `Interrupt()` but not concurrent `Close()` while waiting for a terminal response.
+- Expected impact: downstream orchestration may record an ordinary runtime shutdown as an operator interruption and select the wrong recovery reason.
+- Classification: technical debt because the result depends on a narrow timing interleaving and neither an explicit deterministic-close guarantee nor evidence of a serious highly likely typical-use failure was established.
+- Possible follow-up: classify cancellation with priority `interrupted` then `closed`, and add a deterministic active-turn `Close()` regression.

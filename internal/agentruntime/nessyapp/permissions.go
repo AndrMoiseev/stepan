@@ -25,42 +25,58 @@ var errDelegatedReadTooLarge = errors.New("delegated file read exceeds response 
 
 var errPermissionAlreadyResolved = errors.New("ACP permission request already resolved")
 
-// filePolicy is immutable after connection setup. writableRoot remains empty
-// for a read-only thread even though its process has a transport include root.
+// filePolicy is immutable after connection setup. Workspace write access and
+// the external artifact root remain separate grants, so an approval received
+// by one session cannot widen another session's project access.
 type filePolicy struct {
-	workspaceRoot string
-	writableRoot  string
-	readRoots     []string
+	workspaceRoot         string
+	artifactRoot          string
+	workspaceWriteAllowed bool
+	readRoots             []string
+	writableRoots         []string
 }
 
-func newFilePolicy(workspaceRoot, writableRoot string) filePolicy {
+func newFilePolicy(workspaceRoot, artifactRoot string, workspaceWriteAllowed bool) filePolicy {
 	readRoots := []string{workspaceRoot}
-	if writableRoot != "" {
-		readRoots = append(readRoots, writableRoot)
+	if artifactRoot != "" {
+		readRoots = append(readRoots, artifactRoot)
+	}
+	writableRoots := make([]string, 0, 2)
+	if workspaceWriteAllowed {
+		writableRoots = append(writableRoots, workspaceRoot)
+	}
+	if artifactRoot != "" {
+		writableRoots = append(writableRoots, artifactRoot)
 	}
 	return filePolicy{
-		workspaceRoot: strings.Clone(workspaceRoot),
-		writableRoot:  strings.Clone(writableRoot),
-		readRoots:     append([]string(nil), readRoots...),
+		workspaceRoot:         strings.Clone(workspaceRoot),
+		artifactRoot:          strings.Clone(artifactRoot),
+		workspaceWriteAllowed: workspaceWriteAllowed,
+		readRoots:             append([]string(nil), readRoots...),
+		writableRoots:         append([]string(nil), writableRoots...),
 	}
 }
 
 func (policy filePolicy) context(sessionID, turnID string) permissionContext {
 	return permissionContext{
-		sessionID:     strings.Clone(sessionID),
-		turnID:        strings.Clone(turnID),
-		workspaceRoot: strings.Clone(policy.workspaceRoot),
-		writableRoot:  strings.Clone(policy.writableRoot),
-		readRoots:     append([]string(nil), policy.readRoots...),
+		sessionID:             strings.Clone(sessionID),
+		turnID:                strings.Clone(turnID),
+		workspaceRoot:         strings.Clone(policy.workspaceRoot),
+		artifactRoot:          strings.Clone(policy.artifactRoot),
+		workspaceWriteAllowed: policy.workspaceWriteAllowed,
+		readRoots:             append([]string(nil), policy.readRoots...),
+		writableRoots:         append([]string(nil), policy.writableRoots...),
 	}
 }
 
 type permissionContext struct {
-	sessionID     string
-	turnID        string
-	workspaceRoot string
-	writableRoot  string
-	readRoots     []string
+	sessionID             string
+	turnID                string
+	workspaceRoot         string
+	artifactRoot          string
+	workspaceWriteAllowed bool
+	readRoots             []string
+	writableRoots         []string
 }
 
 type announcedTool struct {
@@ -87,10 +103,10 @@ func newPermissionTurn(context permissionContext) *permissionTurn {
 	}
 }
 
-func (connection *Connection) configureFilePolicy(workspaceRoot, writableRoot string) {
+func (connection *Connection) configureFilePolicy(workspaceRoot, artifactRoot string, workspaceWriteAllowed bool) {
 	connection.mu.Lock()
 	defer connection.mu.Unlock()
-	connection.filePolicy = newFilePolicy(workspaceRoot, writableRoot)
+	connection.filePolicy = newFilePolicy(workspaceRoot, artifactRoot, workspaceWriteAllowed)
 	if connection.handler.permission == nil {
 		connection.handler.permission = func(connection *Connection, received message) error {
 			return connection.mediatePermission(received)
@@ -172,10 +188,10 @@ func (connection *Connection) observeToolCall(raw json.RawMessage) error {
 	connection.mu.Unlock()
 
 	path, pathErr := toolPathFromInput(call.RawInput)
-	target, targetErr := canonicalTargetWithin(context.workspaceRoot, context.writableRoot, path)
+	target, targetErr := canonicalWritableTarget(context, path)
 	denial := diagnosticNone
 	switch {
-	case context.writableRoot == "":
+	case len(context.writableRoots) == 0:
 		denial = diagnosticPermissionDeniedReadOnly
 	case pathErr != nil:
 		denial = diagnosticPermissionDeniedPath
@@ -339,11 +355,11 @@ func (connection *Connection) mediatePermission(received message) error {
 		// are compared. Sharing one decoded value would weaken correlation.
 		name := toolNameFromMeta(request.ToolCall.Meta)
 		path, err := toolPathFromInput(request.ToolCall.RawInput)
-		target, targetErr := canonicalTargetWithin(context.workspaceRoot, context.writableRoot, path)
+		target, targetErr := canonicalWritableTarget(context, path)
 		switch {
 		case name != "write_file" && name != "edit", name != announced.name:
 			denial = diagnosticPermissionDeniedTool
-		case context.writableRoot == "":
+		case len(context.writableRoots) == 0:
 			denial = diagnosticPermissionDeniedReadOnly
 		case err != nil:
 			denial = diagnosticPermissionDeniedPath
@@ -382,6 +398,19 @@ func (connection *Connection) mediatePermission(received message) error {
 	connection.audit.allowOnceSelections++
 	connection.mu.Unlock()
 	return connection.respond(received.id, selectedPermissionResult(allowOption))
+}
+
+// canonicalWritableTarget validates a provider path against the immutable
+// session snapshot. The workspace and ArtifactRoot are evaluated as distinct
+// roots; no approval can add a root after the turn begins.
+func canonicalWritableTarget(context permissionContext, supplied string) (string, error) {
+	for _, root := range context.writableRoots {
+		target, err := canonicalTargetWithin(context.workspaceRoot, root, supplied)
+		if err == nil {
+			return target, nil
+		}
+	}
+	return "", ErrPermissionDenied
 }
 
 // claimPermissionCorrelation is the single state transition for one-shot

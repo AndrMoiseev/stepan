@@ -146,7 +146,7 @@ func TestTurnRunnerClonesBootstrapSchemaAndSessionContext(t *testing.T) {
 	firstText := first.Prompt[0].Text
 	encodedWorkspace, _ := json.Marshal(runner.context.Workspace)
 	for _, expected := range []string{role, string(originalSchema), string(encodedWorkspace), "first user request", "readableRoots", "writableRoots",
-		"For write_file and edit, use an absolute target inside artifactRoot"} {
+		"For write_file and edit, use an absolute target inside writableRoots"} {
 		if !strings.Contains(firstText, expected) {
 			t.Fatalf("first prompt lacks %q:\n%s", expected, firstText)
 		}
@@ -385,7 +385,7 @@ func establishTurnRunner(t *testing.T, schema json.RawMessage, role string) (*tu
 	}
 	workspace := t.TempDir()
 	artifact := t.TempDir()
-	connection.configureFilePolicy(filepath.Clean(workspace), filepath.Clean(artifact))
+	connection.configureFilePolicy(filepath.Clean(workspace), filepath.Clean(artifact), false)
 	runner, err := newTurnRunner(connection, agentruntime.ThreadConfig{
 		BootstrapInstructions: role,
 		OutputSchema:          schema,

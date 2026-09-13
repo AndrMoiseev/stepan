@@ -139,7 +139,7 @@ func TestNessyRealCLIConformance(t *testing.T) {
 		result.Forbidden = testRealCLIForbiddenSurface(t, fixture)
 	})
 	runRealCLIAssertion(t, result, "delegated_external_read_denied", func(t *testing.T) {
-		context := newFilePolicy(fixture.workspace, fixture.artifactOne).context("session", "turn")
+		context := newFilePolicy(fixture.workspace, fixture.artifactOne, false).context("session", "turn")
 		if _, err := canonicalReadableTarget(context, fixture.readCanary); !errors.Is(err, ErrPermissionDenied) {
 			t.Fatal("delegated read accepted a target outside the logical roots")
 		}

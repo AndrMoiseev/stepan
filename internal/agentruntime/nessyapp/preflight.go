@@ -23,7 +23,7 @@ func OpenConnection(process *Process) (*Connection, error) {
 	wire := newTransport(process.Stdout(), process.Stdin())
 	wire.decoder.authToken = process.config.AuthToken
 	connection := newConnection(wire, process, connectionHandler{})
-	connection.configureFilePolicy(workspace, process.WritableRoot())
+	connection.configureFilePolicy(workspace, process.WritableRoot(), process.WorkspaceWriteAllowed())
 	if err := connection.preflight(workspace, startupRoot); err != nil {
 		connection.fail(err)
 		return nil, connection.Err()

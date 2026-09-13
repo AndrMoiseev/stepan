@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 25/65 tasks accepted and task 6.3 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, and 5.5 accepted with technical debt; next action task 6.3 implementation commit and review; final review `not_started`.
+- Outcome: `in_progress`; 26/65 tasks accepted and task 6.4 implementation complete awaiting review; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, and 6.3 accepted with technical debt; next action task 6.4 implementation commit and review; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -64,6 +64,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementer: `/root/implement_6_3` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
 - Frozen candidate grants Claude `Write`/`Edit` inside the workspace only when the immutable thread configuration enables workspace writing, retains independent external `ArtifactRoot` writes and document-session read-only behavior, and preserves interruption as `ErrTurnInterrupted` while close-only failures remain `ErrRuntimeClosed`. Shared and adapter-level fake-runtime tests cover read/write boundaries, ArtifactRoot, and active-turn interruption. No manual check; real-provider smoke remains task 14.3.
 - Implementer focused tests and the Claude package passed; its first full-suite attempt reached the 10-minute diagnostic deadline without failures and was not accepted as evidence. Coordinator reran the frozen candidate with isolated workspace cache: `go test ./... -count=1 -timeout 9m` passed in about 132 seconds (slowest package `internal/flows/impl_loop` 131.815s); Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Nonfatal module stat-cache permission warnings did not affect build exits. Checkbox complete; next: implementation commit and fresh independent reviewer.
+- Implementation commit verified: `895b34955073ebfb38fbc284fec19bb9a94bbbd7`; initial independent review pending. This post-commit checkpoint is an uncommitted planning record until the next authorized task/correction commit.
+- Independent review by `/root/review_6_3` (`gpt-5.6-sol`/`xhigh`) returned PASS with no critical findings. `TD-6.3-001` records a timing-dependent Close-versus-cancellation classification issue as technical debt; it does not satisfy the critical threshold. Task accepted with zero correction cycles; next task 6.4.
+
+### 6.4 — Nessy workspace-write adapter mode
+
+- Base: `895b34955073ebfb38fbc284fec19bb9a94bbbd7`; dependency 6.3 accepted with technical debt.
+- Acceptance: tasks.md 6.4; bind the explicit workspace-write permission and authorization mediation to the active Nessy session, retain independent ArtifactRoot access, and prove one session cannot expand another session's rights.
+- Implementer: `/root/implement_6_4` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate stores workspace-write policy on the created Nessy process/session and evaluates ACP file permissions against that immutable session snapshot. Workspace and external ArtifactRoot remain distinct roots, prompts disclose both, and a two-session regression using the same tool ID requires allow-once only for the write-enabled session while the read-only session is canceled. Real-provider smoke remains outside this task.
+- Implementer focused Nessy permission/conformance tests, the full Nessy package, full suite, Windows build, Darwin/arm64 CGO-disabled cross-build, and diff check passed. Coordinator reran the frozen candidate with an isolated cache: `go test ./... -count=1 -timeout 9m` passed in about 125 seconds (slowest package `internal/flows/impl_loop` 124.737s); Windows build, Darwin cross-build with environment restoration, and `git diff --check` passed. Checkbox complete; next: implementation commit and fresh independent reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

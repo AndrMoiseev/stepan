@@ -200,7 +200,8 @@ func testPermissionAdversarialMatrix(t *testing.T, fixture realCLIFixture) {
 	validTool := announcedTool{name: "write_file", target: filepath.Join(fixture.artifactOne, "valid.txt"), valid: true}
 	newTurn := func() *permissionTurn {
 		turn := newPermissionTurn(permissionContext{
-			sessionID: "session-a", turnID: "turn-a", workspaceRoot: fixture.workspace, writableRoot: fixture.artifactOne,
+			sessionID: "session-a", turnID: "turn-a", workspaceRoot: fixture.workspace, artifactRoot: fixture.artifactOne,
+			readRoots: []string{fixture.workspace, fixture.artifactOne}, writableRoots: []string{fixture.artifactOne},
 		})
 		turn.tools["tool-a"] = validTool
 		return turn

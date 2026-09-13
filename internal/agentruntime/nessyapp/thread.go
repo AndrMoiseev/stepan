@@ -34,7 +34,7 @@ func startNessyThread(ctx context.Context, config Config, threadConfig agentrunt
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	process := NewProcess(config, threadConfig.ArtifactRoot)
+	process := newThreadProcess(config, threadConfig.ArtifactRoot, threadConfig.WorkspaceWriteAllowed)
 	if err := process.Start(); err != nil {
 		_ = process.Close()
 		return nil, err

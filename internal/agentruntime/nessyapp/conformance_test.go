@@ -16,17 +16,26 @@ func TestNessyProviderParity(t *testing.T) {
 		t.Helper()
 		workspace := makeGitRoot(t)
 		runtime := nessyConformanceRuntime(t, workspace, script)
-		return conformance.Fixture{
+		fixture := conformance.Fixture{
 			Runtime: runtime, Workspace: workspace, OutputSchema: specflow.DialogueSchema(),
 			Decode: func(raw json.RawMessage) (conformance.DomainEnvelope, error) {
 				envelope, err := specflow.DecodeEnvelope(raw)
 				return conformance.DomainEnvelope{Kind: string(envelope.Kind), Message: envelope.Message, DecisionCount: len(envelope.Decisions)}, err
 			},
 			WriteAllowed: func(config agentruntime.ThreadConfig, target string) bool {
-				_, err := canonicalTargetWithin(config.Workspace, config.ArtifactRoot, target)
+				policy := newFilePolicy(config.Workspace, config.ArtifactRoot, config.WorkspaceWriteAllowed)
+				_, err := canonicalWritableTarget(policy.context("conformance", "turn"), target)
 				return err == nil
 			},
 		}
+		workspaceWrite := agentruntime.ThreadConfig{
+			Workspace:             workspace,
+			WorkspaceWriteAllowed: true,
+			ArtifactRoot:          t.TempDir(),
+			OutputSchema:          specflow.DialogueSchema(),
+		}
+		conformance.WorkspaceWriteSessionPolicy(t, fixture, workspaceWrite)
+		return fixture
 	})
 }
 

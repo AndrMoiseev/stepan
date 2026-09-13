@@ -37,10 +37,11 @@ var diagnosticSecretPattern = regexp.MustCompile(`(?i)(bearer\s+|(?:token|secret
 // root mounted for it. The root is runtime-owned when the configured artifact
 // root is empty.
 type Process struct {
-	config        Config
-	artifactRoot  string
-	workspaceRoot string
-	deps          processDependencies
+	config                Config
+	artifactRoot          string
+	workspaceRoot         string
+	workspaceWriteAllowed bool
+	deps                  processDependencies
 
 	mu               sync.Mutex
 	started          bool
@@ -64,17 +65,29 @@ type Process struct {
 // NewProcess constructs a process launcher. artifactRoot may be empty for a
 // read-only thread; Start then creates a separate empty runtime-owned root.
 func NewProcess(config Config, artifactRoot string) *Process {
-	return newProcess(config, artifactRoot, defaultDependencies())
+	return newProcessWithWorkspaceWrite(config, artifactRoot, false, defaultDependencies())
 }
 
 func newProcess(config Config, artifactRoot string, deps processDependencies) *Process {
+	return newProcessWithWorkspaceWrite(config, artifactRoot, false, deps)
+}
+
+// newThreadProcess binds the workspace-write permission to one contained
+// process. It is intentionally not exported: ThreadConfig is the public
+// authority, and callers must not grant a process wider access later.
+func newThreadProcess(config Config, artifactRoot string, workspaceWriteAllowed bool) *Process {
+	return newProcessWithWorkspaceWrite(config, artifactRoot, workspaceWriteAllowed, defaultDependencies())
+}
+
+func newProcessWithWorkspaceWrite(config Config, artifactRoot string, workspaceWriteAllowed bool, deps processDependencies) *Process {
 	config.JSONContract = strings.Clone(config.JSONContract)
 	config.EnvelopeSchema = append([]byte(nil), config.EnvelopeSchema...)
 	return &Process{
-		config:       config,
-		artifactRoot: artifactRoot,
-		deps:         deps,
-		waitDone:     make(chan struct{}),
+		config:                config,
+		artifactRoot:          artifactRoot,
+		workspaceWriteAllowed: workspaceWriteAllowed,
+		deps:                  deps,
+		waitDone:              make(chan struct{}),
 	}
 }
 
@@ -319,6 +332,15 @@ func (process *Process) WritableRoot() string {
 		return ""
 	}
 	return process.artifactRoot
+}
+
+// WorkspaceWriteAllowed reports the immutable permission selected from the
+// ThreadConfig that created this process. It is consumed when connection file
+// policy is installed and is never derived from another session or approval.
+func (process *Process) WorkspaceWriteAllowed() bool {
+	process.mu.Lock()
+	defer process.mu.Unlock()
+	return process.workspaceWriteAllowed
 }
 
 // WorkspaceRoot returns the canonical Git root used as the child working

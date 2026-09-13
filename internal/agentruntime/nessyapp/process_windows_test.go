@@ -59,7 +59,7 @@ func TestCanonicalReadableTargetAcceptsShortRootAlias(t *testing.T) {
 	}
 
 	shortWorkspace := shortPathForTest(t, workspace)
-	context := newFilePolicy(shortWorkspace, "").context("session", "turn")
+	context := newFilePolicy(shortWorkspace, "", false).context("session", "turn")
 	got, err := canonicalReadableTarget(context, filepath.Join(shortWorkspace, filepath.Base(target)))
 	if err != nil {
 		t.Fatalf("canonical readable target through short root alias: %v", err)

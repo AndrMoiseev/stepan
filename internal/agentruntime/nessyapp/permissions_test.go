@@ -63,23 +63,52 @@ func TestCanonicalTargetResolvesExistingAndNewTargetsWithoutLinkEscape(t *testin
 }
 
 func TestPermissionContextClonesLogicalRoots(t *testing.T) {
-	policy := newFilePolicy(`C:\workspace`, `C:\artifact`)
+	policy := newFilePolicy(`C:\workspace`, `C:\artifact`, false)
 	context := policy.context("session", "turn")
 	context.readRoots[0] = "changed"
 	if policy.readRoots[0] != `C:\workspace` {
 		t.Fatalf("permission context aliased policy roots: %#v", policy.readRoots)
 	}
-	if context.sessionID != "session" || context.turnID != "turn" || context.writableRoot != `C:\artifact` {
+	if context.sessionID != "session" || context.turnID != "turn" || context.artifactRoot != `C:\artifact` || context.workspaceWriteAllowed {
 		t.Fatalf("permission context = %#v", context)
 	}
 	fresh := policy.context("session", "next-turn")
 	if len(fresh.readRoots) != 2 || fresh.readRoots[0] != `C:\workspace` || fresh.readRoots[1] != `C:\artifact` {
 		t.Fatalf("logical roots = %#v", fresh.readRoots)
 	}
-	readOnly := newFilePolicy(`C:\workspace`, "").context("session", "read-only")
-	if readOnly.writableRoot != "" || len(readOnly.readRoots) != 1 || readOnly.readRoots[0] != `C:\workspace` {
+	readOnly := newFilePolicy(`C:\workspace`, "", false).context("session", "read-only")
+	if len(readOnly.writableRoots) != 0 || len(readOnly.readRoots) != 1 || readOnly.readRoots[0] != `C:\workspace` {
 		t.Fatalf("read-only context = %#v", readOnly)
 	}
+	workspaceWrite := newFilePolicy(`C:\workspace`, `C:\artifact`, true).context("session", "workspace-write")
+	if !workspaceWrite.workspaceWriteAllowed || len(workspaceWrite.writableRoots) != 2 || workspaceWrite.writableRoots[0] != `C:\workspace` || workspaceWrite.writableRoots[1] != `C:\artifact` {
+		t.Fatalf("workspace-write context = %#v", workspaceWrite)
+	}
+}
+
+func TestWorkspaceWritePermissionStaysBoundToItsActiveSession(t *testing.T) {
+	workspace := t.TempDir()
+	writerArtifact, readerArtifact := t.TempDir(), t.TempDir()
+	writer, writerServer, writerRaw := establishWorkspacePolicyConnection(t, workspace, writerArtifact, true)
+	defer writerRaw.Close()
+	defer writer.Close()
+	reader, readerServer, readerRaw := establishWorkspacePolicyConnection(t, workspace, readerArtifact, false)
+	defer readerRaw.Close()
+	defer reader.Close()
+
+	writerPrompt := startPrompt(t, writer, writerServer)
+	readerPrompt := startPrompt(t, reader, readerServer)
+	target := filepath.Join(workspace, "source.go")
+	announceTool(t, writerServer, "shared-tool", "write_file", map[string]any{"file_path": target}, target)
+	announceTool(t, readerServer, "shared-tool", "write_file", map[string]any{"file_path": target}, target)
+	if outcome := requestPermission(t, writerServer, "writer-permission", "shared-tool", "write_file", map[string]any{"file_path": target}, target, standardPermissionOptions()); outcome != "selected:allow-once" {
+		t.Fatalf("writer workspace permission = %q", outcome)
+	}
+	if outcome := requestPermission(t, readerServer, "reader-permission", "shared-tool", "write_file", map[string]any{"file_path": target}, target, standardPermissionOptions()); outcome != "cancelled" {
+		t.Fatalf("reader inherited writer permission = %q", outcome)
+	}
+	finishPrompt(t, writerServer, writerPrompt, "end_turn")
+	finishPromptDenied(t, readerServer, readerPrompt, workspace, readerArtifact)
 }
 
 func TestPermissionMediationAllowsDistinctWritesAndRejectsInvalidGrants(t *testing.T) {
@@ -582,14 +611,22 @@ func TestCloseInvalidatesPendingPermissionWithoutApproval(t *testing.T) {
 }
 
 func establishPolicyConnection(t *testing.T, workspace, writableRoot string, handler connectionHandler) (*Connection, *transport, net.Conn) {
+	return establishPolicyConnectionWithWorkspaceWrite(t, workspace, writableRoot, false, handler)
+}
+
+func establishWorkspacePolicyConnection(t *testing.T, workspace, artifactRoot string, workspaceWriteAllowed bool) (*Connection, *transport, net.Conn) {
+	return establishPolicyConnectionWithWorkspaceWrite(t, workspace, artifactRoot, workspaceWriteAllowed, connectionHandler{})
+}
+
+func establishPolicyConnectionWithWorkspaceWrite(t *testing.T, workspace, writableRoot string, workspaceWriteAllowed bool, handler connectionHandler) (*Connection, *transport, net.Conn) {
 	t.Helper()
 	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
 	if err != nil {
 		t.Fatal(err)
 	}
-	connection.configureFilePolicy(filepath.Clean(workspace), filepath.Clean(writableRoot))
+	connection.configureFilePolicy(filepath.Clean(workspace), filepath.Clean(writableRoot), workspaceWriteAllowed)
 	if writableRoot == "" {
-		connection.configureFilePolicy(filepath.Clean(workspace), "")
+		connection.configureFilePolicy(filepath.Clean(workspace), "", workspaceWriteAllowed)
 	}
 	return connection, server, raw
 }
