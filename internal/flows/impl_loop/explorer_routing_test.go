@@ -14,7 +14,7 @@ import (
 )
 
 func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing.T) {
-	first := explorationResponse(t, strings.Repeat(string(rune(0x044F)), DefaultExplorerResponseCharacters+1))
+	first := explorationResponseWithFact(t, "short message", strings.Repeat(string(rune(0x044F)), 250))
 	second := explorationResponse(t, "validation is centralized")
 	runtime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: first}, {raw: second}}}
 	factory := &explorerRoutingFactory{runtime: runtime}
@@ -26,11 +26,14 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 	call.Run.RunOperations[0].Episode = "final-review"
 	call.Expectation = explorerExpectationFrom(t, expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed), "explorer-call")
 	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	sourceRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
+	sourceSession := &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "source"}
 
 	result, err := RouteExplorer(context.Background(), ExplorerRoute{
-		Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer},
-		SourceExpectation: expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed),
-		Request:           explorationRequest(t), ExplorerCall: call,
+		Owner: owner, SourceSession: sourceSession, SourceExpectation: source,
+		Request: explorationRequest(t), ExplorerCall: call,
+		SourceContinuation: sourceContinuationCall(t, call, source), ExplorerCharacters: 200,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -44,8 +47,11 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 	if factory.created != 1 || len(runtime.messages) != 2 {
 		t.Fatalf("Explorer did not shorten in its original session: runtimes=%d messages=%#v", factory.created, runtime.messages)
 	}
-	if !strings.Contains(runtime.messages[1], "exceeds 12000 Unicode characters") {
+	if !strings.Contains(runtime.messages[1], "exceeds 200 Unicode characters") {
 		t.Fatalf("shortening request = %q", runtime.messages[1])
+	}
+	if result.SourceContinuationResponse.Kind != ResponseReviewPassed || result.SourceContinuationAttempts != 1 || len(sourceRuntime.messages) != 1 || !strings.Contains(sourceRuntime.messages[0], "Explorer result") {
+		t.Fatalf("source continuation was not dispatched on the original thread: result=%#v messages=%#v", result, sourceRuntime.messages)
 	}
 	current, _, err := call.StateStore.Current(context.Background())
 	if err != nil {
@@ -57,6 +63,37 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 	attempts := current.RunOperations[0].Attempts
 	if len(attempts) != 2 || attempts[0].Outcome != implementationstate.AttemptRejected || attempts[1].Outcome != implementationstate.AttemptSucceeded {
 		t.Fatalf("durable technical attempts = %#v", attempts)
+	}
+}
+
+func TestRouteExplorerContinuesValidEscalationsWithoutSizeRetry(t *testing.T) {
+	for _, kind := range []ResponseKind{ResponseClarificationNeeded, ResponseExecutionBlocked} {
+		t.Run(string(kind), func(t *testing.T) {
+			explorerRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, kind)}}}
+			owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: explorerRuntime})
+			t.Cleanup(func() { _ = owner.Close() })
+			call := controlledCallFixture(t, &controlledCallRuntime{})
+			call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+			call.Run.RunOperations[0].Episode = "final-review"
+			source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+			call.Expectation = explorerExpectationFrom(t, source, "explorer-call")
+			call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+			sourceRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
+			result, err := RouteExplorer(context.Background(), ExplorerRoute{
+				Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "source"},
+				SourceExpectation: source, Request: explorationRequest(t), ExplorerCall: call,
+				SourceContinuation: sourceContinuationCall(t, call, source),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Response.Kind != kind || result.Attempts != 1 || len(explorerRuntime.messages) != 1 || len(sourceRuntime.messages) != 1 {
+				t.Fatalf("Explorer escalation route = %#v, explorer=%#v source=%#v", result, explorerRuntime.messages, sourceRuntime.messages)
+			}
+			if kind == ResponseClarificationNeeded && !strings.Contains(result.ContinuationMessage, "requires clarification") || kind == ResponseExecutionBlocked && !strings.Contains(result.ContinuationMessage, "execution blocked") {
+				t.Fatalf("kind-specific continuation = %q", result.ContinuationMessage)
+			}
+		})
 	}
 }
 
@@ -132,6 +169,32 @@ func explorationResponse(t *testing.T, message string) json.RawMessage {
 		t.Fatal(err)
 	}
 	return raw
+}
+
+func explorationResponseWithFact(t *testing.T, message, fact string) json.RawMessage {
+	t.Helper()
+	payload := responsePayloadMap(ResponseExplorationResult)
+	payload["message"], payload["known_facts"] = message, []string{fact}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func sourceContinuationCall(t *testing.T, explorer ControlledAgentCall, source ResponseExpectation) ControlledAgentCall {
+	t.Helper()
+	basis := explorer.Run.RunOperations[0].Basis
+	if err := explorer.Run.AddRunOperation(implementationstate.Operation{ID: "source-continuation", Kind: implementationstate.OperationReview, Counter: implementationstate.CycleCounterNone, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	expectation := source
+	expectation.Binding.CallID = "source-continuation-call"
+	return ControlledAgentCall{
+		Repository: explorer.Repository, Policy: AgentCallPolicy{Role: AgentRoleExplorer, CallID: expectation.Binding.CallID},
+		Run: explorer.Run, Journal: explorer.Journal, StateStore: explorer.StateStore,
+		OperationID: "source-continuation", Limits: explorer.Limits, Expectation: expectation,
+	}
 }
 
 func explorerExpectationFrom(t *testing.T, source ResponseExpectation, callID string) ResponseExpectation {

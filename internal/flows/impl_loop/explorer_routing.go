@@ -27,15 +27,24 @@ type ExplorerRoute struct {
 	SourceExpectation ResponseExpectation
 	Request           AgentResponse
 	ExplorerCall      ControlledAgentCall
+	// SourceContinuation is the controller-owned next turn in the exact
+	// source session. It has its own operation and response expectation;
+	// Explorer's result never chooses either.
+	SourceContinuation ControlledAgentCall
+	// ExplorerCharacters is the effective configured response limit. Zero uses
+	// the documented default; a negative value is invalid.
+	ExplorerCharacters int
 }
 
-// ExplorerRouteResult is fed to the still-open source session by the next
-// controller turn. The source session is intentionally not run here: its next
-// expected state and operation remain a controller decision.
+// ExplorerRouteResult retains both the Explorer outcome and the structured
+// response produced by the controller-owned continuation in the still-open
+// source session.
 type ExplorerRouteResult struct {
-	Response            AgentResponse
-	ContinuationMessage string
-	Attempts            uint64
+	Response                   AgentResponse
+	ContinuationMessage        string
+	Attempts                   uint64
+	SourceContinuationResponse AgentResponse
+	SourceContinuationAttempts uint64
 }
 
 // RouteExplorer starts one fresh Explorer session, preserves the source
@@ -59,18 +68,31 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 	}
 	defer func() { _ = session.Close() }()
 
+	limit, err := effectiveExplorerCharacterLimit(route.ExplorerCharacters)
+	if err != nil {
+		return ExplorerRouteResult{}, err
+	}
 	call := route.ExplorerCall
 	call.Session = session
 	call.AssignmentID = explorerAssignmentID(route.SourceExpectation)
-	call.ValidateResponse = validateExplorerResponseSize
+	call.ValidateResponse = func(response AgentResponse) error { return validateExplorerResponseSize(response, limit) }
 	call.ContinueOnResponseRejection = true
 	result, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return ExplorerRouteResult{Attempts: result.Attempts}, err
 	}
+	continuation := explorerContinuation(result.Response)
+	sourceCall := route.SourceContinuation
+	sourceCall.Session = route.SourceSession
+	sourceCall.Message = continuation
+	sourceResult, err := InvokeControlledAgentCall(ctx, sourceCall)
+	if err != nil {
+		return ExplorerRouteResult{Response: result.Response, ContinuationMessage: continuation, Attempts: result.Attempts, SourceContinuationAttempts: sourceResult.Attempts}, err
+	}
 	return ExplorerRouteResult{
 		Response: result.Response, Attempts: result.Attempts,
-		ContinuationMessage: explorerContinuation(result.Response),
+		ContinuationMessage:        explorerContinuation(result.Response),
+		SourceContinuationResponse: sourceResult.Response, SourceContinuationAttempts: sourceResult.Attempts,
 	}, nil
 }
 
@@ -120,6 +142,26 @@ func validateExplorerRoute(route ExplorerRoute) error {
 	}
 	if route.SourceExpectation.Scope == ResponseScopeBootstrap {
 		return fmt.Errorf("%w: bootstrap Explorer routing requires bootstrap durable state", ErrInvalidExplorerRoute)
+	}
+	if err := validateSourceContinuation(route); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateSourceContinuation(route ExplorerRoute) error {
+	call := route.SourceContinuation
+	if call.Session != nil && call.Session != route.SourceSession {
+		return fmt.Errorf("%w: source continuation must use the originating session", ErrInvalidExplorerRoute)
+	}
+	if err := validateExpectation(call.Expectation); err != nil {
+		return fmt.Errorf("%w: source continuation expectation: %v", ErrInvalidExplorerRoute, err)
+	}
+	if call.Expectation.Role != route.SourceExpectation.Role || call.Expectation.State != route.SourceExpectation.State || call.Expectation.Scope != route.SourceExpectation.Scope || call.Expectation.ExplorerSource != "" || !sameExplorerBinding(call.Expectation.Binding, route.SourceExpectation.Binding) {
+		return fmt.Errorf("%w: source continuation does not preserve the source ownership", ErrInvalidExplorerRoute)
+	}
+	if call.Run != route.ExplorerCall.Run || call.Journal != route.ExplorerCall.Journal || call.StateStore != route.ExplorerCall.StateStore || call.AssignmentID != explorerAssignmentID(route.SourceExpectation) || call.OperationID == "" {
+		return fmt.Errorf("%w: source continuation requires the same durable source state and its own operation", ErrInvalidExplorerRoute)
 	}
 	return nil
 }
@@ -189,31 +231,62 @@ func sameExplorerBinding(explorer, source ResponseBinding) bool {
 	return explorer.RunID == source.RunID && explorer.AssignmentID == source.AssignmentID && explorer.BriefID == source.BriefID && explorer.Specification == source.Specification && explorer.Configuration == source.Configuration && explorer.TaskList == source.TaskList
 }
 
-func validateExplorerResponseSize(response AgentResponse) error {
-	if response.Message == nil {
-		return fmt.Errorf("Explorer response has no message")
+func effectiveExplorerCharacterLimit(limit int) (int, error) {
+	if limit == 0 {
+		return DefaultExplorerResponseCharacters, nil
 	}
-	if utf8.RuneCountInString(*response.Message) > DefaultExplorerResponseCharacters {
-		return fmt.Errorf("Explorer response exceeds %d Unicode characters; shorten the same research answer without omitting confirmed facts, unknowns, or references", DefaultExplorerResponseCharacters)
+	if limit < 0 {
+		return 0, fmt.Errorf("%w: Explorer character limit must be positive", ErrInvalidExplorerRoute)
+	}
+	return limit, nil
+}
+
+func validateExplorerResponseSize(response AgentResponse, limit int) error {
+	// Clarification and execution-blocked are valid Explorer outcomes. They
+	// are delivered to the source as an escalation, not retried as a malformed
+	// or oversized research answer.
+	if response.Kind != ResponseExplorationResult {
+		return nil
+	}
+	text := explorerContinuation(response)
+	if utf8.RuneCountInString(text) > limit {
+		return fmt.Errorf("Explorer response exceeds %d Unicode characters; shorten the same research answer without omitting confirmed facts, unknowns, or references", limit)
 	}
 	return nil
 }
 
 func explorerContinuation(response AgentResponse) string {
 	var text strings.Builder
-	text.WriteString("# Explorer result\n\n")
-	text.WriteString(*response.Message)
-	text.WriteString("\n\n## Confirmed facts\n")
-	for _, fact := range response.KnownFacts {
-		fmt.Fprintf(&text, "- %s\n", fact)
-	}
-	text.WriteString("\n## Unknowns\n")
-	for _, unknown := range response.Unknowns {
-		fmt.Fprintf(&text, "- %s\n", unknown)
-	}
-	text.WriteString("\n## References\n")
-	for _, reference := range response.References {
-		fmt.Fprintf(&text, "- %s\n", reference)
+	switch response.Kind {
+	case ResponseExplorationResult:
+		text.WriteString("# Explorer result\n\n")
+		text.WriteString(*response.Message)
+		text.WriteString("\n\n## Confirmed facts\n")
+		for _, fact := range response.KnownFacts {
+			fmt.Fprintf(&text, "- %s\n", fact)
+		}
+		text.WriteString("\n## Unknowns\n")
+		for _, unknown := range response.Unknowns {
+			fmt.Fprintf(&text, "- %s\n", unknown)
+		}
+		text.WriteString("\n## References\n")
+		for _, reference := range response.References {
+			fmt.Fprintf(&text, "- %s\n", reference)
+		}
+	case ResponseClarificationNeeded:
+		fmt.Fprintf(&text, "# Explorer requires clarification\n\n## Question\n\n%s\n\n## Context\n\n%s\n\n## Boundaries\n\n%s\n\n## References\n", *response.Question, *response.Context, *response.Boundaries)
+		for _, reference := range response.References {
+			fmt.Fprintf(&text, "- %s\n", reference)
+		}
+		if response.Recommendation != nil {
+			fmt.Fprintf(&text, "\n## Recommendation\n\n%s\n", *response.Recommendation)
+		}
+	case ResponseExecutionBlocked:
+		fmt.Fprintf(&text, "# Explorer execution blocked\n\n## Blocked action\n\n%s\n\n## Diagnostic\n\n%s\n\n## Attempts\n", *response.BlockedAction, *response.Diagnostic)
+		for _, attempt := range response.Attempts {
+			fmt.Fprintf(&text, "- %s\n", attempt)
+		}
+		fmt.Fprintf(&text, "\n## Required user action\n\n%s\n", *response.RequiredUserAction)
 	}
 	return strings.TrimSpace(text.String())
 }

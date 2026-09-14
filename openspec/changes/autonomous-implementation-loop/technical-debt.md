@@ -1,5 +1,35 @@
 # Technical debt — autonomous-implementation-loop
 
+## TD-7.5-001 — replacement Explorer session may survive request cleanup
+
+- Origin: task 7.5 initial review; affected locations: `internal/flows/impl_loop/explorer_routing.go` and `controlled_agent_call.go`.
+- Status: `open`.
+- Potential problem: request cleanup closes the originally captured Explorer session, while an internally recreated replacement can remain owned until the whole owner closes.
+- Evidence: controlled-call technical retry replaces the session internally and does not return that effective session to the request cleanup.
+- Expected impact: a provider runtime/thread may leak after an investigation that succeeds only after a technical failure.
+- Classification: technical debt because it requires a technical-failure path, not ordinary successful routing or same-session shortening.
+- Possible follow-up: return/close the effective request-scoped session or move its lifetime fully into the controlled-call abstraction.
+
+## TD-7.5-002 — Explorer episode key is caller supplied
+
+- Origin: task 7.5 initial review; affected location: `internal/flows/impl_loop/explorer_routing.go`.
+- Status: `open`.
+- Potential problem: any nonblank operation episode is accepted, so a future caller could accidentally choose a fresh key per request and reset the ten-investigation allowance.
+- Evidence: routing does not bind the episode to controller-owned source phase/session state; no production caller exists yet.
+- Expected impact: future integration could bypass the per-source-episode limit.
+- Classification: technical debt because the bypass is not reachable through a current production route.
+- Possible follow-up: derive or validate the episode from controller-owned source-phase/session state.
+
+## TD-7.5-003 — Explorer boundary and recovery coverage is incomplete
+
+- Origin: task 7.5 initial review; affected location: `internal/flows/impl_loop/explorer_routing_test.go`.
+- Status: `open`.
+- Potential problem: focused routing coverage does not exercise request 10 versus 11, reopened persisted state, or the complete integration boundary.
+- Evidence: the initial test used one investigation with two technical attempts; durable counter primitives have earlier separate coverage.
+- Expected impact: regressions in the principal episode boundary or recovery composition could escape the routing suite.
+- Classification: technical debt as a test-quality gap; current primitives are independently covered.
+- Possible follow-up: add minimal boundary/reopen integration cases when production routing is composed.
+
 ## TD-7.4-001 — файловая policy не связана с фактической ролью сессии
 
 - Origin: task 7.4 initial review; affected locations: `internal/flows/impl_loop/controlled_agent_call.go` and `agent_call_guard.go`.
