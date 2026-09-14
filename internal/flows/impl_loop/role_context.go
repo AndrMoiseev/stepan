@@ -347,7 +347,9 @@ func responseKindInstruction(kind ResponseKind) string {
 		return text + "; question, context, boundaries, and references are non-empty; options and recommendation are optional only when genuinely available."
 	case ResponseExecutionBlocked:
 		return text + "; blocked_action, diagnostic, attempts, and required_user_action are non-empty."
-	case ResponseTasksExtracted, ResponseTasksAdded:
+	case ResponseTasksExtracted:
+		return text + "; task_ids and task_payloads are non-empty and have equal lengths. Each task_payloads item is exactly one JSON object with id, parent_id, and title; its id matches the same-position task_ids item, and a non-empty parent_id names an earlier item. Response order is the source order."
+	case ResponseTasksAdded:
 		return text + "; task_ids and task_payloads are non-empty and have equal lengths."
 	case ResponseProgressReflected:
 		return text + "; task_ids is non-empty."

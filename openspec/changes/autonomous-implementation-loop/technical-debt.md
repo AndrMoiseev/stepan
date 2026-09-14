@@ -179,3 +179,23 @@
 - Expected impact: a configuration error may be discovered after the intended all-role preflight rather than before implementation starts.
 - Classification: technical debt because the envelope schema is controller-owned and response-schema integration is scheduled in later tasks; no ordinary user configuration currently supplies this value.
 - Possible follow-up: reuse full schema-object validation in `ValidateRuntimeConfig` and cover malformed and empty envelope schemas.
+
+## TD-8.1-001 — OpenSpec document loading follows symlinks outside the repository
+
+- Origin: task 8.1 independent review; affected locations: `internal/openspec/package.go` (`Load`, `readDocument`).
+- Status: `open`.
+- Potential problem: required documents are read through symlink-following filesystem calls while repository containment is checked only against the unresolved lexical path.
+- Evidence: a symlinked change directory or required Markdown document can resolve outside the repository and its bytes can enter `CompleteSpecification`.
+- Expected impact: in an atypical or hostile symlinked checkout, external local data or untrusted instructions could enter agent context.
+- Classification: technical debt because the trigger requires an unusual or hostile checkout and no explicit approved requirement mandates canonical symlink containment.
+- Possible follow-up: canonicalize repository and document paths, reject resolved paths outside the canonical root, and add a platform-appropriate symlink regression.
+
+## TD-8.1-002 — exposed package values can diverge from their recorded versions
+
+- Origin: task 8.1 independent review; affected locations: `internal/openspec/package.go` (`Document`, `Package`, `Documents`, `CompleteSpecification`).
+- Status: `open`.
+- Potential problem: exported mutable fields and slices allow a caller to change or reorder loaded content after `Load` without changing document or aggregate versions.
+- Evidence: assigning a new `MainSpecs[0].Content` or reordering the slice changes rendered agent context while `Package.Version` remains unchanged.
+- Expected impact: a future consumer could bind an agent response to a stale input version.
+- Classification: technical debt because current callers do not mutate the returned package and typical supported behavior is not presently broken.
+- Possible follow-up: keep loaded state private with defensive-copy accessors, or bind rendering and versioning to an immutable snapshot; add mutation-resistance coverage.

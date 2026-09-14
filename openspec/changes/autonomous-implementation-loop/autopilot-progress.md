@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 33/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, 7.4, and 7.5 accepted with technical debt; next action task 8.1; final review `not_started`.
+- Outcome: `in_progress`; 34/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, 7.4, 7.5, and 8.1 accepted with technical debt; next action task 8.2; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -172,6 +172,15 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Implementer: `/root/implement_8_1` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
 - Candidate adds `internal/openspec.Load` with stable document ordering, SHA-256 document/aggregate versions, explicit missing/unsafe-input errors, and separately rendered main specs for briefer selection. Implementer reports focused/full suite and Windows build passing. Coordinator focused `go test ./internal/openspec -count=1 -timeout 2m` and `git diff --check` passed; full coordinator validation, commit, and review remain next.
 - Coordinator mandatory validation passed on Go 1.26.5/windows-amd64: focused `go test ./internal/openspec -count=1 -timeout 2m`, `go test ./... -count=1 -timeout 9m` (slowest `impl_loop` 162.873s), Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`; exit 0. Nonfatal module stat-cache permission warnings did not affect exits. Checkbox complete; review `awaiting_review`; next: implementation commit and fresh reviewer.
+- Implementation commit verified: `2006a633f8494b5b656b41577c3d8479ac7d4e7d`; independent review by `/root/review_8_1` PASS with no critical findings. `TD-8.1-001` and `TD-8.1-002` record symlink-boundary hardening and mutable version/content binding as technical debt. Focused reviewer rerun and `git diff --check` passed. Task 8.1 accepted with technical debt after zero correction cycles; next task 8.2. User edits in tasks 14.1–14.6 remain unstaged and uncommitted.
+
+### 8.2 — new/resumed run task extraction
+
+- Base: `2006a633f8494b5b656b41577c3d8479ac7d4e7d`; dependency 8.1 accepted with technical debt.
+- Acceptance: tasks.md 8.2 and implementation-loop/agent-control requirements; start only a genuinely new change or resume this work copy's own unclosed run, reject task reuse from closed/foreign runs, and persist a formally validated unique ordered hierarchy from the orchestrator without parsing Markdown as controller state.
+- Implementer: `/root/implement_8_2` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds new-change reservation/package loading, own-run continuation through the existing controller lease and durable state store, strict bound orchestrator task decoding with unique IDs/prior-parent hierarchy/source ordering, and precise orchestrator response instructions. Tests cover formal hierarchy/order, malformed/ambiguous payloads, binding, fresh-vs-closed change starts, and current-workcopy paused-vs-closed continuation. No manual check.
+- Implementer focused tests passed; its full suite had one unrelated `internal/processjob.TestCloseKillsProcessTree` empty-PID failure that passed an isolated retry, so that run was not accepted as evidence. Coordinator terminated the implementer's lingering owned Go process before validation. Coordinator mandatory validation passed: focused task tests 1.289s, `go test ./... -count=1 -timeout 9m` (slowest `impl_loop` 167.205s), Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`; exit 0. Nonfatal module stat-cache permission warnings did not affect exits. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
