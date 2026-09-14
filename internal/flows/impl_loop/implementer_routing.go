@@ -9,7 +9,13 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
-var ErrInvalidImplementerRoute = errors.New("invalid implementer check route")
+var (
+	ErrInvalidImplementerRoute = errors.New("invalid implementer check route")
+	// ErrTaskReviewNotReady is the controller seam used by task review. It
+	// deliberately describes the missing current required-check proof instead
+	// of allowing a reviewer to infer readiness from an earlier narrow check.
+	ErrTaskReviewNotReady = errors.New("task review requires current successful mandatory checks")
+)
 
 // ImplementerCheckRoute is the closed controller route from an executor
 // checks_requested response, through configured checks, back to a following
@@ -40,10 +46,15 @@ type ImplementerContinuation struct {
 // result, and continuation outcome. Feedback is suitable for the next agent
 // turn and contains only bounded presentations and durable references.
 type ImplementerCheckRouteResult struct {
-	Response             AgentResponse
-	ResponseAttempts     uint64
-	Checks               ImplementerTransitionResult
-	RequiredChecks       ImplementerTransitionResult
+	Response         AgentResponse
+	ResponseAttempts uint64
+	Checks           ImplementerTransitionResult
+	RequiredChecks   ImplementerTransitionResult
+	// ReviewReady is true only when RequiredChecks is a successful full set
+	// for the current assignment state and acceptance inputs. The task-review
+	// dispatcher is introduced separately; it must require this seam before
+	// starting a reviewer session.
+	ReviewReady          bool
 	Feedback             string
 	ContinuationResponse AgentResponse
 	ContinuationAttempts uint64
@@ -52,10 +63,15 @@ type ImplementerCheckRouteResult struct {
 
 // RouteImplementerChecks is the controller-owned executor dispatcher for the
 // two task-9.1 responses. implementation_ready immediately starts a complete
-// required set. checks_requested runs its narrow set, feeds the same live
-// session, and dispatches the next turn; a ready response from that next turn
-// immediately starts a distinct complete required set. No branch accepts,
-// commits, or completes the assignment.
+// required set. A failed required set is fed back to the same live executor
+// session, which may correct the code and present implementation_ready again.
+// Every such presentation creates a distinct full set, so it starts from the
+// first configured command; a narrow requested set is never reused as
+// acceptance evidence. Mandatory-check attempt reservation enforces the
+// configured per-cycle limit before a fourth external set could start.
+//
+// A successful required set is the only successful terminal result from this
+// dispatcher. Review, acceptance, and commit remain outside this seam.
 func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (ImplementerCheckRouteResult, error) {
 	if err := validateImplementerCheckRoute(route); err != nil {
 		return ImplementerCheckRouteResult{}, err
@@ -107,13 +123,66 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 		}
 		if turnResult.Response.Kind == ResponseImplementationReady {
 			result.RequiredChecks = checks
-			return result, nil
+			if checks.Set.Succeeded() {
+				if err := CanStartTaskReview(route.Transition.Run, route.Transition.AssignmentID); err != nil {
+					return result, err
+				}
+				result.ReviewReady = true
+				return result, nil
+			}
+			// A failed mandatory set is not a retry of one command. Its bounded
+			// feedback turn gives the executor a chance to correct the code; the
+			// next implementation_ready starts another whole required set.
+			result.Feedback = ImplementerCheckFeedback(checks)
+			result.session = turnResult.Session
+			continue
 		}
 		result.Feedback = ImplementerCheckFeedback(checks)
 		// Keep the live session that produced this turn for the next iteration.
 		result.ContinuationResponse = turnResult.Response
 		result.session = turnResult.Session
 	}
+}
+
+// CanStartTaskReview proves that the latest mandatory-check result is a
+// successful complete set for the current code, current specification and
+// configuration, and the current brief. It is intentionally read-only: a
+// later reviewer correction changes the observed code and the next executor
+// implementation_ready must create a new mandatory-check operation.
+func CanStartTaskReview(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) error {
+	if run == nil || run.Status != implementationstate.RunActive {
+		return ErrTaskReviewNotReady
+	}
+	var assignment *implementationstate.Assignment
+	for index := range run.Assignments {
+		if run.Assignments[index].ID == assignmentID {
+			assignment = &run.Assignments[index]
+			break
+		}
+	}
+	if assignment == nil || assignment.Status != implementationstate.AssignmentActive || len(assignment.Briefs) == 0 {
+		return ErrTaskReviewNotReady
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	currentBrief := assignment.Briefs[len(assignment.Briefs)-1].ID
+	for resultIndex := len(assignment.Results) - 1; resultIndex >= 0; resultIndex-- {
+		result := assignment.Results[resultIndex]
+		var operation *implementationstate.Operation
+		for operationIndex := range assignment.Operations {
+			if assignment.Operations[operationIndex].ID == result.OperationID {
+				operation = &assignment.Operations[operationIndex]
+				break
+			}
+		}
+		if operation == nil || operation.Counter != implementationstate.CycleCounterMandatoryChecks {
+			continue
+		}
+		if result.Status == implementationstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis && operation.Basis == basis && operation.BriefID == currentBrief {
+			return nil
+		}
+		return ErrTaskReviewNotReady
+	}
+	return ErrTaskReviewNotReady
 }
 
 func validateImplementerCheckRoute(route ImplementerCheckRoute) error {

@@ -107,6 +107,149 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 	}
 }
 
+func TestRouteImplementerChecksRestartsFullRequiredSetAfterCorrection(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-correction"} {
+		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}}}
+	originExpectation := fixture.executorExpectation("executor-origin-call")
+	correctionExpectation := fixture.executorExpectation("executor-correction-call")
+	runs := 0
+	runner := CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		fixture.runner.commands = append(fixture.runner.commands, command)
+		runs++
+		if runs == 1 {
+			return checkexec.Result{ExitCode: 1, Stderr: []byte("first required set failed")}, nil
+		}
+		return checkexec.Result{ExitCode: 0}, nil
+	})
+	firstTransition := fixture.input("required-first", "required-first-result")
+	firstTransition.Runner = runner
+	secondTransition := fixture.input("required-second", "required-second-result")
+	secondTransition.Runner = runner
+
+	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
+		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		Transition:             firstTransition,
+		Continuation:           ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: correctionExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-correction", Limits: controlledCallLimits(), Expectation: correctionExpectation},
+		ContinuationTransition: secondTransition,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.RequiredChecks.Set.Succeeded() || result.RequiredChecks.Set.Kind != CheckSetRequired {
+		t.Fatalf("last required set = %#v", result.RequiredChecks)
+	}
+	assertRunOrder(t, fixture.runner, "lint", "lint", "test_all")
+	if len(runtime.messages) != 2 || !strings.Contains(runtime.messages[1], "first required set failed") {
+		t.Fatalf("correction feedback = %#v", runtime.messages)
+	}
+	if counters := fixture.run.Assignments[0].Counters; counters.MandatoryChecks != 0 || counters.MandatoryChecksCycle != 2 {
+		t.Fatalf("successful second required set did not open only its next cycle: %#v", counters)
+	}
+}
+
+func TestRouteImplementerChecksPausesBeforeFourthFailedRequiredSet(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-correction-1", "executor-correction-2", "executor-correction-3"} {
+		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}}}
+	expectation := func(id string) ResponseExpectation { return fixture.executorExpectation(id) }
+	runner := CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		fixture.runner.commands = append(fixture.runner.commands, command)
+		return checkexec.Result{ExitCode: 1, Stderr: []byte("still failing")}, nil
+	})
+	makeCall := func(operationID implementationstate.OperationID, callID string) ControlledAgentCall {
+		return ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: callID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: operationID, Limits: controlledCallLimits(), Expectation: expectation(callID)}
+	}
+	input := func(operation implementationstate.OperationID, result implementationstate.ResultID) ImplementerTransitionInput {
+		transition := fixture.input(operation, result)
+		transition.Runner = runner
+		return transition
+	}
+	route := ImplementerCheckRoute{
+		OriginatingCall:        makeCall("executor-origin", "executor-origin-call"),
+		Transition:             input("required-1", "required-result-1"),
+		Continuation:           makeCall("executor-correction-1", "executor-correction-call-1"),
+		ContinuationTransition: input("required-2", "required-result-2"),
+		FurtherContinuations: []ImplementerContinuation{
+			{Call: makeCall("executor-correction-2", "executor-correction-call-2"), Transition: input("required-3", "required-result-3")},
+			{Call: makeCall("executor-correction-3", "executor-correction-call-3"), Transition: input("required-4", "required-result-4")},
+		},
+	}
+	route.OriginatingCall.Session = &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}
+	_, err := RouteImplementerChecks(context.Background(), route)
+	if !errors.Is(err, implementationstate.ErrLimitExceeded) {
+		t.Fatalf("fourth required set error = %v, want limit pause", err)
+	}
+	if fixture.run.Status != implementationstate.RunPaused || fixture.run.LimitPause == nil || fixture.run.LimitPause.Counter != implementationstate.CycleCounterMandatoryChecks {
+		t.Fatalf("fourth required set did not pause mandatory cycle: %#v", fixture.run)
+	}
+	assertRunOrder(t, fixture.runner, "lint", "lint", "lint")
+	if got := fixture.run.Assignments[0].Counters.MandatoryChecks; got != 3 {
+		t.Fatalf("mandatory attempts = %d, want three", got)
+	}
+	if operation := fixture.run.Assignments[0].Operations[len(fixture.run.Assignments[0].Operations)-1]; operation.ID != "required-4" || len(operation.Attempts) != 0 {
+		t.Fatalf("fourth required operation was dispatched: %#v", operation)
+	}
+}
+
+func TestTaskReviewReadinessRequiresFreshMandatorySetAfterCorrection(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	first := fixture.input("required-first", "required-first-result")
+	if _, err := ApplyImplementerTransition(context.Background(), first, fixture.response(ResponseImplementationReady, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if err := CanStartTaskReview(fixture.run, "assignment"); err != nil {
+		t.Fatalf("successful current required set did not enable review: %v", err)
+	}
+
+	// This is the state observed after the implementer applies a reviewer
+	// correction. It must make the prior full set unusable before the next
+	// reviewer session can start.
+	corrected, err := fixture.journal.Publish("post-review-correction", []byte("corrected code state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.ObserveCodeState(corrected); err != nil {
+		t.Fatal(err)
+	}
+	if err := CanStartTaskReview(fixture.run, "assignment"); !errors.Is(err, ErrTaskReviewNotReady) {
+		t.Fatalf("stale mandatory result enabled review: %v", err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+
+	second := fixture.input("required-after-correction", "required-after-correction-result")
+	if _, err := ApplyImplementerTransition(context.Background(), second, fixture.response(ResponseImplementationReady, nil)); err != nil {
+		t.Fatal(err)
+	}
+	assertRunOrder(t, fixture.runner, "lint", "test_all", "lint", "test_all")
+	if err := CanStartTaskReview(fixture.run, "assignment"); err != nil {
+		t.Fatalf("fresh mandatory result did not enable review: %v", err)
+	}
+}
+
 func TestRouteImplementerChecksRejectsMismatchedOriginatingCallBinding(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
