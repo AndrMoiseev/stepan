@@ -394,11 +394,11 @@
 
 - Origin: task 9.4 initial review; affected locations: `internal/flows/impl_loop/brief_refinement.go`, `internal/implementationstate/state.go` (`BeginBriefRefinement`).
 - Status: `open`.
-- Potential problem: the caller's run is reopened before diff capture and before the new operation is durably recorded.
-- Evidence: `BeginBriefRefinement` mutates acceptance/status first; later Git, operation, or persistence failure can return without publishing that mutation.
-- Expected impact: same-process state can lose a prior approval even though no refinement operation or new brief version was durably issued.
-- Classification: technical debt because journal recovery remains authoritative and the critical correction separately adds complete result evidence; the exposed window requires an uncommon preparation/persistence failure.
-- Possible follow-up: capture all read-only inputs first, apply the transition to a clone, and publish it atomically before replacing caller state.
+- Potential problem: acceptance can be durably invalidated before current-diff capture succeeds.
+- Evidence: correction cycle 1 moved transition work to a clone and removed the caller-memory divergence on a zero-event operation-record failure, but the reopened candidate is persisted before later Git/diff preparation.
+- Expected impact: a Git/diff failure can leave the durable assignment reopened even though no new brief version was issued.
+- Classification: technical debt because the transition is now internally consistent and retryable; the remaining effect requires a repository-read failure after durable operation reservation.
+- Possible follow-up: capture all read-only inputs before publishing the cloned reopen/operation transition, or durably model a prepared refinement phase.
 
 ## TD-9.4-002 — impossible original-order coverage exercises substitution rather than irresolvability
 
@@ -409,3 +409,13 @@
 - Expected impact: future regressions in the explicit impossible-order explanation/closure path may not be caught by a task-named regression.
 - Classification: technical debt because production has a general material-specification closure route and no separate behavior defect is demonstrated.
 - Possible follow-up: add a fixture whose briefer ties `clarification_required` to the fixed source-order conflict and verify complete durable closure evidence.
+
+## TD-9.4-003 — Explorer continuation result may expose a closed session pointer
+
+- Origin: task 9.4 rereview cycle 1; affected location: `internal/flows/impl_loop/brief_refinement.go` (`routeBriefRefinementExplorer`).
+- Status: `open`.
+- Potential problem: the returned `BriefRefinementResult.Call.Session` is taken from the pre-continuation turn even if continuation technically recreates the briefer session.
+- Evidence: `SessionOwner` retains the replacement, but the result wrapper is assembled from the earlier session pointer.
+- Expected impact: a caller relying directly on the returned session pointer after a rare technical recreation can receive a closed session, despite the controlled-call result contract promising the live session.
+- Classification: technical debt because normal later routing looks up the replacement through `SessionOwner` and the issue requires a continuation retry/recreation.
+- Possible follow-up: propagate the effective continuation session through the Explorer route result and assert it in a recreation regression.

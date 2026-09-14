@@ -15,7 +15,7 @@ import (
 )
 
 func TestWorkspaceCheckIncludesNewGeneratedFileInAssignmentDiff(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	observer, reporter, _ := newWorkspaceCheckReporter(t, repository, nil, nil)
 	selection := testCheckSelection(nil)
 	selection.Checks["test_auth"] = implementationCheck(repository, "test_auth")
@@ -36,7 +36,7 @@ func TestWorkspaceCheckIncludesNewGeneratedFileInAssignmentDiff(t *testing.T) {
 }
 
 func TestWorkspaceCheckChangingAcceptedCodeInvalidatesAcceptance(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	accepted := implementationstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
 	run := &implementationstate.Run{
 		Status:       implementationstate.RunActive,
@@ -71,7 +71,7 @@ func TestWorkspaceCheckChangingAcceptedCodeInvalidatesAcceptance(t *testing.T) {
 }
 
 func TestWorkspaceCheckRestoresProtectedMutationAndRejectsResult(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	protected := filepath.Join(repository, ".stepan", "settings.json")
 	if err := os.MkdirAll(filepath.Dir(protected), 0o700); err != nil {
 		t.Fatal(err)
@@ -120,7 +120,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 		{name: "protected and generated", writeAllowed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repository := newSnapshotRepository(t)
+			repository := newFilesystemWorkspace(t)
 			protected := filepath.Join(repository, ".stepan", "settings.json")
 			if err := os.MkdirAll(filepath.Dir(protected), 0o700); err != nil {
 				t.Fatal(err)
@@ -138,7 +138,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 			}
 			accepted := implementationstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
 			model := acceptedTestRun(accepted)
-			observer, err := NewWorkspaceCheckObserver(context.Background(), repository, model, journal, []string{".stepan/settings.json"})
+			observer, err := NewWorkspaceCheckObserverWithControl(context.Background(), newFilesystemWorkspaceControl(), repository, model, journal, []string{".stepan/settings.json"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -185,7 +185,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 }
 
 func TestRequiredChecksConvergeAfterStableGeneration(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	observer, reporter, _ := newWorkspaceCheckReporter(t, repository, nil, nil)
 	selection := testCheckSelection([]string{"test_auth"})
 	selection.Checks["test_auth"] = implementationCheck(repository, "test_auth")
@@ -210,7 +210,7 @@ func TestRequiredChecksConvergeAfterStableGeneration(t *testing.T) {
 }
 
 func TestRequiredChecksStopAfterBoundedUnstableGeneration(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	_, reporter, _ := newWorkspaceCheckReporter(t, repository, nil, nil)
 	selection := testCheckSelection([]string{"test_auth"})
 	selection.Checks["test_auth"] = implementationCheck(repository, "test_auth")
@@ -239,7 +239,7 @@ func TestRequiredChecksStopAfterBoundedUnstableGeneration(t *testing.T) {
 }
 
 func TestRequiredChecksRestartWhenCommandsChangeThenRevertCandidate(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	_, reporter, _ := newWorkspaceCheckReporter(t, repository, nil, nil)
 	selection := testCheckSelection([]string{"test_auth", "lint"})
 	selection.Checks["test_auth"] = implementationCheck(repository, "test_auth")
@@ -299,11 +299,12 @@ func newWorkspaceCheckReporter(t *testing.T, repository string, model *implement
 	if err != nil {
 		t.Fatal(err)
 	}
-	publisher, err := NewCheckResultPublisher(run, repository, "check-workspace")
+	workspace := newFilesystemWorkspaceControl()
+	publisher, err := NewCheckResultPublisherWithControl(run, workspace, repository, "check-workspace")
 	if err != nil {
 		t.Fatal(err)
 	}
-	observer, err := NewWorkspaceCheckObserver(context.Background(), repository, model, journal, protected)
+	observer, err := NewWorkspaceCheckObserverWithControl(context.Background(), workspace, repository, model, journal, protected)
 	if err != nil {
 		t.Fatal(err)
 	}

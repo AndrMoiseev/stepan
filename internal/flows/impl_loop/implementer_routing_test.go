@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -45,12 +44,12 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 
 	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
 		OriginatingCall: ControlledAgentCall{
-			Session: session, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true},
+			Session: session, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true},
 			Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment",
 		},
 		Transition: transition,
 		Continuation: ControlledAgentCall{
-			Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationExpectation.Binding.CallID, AllowUnprotected: true},
+			Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationExpectation.Binding.CallID, AllowUnprotected: true},
 			Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-continuation", Limits: controlledCallLimits(), Expectation: continuationExpectation,
 		},
 		ContinuationTransition: requiredTransition,
@@ -94,7 +93,7 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}}}
 	originExpectation := fixture.executorExpectation("executor-origin-call")
 	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
-		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
 		Transition:      fixture.input("required-checks", "required-checks-result"),
 	})
 	if err != nil {
@@ -125,26 +124,20 @@ func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t 
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}}}
 	originExpectation := fixture.executorExpectation("executor-origin-call")
 	stabilityExpectation := fixture.executorExpectation("executor-stability-call")
-	mutated := false
 	runner := CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
 		fixture.runner.commands = append(fixture.runner.commands, command)
-		if command.Program == "test_all" && !mutated {
-			mutated = true
-			if err := os.WriteFile(filepath.Join(fixture.repository, "generated.go"), []byte("package generated\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-		}
 		return checkexec.Result{ExitCode: 0}, nil
 	})
 	firstTransition := fixture.input("required-mutating", "required-mutating-result")
 	firstTransition.Runner = runner
+	firstTransition.Workspace = &scriptedWorkspaceControl{differences: []gitsnapshot.Difference{{Paths: []string{"generated.go"}}, {Paths: []string{"generated.go"}}}}
 	secondTransition := fixture.input("required-stable", "required-stable-result")
 	secondTransition.Runner = runner
 
 	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
-		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
 		Transition:             firstTransition,
-		Continuation:           ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: stabilityExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-stability", Limits: controlledCallLimits(), Expectation: stabilityExpectation},
+		Continuation:           ControlledAgentCall{Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: stabilityExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-stability", Limits: controlledCallLimits(), Expectation: stabilityExpectation},
 		ContinuationTransition: secondTransition,
 	})
 	if err != nil {
@@ -193,9 +186,9 @@ func TestRouteImplementerChecksRestartsFullRequiredSetAfterCorrection(t *testing
 	secondTransition.Runner = runner
 
 	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
-		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
 		Transition:             firstTransition,
-		Continuation:           ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: correctionExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-correction", Limits: controlledCallLimits(), Expectation: correctionExpectation},
+		Continuation:           ControlledAgentCall{Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: correctionExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-correction", Limits: controlledCallLimits(), Expectation: correctionExpectation},
 		ContinuationTransition: secondTransition,
 	})
 	if err != nil {
@@ -233,7 +226,7 @@ func TestRouteImplementerChecksPausesBeforeFourthFailedRequiredSet(t *testing.T)
 		return checkexec.Result{ExitCode: 1, Stderr: []byte("still failing")}, nil
 	})
 	makeCall := func(operationID implementationstate.OperationID, callID string) ControlledAgentCall {
-		return ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: callID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: operationID, Limits: controlledCallLimits(), Expectation: expectation(callID)}
+		return ControlledAgentCall{Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: callID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: operationID, Limits: controlledCallLimits(), Expectation: expectation(callID)}
 	}
 	input := func(operation implementationstate.OperationID, result implementationstate.ResultID) ImplementerTransitionInput {
 		transition := fixture.input(operation, result)
@@ -319,9 +312,9 @@ func TestRouteImplementerChecksRejectsMismatchedOriginatingCallBinding(t *testin
 	transition := fixture.input("requested-checks", "requested-checks-result")
 	transition.BriefID = "different-brief"
 	route := ImplementerCheckRoute{
-		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation},
+		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation},
 		Transition:      transition,
-		Continuation:    ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-continuation", Limits: controlledCallLimits(), Expectation: continuationExpectation},
+		Continuation:    ControlledAgentCall{Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-continuation", Limits: controlledCallLimits(), Expectation: continuationExpectation},
 	}
 	if _, err := RouteImplementerChecks(context.Background(), route); !errors.Is(err, ErrInvalidImplementerRoute) {
 		t.Fatalf("mismatched originating binding error = %v", err)

@@ -151,28 +151,43 @@ func TestRefineBriefRecoversDurableReadyAndClarificationResultsWithoutNewTurn(t 
 }
 
 func TestRefineBriefRecoversAfterPersistFailureFollowingAgentResponse(t *testing.T) {
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "durable despite projection failure")}}}
-	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
-	defer store.Close()
-	defer owner.Close()
-	input := refinementInput(run, store, journal, repository, owner, "refine-persist", "persist-call")
-	original := recordBriefRefinementState
-	calls := 0
-	recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
-		calls++
-		event, err := original(ctx, stateStore, state)
-		if calls == 2 && err == nil {
-			return event, errors.New("simulated projection failure after durable event")
-		}
-		return event, err
-	}
-	t.Cleanup(func() { recordBriefRefinementState = original })
-	if _, err := RefineBrief(context.Background(), input); err == nil {
-		t.Fatal("RefineBrief() error = nil, want simulated durable persistence error")
-	}
-	recovered, err := RefineBrief(context.Background(), input)
-	if err != nil || recovered.Brief == nil || len(runtime.messages) != 1 || assignmentResultForOperation(run, "assignment-1", "refine-persist") == nil {
-		t.Fatalf("durable refinement was not recovered after persistence failure: result=%#v err=%v turns=%d", recovered, err, len(runtime.messages))
+	repository := newFilesystemWorkspace(t)
+	for _, test := range []struct {
+		name      string
+		zeroEvent bool
+	}{{"durable_event", false}, {"zero_event", true}} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "durable despite persistence failure")}}}
+			run, store, journal, repository, owner, _ := briefRefinementFixtureInRepository(t, runtime, repository)
+			defer store.Close()
+			defer owner.Close()
+			operationID := implementationstate.OperationID("refine-persist")
+			if test.zeroEvent {
+				operationID = "refine-zero-event"
+			}
+			input := refinementInput(run, store, journal, repository, owner, operationID, "persist-call")
+			original, calls := recordBriefRefinementState, 0
+			t.Cleanup(func() { recordBriefRefinementState = original })
+			recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+				calls++
+				if calls == 2 && test.zeroEvent {
+					return implementationstate.Event{}, errors.New("simulated zero-event state failure")
+				}
+				event, err := original(ctx, stateStore, state)
+				if calls == 2 && err == nil {
+					return event, errors.New("simulated projection failure after durable event")
+				}
+				return event, err
+			}
+			if _, err := RefineBrief(context.Background(), input); err == nil {
+				t.Fatal("RefineBrief() error = nil, want simulated persistence error")
+			}
+			recordBriefRefinementState = original
+			recovered, err := RefineBrief(context.Background(), input)
+			if err != nil || recovered.Brief == nil || len(runtime.messages) != 1 || assignmentResultForOperation(run, "assignment-1", operationID) == nil {
+				t.Fatalf("published response was not recovered: result=%#v err=%v turns=%d", recovered, err, len(runtime.messages))
+			}
+		})
 	}
 }
 
@@ -211,31 +226,109 @@ func TestRefineBriefPersistsExecutionBlockedWithoutTechnicalRetry(t *testing.T) 
 }
 
 func TestRefineBriefRoutesExplorerThenContinuesSameBrieferSession(t *testing.T) {
-	explore := responsePayloadMap(ResponseExplorationRequested)
-	explore["question"], explore["context"], explore["boundaries"], explore["known_facts"] = "Where is the specified behavior?", "Need an unambiguous specification reference.", "Inspect the current repository only.", []string{"the current brief lacks the rule"}
-	exploreRaw, err := json.Marshal(explore)
-	if err != nil {
-		t.Fatal(err)
-	}
+	exploreRaw := briefExplorationRequest(t)
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: exploreRaw}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after research")}}}
 	run, store, journal, repository, owner, session := briefRefinementFixture(t, runtime)
 	defer store.Close()
 	defer owner.Close()
 	input := refinementInput(run, store, journal, repository, owner, "refine-explore", "explore-source")
-	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "refine-explorer", ExplorerCallID: "explorer-call", ContinuationOperationID: "refine-after-explorer", ContinuationResultID: "refine-after-explorer-result"}
+	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "refine-explorer", ExplorerResultID: "refine-explorer-result", ExplorerCallID: "explorer-call", ContinuationOperationID: "refine-after-explorer", ContinuationResultID: "refine-after-explorer-result"}
 	result, err := RefineBrief(context.Background(), input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Brief == nil || result.Call.Session != session || len(runtime.messages) != 3 || assignmentResultForOperation(run, "assignment-1", "refine-after-explorer") == nil {
+	explorerResult := assignmentResultForOperation(run, "assignment-1", "refine-explorer")
+	if result.Brief == nil || result.Call.Session != session || len(runtime.messages) != 3 || explorerResult == nil || len(explorerResult.Evidence) != 1 || assignmentResultForOperation(run, "assignment-1", "refine-after-explorer") == nil {
 		t.Fatalf("Explorer did not return to the same effective briefer session: result=%#v messages=%#v", result, runtime.messages)
 	}
 }
 
+func TestRefineBriefRecoversExplorerAfterPersistenceFailures(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	for _, test := range []struct {
+		name   string
+		failAt int
+	}{{"after_source_request", 3}, {"after_explorer_result", 4}} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "recovered Explorer route")}}}
+			run, store, journal, repository, owner, _ := briefRefinementFixtureInRepository(t, runtime, repository)
+			defer store.Close()
+			defer owner.Close()
+			input := refinementInput(run, store, journal, repository, owner, "refine-explorer-recovery", "explorer-recovery-call")
+			input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "explorer-recovery", ExplorerResultID: "explorer-recovery-result", ExplorerCallID: "explorer-recovery-call", ContinuationOperationID: "after-explorer-recovery", ContinuationResultID: "after-explorer-recovery-result"}
+			original, calls := recordBriefRefinementState, 0
+			t.Cleanup(func() { recordBriefRefinementState = original })
+			recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+				calls++
+				if calls == test.failAt {
+					return implementationstate.Event{}, errors.New("simulated zero-event state failure")
+				}
+				return original(ctx, stateStore, state)
+			}
+			if _, err := RefineBrief(context.Background(), input); err == nil {
+				t.Fatal("first refinement error = nil")
+			}
+			recordBriefRefinementState = original
+			result, err := RefineBrief(context.Background(), input)
+			if err != nil || result.Brief == nil || len(runtime.messages) != 3 || assignmentResult(run, "assignment-1", "explorer-recovery-result") == nil {
+				t.Fatalf("Explorer workflow did not resume from durable boundary: result=%#v err=%v messages=%d", result, err, len(runtime.messages))
+			}
+		})
+	}
+}
+
+func TestRefineBriefSupportsConsecutiveExplorerRequestsWithoutSecondRefinementRound(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after two research episodes")}}}
+	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
+	defer store.Close()
+	defer owner.Close()
+	input := refinementInput(run, store, journal, repository, owner, "refine-two-explorers", "two-explorers-call")
+	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "explorer-one", ExplorerResultID: "explorer-one-result", ExplorerCallID: "explorer-one-call", ContinuationOperationID: "after-explorer-one", ContinuationResultID: "after-explorer-one-result", Additional: []BriefRefinementExplorer{{ExplorerOperationID: "explorer-two", ExplorerResultID: "explorer-two-result", ExplorerCallID: "explorer-two-call", ContinuationOperationID: "after-explorer-two", ContinuationResultID: "after-explorer-two-result"}}}
+	result, err := RefineBrief(context.Background(), input)
+	if err != nil || result.Brief == nil || len(runtime.messages) != 5 || run.Assignments[0].Counters.BriefRefinement != 1 || assignmentResult(run, "assignment-1", "explorer-two-result") == nil {
+		t.Fatalf("consecutive Explorer route consumed refinement or lost a result: result=%#v err=%v messages=%d counters=%#v", result, err, len(runtime.messages), run.Assignments[0].Counters)
+	}
+}
+
+func TestRefineBriefUsesWorkspaceControlAcrossConsecutiveExplorerTurns(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after two research episodes")}}}
+	run, store, journal, _, owner, _ := briefRefinementFixture(t, runtime)
+	defer store.Close()
+	defer owner.Close()
+	input := refinementInput(run, store, journal, t.TempDir(), owner, "refine-workspace-seam", "workspace-seam-call")
+	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "workspace-explorer-one", ExplorerResultID: "workspace-explorer-one-result", ExplorerCallID: "workspace-explorer-one-call", ContinuationOperationID: "workspace-after-one", ContinuationResultID: "workspace-after-one-result", Additional: []BriefRefinementExplorer{{ExplorerOperationID: "workspace-explorer-two", ExplorerResultID: "workspace-explorer-two-result", ExplorerCallID: "workspace-explorer-two-call", ContinuationOperationID: "workspace-after-two", ContinuationResultID: "workspace-after-two-result"}}}
+	workspace := &unchangedWorkspaceControl{}
+	input.Workspace = workspace
+
+	result, err := RefineBrief(context.Background(), input)
+	if err != nil || result.Brief == nil {
+		t.Fatalf("refinement through workspace seam: result=%#v err=%v", result, err)
+	}
+	if workspace.assignmentDiffs != 1 || workspace.captures != 10 || workspace.diffs != 5 {
+		t.Fatalf("workspace operations = assignment diffs:%d captures:%d diffs:%d", workspace.assignmentDiffs, workspace.captures, workspace.diffs)
+	}
+}
+
+func briefExplorationRequest(t *testing.T) json.RawMessage {
+	t.Helper()
+	explore := responsePayloadMap(ResponseExplorationRequested)
+	explore["question"], explore["context"], explore["boundaries"], explore["known_facts"] = "Where is the specified behavior?", "Need an unambiguous specification reference.", "Inspect the current repository only.", []string{"the current brief lacks the rule"}
+	raw, err := json.Marshal(explore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func briefRefinementFixture(t *testing.T, runtime *controlledCallRuntime) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, *SessionOwner, *AgentSession) {
 	t.Helper()
-	run, store, journal, repository, _ := newBriefSelectionFixture(t)
-	run.Identity.BaselineCommit = strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	return briefRefinementFixtureInRepository(t, runtime, newFilesystemWorkspace(t))
+}
+
+func briefRefinementFixtureInRepository(t *testing.T, runtime *controlledCallRuntime, repository string) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, *SessionOwner, *AgentSession) {
+	t.Helper()
+	run, store, journal, repository, _ := newBriefSelectionFixtureInRepository(t, repository)
+	run.Identity.BaselineCommit = "test-baseline"
 	if err := run.StartAssignment("assignment-1", []implementationstate.TaskID{"A"}); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +352,7 @@ func refinementInput(run *implementationstate.Run, store *runstore.StateStore, j
 	brief := assignment.Briefs[len(assignment.Briefs)-1]
 	question, contextText, boundaries := "Which explicitly specified validation behavior applies?", "The executor found a gap in the initial brief.", "Do not introduce a new public contract."
 	request := AgentResponse{Kind: ResponseClarificationNeeded, Question: &question, Context: &contextText, Boundaries: &boundaries, References: []string{"spec.md#validation"}, Binding: ResponseBinding{CallID: "executor-gap", RunID: run.Identity.ID, AssignmentID: assignment.ID, BriefID: brief.ID, Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
-	return BriefRefinementInput{Owner: owner, Run: run, StateStore: store, Journal: journal, Repository: repository, AssignmentID: assignment.ID, RequesterRole: ResponseRoleImplementer, Request: request, OperationID: operationID, ResultID: implementationstate.ResultID(operationID + "-result"), CallID: callID, Limits: controlledCallLimits()}
+	return BriefRefinementInput{Owner: owner, Workspace: &unchangedWorkspaceControl{}, Run: run, StateStore: store, Journal: journal, Repository: repository, AssignmentID: assignment.ID, RequesterRole: ResponseRoleImplementer, Request: request, OperationID: operationID, ResultID: implementationstate.ResultID(operationID + "-result"), CallID: callID, Limits: controlledCallLimits()}
 }
 
 func acceptForBriefRefinement(t *testing.T, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) {

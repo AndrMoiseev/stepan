@@ -42,6 +42,7 @@ type AssignmentDiff struct {
 // through ObserveCodeState using the durable checked-state evidence.
 type WorkspaceCheckObserver struct {
 	repository     string
+	workspace      WorkspaceControl
 	run            *implementationstate.Run
 	journal        *runstore.Run
 	protectedPaths []string
@@ -59,10 +60,19 @@ type WorkspaceCheckObserver struct {
 // NewWorkspaceCheckObserver captures the assignment's initial candidate
 // state. The caller must retain one observer for the complete assignment.
 func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *implementationstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
+	return NewWorkspaceCheckObserverWithControl(ctx, GitWorkspaceControl{}, repository, run, journal, protectedPaths)
+}
+
+// NewWorkspaceCheckObserverWithControl constructs an observer at the workspace
+// seam. Production uses GitWorkspaceControl; orchestration tests can supply a
+// deterministic adapter while real mutation/restore behavior remains covered
+// by the default constructor's contract tests.
+func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
 	if strings.TrimSpace(repository) == "" {
 		return nil, errors.New("workspace check observer requires a repository")
 	}
-	baseline, err := gitsnapshot.Capture(ctx, repository)
+	workspace = effectiveWorkspaceControl(workspace)
+	baseline, err := workspace.Capture(ctx, repository)
 	if err != nil {
 		return nil, fmt.Errorf("capture assignment workspace: %w", err)
 	}
@@ -75,7 +85,7 @@ func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *impl
 		paths = append(paths, normalized)
 	}
 	slices.Sort(paths)
-	return &WorkspaceCheckObserver{repository: repository, run: run, journal: journal, protectedPaths: slices.Compact(paths), diff: AssignmentDiff{Baseline: baseline, Current: baseline}}, nil
+	return &WorkspaceCheckObserver{repository: repository, workspace: workspace, run: run, journal: journal, protectedPaths: slices.Compact(paths), diff: AssignmentDiff{Baseline: baseline, Current: baseline}}, nil
 }
 
 // AssignmentDiff returns a copy of the current candidate diff. It includes
@@ -98,10 +108,10 @@ func (o *WorkspaceCheckObserver) BeforeCheck(ctx context.Context, _ string, _ ch
 	if o.pending {
 		return errors.New("workspace check observer already has a running check")
 	}
-	if err := gitsnapshot.EnsureUnchanged(ctx, o.repository, o.diff.Current); err != nil {
+	if err := o.workspace.EnsureUnchanged(ctx, o.repository, o.diff.Current); err != nil {
 		return o.block(fmt.Errorf("verify workspace before configured check: %w", err))
 	}
-	before, err := gitsnapshot.Capture(ctx, o.repository)
+	before, err := o.workspace.Capture(ctx, o.repository)
 	if err != nil {
 		return o.block(fmt.Errorf("capture before configured check: %w", err))
 	}
@@ -155,11 +165,11 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string) er
 	}
 	o.pending = false
 	o.candidateChanged = false
-	after, err := gitsnapshot.Capture(ctx, o.repository)
+	after, err := o.workspace.Capture(ctx, o.repository)
 	if err != nil {
 		return o.block(fmt.Errorf("capture after configured check: %w", err))
 	}
-	difference, err := gitsnapshot.Diff(ctx, o.repository, o.before, after)
+	difference, err := o.workspace.Diff(ctx, o.repository, o.before, after)
 	if err != nil {
 		return o.block(fmt.Errorf("compare configured check changes: %w", err))
 	}
@@ -168,7 +178,7 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string) er
 	}
 	protected := protectedCheckPaths(difference.Paths, o.protectedPaths)
 	if len(protected) != 0 {
-		restored, restoreErr := gitsnapshot.RestorePaths(ctx, o.repository, o.before, after, protected)
+		restored, restoreErr := o.workspace.RestorePaths(ctx, o.repository, o.before, after, protected)
 		result := "restored"
 		if restoreErr != nil {
 			result = "failed: " + restoreErr.Error()
@@ -190,7 +200,7 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string) er
 		if err := o.refreshDiff(ctx); err != nil {
 			return o.block(err)
 		}
-		remaining, err := gitsnapshot.Diff(ctx, o.repository, o.before, restored)
+		remaining, err := o.workspace.Diff(ctx, o.repository, o.before, restored)
 		if err != nil {
 			return o.block(fmt.Errorf("compare restored configured-check changes: %w", err))
 		}
@@ -226,7 +236,7 @@ func (o *WorkspaceCheckObserver) ObserveCheckedState(state implementationstate.E
 }
 
 func (o *WorkspaceCheckObserver) refreshDiff(ctx context.Context) error {
-	difference, err := gitsnapshot.Diff(ctx, o.repository, o.diff.Baseline, o.diff.Current)
+	difference, err := o.workspace.Diff(ctx, o.repository, o.diff.Baseline, o.diff.Current)
 	if err != nil {
 		return fmt.Errorf("compute assignment candidate diff: %w", err)
 	}

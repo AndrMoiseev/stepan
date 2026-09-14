@@ -147,7 +147,7 @@ func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
 		}
 		return value
 	}
-	repository := newGitWorkspace(t)
+	repository := newFilesystemWorkspace(t)
 	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "branch", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("spec"), TaskList: ref("tasks"), Configuration: ref("config")}
 	run, stateStore, err := PrepareInitialTaskExtraction(context.Background(), journal, identity, "extract")
 	if err != nil {
@@ -172,7 +172,7 @@ func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
 	expectation := ResponseExpectation{Role: ResponseRoleOrchestrator, State: ResponseStateExtractingTasks, Scope: ResponseScopeRun, Binding: boundExtraction(identity)}
 	call := ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) {
 		return &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread"}, nil
-	}}, Repository: repository, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: "extract"}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation, Message: "extract"}
+	}}, Repository: repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: "extract"}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation, Message: "extract"}
 	if _, err := ExecuteInitialTaskExtraction(context.Background(), call); err != nil {
 		t.Fatal(err)
 	}

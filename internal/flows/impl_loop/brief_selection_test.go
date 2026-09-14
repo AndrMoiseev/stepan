@@ -261,7 +261,13 @@ func commitBriefSelectionAssignment(t *testing.T, run *implementationstate.Run, 
 
 func newBriefSelectionFixture(t *testing.T) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
 	t.Helper()
-	repository := newGitWorkspace(t)
+	return newBriefSelectionFixtureInRepository(t, newFilesystemWorkspace(t))
+}
+
+// newBriefSelectionFixtureInRepository keeps the state store isolated while
+// allowing related controller cases to share one lightweight workspace fixture.
+func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
+	t.Helper()
 	store, err := runstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +328,7 @@ func briefSelectionCall(assignmentID implementationstate.AssignmentID, run *impl
 			return &AgentSession{Role: ResponseRoleBriefer, runtime: runtime, thread: "thread"}, nil
 		}},
 		Repository:  repository,
+		Workspace:   &unchangedWorkspaceControl{},
 		Policy:      AgentCallPolicy{Role: AgentRoleBriefer, CallID: expectation.Binding.CallID},
 		Run:         run,
 		Journal:     journal,

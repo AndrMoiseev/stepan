@@ -67,6 +67,7 @@ type BriefSelectionCallInput struct {
 	// assignment-scoped briefer refinements to one lifecycle.
 	AssignmentID     implementationstate.AssignmentID
 	Repository       string
+	Workspace        WorkspaceControl
 	Policy           AgentCallPolicy
 	Run              *implementationstate.Run
 	Journal          *runstore.Run
@@ -107,7 +108,7 @@ func NewBriefSelectionCall(ctx context.Context, owner *SessionOwner, input Brief
 		return BriefSelectionCall{}, fmt.Errorf("%w: start briefer session: %v", ErrBriefSelection, err)
 	}
 	call := ControlledAgentCall{
-		Session: session, Repository: input.Repository, Policy: input.Policy, Run: input.Run,
+		Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: input.Policy, Run: input.Run,
 		Journal: input.Journal, StateStore: input.StateStore, OperationID: input.OperationID,
 		Limits: input.Limits, Expectation: input.Expectation, Message: briefSelectionMessage,
 		Timeout: input.Timeout, ValidateResponse: input.ValidateResponse,

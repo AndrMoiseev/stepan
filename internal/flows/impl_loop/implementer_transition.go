@@ -26,6 +26,7 @@ var ErrRequiredChecksChanged = errors.New("required checks changed the workspace
 // an operation, or an assignment by putting one in its response.
 type ImplementerTransitionInput struct {
 	Run            *implementationstate.Run
+	Workspace      WorkspaceControl
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
 	Repository     string
@@ -120,11 +121,11 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: reserve check attempt: %w", ErrImplementerTransition, err)
 	}
 
-	publisher, err := NewCheckResultPublisher(input.Journal, input.Repository, implementationstate.EvidenceID(input.ResultID))
+	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implementationstate.EvidenceID(input.ResultID))
 	if err != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: create check publisher: %v", ErrImplementerTransition, err)
 	}
-	observer, err := NewWorkspaceCheckObserver(ctx, input.Repository, input.Run, input.Journal, input.ProtectedPaths)
+	observer, err := NewWorkspaceCheckObserverWithControl(ctx, input.Workspace, input.Repository, input.Run, input.Journal, input.ProtectedPaths)
 	if err != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: observe check workspace: %v", ErrImplementerTransition, err)
 	}

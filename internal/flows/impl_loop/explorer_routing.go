@@ -34,6 +34,11 @@ type ExplorerRoute struct {
 	// ExplorerCharacters is the effective configured response limit. Zero uses
 	// the documented default; a negative value is invalid.
 	ExplorerCharacters int
+	// PersistExplorerResponse is called after the Explorer response has passed
+	// controller validation and before it can influence the source session. A
+	// route that crosses a durable workflow boundary uses this to make research
+	// evidence replayable before dispatching the continuation.
+	PersistExplorerResponse func(context.Context, ControlledAgentCallResult) error
 }
 
 // ExplorerRouteResult retains both the Explorer outcome and the structured
@@ -83,7 +88,15 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 	if err != nil {
 		return ExplorerRouteResult{Attempts: result.Attempts}, err
 	}
+	if route.PersistExplorerResponse != nil {
+		if err := route.PersistExplorerResponse(context.WithoutCancel(ctx), result); err != nil {
+			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
+		}
+	}
 	if result.Response.Kind == ResponseExecutionBlocked {
+		if call.Run.Status == implementationstate.RunPaused {
+			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts, Paused: true, PauseReason: call.Run.PauseReason}, nil
+		}
 		reason, err := persistExplorerExecutionBlocked(ctx, call, result.Response)
 		if err != nil {
 			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err

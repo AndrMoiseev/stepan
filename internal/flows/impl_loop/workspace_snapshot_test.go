@@ -89,14 +89,12 @@ func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing
 }
 
 func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
-	original := ensureWorkspaceUnchanged
-	ensureWorkspaceUnchanged = func(context.Context, string, gitsnapshot.Snapshot) error {
-		return &gitsnapshot.SubmoduleCycleError{Root: "cycle"}
-	}
-	t.Cleanup(func() { ensureWorkspaceUnchanged = original })
-
 	run := &implementationstate.Run{Status: implementationstate.RunActive}
-	err := CheckWorkspaceBeforeOperation(context.Background(), t.TempDir(), gitsnapshot.Snapshot{}, run)
+	workspace := ensureErrorWorkspaceControl{
+		WorkspaceControl: &unchangedWorkspaceControl{},
+		err:              &gitsnapshot.SubmoduleCycleError{Root: "cycle"},
+	}
+	err := CheckWorkspaceBeforeOperationWithControl(context.Background(), workspace, t.TempDir(), gitsnapshot.Snapshot{}, run)
 	if !errors.Is(err, gitsnapshot.ErrSubmoduleCycle) {
 		t.Fatalf("error = %v", err)
 	}

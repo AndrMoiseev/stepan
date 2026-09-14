@@ -22,6 +22,7 @@ var ErrInvalidTaskReviewRoute = errors.New("invalid task review route")
 // result, or a session by returning them in its JSON response.
 type TaskReviewInput struct {
 	Owner        *SessionOwner
+	Workspace    WorkspaceControl
 	Run          *implementationstate.Run
 	StateStore   *runstore.StateStore
 	Journal      *runstore.Run
@@ -68,7 +69,7 @@ func StartTaskReview(ctx context.Context, input TaskReviewInput) (TaskReviewResu
 		return TaskReviewResult{}, err
 	}
 	diffBase := assignmentDiffBase(input.Run, input.AssignmentID)
-	diff, err := assignmentDiff(ctx, input.Repository, diffBase)
+	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, diffBase)
 	if err != nil {
 		return TaskReviewResult{}, err
 	}
@@ -118,7 +119,7 @@ func RouteTaskReviewDispute(ctx context.Context, input TaskReviewInput, reviewer
 	}
 	finding := dispute.FindingIDs[0]
 	message := fmt.Sprintf("# Executor review dispute\n\nFinding ID: %s\n\n## Arguments\n\n%s\n\n## Supporting references\n%s\n\nReconsider this finding in the existing review discussion. Resolve it with a reason, or retain it while answering these arguments.", finding, *dispute.Message, markdownList(dispute.References))
-	diff, err := assignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
+	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
 	if err != nil {
 		return TaskReviewResult{}, err
 	}
@@ -171,7 +172,7 @@ func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *Ag
 		return TaskReviewResult{}, fmt.Errorf("%w: persist review operation: %v", ErrInvalidTaskReviewRoute, err)
 	}
 	binding := ResponseBinding{CallID: input.CallID, RunID: input.Run.Identity.ID, AssignmentID: input.AssignmentID, BriefID: briefID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
-	call := ControlledAgentCall{Session: session, Repository: input.Repository, Policy: AgentCallPolicy{Role: AgentRoleTaskReviewer, CallID: input.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: input.OperationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleTaskReviewer, State: ResponseStateTaskReview, Scope: ResponseScopeAssignment, Binding: binding}, Message: message}
+	call := ControlledAgentCall{Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleTaskReviewer, CallID: input.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: input.OperationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleTaskReviewer, State: ResponseStateTaskReview, Scope: ResponseScopeAssignment, Binding: binding}, Message: message}
 	call.Timeout = input.Timeout
 	call.ValidateResponse = func(response AgentResponse) error {
 		if err := validateTaskReviewerResponse(input.Run, input.AssignmentID, response); err != nil {
@@ -252,7 +253,7 @@ func assignmentDiffBase(run *implementationstate.Run, assignmentID implementatio
 	return base
 }
 
-func assignmentDiff(ctx context.Context, repository, base string) (string, error) {
+func gitAssignmentDiff(ctx context.Context, repository, base string) (string, error) {
 	if strings.TrimSpace(base) == "" {
 		return "", fmt.Errorf("%w: assignment diff base is required", ErrInvalidTaskReviewRoute)
 	}
@@ -270,6 +271,10 @@ func assignmentDiff(ctx context.Context, repository, base string) (string, error
 		return "(no working-tree changes)", nil
 	}
 	return string(output), nil
+}
+
+func assignmentDiff(ctx context.Context, repository, base string) (string, error) {
+	return GitWorkspaceControl{}.AssignmentDiff(ctx, repository, base)
 }
 
 // untrackedAssignmentDiff adds every non-ignored untracked file to the

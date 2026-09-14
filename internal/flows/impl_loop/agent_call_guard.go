@@ -78,6 +78,10 @@ type AgentCallOutcome struct {
 // a broad Git reset. The caller owns durable technical-attempt reservation and
 // retries when Disposition is CallRetry.
 func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPolicy, run *implementationstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
+	return observeAgentCall(ctx, GitWorkspaceControl{}, repository, policy, run, journal, invoke)
+}
+
+func observeAgentCall(ctx context.Context, workspace WorkspaceControl, repository string, policy AgentCallPolicy, run *implementationstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
 	if run == nil || journal == nil || invoke == nil {
 		return AgentCallOutcome{}, errors.New("observe agent call requires run, violation journal, and invocation")
 	}
@@ -88,16 +92,16 @@ func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPo
 	if err != nil {
 		return AgentCallOutcome{}, err
 	}
-	before, err := gitsnapshot.Capture(ctx, repository)
+	before, err := workspace.Capture(ctx, repository)
 	if err != nil {
 		return blockAgentCall(run, fmt.Errorf("capture before agent call: %w", err))
 	}
 	invocationErr := invoke()
-	after, err := gitsnapshot.Capture(ctx, repository)
+	after, err := workspace.Capture(ctx, repository)
 	if err != nil {
 		return blockAgentCall(run, fmt.Errorf("capture after agent call: %w", err))
 	}
-	difference, err := gitsnapshot.Diff(ctx, repository, before, after)
+	difference, err := workspace.Diff(ctx, repository, before, after)
 	if err != nil {
 		return blockAgentCall(run, fmt.Errorf("compare agent call changes: %w", err))
 	}
@@ -110,7 +114,7 @@ func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPo
 	if len(violations) == 0 {
 		return AgentCallOutcome{Disposition: CallAccepted, Snapshot: after, InvocationError: invocationErr}, nil
 	}
-	restored, restoreErr := gitsnapshot.RestorePaths(ctx, repository, before, after, violations)
+	restored, restoreErr := workspace.RestorePaths(ctx, repository, before, after, violations)
 	result := "restored"
 	if restoreErr != nil {
 		result = "failed: " + restoreErr.Error()

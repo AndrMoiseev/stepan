@@ -231,7 +231,7 @@ func sourceContinuationCall(t *testing.T, explorer ControlledAgentCall, source R
 	expectation := source
 	expectation.Binding.CallID = "source-continuation-call"
 	return ControlledAgentCall{
-		Repository: explorer.Repository, Policy: AgentCallPolicy{Role: AgentRoleExplorer, CallID: expectation.Binding.CallID},
+		Repository: explorer.Repository, Workspace: explorer.Workspace, Policy: AgentCallPolicy{Role: AgentRoleExplorer, CallID: expectation.Binding.CallID},
 		Run: explorer.Run, Journal: explorer.Journal, StateStore: explorer.StateStore,
 		OperationID: "source-continuation", Limits: explorer.Limits, Expectation: expectation,
 	}

@@ -38,6 +38,10 @@ type GitWorkspace struct {
 // path is absolute and canonical so it can safely identify one working copy in
 // durable state later in the implementation flow.
 func FindGitRoot(ctx context.Context, start string) (string, error) {
+	return GitWorkspaceControl{}.FindRoot(ctx, start)
+}
+
+func gitFindRoot(ctx context.Context, start string) (string, error) {
 	output, err := runGit(ctx, start, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("find Git root from %q: %w", start, err)
@@ -62,7 +66,11 @@ func FindGitRoot(ctx context.Context, start string) (string, error) {
 // uncommitted implementation work, which is reconciled by later run-state
 // work. No Git command here changes repository state.
 func ValidateNewStart(ctx context.Context, start string, configuration implementationconfig.Configuration) (GitWorkspace, error) {
-	root, err := FindGitRoot(ctx, start)
+	return GitWorkspaceControl{}.ValidateNewStart(ctx, start, configuration)
+}
+
+func gitValidateNewStart(ctx context.Context, control RepositoryControl, start string, configuration implementationconfig.Configuration) (GitWorkspace, error) {
+	root, err := control.FindRoot(ctx, start)
 	if err != nil {
 		return GitWorkspace{}, err
 	}

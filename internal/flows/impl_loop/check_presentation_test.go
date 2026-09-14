@@ -41,7 +41,7 @@ func TestBoundedCheckDiagnosticsPreservesUnicodeEdgesAndSmallOutput(t *testing.T
 }
 
 func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	store, err := runstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publisher, err := NewCheckResultPublisher(run, repository, "check-operation")
+	publisher, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "check-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
 }
 
 func TestRunRequestedChecksWithReporterAttachesPresentationAndMeasuresDuration(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	store, err := runstore.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +139,7 @@ func TestRunRequestedChecksWithReporterAttachesPresentationAndMeasuresDuration(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reporter, err := NewCheckResultPublisher(run, repository, "request-operation")
+	reporter, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "request-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			repository := newSnapshotRepository(t)
+			repository := newFilesystemWorkspace(t)
 			store, err := runstore.New(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
@@ -205,7 +205,7 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 			if err != nil {
 				t.Fatal(err)
 			}
-			reporter, err := NewCheckResultPublisher(run, repository, "canceled-result")
+			reporter, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "canceled-result")
 			if err != nil {
 				t.Fatal(err)
 			}

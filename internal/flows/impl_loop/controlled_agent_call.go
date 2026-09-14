@@ -25,8 +25,11 @@ var (
 // operation. Attempts are reserved against OperationID before each dispatch;
 // a retry therefore stays in the same semantic round.
 type ControlledAgentCall struct {
-	Session      *AgentSession
-	Repository   string
+	Session    *AgentSession
+	Repository string
+	// Workspace defaults to GitWorkspaceControl. Tests of orchestration may
+	// supply an in-memory adapter without weakening production observation.
+	Workspace    WorkspaceControl
 	Policy       AgentCallPolicy
 	Run          *implementationstate.Run
 	Journal      *runstore.Run
@@ -98,7 +101,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		// The provider is cancelled through ctx, but the Git post-check must
 		// still run after cancellation so a cancelled turn cannot evade the
 		// write boundary.
-		outcome, err := ObserveAgentCall(context.WithoutCancel(ctx), call.Repository, call.Policy, call.Run, call.Journal, func() error {
+		outcome, err := observeAgentCall(context.WithoutCancel(ctx), effectiveWorkspaceControl(call.Workspace), call.Repository, call.Policy, call.Run, call.Journal, func() error {
 			var turnErr error
 			raw, turnErr = runBoundedAgentTurn(ctx, session, message, timeout)
 			return turnErr

@@ -305,6 +305,41 @@ func (r *Run) Read(reference implementationstate.EvidenceRef) ([]byte, error) {
 	return r.readVerified(reference)
 }
 
+// PublishedReference reconstructs the verified reference for an immutable
+// artifact that was published before its owning state event. It is intended
+// solely for crash recovery at that publication/event boundary.
+func (r *Run) PublishedReference(id implementationstate.EvidenceID) (implementationstate.EvidenceRef, error) {
+	if r == nil || strings.TrimSpace(string(id)) == "" {
+		return implementationstate.EvidenceRef{}, fmt.Errorf("%w: nil run or empty evidence ID", ErrInvalidReference)
+	}
+	if err := requireDirectory(r.directory); err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	if err := requireDirectory(r.files); err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	target := r.filePath(id)
+	var digest string
+	if err := withRegularFile(r.markerPath(target), func(file *os.File) error {
+		data, err := io.ReadAll(io.LimitReader(file, markerSize+1))
+		if err != nil {
+			return fmt.Errorf("read publication marker: %w", err)
+		}
+		if len(data) != markerSize || data[len(data)-1] != '\n' {
+			return fmt.Errorf("%w: malformed publication marker", ErrReferenceIntegrity)
+		}
+		digest = string(data[:len(data)-1])
+		return nil
+	}); err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	reference := implementationstate.EvidenceRef{ID: id, Digest: digest}
+	if err := r.VerifyReference(reference); err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	return reference, nil
+}
+
 // ArtifactPath returns the absolute path of a published immutable artifact.
 // The complete reference is verified before exposing the path, so callers can
 // present only durable run-local files to agents or users. Consumers that need

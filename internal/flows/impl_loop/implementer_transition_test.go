@@ -117,7 +117,7 @@ func newImplementerTransitionFixture(t *testing.T) implementerTransitionFixture 
 	selection := testCheckSelection([]string{"lint", "test_all"})
 	runner := &recordingCheckRunner{}
 	if _, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, StateStore: state, Journal: journal, Repository: repository, Selection: selection, Runner: runner,
+		Run: run, Workspace: &unchangedWorkspaceControl{}, StateStore: state, Journal: journal, Repository: repository, Selection: selection, Runner: runner,
 		MaxCycles: 3, Operation: "baseline", Result: "baseline-result",
 	}); err != nil {
 		t.Fatal(err)
@@ -148,5 +148,5 @@ func (fixture implementerTransitionFixture) response(kind ResponseKind, names []
 }
 
 func (fixture implementerTransitionFixture) input(operation implementationstate.OperationID, result implementationstate.ResultID) ImplementerTransitionInput {
-	return ImplementerTransitionInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", BriefID: "brief", Selection: fixture.selection, Runner: fixture.runner, Limits: controlledCallLimits(), OperationID: operation, ResultID: result}
+	return ImplementerTransitionInput{Run: fixture.run, Workspace: &unchangedWorkspaceControl{}, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", BriefID: "brief", Selection: fixture.selection, Runner: fixture.runner, Limits: controlledCallLimits(), OperationID: operation, ResultID: result}
 }

@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -65,6 +64,7 @@ type CheckPresentation struct {
 type CheckResultPublisher struct {
 	run        *runstore.Run
 	repository string
+	workspace  WorkspaceControl
 	resultID   implementationstate.EvidenceID
 	next       uint64
 }
@@ -74,6 +74,12 @@ type CheckResultPublisher struct {
 // resultID must be unique for this completed check-set attempt, including a
 // retry after a process restart.
 func NewCheckResultPublisher(run *runstore.Run, repository string, resultID implementationstate.EvidenceID) (*CheckResultPublisher, error) {
+	return NewCheckResultPublisherWithControl(run, GitWorkspaceControl{}, repository, resultID)
+}
+
+// NewCheckResultPublisherWithControl publishes a checked state observed
+// through the workspace seam.
+func NewCheckResultPublisherWithControl(run *runstore.Run, workspace WorkspaceControl, repository string, resultID implementationstate.EvidenceID) (*CheckResultPublisher, error) {
 	if run == nil {
 		return nil, fmt.Errorf("check result publisher requires a run")
 	}
@@ -83,7 +89,7 @@ func NewCheckResultPublisher(run *runstore.Run, repository string, resultID impl
 	if strings.TrimSpace(string(resultID)) == "" {
 		return nil, fmt.Errorf("check result publisher requires a result evidence ID")
 	}
-	return &CheckResultPublisher{run: run, repository: repository, resultID: resultID}, nil
+	return &CheckResultPublisher{run: run, repository: repository, workspace: effectiveWorkspaceControl(workspace), resultID: resultID}, nil
 }
 
 // ReportCheck captures the post-command Git fingerprint and publishes the
@@ -97,7 +103,7 @@ func (p *CheckResultPublisher) ReportCheck(ctx context.Context, name string, com
 	if strings.TrimSpace(name) == "" {
 		return CheckPresentation{}, fmt.Errorf("check result publisher requires a check name")
 	}
-	snapshot, err := gitsnapshot.Capture(ctx, p.repository)
+	snapshot, err := p.workspace.Capture(ctx, p.repository)
 	if err != nil {
 		return CheckPresentation{}, fmt.Errorf("capture checked state: %w", err)
 	}

@@ -25,7 +25,7 @@ func TestTaskReviewKeepsReviewerOwnedFindingsAcrossDisputeRounds(t *testing.T) {
 
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseChangesRequested)}, {raw: responsePayload(t, ResponseReviewPassed)}}}
 	reviewer := &AgentSession{Role: ResponseRoleTaskReviewer, runtime: runtime, thread: "reviewer"}
-	input := TaskReviewInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", OperationID: "review-1", ResultID: "review-1-result", CallID: "review-1-call", Limits: controlledCallLimits()}
+	input := TaskReviewInput{Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", OperationID: "review-1", ResultID: "review-1-result", CallID: "review-1-call", Limits: controlledCallLimits()}
 	first, err := runTaskReviewerTurn(context.Background(), input, reviewer, "brief", "review", "base")
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestTaskReviewPersistsMixedReviewerDecisionsAndDisputeAcrossRestart(t *test
 	}
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: firstRaw}, {raw: secondRaw}}}
 	reviewer := &AgentSession{Role: ResponseRoleTaskReviewer, runtime: runtime, thread: "reviewer"}
-	input := TaskReviewInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", OperationID: "review-1", ResultID: "review-1-result", CallID: "review-1-call", Limits: controlledCallLimits()}
+	input := TaskReviewInput{Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", OperationID: "review-1", ResultID: "review-1-result", CallID: "review-1-call", Limits: controlledCallLimits()}
 	if _, err := runTaskReviewerTurn(context.Background(), input, reviewer, "brief", "initial", "base"); err != nil {
 		t.Fatal(err)
 	}

@@ -22,6 +22,7 @@ const initialRequiredChecksPauseReason = "initial required checks did not pass"
 // implementation scope.
 type InitialRequiredChecks struct {
 	Run        *implementationstate.Run
+	Workspace  WorkspaceControl
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
@@ -72,11 +73,11 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: reserve baseline check attempt: %v", ErrInitialRequiredChecks, err)
 	}
 
-	publisher, err := NewCheckResultPublisher(input.Journal, input.Repository, implementationstate.EvidenceID(input.Result))
+	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implementationstate.EvidenceID(input.Result))
 	if err != nil {
 		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline check publisher: %w", err))
 	}
-	observer, err := NewWorkspaceCheckObserver(ctx, input.Repository, input.Run, input.Journal, input.ProtectedPaths)
+	observer, err := NewWorkspaceCheckObserverWithControl(ctx, input.Workspace, input.Repository, input.Run, input.Journal, input.ProtectedPaths)
 	if err != nil {
 		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline workspace observer: %w", err))
 	}

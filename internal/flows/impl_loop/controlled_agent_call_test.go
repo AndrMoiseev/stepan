@@ -10,10 +10,74 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
+
+func TestInvokeControlledAgentCallUsesWorkspaceControlSeam(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: controlledResponse(t, "accepted without a Git process")}}}
+	call := controlledCallFixture(t, runtime)
+	call.Repository = t.TempDir() // Deliberately not a Git repository.
+	workspace := &unchangedWorkspaceControl{}
+	call.Workspace = workspace
+
+	result, err := InvokeControlledAgentCall(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Message == nil || *result.Response.Message != "accepted without a Git process" {
+		t.Fatalf("response = %#v", result.Response)
+	}
+	if workspace.captures != 2 || workspace.diffs != 1 {
+		t.Fatalf("workspace observations = captures:%d diffs:%d", workspace.captures, workspace.diffs)
+	}
+}
+
+type unchangedWorkspaceControl struct {
+	captures        int
+	diffs           int
+	assignmentDiffs int
+}
+
+type scriptedWorkspaceControl struct {
+	unchangedWorkspaceControl
+	differences []gitsnapshot.Difference
+}
+
+func (w *scriptedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+	w.diffs++
+	if len(w.differences) == 0 {
+		return gitsnapshot.Difference{}, nil
+	}
+	difference := w.differences[0]
+	w.differences = w.differences[1:]
+	return difference, nil
+}
+
+func (w *unchangedWorkspaceControl) Capture(context.Context, string) (gitsnapshot.Snapshot, error) {
+	w.captures++
+	return gitsnapshot.Snapshot{HeadOID: "unchanged", TreeOID: "unchanged"}, nil
+}
+
+func (w *unchangedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+	w.diffs++
+	return gitsnapshot.Difference{}, nil
+}
+
+func (*unchangedWorkspaceControl) RestorePaths(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot, []string) (gitsnapshot.Snapshot, error) {
+	return gitsnapshot.Snapshot{HeadOID: "unchanged", TreeOID: "unchanged"}, nil
+}
+
+func (*unchangedWorkspaceControl) EnsureUnchanged(context.Context, string, gitsnapshot.Snapshot) error {
+	return nil
+}
+
+func (w *unchangedWorkspaceControl) AssignmentDiff(context.Context, string, string) (string, error) {
+	w.assignmentDiffs++
+	return "No assignment changes.", nil
+}
 
 func TestInvokeControlledAgentCallRetriesCrashAndMalformedResponse(t *testing.T) {
 	if DefaultAgentCallTimeout != 1800*time.Second {
@@ -94,6 +158,7 @@ func TestInvokeControlledAgentCallRejectsRestoredViolationBeforeRetry(t *testing
 	}}
 	call := controlledCallFixture(t, runtime)
 	call.Repository = repository
+	call.Workspace = GitWorkspaceControl{}
 	call.Policy = AgentCallPolicy{Role: AgentRoleExecutor, CallID: call.Expectation.Binding.CallID, AllowUnprotected: true, ProtectedPaths: []string{".stepan/settings.json"}}
 	result, err := InvokeControlledAgentCall(context.Background(), call)
 	if err != nil {
@@ -190,7 +255,7 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = stateStore.Close() })
-	repository := newSnapshotRepository(t)
+	repository := t.TempDir()
 	baseline := controlledCallReference(t, journal, "baseline")
 	specification := controlledCallReference(t, journal, "specification")
 	taskList := controlledCallReference(t, journal, "tasks")
@@ -220,6 +285,7 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 			return &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "thread"}, nil
 		}},
 		Repository: repository,
+		Workspace:  &unchangedWorkspaceControl{},
 		Policy:     AgentCallPolicy{Role: AgentRoleExecutor, CallID: expectation.Binding.CallID, AllowUnprotected: true},
 		Run:        model,
 		Journal:    journal, StateStore: stateStore, OperationID: "agent-operation", Limits: controlledCallLimits(), Expectation: expectation, Message: "perform the requested action",
