@@ -463,7 +463,7 @@ func responseKindInstruction(kind ResponseKind) string {
 	case ResponseReviewPassed:
 		return text + "; message and references are non-empty."
 	case ResponseChangesRequested:
-		return text + "; every finding array is non-empty and finding_ids, findings, locations, bases, and expected_results have equal lengths."
+		return text + "; every finding array is non-empty and finding_ids, findings, finding_decisions, finding_reasons, locations, bases, and expected_results have equal lengths. For each prior finding, use resolved or retained with a concrete reviewer reason; use open only for a new finding."
 	case ResponseReviewDisputed:
 		return text + "; finding_ids has exactly one item; message and references are non-empty."
 	case ResponseExplorationRequested:

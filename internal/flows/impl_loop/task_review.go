@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -104,6 +105,12 @@ func RouteTaskReviewDispute(ctx context.Context, input TaskReviewInput, reviewer
 	}
 	if err := validateExecutorDispute(input.Run, input.AssignmentID, dispute); err != nil {
 		return TaskReviewResult{}, err
+	}
+	if err := input.Run.RecordTaskReviewDispute(input.AssignmentID, implementationstate.TaskReviewDispute{FindingID: dispute.FindingIDs[0], Arguments: *dispute.Message, References: slices.Clone(dispute.References)}); err != nil {
+		return TaskReviewResult{}, fmt.Errorf("%w: record executor dispute: %v", ErrInvalidTaskReviewRoute, err)
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		return TaskReviewResult{}, fmt.Errorf("%w: persist executor dispute: %v", ErrInvalidTaskReviewRoute, err)
 	}
 	brief, err := currentAssignmentBrief(input.Journal, input.Run, input.AssignmentID)
 	if err != nil {
@@ -254,10 +261,60 @@ func assignmentDiff(ctx context.Context, repository, base string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("%w: capture assignment diff: %v: %s", ErrInvalidTaskReviewRoute, err, strings.TrimSpace(string(output)))
 	}
+	untracked, err := untrackedAssignmentDiff(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	output = append(output, untracked...)
 	if strings.TrimSpace(string(output)) == "" {
 		return "(no working-tree changes)", nil
 	}
 	return string(output), nil
+}
+
+// untrackedAssignmentDiff adds every non-ignored untracked file to the
+// controller-built review packet. git diff <base> cannot see those files, but
+// generated output and newly introduced sources are part of an assignment's
+// observable state. Names come from Git's NUL-delimited output and are
+// rejected if they are not safe repository-relative paths before being handed
+// back to Git.
+func untrackedAssignmentDiff(ctx context.Context, repository string) ([]byte, error) {
+	listed := exec.CommandContext(ctx, "git", "-C", repository, "ls-files", "--others", "--exclude-standard", "-z")
+	paths, err := listed.Output()
+	if err != nil {
+		return nil, fmt.Errorf("%w: list untracked assignment files: %v", ErrInvalidTaskReviewRoute, err)
+	}
+	var diff []byte
+	for _, raw := range strings.Split(strings.TrimSuffix(string(paths), "\x00"), "\x00") {
+		if raw == "" {
+			continue
+		}
+		path, err := safeAssignmentDiffPath(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%w: untracked assignment path: %v", ErrInvalidTaskReviewRoute, err)
+		}
+		command := exec.CommandContext(ctx, "git", "-C", repository, "diff", "--no-index", "--", "/dev/null", path)
+		output, err := command.CombinedOutput()
+		// git diff --no-index uses exit code 1 for a normal difference.
+		if err != nil {
+			if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+				return nil, fmt.Errorf("%w: capture untracked file %q: %v: %s", ErrInvalidTaskReviewRoute, path, err, strings.TrimSpace(string(output)))
+			}
+		}
+		diff = append(diff, output...)
+	}
+	return diff, nil
+}
+
+func safeAssignmentDiffPath(value string) (string, error) {
+	if value == "" || filepath.IsAbs(value) || filepath.VolumeName(value) != "" {
+		return "", errors.New("path must be repository-relative")
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", errors.New("path escapes repository")
+	}
+	return filepath.ToSlash(clean), nil
 }
 
 func modifiedExistingTests(diff string) bool {
@@ -325,16 +382,43 @@ func validateTaskReviewerResponse(run *implementationstate.Run, assignmentID imp
 		return fmt.Errorf("%w: reviewer response is not bound to assignment", ErrInvalidTaskReviewRoute)
 	}
 	if response.Kind == ResponseChangesRequested {
+		if len(response.FindingIDs) == 0 || len(response.FindingIDs) != len(response.Findings) || len(response.FindingIDs) != len(response.FindingDecisions) || len(response.FindingIDs) != len(response.FindingReasons) || len(response.FindingIDs) != len(response.Locations) || len(response.FindingIDs) != len(response.Bases) || len(response.FindingIDs) != len(response.ExpectedResults) {
+			return fmt.Errorf("%w: reviewer finding decision fields have inconsistent lengths", ErrInvalidTaskReviewRoute)
+		}
+		previous := latestReviewFindings(assignmentForReview(run, assignmentID))
 		seen := map[string]bool{}
 		for index, id := range response.FindingIDs {
-			if seen[id] || !blockingFindingBasis(response.Bases[index]) {
+			decision := implementationstate.FindingStatus(response.FindingDecisions[index])
+			if seen[id] || !decisionValidForFinding(decision, previous[id], previous[id].ID != "") || !blockingFindingBasis(response.Bases[index]) {
 				return fmt.Errorf("%w: blocking finding %q lacks a defect, explicit requirement, or rule basis", ErrInvalidTaskReviewRoute, id)
 			}
+			if strings.TrimSpace(response.FindingReasons[index]) == "" {
+				return fmt.Errorf("%w: finding %q lacks a reviewer decision reason", ErrInvalidTaskReviewRoute, id)
+			}
 			seen[id] = true
+		}
+		for id, finding := range previous {
+			if (finding.Status == implementationstate.FindingOpen || finding.Status == implementationstate.FindingRetained) && !seen[id] {
+				return fmt.Errorf("%w: reviewer omitted an unresolved finding %q", ErrInvalidTaskReviewRoute, id)
+			}
 		}
 		return nil
 	}
 	return nil
+}
+
+func decisionValidForFinding(decision implementationstate.FindingStatus, previous implementationstate.TaskReviewFinding, exists bool) bool {
+	if !decisionValid(decision) {
+		return false
+	}
+	if exists {
+		return decision == implementationstate.FindingResolved || decision == implementationstate.FindingRetained
+	}
+	return decision == implementationstate.FindingOpen
+}
+
+func decisionValid(decision implementationstate.FindingStatus) bool {
+	return decision == implementationstate.FindingOpen || decision == implementationstate.FindingResolved || decision == implementationstate.FindingRetained
 }
 
 func blockingFindingBasis(basis string) bool {
@@ -356,7 +440,7 @@ func taskReviewRecord(run *implementationstate.Run, assignmentID implementations
 		return implementationstate.TaskReviewRecord{}, "", fmt.Errorf("%w: unknown assignment", ErrInvalidTaskReviewRoute)
 	}
 	previous := latestReviewFindings(assignment)
-	record := implementationstate.TaskReviewRecord{OperationID: operationID, ResultID: resultID, Round: uint64(len(assignment.TaskReviews) + 1), State: run.CurrentState}
+	record := implementationstate.TaskReviewRecord{OperationID: operationID, ResultID: resultID, Round: uint64(len(assignment.TaskReviews) + 1), State: run.CurrentState, Disputes: cloneTaskReviewDisputes(assignment.PendingTaskReviewDisputes)}
 	if response.Kind == ResponseReviewPassed {
 		for _, finding := range previous {
 			finding.Status, finding.Resolution = implementationstate.FindingResolved, "reviewer confirmed the current diff resolves the finding"
@@ -365,23 +449,26 @@ func taskReviewRecord(run *implementationstate.Run, assignmentID implementations
 		record.Discussion = *response.Message
 		return record, implementationstate.ResultSucceeded, nil
 	}
-	seen := map[string]bool{}
 	for index, id := range response.FindingIDs {
-		status, resolution := implementationstate.FindingOpen, ""
-		if _, found := previous[id]; found {
-			status, resolution = implementationstate.FindingRetained, "reviewer retained finding after reconsideration"
+		finding := implementationstate.TaskReviewFinding{ID: id, Problem: response.Findings[index], Location: response.Locations[index], Basis: response.Bases[index], ExpectedResult: response.ExpectedResults[index], Status: implementationstate.FindingStatus(response.FindingDecisions[index]), Resolution: response.FindingReasons[index]}
+		if prior, found := previous[id]; found {
+			// The reviewer must retain the original identity and description when
+			// deciding an existing finding; its decision reason is the mutable
+			// part of the discussion.
+			finding.Problem, finding.Location, finding.Basis, finding.ExpectedResult = prior.Problem, prior.Location, prior.Basis, prior.ExpectedResult
 		}
-		record.Findings = append(record.Findings, implementationstate.TaskReviewFinding{ID: id, Problem: response.Findings[index], Location: response.Locations[index], Basis: response.Bases[index], ExpectedResult: response.ExpectedResults[index], Status: status, Resolution: resolution})
-		seen[id] = true
+		record.Findings = append(record.Findings, finding)
 	}
-	for id, finding := range previous {
-		if !seen[id] && (finding.Status == implementationstate.FindingOpen || finding.Status == implementationstate.FindingRetained) {
-			finding.Status, finding.Resolution = implementationstate.FindingRetained, "reviewer retained prior unresolved finding"
-			record.Findings = append(record.Findings, finding)
-		}
-	}
-	record.Discussion = "reviewer requested changes"
+	record.Discussion = "reviewer recorded explicit per-finding decisions"
 	return record, implementationstate.ResultFailed, nil
+}
+
+func cloneTaskReviewDisputes(disputes []implementationstate.TaskReviewDispute) []implementationstate.TaskReviewDispute {
+	result := make([]implementationstate.TaskReviewDispute, len(disputes))
+	for index, dispute := range disputes {
+		result[index] = implementationstate.TaskReviewDispute{FindingID: dispute.FindingID, Arguments: dispute.Arguments, References: slices.Clone(dispute.References)}
+	}
+	return result
 }
 
 func latestReviewFindings(assignment *implementationstate.Assignment) map[string]implementationstate.TaskReviewFinding {
@@ -424,7 +511,10 @@ func renderTaskReviewHistory(run *implementationstate.Run, assignmentID implemen
 	for _, review := range assignment.TaskReviews {
 		fmt.Fprintf(&text, "## Review round %d\n\n%s\n", review.Round, review.Discussion)
 		for _, finding := range review.Findings {
-			fmt.Fprintf(&text, "- %s [%s] at %s; basis: %s; resolution: %s\n", finding.ID, finding.Status, finding.Location, finding.Basis, finding.Resolution)
+			fmt.Fprintf(&text, "\n### Finding %s [%s]\n\nProblem: %s\n\nLocation: %s\n\nBasis: %s\n\nExpected result: %s\n\nReviewer decision reason: %s\n", finding.ID, finding.Status, finding.Problem, finding.Location, finding.Basis, finding.ExpectedResult, finding.Resolution)
+		}
+		for _, dispute := range review.Disputes {
+			fmt.Fprintf(&text, "\n### Executor dispute for %s\n\nArguments: %s\n\nReferences:\n%s\n", dispute.FindingID, dispute.Arguments, markdownList(dispute.References))
 		}
 	}
 	return strings.TrimSpace(text.String())

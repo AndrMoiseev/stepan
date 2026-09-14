@@ -284,7 +284,7 @@ func responsePayload(t *testing.T, kind ResponseKind) json.RawMessage {
 
 func responsePayloadMap(kind ResponseKind) map[string]any {
 	payload := map[string]any{
-		"kind": string(kind), "message": "", "task_ids": []string{}, "task_payloads": []string{}, "brief": "", "check_names": []string{}, "finding_ids": []string{}, "findings": []string{}, "question": "", "context": "", "boundaries": "", "known_facts": []string{}, "unknowns": []string{}, "references": []string{}, "locations": []string{}, "bases": []string{}, "expected_results": []string{}, "options": []string{}, "recommendation": "", "blocked_action": "", "diagnostic": "", "attempts": []string{}, "required_user_action": "", "user_implementation": "", "project_implementation": "", "explanation": "",
+		"kind": string(kind), "message": "", "task_ids": []string{}, "task_payloads": []string{}, "brief": "", "check_names": []string{}, "finding_ids": []string{}, "findings": []string{}, "finding_decisions": []string{}, "finding_reasons": []string{}, "question": "", "context": "", "boundaries": "", "known_facts": []string{}, "unknowns": []string{}, "references": []string{}, "locations": []string{}, "bases": []string{}, "expected_results": []string{}, "options": []string{}, "recommendation": "", "blocked_action": "", "diagnostic": "", "attempts": []string{}, "required_user_action": "", "user_implementation": "", "project_implementation": "", "explanation": "",
 	}
 	switch kind {
 	case ResponseBriefReady:
@@ -296,7 +296,7 @@ func responsePayloadMap(kind ResponseKind) map[string]any {
 	case ResponseReviewPassed:
 		payload["message"], payload["references"] = "review passed", []string{"internal/example.go:12"}
 	case ResponseChangesRequested:
-		payload["finding_ids"], payload["findings"], payload["locations"], payload["bases"], payload["expected_results"] = []string{"F-1"}, []string{"missing validation"}, []string{"internal/example.go:12"}, []string{"rules.md#validation"}, []string{"reject invalid input"}
+		payload["finding_ids"], payload["findings"], payload["finding_decisions"], payload["finding_reasons"], payload["locations"], payload["bases"], payload["expected_results"] = []string{"F-1"}, []string{"missing validation"}, []string{"open"}, []string{"new blocking rule violation"}, []string{"internal/example.go:12"}, []string{"rules.md#validation"}, []string{"reject invalid input"}
 	case ResponseReviewDisputed:
 		payload["finding_ids"], payload["message"], payload["references"] = []string{"F-1"}, "the validation is already present", []string{"internal/example.go:12"}
 	case ResponseExplorationRequested:

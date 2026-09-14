@@ -149,6 +149,8 @@ type AgentResponse struct {
 	CheckNames            []string
 	FindingIDs            []string
 	Findings              []string
+	FindingDecisions      []string
+	FindingReasons        []string
 	Question              *string
 	Context               *string
 	Boundaries            *string
@@ -195,6 +197,8 @@ func ResponseSchema(role ResponseRole) (json.RawMessage, error) {
 			"check_names":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"finding_ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"findings":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"finding_decisions":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"finding_reasons":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"question":               map[string]any{"type": "string"},
 			"context":                map[string]any{"type": "string"},
 			"boundaries":             map[string]any{"type": "string"},
@@ -261,6 +265,8 @@ type responseTransport struct {
 	CheckNames            []string `json:"check_names"`
 	FindingIDs            []string `json:"finding_ids"`
 	Findings              []string `json:"findings"`
+	FindingDecisions      []string `json:"finding_decisions"`
+	FindingReasons        []string `json:"finding_reasons"`
 	Question              string   `json:"question"`
 	Context               string   `json:"context"`
 	Boundaries            string   `json:"boundaries"`
@@ -282,7 +288,7 @@ type responseTransport struct {
 }
 
 var responseTransportFields = []string{
-	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "question", "context", "boundaries", "known_facts", "unknowns", "references", "locations", "bases", "expected_results", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_implementation", "project_implementation", "explanation",
+	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "finding_decisions", "finding_reasons", "question", "context", "boundaries", "known_facts", "unknowns", "references", "locations", "bases", "expected_results", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_implementation", "project_implementation", "explanation",
 }
 
 var responseKindsByRole = map[ResponseRole][]ResponseKind{
@@ -443,7 +449,7 @@ func decodeResponseTransport(raw json.RawMessage) (responseTransport, error) {
 	if decoder.More() {
 		return responseTransport{}, fmt.Errorf("%w: response has trailing values", ErrMalformedAgentResponse)
 	}
-	if result.TaskIDs == nil || result.TaskPayloads == nil || result.CheckNames == nil || result.FindingIDs == nil || result.Findings == nil || result.KnownFacts == nil || result.Unknowns == nil || result.References == nil || result.Locations == nil || result.Bases == nil || result.ExpectedResults == nil || result.Options == nil || result.Attempts == nil {
+	if result.TaskIDs == nil || result.TaskPayloads == nil || result.CheckNames == nil || result.FindingIDs == nil || result.Findings == nil || result.FindingDecisions == nil || result.FindingReasons == nil || result.KnownFacts == nil || result.Unknowns == nil || result.References == nil || result.Locations == nil || result.Bases == nil || result.ExpectedResults == nil || result.Options == nil || result.Attempts == nil {
 		return responseTransport{}, fmt.Errorf("%w: array placeholders must be arrays", ErrMalformedAgentResponse)
 	}
 	return result, nil
@@ -453,7 +459,7 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 	result := AgentResponse{
 		Kind: kind, Message: optionalString(input.Message), Brief: optionalString(input.Brief),
 		TaskPayloads: optionalStrings(input.TaskPayloads), CheckNames: optionalStrings(input.CheckNames),
-		FindingIDs: optionalStrings(input.FindingIDs), Findings: optionalStrings(input.Findings),
+		FindingIDs: optionalStrings(input.FindingIDs), Findings: optionalStrings(input.Findings), FindingDecisions: optionalStrings(input.FindingDecisions), FindingReasons: optionalStrings(input.FindingReasons),
 		Question: optionalString(input.Question), Context: optionalString(input.Context), Boundaries: optionalString(input.Boundaries),
 		KnownFacts: optionalStrings(input.KnownFacts), Unknowns: optionalStrings(input.Unknowns), References: optionalStrings(input.References),
 		Locations: optionalStrings(input.Locations), Bases: optionalStrings(input.Bases), ExpectedResults: optionalStrings(input.ExpectedResults), Options: optionalStrings(input.Options),
@@ -534,12 +540,12 @@ func validateResponseSemantics(response AgentResponse) error {
 		for _, value := range []struct {
 			name   string
 			values []string
-		}{{"finding_ids", response.FindingIDs}, {"findings", response.Findings}, {"locations", response.Locations}, {"bases", response.Bases}, {"expected_results", response.ExpectedResults}} {
+		}{{"finding_ids", response.FindingIDs}, {"findings", response.Findings}, {"finding_decisions", response.FindingDecisions}, {"finding_reasons", response.FindingReasons}, {"locations", response.Locations}, {"bases", response.Bases}, {"expected_results", response.ExpectedResults}} {
 			if err := requireValues(value.name, value.values); err != nil {
 				return err
 			}
 		}
-		return sameLength(response.FindingIDs, response.Findings, response.Locations, response.Bases, response.ExpectedResults)
+		return sameLength(response.FindingIDs, response.Findings, response.FindingDecisions, response.FindingReasons, response.Locations, response.Bases, response.ExpectedResults)
 	case ResponseReviewDisputed:
 		if len(response.FindingIDs) != 1 {
 			return fmt.Errorf("%w: review_disputed requires exactly one finding ID", ErrResponseSemantics)
@@ -633,6 +639,8 @@ func rejectUnexpectedSemanticFields(response AgentResponse) error {
 		"check_names":            len(response.CheckNames) != 0,
 		"finding_ids":            len(response.FindingIDs) != 0,
 		"findings":               len(response.Findings) != 0,
+		"finding_decisions":      len(response.FindingDecisions) != 0,
+		"finding_reasons":        len(response.FindingReasons) != 0,
 		"question":               response.Question != nil,
 		"context":                response.Context != nil,
 		"boundaries":             response.Boundaries != nil,
@@ -665,7 +673,7 @@ var allowedSemanticFields = map[ResponseKind][]string{
 	ResponseImplementationReady:   {"message"},
 	ResponseChecksRequested:       {"check_names"},
 	ResponseReviewPassed:          {"message", "references"},
-	ResponseChangesRequested:      {"finding_ids", "findings", "locations", "bases", "expected_results"},
+	ResponseChangesRequested:      {"finding_ids", "findings", "finding_decisions", "finding_reasons", "locations", "bases", "expected_results"},
 	ResponseReviewDisputed:        {"finding_ids", "message", "references"},
 	ResponseExplorationRequested:  {"question", "context", "boundaries", "known_facts"},
 	ResponseExplorationResult:     {"message", "known_facts", "unknowns", "references"},

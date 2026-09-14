@@ -329,3 +329,33 @@
 - Expected impact: a future continuation boundary could accidentally disclose environment values or unbounded output instead of using `CheckPresentation` and durable references.
 - Classification: technical debt because no current production continuation formatter consumes the raw fields and the persisted agent-facing evidence is already filtered.
 - Possible follow-up: expose a dedicated agent-facing DTO and keep raw command/results private to controller execution.
+
+## TD-9.3-001 — review-policy validation relies on lexical heuristics
+
+- Origin: task 9.3 initial review; affected location: `internal/flows/impl_loop/task_review.go` (`blockingFindingBasis`, `reviewPassExplainsTestChange`).
+- Status: `open`.
+- Potential problem: multilingual substring checks can accept an unsupported assertion containing a magic word or reject a valid explanation phrased differently.
+- Evidence: semantic grounds and test-change rationale are inferred from loose keyword presence rather than structured fields or controller evidence.
+- Expected impact: unusual but valid reviewer wording can be rejected, while carefully worded unsupported claims can pass transport validation.
+- Classification: technical debt because normal structured reviewer prompts constrain the wording and no current concrete behavior failure beyond the separately critical durable-discussion defects is demonstrated.
+- Possible follow-up: replace prose heuristics with closed structured basis/rationale fields tied to controller evidence.
+
+## TD-9.3-002 — task-review coverage is narrower than the required state space
+
+- Origin: task 9.3 initial review; affected location: `internal/flows/impl_loop/task_review_test.go`.
+- Status: `open`.
+- Potential problem: initial tests omit direct coverage of the third-round boundary, retained-dispute branch, mixed finding resolution, untracked/generated files, changed-test rationale branches, durable restart reconstruction, and executor-session identity.
+- Evidence: the frozen candidate's two principal tests exercise only a subset of those paths.
+- Expected impact: regressions in uncommon review transitions may escape task-focused tests.
+- Classification: technical debt for coverage not required to repair a demonstrated production defect; correction cycle 1 will add regressions required by the two critical findings.
+- Possible follow-up: build a table-driven review state-machine suite spanning all response kinds and recovery boundaries.
+
+## TD-9.3-003 — correction routing does not prove exact executor-session identity
+
+- Origin: task 9.3 initial review; affected location: `internal/flows/impl_loop/task_review.go` (`RouteTaskReviewChanges`).
+- Status: `open`.
+- Potential problem: correction routing validates executor role and binding but not that the supplied live session is the exact session that produced the implementation.
+- Evidence: another session with matching role/binding can satisfy the current checks.
+- Expected impact: controller misuse could send review feedback to a replacement or unrelated executor session and break conversational continuity.
+- Classification: technical debt because current controller ownership supplies the intended session and no cross-session production call site is yet demonstrated.
+- Possible follow-up: persist and compare an immutable executor session identity at assignment creation and correction routing.

@@ -446,6 +446,9 @@ type Assignment struct {
 	// reviewer turn, while the discussion is what binds later turns and an
 	// executor dispute to stable finding identifiers.
 	TaskReviews []TaskReviewRecord
+	// PendingTaskReviewDisputes is written before the reviewer continuation is
+	// dispatched, so an executor objection cannot disappear on a crash.
+	PendingTaskReviewDisputes []TaskReviewDispute
 }
 
 // FindingStatus is owned exclusively by the task reviewer.  In particular an
@@ -475,6 +478,27 @@ type TaskReviewFinding struct {
 	Resolution     string
 }
 
+// TaskReviewDispute is evidence submitted by the executor. It never changes a
+// finding itself; only the following task-review record can resolve or retain
+// the cited finding.
+type TaskReviewDispute struct {
+	FindingID  string
+	Arguments  string
+	References []string
+}
+
+func (d TaskReviewDispute) valid() bool {
+	if strings.TrimSpace(d.FindingID) == "" || strings.TrimSpace(d.Arguments) == "" || len(d.References) == 0 {
+		return false
+	}
+	for _, reference := range d.References {
+		if strings.TrimSpace(reference) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 func (f TaskReviewFinding) valid() bool {
 	return strings.TrimSpace(f.ID) != "" && strings.TrimSpace(f.Problem) != "" && strings.TrimSpace(f.Location) != "" && strings.TrimSpace(f.Basis) != "" && strings.TrimSpace(f.ExpectedResult) != "" && f.Status.valid() && (f.Status == FindingOpen || strings.TrimSpace(f.Resolution) != "")
 }
@@ -488,6 +512,7 @@ type TaskReviewRecord struct {
 	Round       uint64
 	State       EvidenceRef
 	Findings    []TaskReviewFinding
+	Disputes    []TaskReviewDispute
 	Discussion  string
 }
 
@@ -501,6 +526,11 @@ func (r TaskReviewRecord) valid() bool {
 			return false
 		}
 		seen[finding.ID] = true
+	}
+	for _, dispute := range r.Disputes {
+		if !dispute.valid() {
+			return false
+		}
 	}
 	return true
 }
@@ -1032,8 +1062,34 @@ func (r *Run) RecordTaskReview(assignmentID AssignmentID, record TaskReviewRecor
 	if operation == nil || result == nil || result.OperationID != operation.ID || operation.Kind != OperationReview || operation.Counter != CycleCounterAssignmentReview || result.State != record.State || result.Basis != operation.Basis {
 		return fmt.Errorf("%w: task review record does not match review evidence", ErrInvalidState)
 	}
+	if !slices.EqualFunc(record.Disputes, assignment.PendingTaskReviewDisputes, func(left, right TaskReviewDispute) bool {
+		return left.FindingID == right.FindingID && left.Arguments == right.Arguments && slices.Equal(left.References, right.References)
+	}) {
+		return fmt.Errorf("%w: task review record does not retain pending disputes", ErrInvalidState)
+	}
 	assignment.TaskReviews = append(assignment.TaskReviews, cloneTaskReview(record))
+	assignment.PendingTaskReviewDisputes = nil
 	return nil
+}
+
+// RecordTaskReviewDispute durably retains an executor objection before the
+// controller dispatches the existing reviewer session. The executor cannot
+// select a closed finding or resolve anything through this transition.
+func (r *Run) RecordTaskReviewDispute(assignmentID AssignmentID, dispute TaskReviewDispute) error {
+	assignment, err := r.activeAssignment(assignmentID)
+	if err != nil {
+		return err
+	}
+	if !dispute.valid() {
+		return fmt.Errorf("%w: invalid task review dispute", ErrInvalidState)
+	}
+	for _, finding := range r.OpenTaskReviewFindings(assignmentID) {
+		if finding.ID == dispute.FindingID {
+			assignment.PendingTaskReviewDisputes = append(assignment.PendingTaskReviewDisputes, cloneTaskReviewDispute(dispute))
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: dispute references closed or unknown finding", ErrInvalidState)
 }
 
 // OpenTaskReviewFindings returns the current unresolved reviewer findings.
@@ -1678,6 +1734,11 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 			return fmt.Errorf("%w: task review history lacks matching evidence", ErrInvalidState)
 		}
 	}
+	for _, dispute := range assignment.PendingTaskReviewDisputes {
+		if !dispute.valid() {
+			return fmt.Errorf("%w: invalid pending task review dispute", ErrInvalidState)
+		}
+	}
 	for _, evidence := range assignment.AcceptanceHistory {
 		if assignment.validateAcceptance(evidence, false) != nil {
 			return fmt.Errorf("%w: invalid historical acceptance", ErrInvalidState)
@@ -2126,5 +2187,14 @@ func cloneFinalAcceptance(evidence FinalAcceptanceEvidence) *FinalAcceptanceEvid
 
 func cloneTaskReview(record TaskReviewRecord) TaskReviewRecord {
 	record.Findings = slices.Clone(record.Findings)
+	record.Disputes = slices.Clone(record.Disputes)
+	for index := range record.Disputes {
+		record.Disputes[index] = cloneTaskReviewDispute(record.Disputes[index])
+	}
 	return record
+}
+
+func cloneTaskReviewDispute(dispute TaskReviewDispute) TaskReviewDispute {
+	dispute.References = slices.Clone(dispute.References)
+	return dispute
 }
