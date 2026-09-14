@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 32/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, and 7.4 accepted with technical debt; next action task 7.5; final review `not_started`.
+- Outcome: `in_progress`; 33/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, 7.4, and 7.5 accepted with technical debt; next action task 8.1; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -162,6 +162,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Correction cycle 1 commit verified: `ede9e764b1d0a998b48be5767d58f08bc9611267`; rereview pending with `/root/review_7_5`. Completed correction cycles remain 0 until response. Parallel user edits in tasks 14.1–14.6 remain uncommitted.
 - Rereview cycle 1 resolved `SPEC-7.5-001` and `SPEC-7.5-003`; `SPEC-7.5-002` remains critical only for `execution_blocked`, which is incorrectly continued to the source rather than durably pausing dependent work. No new debt. Completed correction cycles: 1. Checkbox reopened; review `correcting`; correction cycle 2 assigned to the same pair.
 - Correction cycle 2 frozen candidate branches on Explorer `execution_blocked` before source continuation, durably persists the paused run with diagnostic, attempts, and required user action, and returns a paused controller result without invoking the source. Focused recovery test passed in 1.893s; implementer full `go test ./... -count=1 -timeout 9m` passed (impl_loop 165.8s), Windows build and `git diff --check` passed. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview.
+- Correction cycle 2 commit verified: `aef8c7288eb3411738b9ed81e8fb0789e308d3f5`; rereview pending with `/root/review_7_5`. Completed correction cycles remain 1 until response; user task 14 edits remain uncommitted.
+- Rereview cycle 2 PASS: `SPEC-7.5-001` through `SPEC-7.5-003` resolved; no remaining/new critical findings. `TD-7.5-001` through `TD-7.5-003` remain open. Task 7.5 accepted with technical debt after two completed correction cycles; next task 8.1.
+
+### 8.1 — concrete OpenSpec package access
+
+- Base: `aef8c7288eb3411738b9ed81e8fb0789e308d3f5`; dependency 7.5 accepted with technical debt.
+- Acceptance: tasks.md 8.1; concrete access to the selected change package and main specs with input versions, no generic specification-adapter interface and no Markdown task parser; cover complete loading, unavailable documents, and main specs supplied for agent relevance selection.
+- Implementer: `/root/implement_8_1` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Candidate adds `internal/openspec.Load` with stable document ordering, SHA-256 document/aggregate versions, explicit missing/unsafe-input errors, and separately rendered main specs for briefer selection. Implementer reports focused/full suite and Windows build passing. Coordinator focused `go test ./internal/openspec -count=1 -timeout 2m` and `git diff --check` passed; full coordinator validation, commit, and review remain next.
+- Coordinator mandatory validation passed on Go 1.26.5/windows-amd64: focused `go test ./internal/openspec -count=1 -timeout 2m`, `go test ./... -count=1 -timeout 9m` (slowest `impl_loop` 162.873s), Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check`; exit 0. Nonfatal module stat-cache permission warnings did not affect exits. Checkbox complete; review `awaiting_review`; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 
