@@ -14,6 +14,12 @@ import (
 
 var ErrImplementerTransition = errors.New("invalid implementer response transition")
 
+// ErrRequiredChecksChanged is recorded when a successful required command
+// changed the candidate workspace. The set is useful diagnostic evidence but
+// cannot prove acceptance: every required command must be rerun against the
+// newly observed state.
+var ErrRequiredChecksChanged = errors.New("required checks changed the workspace")
+
 // ImplementerTransitionInput contains the controller-owned dependencies for
 // one response from the current executor session. Operation and result IDs are
 // allocated by the controller; an agent cannot choose an executable command,
@@ -43,6 +49,10 @@ type ImplementerTransitionResult struct {
 	Diagnostic         string
 	Evidence           implementationstate.EvidenceRef
 	RequiredAcceptance bool
+	// WorkspaceChanged is meaningful only for RequiredAcceptance. It is true
+	// for any mutation during the complete set, including a later reversion.
+	// Such a set is deliberately nonterminal and consumes one mandatory round.
+	WorkspaceChanged bool
 }
 
 // ValidateImplementerTransitionResponse is suitable for
@@ -120,19 +130,31 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 	}
 	reporter := &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}
 	var set CheckSet
+	var workspaceChanged bool
 	if kind == CheckSetRequested {
 		set, err = RunRequestedChecksWithReporter(ctx, input.Selection, response.CheckNames, input.Runner, reporter)
 	} else {
-		set, err = RunRequiredChecksWithReporter(ctx, input.Selection, input.Runner, reporter)
+		cycle, cycleErr := RunOneRequiredCheckCycle(ctx, input.Selection, input.Runner, reporter, 1)
+		set, err, workspaceChanged = cycle.Set, cycleErr, cycle.Changed
 	}
 	diagnostic := checkSetDiagnostic(set, err)
-	evidence, publishErr := publishImplementerCheckEvidence(input.Journal, input.ResultID, set, err)
+	if kind == CheckSetRequired && workspaceChanged {
+		if diagnostic != "" {
+			diagnostic += "\n"
+		}
+		diagnostic += ErrRequiredChecksChanged.Error()
+	}
+	evidenceErr := err
+	if kind == CheckSetRequired && workspaceChanged {
+		evidenceErr = errors.Join(evidenceErr, ErrRequiredChecksChanged)
+	}
+	evidence, publishErr := publishImplementerCheckEvidence(input.Journal, input.ResultID, set, evidenceErr)
 	if publishErr != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: publish check diagnostics: %v", ErrImplementerTransition, publishErr)
 	}
 
 	status, outcome := implementationstate.ResultSucceeded, implementationstate.AttemptSucceeded
-	if err != nil || !set.Succeeded() {
+	if err != nil || !set.Succeeded() || (kind == CheckSetRequired && workspaceChanged) {
 		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
@@ -157,7 +179,7 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 	if _, recordErr := input.StateStore.Record(persistContext, input.Run); recordErr != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check result: %v", ErrImplementerTransition, recordErr)
 	}
-	return ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired}, nil
+	return ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired, WorkspaceChanged: workspaceChanged}, nil
 }
 
 func validateImplementerTransitionInput(input ImplementerTransitionInput) error {

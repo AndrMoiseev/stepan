@@ -123,16 +123,17 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 		}
 		if turnResult.Response.Kind == ResponseImplementationReady {
 			result.RequiredChecks = checks
-			if checks.Set.Succeeded() {
+			if checks.Set.Succeeded() && !checks.WorkspaceChanged {
 				if err := CanStartTaskReview(route.Transition.Run, route.Transition.AssignmentID); err != nil {
 					return result, err
 				}
 				result.ReviewReady = true
 				return result, nil
 			}
-			// A failed mandatory set is not a retry of one command. Its bounded
-			// feedback turn gives the executor a chance to correct the code; the
-			// next implementation_ready starts another whole required set.
+			// A failed or workspace-mutating mandatory set is not a retry of one
+			// command. Its bounded feedback turn gives the executor a chance to
+			// correct the code (or acknowledge generated output); the next
+			// implementation_ready starts another whole required set.
 			result.Feedback = ImplementerCheckFeedback(checks)
 			result.session = turnResult.Session
 			continue
@@ -285,6 +286,9 @@ func isImplementerAgentOperation(run *implementationstate.Run, assignmentID impl
 func ImplementerCheckFeedback(transition ImplementerTransitionResult) string {
 	var text strings.Builder
 	text.WriteString("# Configured check results\n")
+	if transition.RequiredAcceptance && transition.WorkspaceChanged {
+		text.WriteString("\nThe required set changed the workspace. It is not acceptance evidence; the next implementation-ready response will run the full required set again from its first command.\n")
+	}
 	for _, check := range transition.Set.Results {
 		fmt.Fprintf(&text, "\n## %s\n\n- Status: %s\n", check.Name, check.Status)
 		if check.Presentation == nil {

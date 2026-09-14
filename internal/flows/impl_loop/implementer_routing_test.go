@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,6 +106,59 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 	assertRunOrder(t, fixture.runner, "lint", "test_all")
 	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
 		t.Fatalf("initial ready accepted or committed assignment: %#v", fixture.run.Assignments[0])
+	}
+}
+
+func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-stability"} {
+		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}, {raw: responsePayload(t, ResponseImplementationReady)}}}
+	originExpectation := fixture.executorExpectation("executor-origin-call")
+	stabilityExpectation := fixture.executorExpectation("executor-stability-call")
+	mutated := false
+	runner := CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		fixture.runner.commands = append(fixture.runner.commands, command)
+		if command.Program == "test_all" && !mutated {
+			mutated = true
+			if err := os.WriteFile(filepath.Join(fixture.repository, "generated.go"), []byte("package generated\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return checkexec.Result{ExitCode: 0}, nil
+	})
+	firstTransition := fixture.input("required-mutating", "required-mutating-result")
+	firstTransition.Runner = runner
+	secondTransition := fixture.input("required-stable", "required-stable-result")
+	secondTransition.Runner = runner
+
+	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
+		OriginatingCall:        ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		Transition:             firstTransition,
+		Continuation:           ControlledAgentCall{Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: stabilityExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-stability", Limits: controlledCallLimits(), Expectation: stabilityExpectation},
+		ContinuationTransition: secondTransition,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRunOrder(t, fixture.runner, "lint", "test_all", "lint", "test_all")
+	if !result.ReviewReady || result.RequiredChecks.WorkspaceChanged || !result.RequiredChecks.Set.Succeeded() {
+		t.Fatalf("stable required set did not solely enable review: %#v", result)
+	}
+	if len(fixture.run.Assignments[0].Results) != 2 || fixture.run.Assignments[0].Results[0].Status != implementationstate.ResultFailed || fixture.run.Assignments[0].Results[1].Status != implementationstate.ResultSucceeded {
+		t.Fatalf("mutating required set remained acceptance evidence: %#v", fixture.run.Assignments[0].Results)
+	}
+	if len(runtime.messages) != 2 || !strings.Contains(runtime.messages[1], "not acceptance evidence") {
+		t.Fatalf("workspace-mutation feedback = %#v", runtime.messages)
 	}
 }
 
