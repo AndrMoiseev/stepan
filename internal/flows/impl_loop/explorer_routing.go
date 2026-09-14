@@ -45,6 +45,8 @@ type ExplorerRouteResult struct {
 	Attempts                   uint64
 	SourceContinuationResponse AgentResponse
 	SourceContinuationAttempts uint64
+	Paused                     bool
+	PauseReason                string
 }
 
 // RouteExplorer starts one fresh Explorer session, preserves the source
@@ -80,6 +82,16 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 	result, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return ExplorerRouteResult{Attempts: result.Attempts}, err
+	}
+	if result.Response.Kind == ResponseExecutionBlocked {
+		reason, err := persistExplorerExecutionBlocked(ctx, call, result.Response)
+		if err != nil {
+			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
+		}
+		return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts, Paused: true, PauseReason: reason}, nil
+	}
+	if err := validateSourceContinuation(route); err != nil {
+		return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
 	}
 	continuation := explorerContinuation(result.Response)
 	sourceCall := route.SourceContinuation
@@ -143,10 +155,27 @@ func validateExplorerRoute(route ExplorerRoute) error {
 	if route.SourceExpectation.Scope == ResponseScopeBootstrap {
 		return fmt.Errorf("%w: bootstrap Explorer routing requires bootstrap durable state", ErrInvalidExplorerRoute)
 	}
-	if err := validateSourceContinuation(route); err != nil {
-		return err
-	}
 	return nil
+}
+
+func persistExplorerExecutionBlocked(ctx context.Context, call ControlledAgentCall, response AgentResponse) (string, error) {
+	reason := fmt.Sprintf("execution_blocked: Explorer blocked action: %s; diagnostic: %s; attempts: %s; required user action: %s", *response.BlockedAction, *response.Diagnostic, strings.Join(response.Attempts, "; "), *response.RequiredUserAction)
+	event, err := implementationstate.NewRunStateEvent(1, call.Run)
+	if err != nil {
+		return "", fmt.Errorf("clone Explorer execution-blocked state: %w", err)
+	}
+	candidate := *event.State
+	if err := candidate.Pause(reason); err != nil {
+		return "", fmt.Errorf("pause Explorer execution-blocked run: %w", err)
+	}
+	written, err := call.StateStore.Record(ctx, &candidate)
+	if written.Sequence != 0 {
+		*call.Run = candidate
+	}
+	if err != nil {
+		return "", fmt.Errorf("persist Explorer execution-blocked pause: %w", err)
+	}
+	return reason, nil
 }
 
 func validateSourceContinuation(route ExplorerRoute) error {

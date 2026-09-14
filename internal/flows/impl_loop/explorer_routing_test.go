@@ -11,6 +11,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing.T) {
@@ -67,7 +68,7 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 }
 
 func TestRouteExplorerContinuesValidEscalationsWithoutSizeRetry(t *testing.T) {
-	for _, kind := range []ResponseKind{ResponseClarificationNeeded, ResponseExecutionBlocked} {
+	for _, kind := range []ResponseKind{ResponseClarificationNeeded} {
 		t.Run(string(kind), func(t *testing.T) {
 			explorerRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, kind)}}}
 			owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: explorerRuntime})
@@ -94,6 +95,45 @@ func TestRouteExplorerContinuesValidEscalationsWithoutSizeRetry(t *testing.T) {
 				t.Fatalf("kind-specific continuation = %q", result.ContinuationMessage)
 			}
 		})
+	}
+}
+
+func TestRouteExplorerExecutionBlockedDurablyPausesWithoutSourceContinuation(t *testing.T) {
+	explorerRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: explorerRuntime})
+	t.Cleanup(func() { _ = owner.Close() })
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Episode = "final-review"
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	call.Expectation = explorerExpectationFrom(t, source, "explorer-call")
+	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	sourceRuntime := &explorerRoutingRuntime{}
+
+	result, err := RouteExplorer(context.Background(), ExplorerRoute{
+		Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "source"},
+		SourceExpectation: source, Request: explorationRequest(t), ExplorerCall: call,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Paused || result.SourceContinuationAttempts != 0 || len(sourceRuntime.messages) != 0 {
+		t.Fatalf("execution-blocked route advanced the source: %#v, source=%#v", result, sourceRuntime.messages)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	current, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != implementationstate.RunPaused || !strings.Contains(current.PauseReason, "tool is not installed") || !strings.Contains(current.PauseReason, "install the configured tool") || !strings.Contains(current.PauseReason, "checked PATH") {
+		t.Fatalf("durable execution-blocked pause = %#v", current)
 	}
 }
 
