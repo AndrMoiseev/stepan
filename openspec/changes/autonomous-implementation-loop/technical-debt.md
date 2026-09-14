@@ -249,3 +249,23 @@
 - Expected impact: same-process retry may reject work until the run is reloaded from the journal.
 - Classification: technical debt because recovery from durable state remains correct and the trigger is an uncommon persistence failure.
 - Possible follow-up: apply transitions to clones and replace the caller only after durable publication, following runstore transition helpers.
+
+## TD-8.3-003 — cancellation during initial snapshot can miss durable pause
+
+- Origin: task 8.3 rereview cycle 1; affected location: `internal/flows/impl_loop/initial_checks.go` (workspace observer construction).
+- Status: `open`.
+- Potential problem: cancellation during initial workspace-snapshot construction reaches the pause path before the detached persistence context is created.
+- Evidence: observer construction uses the invocation context, while the bounded `WithoutCancel` persistence context is initialized only afterward.
+- Expected impact: a narrow pre-command cancellation can leave the durable run active with only a started attempt.
+- Classification: technical debt because it requires cancellation in a short snapshot-construction window; active-command cancellation is durably handled.
+- Possible follow-up: create the bounded detached persistence context immediately after attempt reservation and use it for every later pause path.
+
+## STD-8.3-001 — baseline evidence validation predicates are duplicated
+
+- Origin: task 8.3 rereview cycle 1; affected location: `internal/implementationstate/state.go` (`RecordInitialBaselinePass`, `validateInitialBaseline`).
+- Status: `open`.
+- Potential problem: two copies of the baseline operation/result predicate can drift as evidence rules evolve.
+- Evidence: record-time validation and restored-state validation separately enumerate the same operation kind, counter, status, state, and basis relationships.
+- Expected impact: future maintenance could accept evidence in one path and reject it in the other.
+- Classification: technical debt because current predicates agree and no present behavior is broken.
+- Possible follow-up: construct `InitialBaselineEvidence` once and validate it through the shared helper.

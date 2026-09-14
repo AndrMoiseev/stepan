@@ -294,7 +294,7 @@ func RoleInstructions(role ResponseRole) (string, error) {
 	case ResponseRoleOrchestrator:
 		specific = "Work only with the OpenSpec package, machine task list, run state, and concise stage results. Do not research code. You may directly edit only tasks.md of the selected change. Machine state, Git metadata and operations, and every other file are controller-owned."
 	case ResponseRoleBriefer:
-		specific = "Select complete ordered tasks and produce a self-contained brief from the complete specification. Resolve only unambiguous requirements; escalate material gaps or conflicts."
+		specific = "Select one or more complete leaf tasks as the non-empty contiguous prefix of the controller-supplied remaining task order, and produce a self-contained brief from the complete specification. Never select a parent, split a task, skip or reorder tasks, or reselect a task. Resolve only unambiguous requirements; escalate material gaps or conflicts."
 	case ResponseRoleImplementer:
 		specific = "Implement only the current brief. You may edit permitted implementation files, but never change specification, briefs, rules, configuration, run state, or Git metadata. Do not execute commands; request configured checks by name or ask the controller for Explorer. Escalate an incomplete or conflicting brief."
 	case ResponseRoleTaskReviewer:
