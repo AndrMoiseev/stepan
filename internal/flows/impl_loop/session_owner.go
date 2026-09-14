@@ -109,6 +109,28 @@ func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implementat
 	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(assignmentID)}, start.roleStartContext())
 }
 
+// ExistingBriefer returns the already-started briefer conversation for an
+// assignment. Brief refinement is a continuation of initial briefing rather
+// than an opportunity to create an independent interpretation after the fact.
+// A resumed process has no such conversation and must create a new session
+// through its recovery flow with the complete durable context.
+func (owner *SessionOwner) ExistingBriefer(assignmentID implementationstate.AssignmentID) (*AgentSession, error) {
+	if owner == nil || strings.TrimSpace(string(assignmentID)) == "" {
+		return nil, errors.New("implementation briefer continuation requires an assignment ID")
+	}
+	key := sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(assignmentID)}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed {
+		return nil, ErrSessionOwnerClosed
+	}
+	session := owner.persistent[key]
+	if session == nil {
+		return nil, errors.New("implementation briefer continuation requires an existing session")
+	}
+	return session, nil
+}
+
 // Assignment returns the implementer or task-reviewer conversation
 // for one assignment. A different assignment gets an entirely new session for
 // each role, while follow-up work for this assignment keeps its conversation.

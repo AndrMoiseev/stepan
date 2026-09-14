@@ -359,3 +359,33 @@
 - Expected impact: controller misuse could send review feedback to a replacement or unrelated executor session and break conversational continuity.
 - Classification: technical debt because current controller ownership supplies the intended session and no cross-session production call site is yet demonstrated.
 - Possible follow-up: persist and compare an immutable executor session identity at assignment creation and correction routing.
+
+## TD-9.3-004 — untracked review diff starts one Git process per file
+
+- Origin: task 9.3 rereview cycle 1; affected location: `internal/flows/impl_loop/task_review.go` (`assignmentDiff`).
+- Status: `open`.
+- Potential problem: each non-ignored untracked file is rendered by a separate `git diff --no-index` process.
+- Evidence: untracked paths are enumerated safely, then processed sequentially through individual Git invocations.
+- Expected impact: a workspace with a very large generated/untracked set can make preparation of the reviewer packet expensive.
+- Classification: technical debt because completeness and safety are correct and ordinary assignment diffs contain a modest number of files.
+- Possible follow-up: batch path-safe untracked diff generation or render equivalent patches in-process with bounded resources.
+
+## TD-9.3-005 — persisted pending disputes are not deduplicated
+
+- Origin: task 9.3 rereview cycle 1; affected locations: `internal/implementationstate/state.go`, `internal/flows/impl_loop/task_review.go`.
+- Status: `open`.
+- Potential problem: retry after dispute persistence but before reviewer completion can append the same semantic dispute again.
+- Evidence: pending disputes are durable, but no stable dispute identity or idempotent append rule rejects a duplicate retry.
+- Expected impact: reconstructed prior discussion may contain duplicate arguments and references after a narrow crash boundary.
+- Classification: technical debt because reviewer ownership and recovery remain intact; duplication requires a retry in a small persistence/dispatch window.
+- Possible follow-up: assign a controller-owned dispute ID and make persistence idempotent by assignment, round, and finding set.
+
+## TD-9.3-006 — changes_requested may contain only resolved findings
+
+- Origin: task 9.3 rereview cycle 1; affected location: `internal/flows/impl_loop/task_review.go`.
+- Status: `open`.
+- Potential problem: a `changes_requested` response in which every explicit decision is `resolved` is accepted, recording failed review evidence but yielding an empty correction packet.
+- Evidence: per-finding validation accepts resolved decisions without requiring at least one open or retained finding for this response kind.
+- Expected impact: an inconsistent reviewer response can route a pointless executor continuation instead of requiring `review_passed`.
+- Classification: technical debt because normal reviewer instructions distinguish the response kinds and no loss of finding ownership occurs.
+- Possible follow-up: require at least one open or retained decision for `changes_requested`, otherwise reject and retry as `review_passed`.

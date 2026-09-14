@@ -1015,6 +1015,33 @@ func (r *Run) AddBriefVersion(assignmentID AssignmentID, brief BriefVersion) err
 	return nil
 }
 
+// BeginBriefRefinement prepares a selected assignment for a new brief version.
+// A tentative acceptance is archived before a controller asks the already-live
+// briefer to reconsider the contract: the prior check and review evidence is
+// tied to the old brief and cannot authorize a later version.
+func (r *Run) BeginBriefRefinement(assignmentID AssignmentID) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	index := r.assignmentIndex(assignmentID)
+	if index < 0 {
+		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
+	}
+	assignment := &r.Assignments[index]
+	switch assignment.Status {
+	case AssignmentActive:
+		return nil
+	case AssignmentAcceptedAwaitingCommit:
+		if assignment.Acceptance == nil {
+			return fmt.Errorf("%w: accepted assignment lacks acceptance", ErrInvalidState)
+		}
+		r.reopenAssignment(assignment)
+		return nil
+	default:
+		return fmt.Errorf("%w: assignment cannot refine its brief", ErrInvalidTransition)
+	}
+}
+
 // AddOperation and AddResult retain controller-mediated work and its outcome.
 func (r *Run) AddOperation(assignmentID AssignmentID, operation Operation) error {
 	assignment, err := r.activeAssignment(assignmentID)
