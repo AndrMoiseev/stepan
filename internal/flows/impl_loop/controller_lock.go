@@ -120,11 +120,13 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 		if err != nil {
 			return nil, fmt.Errorf("read run %s status: %w", id, err)
 		}
-		stateWorkCopy, err := FindGitRoot(ctx, state.Identity.WorkCopy)
-		if err != nil {
-			return nil, fmt.Errorf("run %s has invalid working copy: %w", id, err)
+		if state.Status == implementationstate.RunClosed || state.Status == implementationstate.RunSucceeded {
+			continue
 		}
-		if lockIdentity(stateWorkCopy) == lockIdentity(canonical) && state.Status != implementationstate.RunClosed && state.Status != implementationstate.RunSucceeded {
+		if lockIdentity(filepath.Clean(state.Identity.WorkCopy)) != lockIdentity(canonical) {
+			continue
+		}
+		if lockIdentity(state.Identity.WorkCopy) == lockIdentity(canonical) {
 			return state, nil
 		}
 	}

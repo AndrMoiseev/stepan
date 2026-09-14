@@ -199,3 +199,13 @@
 - Expected impact: a future consumer could bind an agent response to a stale input version.
 - Classification: technical debt because current callers do not mutate the returned package and typical supported behavior is not presently broken.
 - Possible follow-up: keep loaded state private with defensive-copy accessors, or bind rendering and versioning to an immutable snapshot; add mutation-resistance coverage.
+
+## TD-8.2-001 — Windows change-name case alias can bypass prior-run detection
+
+- Origin: task 8.2 initial review; affected location: `internal/flows/impl_loop/initial_tasks.go` (`changeHasRun`).
+- Status: `open`.
+- Potential problem: saved change identity comparison is case-sensitive while a case-insensitive filesystem can resolve differently cased names to the same OpenSpec directory.
+- Evidence: a closed run for `change` does not compare equal to requested `CHANGE`, although Windows may load the same package directory.
+- Expected impact: an unusually cased invocation could reopen the same logical change after a closed run.
+- Classification: technical debt because it depends on atypical noncanonical input and the approved contract does not define case normalization for change identifiers.
+- Possible follow-up: define a canonical change identity or compare canonical package-directory identity, with a Windows regression.

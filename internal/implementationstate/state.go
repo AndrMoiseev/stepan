@@ -430,10 +430,14 @@ type FinalAcceptanceEvidence struct {
 // Run is the portable in-memory representation for future JSONL and SQLite
 // stores. Markdown checkbox state is deliberately absent.
 type Run struct {
-	Identity               RunIdentity
-	Status                 RunStatus
-	CurrentState           EvidenceRef
-	Tasks                  []Task
+	Identity     RunIdentity
+	Status       RunStatus
+	CurrentState EvidenceRef
+	Tasks        []Task
+	// TaskExtractionPending is true only during the durable pre-extraction
+	// boundary. It permits an otherwise complete run identity before the first
+	// orchestrator response supplies the machine task hierarchy.
+	TaskExtractionPending  bool `json:"task_extraction_pending,omitempty"`
 	LeafStatus             map[TaskID]TaskStatus
 	Assignments            []Assignment
 	RunOperations          []Operation
@@ -530,6 +534,36 @@ func NewRun(identity RunIdentity, tasks []Task) (*Run, error) {
 		}
 	}
 	return run, nil
+}
+
+// NewRunPendingTaskExtraction creates the durable state recorded before the
+// initial orchestrator turn. It cannot be used after tasks have been supplied.
+func NewRunPendingTaskExtraction(identity RunIdentity) (*Run, error) {
+	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, TaskExtractionPending: true, LeafStatus: make(map[TaskID]TaskStatus)}
+	if err := run.Validate(); err != nil {
+		return nil, err
+	}
+	return run, nil
+}
+
+// CompleteInitialTaskExtraction atomically installs the first and only source
+// hierarchy after its formal response has been accepted.
+func (r *Run) CompleteInitialTaskExtraction(tasks []Task) error {
+	if err := r.requireActive(); err != nil || !r.TaskExtractionPending {
+		return fmt.Errorf("%w: task extraction is not pending", ErrInvalidState)
+	}
+	candidate := &Run{Identity: r.Identity, Status: r.Status, CurrentState: r.CurrentState, Tasks: slices.Clone(tasks)}
+	if err := candidate.validateStructure(); err != nil {
+		return err
+	}
+	r.Tasks, r.TaskExtractionPending = candidate.Tasks, false
+	r.LeafStatus = make(map[TaskID]TaskStatus)
+	for _, task := range r.Tasks {
+		if r.isLeaf(task.ID) {
+			r.LeafStatus[task.ID] = TaskPending
+		}
+	}
+	return nil
 }
 
 // Validate checks serializable state loaded by a future store.
@@ -699,7 +733,7 @@ func (r *Run) validateLifecycle() error {
 }
 
 func (r *Run) validateStructure() error {
-	if r.Identity.validate() != nil || len(r.Tasks) == 0 {
+	if r.Identity.validate() != nil || (len(r.Tasks) == 0 && !r.TaskExtractionPending) || (len(r.Tasks) != 0 && r.TaskExtractionPending) {
 		return fmt.Errorf("%w: run must have an identity and tasks", ErrInvalidState)
 	}
 	seen := make(map[TaskID]Task, len(r.Tasks))

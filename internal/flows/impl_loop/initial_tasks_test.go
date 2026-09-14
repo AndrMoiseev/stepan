@@ -2,6 +2,7 @@ package impl_loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestNewRunFromTaskExtractionPreservesFormalOrderAndHierarchy(t *testing.T) {
@@ -52,6 +54,7 @@ func TestDecodeExtractedTasksRejectsNonFormalOrAmbiguousHierarchy(t *testing.T) 
 		{name: "duplicate identifier", ids: []implementationstate.TaskID{"one", "one"}, payloads: []string{`{"id":"one","parent_id":"","title":"one"}`, `{"id":"one","parent_id":"","title":"again"}`}},
 		{name: "payload identifier disagrees", ids: []implementationstate.TaskID{"one"}, payloads: []string{`{"id":"other","parent_id":"","title":"one"}`}},
 		{name: "later parent", ids: []implementationstate.TaskID{"child", "parent"}, payloads: []string{`{"id":"child","parent_id":"parent","title":"child"}`, `{"id":"parent","parent_id":"","title":"parent"}`}},
+		{name: "reopened closed subtree", ids: []implementationstate.TaskID{"A", "B", "A1"}, payloads: []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"B","parent_id":"","title":"B"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}},
 		{name: "unknown payload field", ids: []implementationstate.TaskID{"one"}, payloads: []string{`{"id":"one","parent_id":"","title":"one","order":9}`}},
 		{name: "blank title", ids: []implementationstate.TaskID{"one"}, payloads: []string{`{"id":"one","parent_id":"","title":" "}`}},
 	} {
@@ -85,6 +88,87 @@ func TestOrchestratorInstructionsSpecifyFormalTaskPayload(t *testing.T) {
 		if !strings.Contains(instructions, required) {
 			t.Fatalf("orchestrator instructions omit %q\n%s", required, instructions)
 		}
+	}
+}
+
+func TestInitialExtractionPersistsPreDispatchAndCompletionBoundaries(t *testing.T) {
+	store := mustControllerStore(t, t.TempDir())
+	journal, err := store.Create("extract-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+		value, err := journal.Publish(id, []byte(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: "repo", WorkCopy: "repo", Branch: "branch", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("spec"), TaskList: ref("tasks"), Configuration: ref("config")}
+	run, stateStore, err := PrepareInitialTaskExtraction(context.Background(), journal, identity, "extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	if !run.TaskExtractionPending || len(run.RunOperations) != 1 {
+		t.Fatalf("pre-extraction state = %#v", run)
+	}
+	if _, _, err := stateStore.RecordRunAttemptStart(context.Background(), run, "extract"); err != nil {
+		t.Fatal(err)
+	}
+	// This is the crash-before-response boundary: reopening sees a reserved
+	// attempt and no imported hierarchy.
+	if _, err := stateStore.RecordRunAttemptOutcome(context.Background(), run, "extract", implementationstate.AttemptSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	response := AgentResponse{Kind: ResponseTasksExtracted, TaskIDs: []implementationstate.TaskID{"A", "A1"}, TaskPayloads: []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}, Binding: boundExtraction(identity)}
+	if err := PersistInitialTaskExtraction(context.Background(), stateStore, run, "extract", response); err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := runstore.ReadJournalCurrent(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.TaskExtractionPending || !reflect.DeepEqual(current.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) {
+		t.Fatalf("persisted extraction = %#v", current)
+	}
+}
+
+func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
+	store := mustControllerStore(t, t.TempDir())
+	journal, err := store.Create("controlled-extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+		value, err := journal.Publish(id, []byte(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	repository := newGitWorkspace(t)
+	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "branch", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("spec"), TaskList: ref("tasks"), Configuration: ref("config")}
+	run, stateStore, err := PrepareInitialTaskExtraction(context.Background(), journal, identity, "extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	payload := responsePayloadMap(ResponseTasksExtracted)
+	payload["task_ids"] = []string{"A"}
+	payload["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: raw}}}
+	expectation := ResponseExpectation{Role: ResponseRoleOrchestrator, State: ResponseStateExtractingTasks, Scope: ResponseScopeRun, Binding: boundExtraction(identity)}
+	call := ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) { return nil, errors.New("unexpected retry") }}, Repository: repository, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: "extract"}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation, Message: "extract"}
+	if _, err := ExecuteInitialTaskExtraction(context.Background(), call); err != nil {
+		t.Fatal(err)
+	}
+	if run.TaskExtractionPending || len(run.RunResults) != 1 || len(run.Tasks) != 1 {
+		t.Fatalf("completed extraction = %#v", run)
 	}
 }
 
@@ -129,6 +213,25 @@ func TestContinueOwnRunUsesOnlyCurrentWorkingCopyAndNeverClosedRun(t *testing.T)
 	}
 	if _, err := ContinueOwnRun(context.Background(), store, otherRepository); !errors.Is(err, ErrNoResumableRun) {
 		t.Fatalf("closed run continuation error = %v, want ErrNoResumableRun", err)
+	}
+}
+
+func TestForeignUnavailableRunsDoNotBlockCurrentWorkCopy(t *testing.T) {
+	store := mustControllerStore(t, t.TempDir())
+	current := newGitWorkspace(t)
+	foreign := newGitWorkspace(t)
+	mustRecordControllerRun(t, store, "foreign-closed", foreign, implementationstate.RunClosed)
+	mustRecordControllerRun(t, store, "foreign-open", foreign, implementationstate.RunPaused)
+	if err := os.RemoveAll(foreign); err != nil {
+		t.Fatal(err)
+	}
+	writeInitialOpenSpecPackage(t, current, "fresh")
+	start, err := BeginNewChange(context.Background(), store, current, "fresh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := start.Lease.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -32,6 +33,71 @@ var (
 type NewChangeStart struct {
 	Lease   *ControllerLease
 	Package openspec.Package
+}
+
+// PrepareInitialTaskExtraction durably creates the pre-extraction machine
+// state and its controller-owned agent operation before an orchestrator turn.
+func PrepareInitialTaskExtraction(ctx context.Context, journal *runstore.Run, identity implementationstate.RunIdentity, operationID implementationstate.OperationID) (*implementationstate.Run, *runstore.StateStore, error) {
+	if journal == nil || operationID == "" {
+		return nil, nil, fmt.Errorf("%w: extraction journal and operation are required", ErrTaskExtraction)
+	}
+	run, err := implementationstate.NewRunPendingTaskExtraction(identity)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := run.AddRunOperation(implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationAgent, Basis: implementationstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}}); err != nil {
+		return nil, nil, err
+	}
+	stateStore, err := runstore.OpenState(journal)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := stateStore.Record(ctx, run); err != nil {
+		_ = stateStore.Close()
+		return nil, nil, err
+	}
+	return run, stateStore, nil
+}
+
+// PersistInitialTaskExtraction records the formally accepted hierarchy after
+// the agent result. A crash before this record leaves TaskExtractionPending and
+// the reserved attempt visible for recovery rather than importing work.
+func PersistInitialTaskExtraction(ctx context.Context, stateStore *runstore.StateStore, run *implementationstate.Run, operationID implementationstate.OperationID, response AgentResponse) error {
+	if stateStore == nil || run == nil {
+		return fmt.Errorf("%w: extraction state is required", ErrTaskExtraction)
+	}
+	tasks, err := DecodeExtractedTasks(response.TaskIDs, response.TaskPayloads)
+	if err != nil {
+		return err
+	}
+	if response.Kind != ResponseTasksExtracted || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
+		return fmt.Errorf("%w: response is not bound to pending run", ErrTaskExtraction)
+	}
+	if err := run.CompleteInitialTaskExtraction(tasks); err != nil {
+		return err
+	}
+	if err := run.AddRunResult(implementationstate.OperationResult{ID: implementationstate.ResultID(string(operationID) + "-result"), OperationID: operationID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}}); err != nil {
+		return err
+	}
+	_, err = stateStore.Record(ctx, run)
+	return err
+}
+
+// ExecuteInitialTaskExtraction connects the pending durable state to the
+// controlled orchestrator turn. The existing controlled call reserves and
+// records its attempt before dispatch; only its accepted response is persisted.
+func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall) (ControlledAgentCallResult, error) {
+	if call.Run == nil || !call.Run.TaskExtractionPending || call.AssignmentID != "" || call.Expectation.Role != ResponseRoleOrchestrator || call.Expectation.State != ResponseStateExtractingTasks {
+		return ControlledAgentCallResult{}, fmt.Errorf("%w: invalid initial extraction call", ErrTaskExtraction)
+	}
+	result, err := InvokeControlledAgentCall(ctx, call)
+	if err != nil {
+		return result, err
+	}
+	if err := PersistInitialTaskExtraction(ctx, call.StateStore, call.Run, call.OperationID, result.Response); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 // BeginNewChange accepts only a change that has not already supplied a run in
@@ -131,11 +197,7 @@ func changeHasRun(ctx context.Context, store *runstore.Store, workCopy, change s
 		if err != nil {
 			return false, fmt.Errorf("read run %s state: %w", id, err)
 		}
-		stateWorkCopy, err := FindGitRoot(ctx, state.Identity.WorkCopy)
-		if err != nil {
-			return false, fmt.Errorf("run %s has invalid working copy: %w", id, err)
-		}
-		if lockIdentity(stateWorkCopy) == lockIdentity(canonical) && state.Identity.Change == change {
+		if lockIdentity(filepath.Clean(state.Identity.WorkCopy)) == lockIdentity(canonical) && state.Identity.Change == change {
 			return true, nil
 		}
 	}
@@ -190,6 +252,24 @@ func DecodeExtractedTasks(ids []implementationstate.TaskID, payloads []string) (
 		if parent != "" {
 			if _, exists := seen[parent]; !exists {
 				return nil, fmt.Errorf("%w: task %q has unknown or later parent %q", ErrTaskExtraction, id, parent)
+			}
+		}
+		// A preorder traversal may return to an active ancestor, but cannot
+		// reopen a subtree after a following sibling/root was emitted.
+		if index > 0 {
+			ancestor := tasks[len(tasks)-1].ID
+			for ancestor != "" && ancestor != parent {
+				found := implementationstate.TaskID("")
+				for i := len(tasks) - 1; i >= 0; i-- {
+					if tasks[i].ID == ancestor {
+						found = tasks[i].ParentID
+						break
+					}
+				}
+				ancestor = found
+			}
+			if parent != "" && ancestor != parent {
+				return nil, fmt.Errorf("%w: task %q reopens closed parent %q", ErrTaskExtraction, id, parent)
 			}
 		}
 		tasks = append(tasks, implementationstate.Task{ID: id, ParentID: parent, Order: index, Title: payload.Title})
