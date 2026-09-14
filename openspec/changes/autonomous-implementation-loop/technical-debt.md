@@ -319,3 +319,13 @@
 - Expected impact: unusual identifiers can lose string identity for external consumers of the brief document.
 - Classification: technical debt because conventional assignment/task IDs avoid YAML-reserved scalar forms.
 - Possible follow-up: always encode identifier fields as YAML strings and add reserved-word/numeric fixtures.
+
+## TD-9.1-001 — transition result exposes raw check data beyond the bounded agent presentation
+
+- Origin: task 9.1 initial review; affected locations: `internal/flows/impl_loop/implementer_transition.go` (`ImplementerTransitionResult`), `internal/flows/impl_loop/check_set.go`, and `internal/checkexec` result types.
+- Status: `open`.
+- Potential problem: `ImplementerTransitionResult.Set` exposes command environment and complete stdout/stderr through raw check results even though the transition describes its output as bounded agent feedback.
+- Evidence: the exported result includes the full `CheckSet`; safe JSON evidence omits those fields, but a future formatter could consume the raw values directly.
+- Expected impact: a future continuation boundary could accidentally disclose environment values or unbounded output instead of using `CheckPresentation` and durable references.
+- Classification: technical debt because no current production continuation formatter consumes the raw fields and the persisted agent-facing evidence is already filtered.
+- Possible follow-up: expose a dedicated agent-facing DTO and keep raw command/results private to controller execution.

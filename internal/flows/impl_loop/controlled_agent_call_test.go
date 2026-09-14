@@ -261,6 +261,7 @@ type controlledCallRuntime struct {
 	mu         sync.Mutex
 	turns      []controlledTurn
 	messages   []string
+	threads    []agentruntime.Thread
 	interrupts int
 	started    chan struct{}
 	interrupt  chan struct{}
@@ -270,7 +271,7 @@ func (runtime *controlledCallRuntime) StartThread(agentruntime.ThreadConfig) (ag
 	return "thread", nil
 }
 
-func (runtime *controlledCallRuntime) RunTurn(_ agentruntime.Thread, message string) (json.RawMessage, error) {
+func (runtime *controlledCallRuntime) RunTurn(thread agentruntime.Thread, message string) (json.RawMessage, error) {
 	runtime.mu.Lock()
 	index := len(runtime.messages)
 	if index >= len(runtime.turns) {
@@ -279,6 +280,7 @@ func (runtime *controlledCallRuntime) RunTurn(_ agentruntime.Thread, message str
 	}
 	turn := runtime.turns[index]
 	runtime.messages = append(runtime.messages, message)
+	runtime.threads = append(runtime.threads, thread)
 	if runtime.started == nil {
 		runtime.started = make(chan struct{})
 	}

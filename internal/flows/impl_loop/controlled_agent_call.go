@@ -53,6 +53,11 @@ type ControlledAgentCall struct {
 // technical attempts, making the caller's progress display deterministic.
 type ControlledAgentCallResult struct {
 	Response AgentResponse
+	// Session is the live session that produced Response. A technical retry can
+	// recreate a provider thread, so a controller that immediately continues a
+	// successful conversation must use this value rather than its original
+	// input pointer.
+	Session *AgentSession
 	// Snapshot is the post-call Git fingerprint that must be checked before
 	// the next controller operation.
 	Snapshot gitsnapshot.Snapshot
@@ -170,7 +175,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 		}
-		return ControlledAgentCallResult{Response: response, Snapshot: outcome.Snapshot, Attempts: attempts}, nil
+		return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, nil
 	}
 }
 
