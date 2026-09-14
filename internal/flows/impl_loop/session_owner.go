@@ -215,11 +215,38 @@ func (owner *SessionOwner) recreate(ctx context.Context, session *AgentSession) 
 		}
 	}
 	owner.mu.Unlock()
-	closeErr := session.close()
+	closeErr := discardSessionForTechnicalRetry(session)
 	if createErr != nil {
 		return nil, errors.Join(fmt.Errorf("recreate implementation session for role %q: %w", session.Role, createErr), closeErr)
 	}
 	return next, closeErr
+}
+
+// discardSessionForTechnicalRetry closes a session that has already been
+// replaced. Interrupt and crash paths in all supported adapters invalidate the
+// old handle before this call, so their terminal sentinels merely confirm that
+// there is nothing left to dispose. Cleanup or containment failures still
+// matter: they can leave resources or boundaries in an unknown state and must
+// stop the retry.
+func discardSessionForTechnicalRetry(session *AgentSession) error {
+	err := session.close()
+	if isExpectedDiscardError(err) {
+		return nil
+	}
+	return err
+}
+
+func isExpectedDiscardError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, agentruntime.ErrRuntimeCleanup) || errors.Is(err, agentruntime.ErrRuntimeContainment) {
+		return false
+	}
+	return errors.Is(err, agentruntime.ErrTurnInterrupted) ||
+		errors.Is(err, agentruntime.ErrRuntimeClosed) ||
+		errors.Is(err, agentruntime.ErrRuntimeExited) ||
+		errors.Is(err, agentruntime.ErrThreadFailed)
 }
 
 // RunTurn continues this role's provider conversation. Calls are serialized

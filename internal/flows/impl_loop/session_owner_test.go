@@ -123,6 +123,35 @@ func TestSessionOwnerRejectsInvalidScopesAndClosedOwner(t *testing.T) {
 	}
 }
 
+func TestSessionOwnerRecreateIgnoresTerminalCloseButSurfacesCleanupFailure(t *testing.T) {
+	t.Run("terminal close", func(t *testing.T) {
+		factory := &sessionRuntimeFactory{closeThreadErr: agentruntime.ErrTurnInterrupted}
+		owner := newSessionOwnerForTest(t, factory)
+		t.Cleanup(func() { _ = owner.Close() })
+		session, err := owner.Assignment(context.Background(), "assignment", ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		next, err := session.Recreate(context.Background())
+		if err != nil || next == session {
+			t.Fatalf("terminal close recreation = %p, %v", next, err)
+		}
+	})
+
+	t.Run("cleanup failure", func(t *testing.T) {
+		factory := &sessionRuntimeFactory{closeThreadErr: errors.Join(agentruntime.ErrThreadFailed, agentruntime.ErrRuntimeCleanup)}
+		owner := newSessionOwnerForTest(t, factory)
+		t.Cleanup(func() { _ = owner.Close() })
+		session, err := owner.Assignment(context.Background(), "assignment", ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := session.Recreate(context.Background()); !errors.Is(err, agentruntime.ErrRuntimeCleanup) {
+			t.Fatalf("cleanup failure was swallowed: %v", err)
+		}
+	})
+}
+
 func newSessionOwnerForTest(t *testing.T, factory RuntimeFactory) *SessionOwner {
 	t.Helper()
 	roles := make(map[string]PreparedRole, len(loopRuntimeRoles))
@@ -146,8 +175,9 @@ func sessionStartContext(t *testing.T, role ResponseRole) RoleStartContext {
 }
 
 type sessionRuntimeFactory struct {
-	mu       sync.Mutex
-	runtimes []*sessionRuntime
+	mu             sync.Mutex
+	runtimes       []*sessionRuntime
+	closeThreadErr error
 }
 
 func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error {
@@ -155,7 +185,7 @@ func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProf
 }
 
 func (factory *sessionRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
-	runtime := &sessionRuntime{}
+	runtime := &sessionRuntime{closeThreadErr: factory.closeThreadErr}
 	factory.mu.Lock()
 	factory.runtimes = append(factory.runtimes, runtime)
 	factory.mu.Unlock()
@@ -186,6 +216,7 @@ func (factory *sessionRuntimeFactory) turns(session *AgentSession) int {
 type sessionRuntime struct {
 	configurations []agentruntime.ThreadConfig
 	turnCount      int
+	closeThreadErr error
 }
 
 func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
@@ -198,7 +229,7 @@ func (runtime *sessionRuntime) RunTurn(agentruntime.Thread, string) (json.RawMes
 	return json.RawMessage(`{"kind":"implementation_ready"}`), nil
 }
 
-func (runtime *sessionRuntime) CloseThread(agentruntime.Thread) error { return nil }
+func (runtime *sessionRuntime) CloseThread(agentruntime.Thread) error { return runtime.closeThreadErr }
 func (runtime *sessionRuntime) Interrupt() error                      { return nil }
 func (runtime *sessionRuntime) Close() error                          { return nil }
 

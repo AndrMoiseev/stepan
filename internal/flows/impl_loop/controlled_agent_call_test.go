@@ -408,8 +408,15 @@ func (runtime *terminatedSessionRuntime) Interrupt() error {
 	return nil
 }
 
-func (runtime *terminatedSessionRuntime) CloseThread(agentruntime.Thread) error { return nil }
-func (runtime *terminatedSessionRuntime) Close() error                          { return nil }
+func (runtime *terminatedSessionRuntime) CloseThread(agentruntime.Thread) error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.closed {
+		return agentruntime.ErrTurnInterrupted
+	}
+	return nil
+}
+func (runtime *terminatedSessionRuntime) Close() error { return nil }
 
 func (runtime *terminatedSessionRuntime) isClosed() bool {
 	runtime.mu.Lock()
