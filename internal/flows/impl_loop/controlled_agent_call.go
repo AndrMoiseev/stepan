@@ -37,6 +37,15 @@ type ControlledAgentCall struct {
 	Expectation  ResponseExpectation
 	Message      string
 	Timeout      time.Duration // zero selects DefaultAgentCallTimeout
+	// ValidateResponse applies controller-specific acceptance criteria after a
+	// response has passed its role schema. A rejection is a technical attempt,
+	// not a new semantic operation.
+	ValidateResponse func(AgentResponse) error
+	// ContinueOnResponseRejection keeps a still-healthy provider session for a
+	// controller follow-up. It is intentionally limited to a decoded response:
+	// crashes, timeouts, malformed transport, and file-policy violations still
+	// recreate the session before retrying.
+	ContinueOnResponseRejection bool
 }
 
 // ControlledAgentCallResult is returned only for a response that passed both
@@ -143,6 +152,21 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 			message = retryPrompt(call.Message, bindErr.Error())
 			continue
 		}
+		if call.ValidateResponse != nil {
+			if validationErr := call.ValidateResponse(response); validationErr != nil {
+				if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, validationErr.Error()); err != nil {
+					return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+				}
+				message = retryPrompt(call.Message, validationErr.Error())
+				if !call.ContinueOnResponseRejection {
+					session, err = recreateAgentSession(ctx, session)
+					if err != nil {
+						return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+					}
+				}
+				continue
+			}
+		}
 		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 		}
@@ -156,6 +180,9 @@ func validateControlledAgentCall(call ControlledAgentCall) error {
 	}
 	if call.Expectation.Binding.CallID == "" || call.Policy.CallID != call.Expectation.Binding.CallID {
 		return errors.New("controlled agent call policy and response binding must share a call ID")
+	}
+	if call.Session.Role != call.Expectation.Role {
+		return errors.New("controlled agent call session and response expectation must share a role")
 	}
 	return nil
 }

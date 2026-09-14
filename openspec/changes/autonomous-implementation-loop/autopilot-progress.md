@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 31/65 tasks accepted and task 7.4 correction cycle 2 awaits rereview; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, and 6.5 accepted with technical debt; next action commit and rereview task 7.4 correction; final review `not_started`.
+- Outcome: `in_progress`; 32/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, and 7.4 accepted with technical debt; next action task 7.5; final review `not_started`.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -146,6 +146,16 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Correction cycle 1 commit verified: `83c99ba4fb5aea60102197f17f5cf295673b8b49`; rereview pending with `/root/review_7_4_resume`. Completed correction cycles remain 0 until response. This post-commit checkpoint is an uncommitted planning record.
 - Rereview cycle 1 resolved `SPEC-7.4-001` but `SPEC-7.4-002` remains critical: production adapters return terminal sentinels when cleanup closes an already interrupted thread, and `SessionOwner.recreate` currently treats that expected stale close result as a failed replacement, so the new runtime never receives the retry. `TD-7.4-001` remains open and no new debt was reported. Completed correction cycles: 1. Checkbox reopened; review `correcting`; next correction cycle 2 with the same replacement pair.
 - Correction cycle 2 frozen candidate discards the replaced session through a retry-specific cleanup path: expected already-terminal runtime/thread sentinels no longer prevent the new session from receiving the retry, while cleanup and containment failures remain blocking. The lifecycle fake now returns `ErrTurnInterrupted` from `CloseThread` after interrupt, and tests distinguish expected terminal disposal from real cleanup failure. Coordinator exact call/recreate tests passed in 24.321s; `go test ./... -count=1 -timeout 9m` passed (slowest `impl_loop` 155.781s); Windows build, Darwin/arm64 CGO-disabled cross-build with environment restoration, and `git diff --check` passed. Checkbox complete; review `awaiting_review`; completed correction cycles remain 1 until rereview.
+- Correction cycle 2 commit verified: `46648ea4384f821affaa4075a3dd723561423f49`; rereview pending with `/root/review_7_4_resume`. Completed correction cycles remain 1 until response. Parallel user edits in tasks 14.1–14.6 were explicitly excluded from this commit and remain uncommitted.
+- Rereview cycle 2 PASS: `SPEC-7.4-001` and `SPEC-7.4-002` resolved; no remaining/new critical findings. `TD-7.4-001` remains open and new `TD-7.4-002` records a rare joined-error cleanup-classification risk. Task 7.4 accepted with technical debt after two completed correction cycles; next task 7.5.
+
+### 7.5 — controller-routed Explorer
+
+- Base: `46648ea4384f821affaa4075a3dd723561423f49`; dependency 7.4 accepted with technical debt.
+- Acceptance: tasks.md 7.5; route Explorer only through the controller with source question/context/boundaries/known facts, a fresh Explorer session per request, result continuation to the source session, a durable default limit of 10 investigations per episode, a default 12000-Unicode-character response bound, same-session shortening through technical attempts, and no Explorer delegation.
+- Implementer: `/root/implement_7_5` (`gpt-5.6-terra`/`high`); reviewer: `not_started`; review: `awaiting_review`; completed correction cycles: 0.
+- Frozen candidate adds controller-owned Explorer routing, read-only policy, durable episode validation/counter use, continuation payloads for the originating session, and same-session shortening without silent truncation. Focused tests cover return/counter persistence, shortening, and delegation refusal. No manual check.
+- Coordinator validation passed `go test ./internal/flows/impl_loop -run '^TestRouteExplorer' -count=1 -timeout 2m` (3.794s), `go test ./... -count=1 -timeout 9m` (slowest `impl_loop` 158.233s), Windows build, and `git diff --check`; exit 0. No platform/runtime lifecycle code changed, so task-specific cross-build was not required. Checkbox complete; next: implementation commit and fresh reviewer.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

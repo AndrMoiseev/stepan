@@ -127,6 +127,16 @@ type FinalReviewerStartInput struct {
 	Diff          string
 }
 
+// ExplorerStartInput is the complete, controller-owned scope of one research
+// request. It deliberately carries the source agent's request verbatim rather
+// than a transcript from another agent session.
+type ExplorerStartInput struct {
+	Question   string
+	Context    string
+	Boundaries string
+	KnownFacts []string
+}
+
 // RoleStartContext is the complete immutable bootstrap payload for one role.
 // StartMessage is passed at thread creation, not reconstructed from provider
 // conversation history after a restart.
@@ -210,6 +220,34 @@ func BuildFinalReviewerStartContext(input FinalReviewerStartInput) (RoleStartCon
 	renderRulesIndex(&data, input.Rules)
 	fmt.Fprintf(&data, "\n# Aggregate final diff\n\n%s\n", strings.TrimSpace(input.Diff))
 	return newRoleStartContext(ResponseRoleFinalReviewer, data.String())
+}
+
+// BuildExplorerStartContext prepares the fresh, one-request Explorer session.
+func BuildExplorerStartContext(input ExplorerStartInput) (RoleStartContext, error) {
+	if strings.TrimSpace(input.Question) == "" || strings.TrimSpace(input.Context) == "" || strings.TrimSpace(input.Boundaries) == "" {
+		return RoleStartContext{}, fmt.Errorf("%w: Explorer question, context, and boundaries are required", ErrInvalidRoleContext)
+	}
+	if err := requireNonEmptyContextValues("Explorer known facts", input.KnownFacts); err != nil {
+		return RoleStartContext{}, err
+	}
+	data := strings.Builder{}
+	fmt.Fprintf(&data, "# Research question\n\n%s\n\n# Context\n\n%s\n\n# Boundaries\n\n%s\n\n# Known facts\n\n", strings.TrimSpace(input.Question), strings.TrimSpace(input.Context), strings.TrimSpace(input.Boundaries))
+	for _, fact := range input.KnownFacts {
+		fmt.Fprintf(&data, "- %s\n", strings.TrimSpace(fact))
+	}
+	return newRoleStartContext(ResponseRoleExplorer, data.String())
+}
+
+func requireNonEmptyContextValues(name string, values []string) error {
+	if len(values) == 0 {
+		return fmt.Errorf("%w: %s are required", ErrInvalidRoleContext, name)
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%w: %s contain an empty value", ErrInvalidRoleContext, name)
+		}
+	}
+	return nil
 }
 
 func renderRulesIndex(builder *strings.Builder, index RulesIndex) {

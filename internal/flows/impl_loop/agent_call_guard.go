@@ -23,6 +23,10 @@ type AgentRole string
 const (
 	AgentRoleOrchestrator AgentRole = "orchestrator"
 	AgentRoleExecutor     AgentRole = "executor"
+	// AgentRoleExplorer is read-only. It is retained in the call-policy
+	// record so a detected write is attributed to Explorer rather than another
+	// controller role.
+	AgentRoleExplorer AgentRole = "explorer"
 )
 
 // AgentCallPolicy is the post-call write boundary for one agent invocation.
@@ -123,11 +127,11 @@ func normalizeAgentCallPolicy(policy AgentCallPolicy) (AgentCallPolicy, error) {
 	if policy.Role == "" || strings.TrimSpace(policy.CallID) == "" {
 		return AgentCallPolicy{}, errors.New("agent call policy requires role and call ID")
 	}
-	if policy.Role != AgentRoleOrchestrator && policy.Role != AgentRoleExecutor {
+	if policy.Role != AgentRoleOrchestrator && policy.Role != AgentRoleExecutor && policy.Role != AgentRoleExplorer {
 		return AgentCallPolicy{}, fmt.Errorf("agent call role %q cannot write the workspace", policy.Role)
 	}
-	if policy.Role == AgentRoleOrchestrator && policy.AllowUnprotected {
-		return AgentCallPolicy{}, errors.New("orchestrator must use an explicit task-list path boundary")
+	if (policy.Role == AgentRoleOrchestrator || policy.Role == AgentRoleExplorer) && policy.AllowUnprotected {
+		return AgentCallPolicy{}, errors.New("read-only agent role must use an explicit path boundary")
 	}
 	collections := []*[]string{&policy.AllowedPaths, &policy.AllowedRoots, &policy.ProtectedPaths}
 	for _, collection := range collections {

@@ -10,6 +10,16 @@
 - Classification: technical debt because the problematic route is not currently reachable in production and no typical supported-use failure exists yet.
 - Possible follow-up: derive policy from the session role, validate it against the response expectation, represent all roles in violation records, and give read-only roles no writable scope.
 
+## TD-7.4-002 — joined terminal error может скрыть независимую cleanup-ошибку
+
+- Origin: task 7.4 rereview cycle 2; affected location: `internal/flows/impl_loop/session_owner.go`, retry discard and session close.
+- Status: `open`.
+- Potential problem: a joined error containing an expected terminal sentinel is accepted unless it also contains the two known cleanup/containment sentinels, so an unrelated unwrapped process/client close failure can be hidden.
+- Evidence: supported adapters may return raw `process.Close` or `client.Disconnect` errors, and `errors.Join(ErrTurnInterrupted, errors.New("process close failed"))` satisfies the current expected-discard predicate.
+- Expected impact: on a rare unclassified cleanup failure, work may continue in the replacement runtime without confirmed disposal of the old runtime.
+- Classification: technical debt because cleanup failures are atypical and the ordinary timeout/retry path now behaves correctly.
+- Possible follow-up: evaluate handle and runtime close results separately, ignore only the terminal handle result, preserve every independent runtime-close failure, and remove a replacement from the owner when discard fails.
+
 ## TASK-4.3-007 — closing content race in a pre-dirty tracked file
 
 - Origin: task 4.3 final task rereview; affected location: `internal/gitsnapshot/snapshot.go`, `captureLocal` and `verifyLocalState`.
