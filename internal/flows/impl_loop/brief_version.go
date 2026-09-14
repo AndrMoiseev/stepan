@@ -86,11 +86,14 @@ func BuildCurrentTaskRoleContexts(journal *runstore.Run, run *implementationstat
 	if err != nil {
 		return RoleStartContext{}, RoleStartContext{}, fmt.Errorf("%w: read current brief: %v", ErrBriefVersion, err)
 	}
-	body, err := parseBriefDocument(document, assignment.ID, brief.Number, assignment.TaskIDs)
-	if err != nil {
+	if _, err := parseBriefDocument(document, assignment.ID, brief.Number, assignment.TaskIDs); err != nil {
 		return RoleStartContext{}, RoleStartContext{}, err
 	}
-	input := TaskRoleStartInput{AssignmentID: assignment.ID, BriefID: brief.ID, Brief: body, Rules: rules, Checks: checks}
+	// Keep the artifact intact after validation. The hash-bound Markdown,
+	// including controller-generated YAML metadata, is the contract both roles
+	// must receive; passing only its body would silently detach their context
+	// from the durable version they are asked to implement or review.
+	input := TaskRoleStartInput{AssignmentID: assignment.ID, BriefID: brief.ID, Brief: string(document), Rules: rules, Checks: checks}
 	implementer, err := BuildImplementerStartContext(input)
 	if err != nil {
 		return RoleStartContext{}, RoleStartContext{}, err

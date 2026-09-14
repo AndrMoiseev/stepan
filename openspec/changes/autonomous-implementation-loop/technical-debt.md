@@ -299,3 +299,23 @@
 - Expected impact: a future regression in pending-task filtering might not be caught by task-specific coverage.
 - Classification: technical debt because current production prefix validation excludes committed tasks and no present behavior failure is demonstrated.
 - Possible follow-up: commit task A in the fixture, reject a repeated A response, then accept B on retry.
+
+## TD-8.5-001 — brief persistence failure can leave memory and an artifact ahead of the journal
+
+- Origin: task 8.5 initial review; affected location: `internal/flows/impl_loop/brief_version.go` (`PersistBriefVersion`).
+- Status: `open`.
+- Potential problem: the Markdown is published and the caller's run is mutated before `StateStore.Record`; cancellation or persistence failure leaves an orphan artifact and in-memory brief version absent from durable state.
+- Evidence: publication, `AddBriefVersion`, and state recording occur sequentially without a cloned durable transition or orphan-reuse rule.
+- Expected impact: a same-process retry can allocate an unintended next version, while a restart can conflict when republishing the deterministic artifact ID with different content.
+- Classification: technical debt because it requires an uncommon persistence/cancellation failure and normal execution remains correct.
+- Possible follow-up: record a cloned candidate before updating caller memory and define recovery-safe artifact identity or verified orphan reuse.
+
+## TD-8.5-002 — YAML identifier scalars can be interpreted as non-string values
+
+- Origin: task 8.5 initial review; affected location: `internal/flows/impl_loop/brief_version.go` (`yamlScalar`).
+- Status: `open`.
+- Potential problem: unquoted alphanumeric identifiers such as `null`, `true`, or `123` are valid input IDs but ordinary YAML parsers interpret them as null, boolean, or number.
+- Evidence: the renderer leaves every alphanumeric identifier unquoted and its validator compares the same textual rendering rather than YAML types.
+- Expected impact: unusual identifiers can lose string identity for external consumers of the brief document.
+- Classification: technical debt because conventional assignment/task IDs avoid YAML-reserved scalar forms.
+- Possible follow-up: always encode identifier fields as YAML strings and add reserved-word/numeric fixtures.

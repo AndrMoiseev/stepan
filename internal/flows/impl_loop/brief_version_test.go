@@ -75,12 +75,18 @@ func TestPersistRefinedBriefKeepsAssignmentTasksAndBuildsSharedCurrentRoleContex
 	if err != nil {
 		t.Fatal(err)
 	}
+	currentDocument := string(mustReadBrief(t, journal, refined.Document))
 	for _, start := range []RoleStartContext{implementer, reviewer} {
-		if !strings.Contains(start.StartMessage, "Brief version: brief-assignment-1-v2") || !strings.Contains(start.StartMessage, refinedBody) || strings.Contains(start.StartMessage, "initial brief") {
+		if !strings.Contains(start.StartMessage, "Brief version: brief-assignment-1-v2") || !strings.Contains(start.StartMessage, currentDocument) || strings.Contains(start.StartMessage, "initial brief") {
 			t.Fatalf("role did not receive the same current version: %s", start.StartMessage)
 		}
 	}
-	if strings.Contains(string(mustReadBrief(t, journal, refined.Document)), "current rules") {
+	for _, required := range []string{"assignment_id: assignment-1", "version: 2", "task_ids:\n  - A\n  - B", refinedBody} {
+		if !strings.Contains(currentDocument, required) {
+			t.Fatalf("current brief misses %q:\n%s", required, currentDocument)
+		}
+	}
+	if strings.Contains(currentDocument, "current rules") {
 		t.Fatal("brief artifact unexpectedly snapshots rules")
 	}
 }
