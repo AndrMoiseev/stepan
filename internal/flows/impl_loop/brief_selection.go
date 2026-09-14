@@ -144,8 +144,8 @@ func ExecuteBriefSelection(ctx context.Context, selection BriefSelectionCall) (B
 	if err := call.Run.StartAssignment(assignmentID, result.Response.TaskIDs); err != nil {
 		return BriefSelectionResult{Call: result}, fmt.Errorf("%w: create assignment: %v", ErrBriefSelection, err)
 	}
-	if _, err := call.StateStore.Record(ctx, call.Run); err != nil {
-		return BriefSelectionResult{Call: result}, fmt.Errorf("%w: persist assignment: %v", ErrBriefSelection, err)
+	if _, err := PersistBriefVersion(ctx, call.Journal, call.StateStore, call.Run, assignmentID, result.Response.TaskIDs, *result.Response.Brief); err != nil {
+		return BriefSelectionResult{Call: result}, fmt.Errorf("%w: persist initial brief: %v", ErrBriefSelection, err)
 	}
 	return BriefSelectionResult{Call: result, AssignmentID: assignmentID, TaskIDs: slices.Clone(result.Response.TaskIDs)}, nil
 }
