@@ -389,3 +389,23 @@
 - Expected impact: an inconsistent reviewer response can route a pointless executor continuation instead of requiring `review_passed`.
 - Classification: technical debt because normal reviewer instructions distinguish the response kinds and no loss of finding ownership occurs.
 - Possible follow-up: require at least one open or retained decision for `changes_requested`, otherwise reject and retry as `review_passed`.
+
+## TD-9.4-001 — refinement invalidates acceptance before a durable transition boundary
+
+- Origin: task 9.4 initial review; affected locations: `internal/flows/impl_loop/brief_refinement.go`, `internal/implementationstate/state.go` (`BeginBriefRefinement`).
+- Status: `open`.
+- Potential problem: the caller's run is reopened before diff capture and before the new operation is durably recorded.
+- Evidence: `BeginBriefRefinement` mutates acceptance/status first; later Git, operation, or persistence failure can return without publishing that mutation.
+- Expected impact: same-process state can lose a prior approval even though no refinement operation or new brief version was durably issued.
+- Classification: technical debt because journal recovery remains authoritative and the critical correction separately adds complete result evidence; the exposed window requires an uncommon preparation/persistence failure.
+- Possible follow-up: capture all read-only inputs first, apply the transition to a clone, and publish it atomically before replacing caller state.
+
+## TD-9.4-002 — impossible original-order coverage exercises substitution rather than irresolvability
+
+- Origin: task 9.4 initial review; affected location: `internal/flows/impl_loop/brief_refinement_test.go` (`TestRefineBriefRejectsAnImpossibleOriginalTaskOrder`).
+- Status: `open`.
+- Potential problem: the test returns task `B` instead of `A`; it proves stable task-block enforcement but not a briefer conclusion that the original order itself cannot be implemented.
+- Evidence: the fixture retries an invalid substituted task response and then accepts the original task, while general terminal clarification is tested separately.
+- Expected impact: future regressions in the explicit impossible-order explanation/closure path may not be caught by a task-named regression.
+- Classification: technical debt because production has a general material-specification closure route and no separate behavior defect is demonstrated.
+- Possible follow-up: add a fixture whose briefer ties `clarification_required` to the fixed source-order conflict and verify complete durable closure evidence.

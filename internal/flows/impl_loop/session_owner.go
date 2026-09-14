@@ -18,6 +18,7 @@ var (
 	// A resumed run must use a new owner and therefore new provider sessions.
 	ErrSessionOwnerClosed = errors.New("implementation session owner is closed")
 	ErrSessionClosed      = errors.New("implementation agent session is closed")
+	ErrSessionMissing     = errors.New("implementation agent session is not available")
 )
 
 // SessionOwner owns the provider conversations for one implementation run in
@@ -126,7 +127,7 @@ func (owner *SessionOwner) ExistingBriefer(assignmentID implementationstate.Assi
 	}
 	session := owner.persistent[key]
 	if session == nil {
-		return nil, errors.New("implementation briefer continuation requires an existing session")
+		return nil, ErrSessionMissing
 	}
 	return session, nil
 }
