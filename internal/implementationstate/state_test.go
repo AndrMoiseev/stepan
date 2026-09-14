@@ -412,6 +412,50 @@ func TestAssignmentRequiresWholeContiguousPendingLeafPrefix(t *testing.T) {
 	}
 }
 
+func TestStartAssignmentRequiresDurableCurrentInitialBaseline(t *testing.T) {
+	run, err := NewRun(RunIdentity{ID: "run", Change: "change", Repository: "/repo", WorkCopy: "/repo", Branch: "feature", BaselineCommit: "base", BaselineState: acceptedState(), Specification: testBasis().Specification, TaskList: EvidenceRef{ID: "tasks", Digest: "tasks-digest"}, Configuration: testBasis().Configuration}, []Task{{ID: "task", Order: 0, Title: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("assignment without initial baseline error = %v, want invalid transition", err)
+	}
+	recordInitialBaseline(t, run, "initial-baseline", "initial-baseline-result")
+	if err := run.StartAssignment("assignment", []TaskID{"task"}); err != nil {
+		t.Fatalf("assignment after durable initial baseline: %v", err)
+	}
+
+	invalid := newSingleTaskRun(t)
+	invalid.InitialBaseline = nil
+	invalid.Assignments = append(invalid.Assignments, Assignment{ID: "assignment", TaskIDs: []TaskID{"task"}, Status: AssignmentActive})
+	if err := invalid.Validate(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("restored assignment without baseline error = %v, want invalid state", err)
+	}
+}
+
+func TestCommittedFirstAssignmentAllowsNextAssignmentAfterBaselineStateChanges(t *testing.T) {
+	run := newTestRun(t)
+	if err := run.StartAssignment("first", []TaskID{"task-a"}); err != nil {
+		t.Fatal(err)
+	}
+	prepareAcceptedAssignment(t, run, "first")
+	state := run.CurrentState
+	intent := testCommitIntent()
+	if err := run.CommitAssignment("first", CommitEvidence{OperationID: intent.OperationID, CommitID: "commit-a", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: state, Basis: testBasis()}); err != nil {
+		t.Fatal(err)
+	}
+	changed := EvidenceRef{ID: "code-after-first", Digest: "code-after-first-digest"}
+	if err := run.ObserveCodeState(changed); err != nil {
+		t.Fatal(err)
+	}
+	if run.InitialBaseline == nil || run.InitialBaseline.State == run.CurrentState {
+		t.Fatalf("test did not establish changed post-baseline state: %#v", run)
+	}
+	if err := run.StartAssignment("second", []TaskID{"task-b"}); err != nil {
+		t.Fatalf("next assignment after committed first assignment: %v", err)
+	}
+}
+
 func TestAcceptanceRequiresResultsForSameBriefAndExactState(t *testing.T) {
 	run := newTestRun(t)
 	if err := run.StartAssignment("assignment-1", []TaskID{"task-a"}); err != nil {
@@ -721,6 +765,7 @@ func TestFinalAcceptanceCannotBeRecordedOrRestoredBeforeTasksAndCannotSurviveCod
 	if err := run.ObserveCodeState(committedState); err != nil {
 		t.Fatal(err)
 	}
+	refreshInitialBaseline(t, run, "committed")
 	if err := run.StartAssignment("assignment-1", []TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
@@ -793,6 +838,7 @@ func newTestRun(t *testing.T) *Run {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedInitialBaseline(t, run)
 	return run
 }
 
@@ -802,7 +848,35 @@ func newSingleTaskRun(t *testing.T) *Run {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedInitialBaseline(t, run)
 	return run
+}
+
+func seedInitialBaseline(t *testing.T, run *Run) {
+	t.Helper()
+	recordInitialBaseline(t, run, "initial-baseline", "initial-baseline-result")
+}
+
+func refreshInitialBaseline(t *testing.T, run *Run, suffix string) {
+	t.Helper()
+	recordInitialBaseline(t, run, OperationID("initial-baseline-"+suffix), ResultID("initial-baseline-"+suffix+"-result"))
+}
+
+func recordInitialBaseline(t *testing.T, run *Run, operationID OperationID, resultID ResultID) {
+	t.Helper()
+	basis := AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(Operation{ID: operationID, Kind: OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt(operationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(OperationResult{ID: resultID, OperationID: operationID, Status: ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordInitialBaselinePass(operationID, resultID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func prepareAcceptedAssignment(t *testing.T, run *Run, assignmentID AssignmentID) {

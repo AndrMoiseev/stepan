@@ -270,6 +270,19 @@ func assertCheckEvidenceCanBeRecordedWithoutOutput(t *testing.T, run *runstore.R
 	if err != nil {
 		t.Fatal(err)
 	}
+	basis := implementationstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
+	if err := model.AddRunOperation(implementationstate.Operation{ID: "initial-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.StartRunAttempt("initial-baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddRunResult(implementationstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.RecordInitialBaselinePass("initial-baseline", "initial-baseline-result"); err != nil {
+		t.Fatal(err)
+	}
 	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +290,6 @@ func assertCheckEvidenceCanBeRecordedWithoutOutput(t *testing.T, run *runstore.R
 	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
 	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}

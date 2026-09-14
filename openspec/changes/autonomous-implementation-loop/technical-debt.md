@@ -229,3 +229,23 @@
 - Expected impact: same-process retry may reject extraction until the model is reloaded; careless callers could inspect state inconsistent with the durable source of truth.
 - Classification: technical debt because recovery from the journal restores the correct pending state and the failure path is uncommon.
 - Possible follow-up: mutate a cloned candidate and publish/update the caller only after durable success, matching runstore transition helpers.
+
+## TD-8.3-001 — baseline gate accepts an empty required-check selection
+
+- Origin: task 8.3 initial review; affected location: `internal/flows/impl_loop/initial_checks.go` (`validateInitialRequiredChecks`).
+- Status: `open`.
+- Potential problem: an empty required list yields a zero-result set whose `Succeeded` method is vacuously true.
+- Evidence: the gate itself does not reject empty `Selection.Required`.
+- Expected impact: malformed direct API use could claim baseline success without checks.
+- Classification: technical debt because normal configuration preparation already requires a non-empty required set.
+- Possible follow-up: reject an empty required selection at the gate and add a small validation test.
+
+## TD-8.3-002 — baseline transitions can leave in-memory state ahead of persistence
+
+- Origin: task 8.3 initial review; affected location: `internal/flows/impl_loop/initial_checks.go` (operation/result/pause transitions).
+- Status: `open`.
+- Potential problem: the caller model is mutated before several `StateStore.Record` calls, so a pre-journal persistence failure can leave memory ahead of the durable source of truth.
+- Evidence: operation addition, result/current-state update, and pause occur on the supplied run before their respective record calls.
+- Expected impact: same-process retry may reject work until the run is reloaded from the journal.
+- Classification: technical debt because recovery from durable state remains correct and the trigger is an uncommon persistence failure.
+- Possible follow-up: apply transitions to clones and replace the caller only after durable publication, following runstore transition helpers.

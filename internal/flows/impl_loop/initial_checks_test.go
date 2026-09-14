@@ -3,9 +3,13 @@ package impl_loop
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -18,7 +22,7 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
 		Run: run, StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"lint", "test_all", "build"}), Runner: runner,
-		Operation: "baseline-checks", Result: "baseline-result",
+		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +60,99 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	}
 }
 
+func TestInitialRequiredChecksRestartsCompleteSetAfterAllowedMutation(t *testing.T) {
+	run, state, journal, repository := newInitialCheckRun(t)
+	defer state.Close()
+	selection := testCheckSelection([]string{"lint", "test_all"})
+	selection.Checks["lint"] = implementationCheck(repository, "lint")
+	selection.Checks["test_all"] = implementationCheck(repository, "test_all")
+	var calls []string
+	runner := CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		calls = append(calls, command.Program)
+		if len(calls) == 1 {
+			if err := os.WriteFile(filepath.Join(repository, "generated.go"), []byte("generated\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return checkexec.Result{}, nil
+	})
+
+	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
+		Run: run, StateStore: state, Journal: journal, Repository: repository, Selection: selection, Runner: runner,
+		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := calls, []string{"lint", "test_all", "lint", "test_all"}; !slices.Equal(got, want) {
+		t.Fatalf("required check convergence order = %#v, want %#v", got, want)
+	}
+	if len(result.Convergence.Cycles) != 2 || !result.Convergence.Cycles[0].Changed || result.Convergence.Cycles[1].Changed || run.InitialBaseline == nil {
+		t.Fatalf("baseline convergence = %#v, run = %#v", result.Convergence, run)
+	}
+}
+
+func TestInitialRequiredChecksPersistsInterruptedResultAfterCallerCancellation(t *testing.T) {
+	run, state, journal, repository := newInitialCheckRun(t)
+	defer state.Close()
+	selection := testCheckSelection([]string{"lint"})
+	selection.Checks["lint"] = implementationCheck(repository, "lint")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result, err := RunInitialRequiredChecks(ctx, InitialRequiredChecks{
+		Run: run, StateStore: state, Journal: journal, Repository: repository, Selection: selection,
+		Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+			cancel()
+			return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureCanceled, Stderr: []byte("interrupted baseline")}, context.Canceled
+		}), MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Set.Results[0].Status != CheckFailed || run.Status != implementationstate.RunPaused || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultInterrupted {
+		t.Fatalf("canceled baseline was not durably interrupted and paused: result=%#v run=%#v", result, run)
+	}
+	current, _, err := runstore.ReadJournalCurrent(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != implementationstate.RunPaused || len(current.RunResults) != 1 || current.RunResults[0].Status != implementationstate.ResultInterrupted {
+		t.Fatalf("durable canceled baseline = %#v", current)
+	}
+}
+
+func TestInitialRequiredChecksBlocksProtectedMutationWithDurableEvidence(t *testing.T) {
+	run, state, journal, repository := newInitialCheckRun(t)
+	defer state.Close()
+	selection := testCheckSelection([]string{"lint"})
+	selection.Checks["lint"] = implementationCheck(repository, "lint")
+
+	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
+		Run: run, StateStore: state, Journal: journal, Repository: repository, Selection: selection,
+		Runner: CheckRunnerFunc(func(_ context.Context, _ checkexec.Command) (checkexec.Result, error) {
+			if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("changed by check\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return checkexec.Result{}, nil
+		}), MaxCycles: 3, ProtectedPaths: []string{"tracked.txt"}, Operation: "baseline-checks", Result: "baseline-result",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != implementationstate.RunPaused || run.PauseReason != initialRequiredChecksPauseReason || run.InitialBaseline != nil || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultFailed {
+		t.Fatalf("protected baseline mutation was not durably blocked: result=%#v run=%#v", result, run)
+	}
+	violation, err := os.ReadFile(journal.ViolationJournalPath())
+	if err != nil || !strings.Contains(string(violation), "tracked.txt") {
+		t.Fatalf("protected baseline mutation has no violation evidence: %q, %v", violation, err)
+	}
+	contents, err := os.ReadFile(filepath.Join(repository, "tracked.txt"))
+	if err != nil || string(contents) != "initial\n" {
+		t.Fatalf("protected file was not restored: %q, %v", contents, err)
+	}
+}
+
 func TestInitialRequiredChecksRunsEntireProjectOrderAndBindsObservedBaseline(t *testing.T) {
 	run, state, journal, repository := newInitialCheckRun(t)
 	defer state.Close()
@@ -64,7 +161,7 @@ func TestInitialRequiredChecksRunsEntireProjectOrderAndBindsObservedBaseline(t *
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
 		Run: run, StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"test_all", "lint", "build"}), Runner: runner,
-		Operation: "baseline-checks", Result: "baseline-result",
+		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +185,7 @@ func TestInitialRequiredChecksRejectsAnythingButExtractedInitialBaseline(t *test
 	run.CurrentState = implementationstate.EvidenceRef{ID: "other", Digest: run.Identity.BaselineState.Digest}
 	if _, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
 		Run: run, StateStore: state, Journal: journal, Repository: repository,
-		Selection: testCheckSelection([]string{"lint"}), Runner: &recordingCheckRunner{}, Operation: "baseline", Result: "result",
+		Selection: testCheckSelection([]string{"lint"}), Runner: &recordingCheckRunner{}, MaxCycles: 3, Operation: "baseline", Result: "result",
 	}); !errors.Is(err, ErrInitialRequiredChecks) {
 		t.Fatalf("error = %v, want initial-baseline validation error", err)
 	}

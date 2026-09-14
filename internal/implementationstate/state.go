@@ -68,6 +68,33 @@ func (s RunStatus) valid() bool {
 	return s == RunActive || s == RunPaused || s == RunClosed || s == RunSucceeded
 }
 
+// InitialBaselineEvidence is the successful full required-check set that
+// permits the first assignment. A nil value is the durable pending state.
+// It is deliberately run-scoped: baseline checks precede every assignment.
+type InitialBaselineEvidence struct {
+	OperationID OperationID
+	ResultID    ResultID
+	State       EvidenceRef
+	Basis       AcceptanceBasis
+}
+
+func (e InitialBaselineEvidence) valid() bool {
+	return e.OperationID != "" && e.ResultID != "" && e.State.valid() && e.Basis.valid()
+}
+
+// InitialBaselineStatus makes the baseline gate visible in every durable run
+// snapshot instead of inferring it from assignment history.
+type InitialBaselineStatus string
+
+const (
+	InitialBaselinePending InitialBaselineStatus = "pending"
+	InitialBaselinePassed  InitialBaselineStatus = "passed"
+)
+
+func (s InitialBaselineStatus) valid() bool {
+	return s == InitialBaselinePending || s == InitialBaselinePassed
+}
+
 // Task is one ordered item in the extracted task hierarchy. A task without a
 // child is a unit of implementation. Parent status is calculated from children
 // and is never independently persisted or changed.
@@ -437,7 +464,12 @@ type Run struct {
 	// TaskExtractionPending is true only during the durable pre-extraction
 	// boundary. It permits an otherwise complete run identity before the first
 	// orchestrator response supplies the machine task hierarchy.
-	TaskExtractionPending  bool `json:"task_extraction_pending,omitempty"`
+	TaskExtractionPending bool `json:"task_extraction_pending,omitempty"`
+	// InitialBaseline is nil while status is pending, until the extracted run has passed the complete
+	// initial required-check set. It prevents an assignment from bypassing a
+	// pre-existing project failure after a restart or direct state replay.
+	InitialBaselineStatus  InitialBaselineStatus    `json:"initial_baseline_status"`
+	InitialBaseline        *InitialBaselineEvidence `json:"initial_baseline,omitempty"`
 	LeafStatus             map[TaskID]TaskStatus
 	Assignments            []Assignment
 	RunOperations          []Operation
@@ -523,7 +555,7 @@ func cloneRun(run *Run) (*Run, error) {
 // NewRun validates the extracted ordered hierarchy and creates a new active
 // run. All leaf tasks start pending.
 func NewRun(identity RunIdentity, tasks []Task) (*Run, error) {
-	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, Tasks: slices.Clone(tasks)}
+	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, Tasks: slices.Clone(tasks), InitialBaselineStatus: InitialBaselinePending}
 	if err := run.validateStructure(); err != nil {
 		return nil, err
 	}
@@ -539,7 +571,7 @@ func NewRun(identity RunIdentity, tasks []Task) (*Run, error) {
 // NewRunPendingTaskExtraction creates the durable state recorded before the
 // initial orchestrator turn. It cannot be used after tasks have been supplied.
 func NewRunPendingTaskExtraction(identity RunIdentity) (*Run, error) {
-	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, TaskExtractionPending: true, LeafStatus: make(map[TaskID]TaskStatus)}
+	run := &Run{Identity: identity, Status: RunActive, CurrentState: identity.BaselineState, TaskExtractionPending: true, InitialBaselineStatus: InitialBaselinePending, LeafStatus: make(map[TaskID]TaskStatus)}
 	if err := run.Validate(); err != nil {
 		return nil, err
 	}
@@ -684,6 +716,20 @@ func (r *Run) Validate() error {
 		}
 		results[result.ID] = true
 	}
+	if !r.InitialBaselineStatus.valid() || (r.InitialBaselineStatus == InitialBaselinePending && r.InitialBaseline != nil) || (r.InitialBaselineStatus == InitialBaselinePassed && r.InitialBaseline == nil) {
+		return fmt.Errorf("%w: invalid initial baseline state", ErrInvalidState)
+	}
+	if r.InitialBaseline != nil {
+		if err := r.validateInitialBaseline(*r.InitialBaseline); err != nil {
+			return err
+		}
+	}
+	if r.InitialBaseline == nil && len(r.Assignments) != 0 {
+		return fmt.Errorf("%w: assignment exists before initial baseline passed", ErrInvalidState)
+	}
+	if r.TaskExtractionPending && r.InitialBaseline != nil {
+		return fmt.Errorf("%w: pending task extraction has initial baseline evidence", ErrInvalidState)
+	}
 	if r.FinalAcceptance != nil {
 		if err := r.validateFinalAcceptance(*r.FinalAcceptance, true); err != nil {
 			return err
@@ -805,6 +851,9 @@ func (r *Run) StartAssignment(id AssignmentID, taskIDs []TaskID) error {
 	if err := r.requireActive(); err != nil {
 		return err
 	}
+	if !r.hasCurrentInitialBaseline() {
+		return fmt.Errorf("%w: successful current initial baseline is required before assignment", ErrInvalidTransition)
+	}
 	if id == "" || r.assignmentIndex(id) >= 0 || r.hasOpenAssignment() {
 		return fmt.Errorf("%w: invalid or concurrent assignment", ErrInvalidState)
 	}
@@ -814,6 +863,49 @@ func (r *Run) StartAssignment(id AssignmentID, taskIDs []TaskID) error {
 	}
 	r.invalidateFinalAcceptance()
 	r.Assignments = append(r.Assignments, Assignment{ID: id, TaskIDs: slices.Clone(taskIDs), Status: AssignmentActive})
+	return nil
+}
+
+// RecordInitialBaselinePass makes the successful initial required-check set a
+// durable gate for the first assignment. It accepts only the current run-level
+// check result, so an old or failed result cannot unlock work after inputs or
+// code changed.
+func (r *Run) RecordInitialBaselinePass(operationID OperationID, resultID ResultID) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if r.TaskExtractionPending || len(r.Assignments) != 0 {
+		return fmt.Errorf("%w: initial baseline cannot be recorded in this run state", ErrInvalidTransition)
+	}
+	operation := r.runOperation(operationID)
+	result := r.runResult(resultID)
+	if operation == nil || result == nil || result.OperationID != operationID || operation.Kind != OperationCheck || operation.Counter != CycleCounterNone || result.Status != ResultSucceeded || result.State != r.CurrentState || result.Basis != r.currentBasis() || operation.Basis != result.Basis {
+		return fmt.Errorf("%w: initial baseline does not prove current state", ErrInvalidState)
+	}
+	r.InitialBaseline = &InitialBaselineEvidence{OperationID: operationID, ResultID: resultID, State: result.State, Basis: result.Basis}
+	r.InitialBaselineStatus = InitialBaselinePassed
+	return nil
+}
+
+func (r *Run) hasCurrentInitialBaseline() bool {
+	if r == nil || r.InitialBaselineStatus != InitialBaselinePassed || r.InitialBaseline == nil || r.InitialBaseline.Basis != r.currentBasis() || r.validateInitialBaseline(*r.InitialBaseline) != nil {
+		return false
+	}
+	// The baseline guards only the first assignment. Later assignments are
+	// expected to follow committed code changes, so their current state cannot
+	// equal the pre-implementation baseline evidence.
+	return len(r.Assignments) != 0 || r.InitialBaseline.State == r.CurrentState
+}
+
+func (r *Run) validateInitialBaseline(evidence InitialBaselineEvidence) error {
+	if !evidence.valid() {
+		return fmt.Errorf("%w: invalid initial baseline evidence", ErrInvalidState)
+	}
+	operation := r.runOperation(evidence.OperationID)
+	result := r.runResult(evidence.ResultID)
+	if operation == nil || result == nil || result.OperationID != evidence.OperationID || operation.Kind != OperationCheck || operation.Counter != CycleCounterNone || result.Status != ResultSucceeded || result.State != evidence.State || result.Basis != evidence.Basis || operation.Basis != evidence.Basis {
+		return fmt.Errorf("%w: invalid initial baseline result", ErrInvalidState)
+	}
 	return nil
 }
 
@@ -1313,8 +1405,8 @@ func (r *Run) EndRunExplorerEpisode(episode string) error {
 }
 
 func (r *Run) AddRunResult(result OperationResult) error {
-	if err := r.requireActive(); err != nil {
-		return err
+	if r == nil || (r.Status != RunActive && r.Status != RunPaused) {
+		return fmt.Errorf("%w: run cannot record a run result", ErrInvalidTransition)
 	}
 	operation := r.runOperation(result.OperationID)
 	if !result.valid() || r.resultExists(result.ID) || operation == nil || (!operation.UncountedResumeCheck && len(operation.Attempts) == 0) || result.Basis != operation.Basis {

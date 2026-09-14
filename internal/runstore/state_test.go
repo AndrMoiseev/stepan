@@ -520,7 +520,25 @@ func newStoredModel(t *testing.T, run *Run) *implementationstate.Run {
 	if err != nil {
 		t.Fatal(err)
 	}
+	seedStoredInitialBaseline(t, model)
 	return model
+}
+
+func seedStoredInitialBaseline(t *testing.T, model *implementationstate.Run) {
+	t.Helper()
+	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.AddRunOperation(implementationstate.Operation{ID: "initial-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := model.StartRunAttempt("initial-baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.AddRunResult(implementationstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := model.RecordInitialBaselinePass("initial-baseline", "initial-baseline-result"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func publishTestReference(t *testing.T, run *Run, id implementationstate.EvidenceID) implementationstate.EvidenceRef {
@@ -1310,12 +1328,24 @@ func TestRecordRunTechnicalRetryDoesNotConsumeOrRecheckSemanticLimit(t *testing.
 			if err := current.Validate(); err != nil {
 				t.Fatalf("reopened technical retry state is invalid: %v", err)
 			}
-			attempts := current.RunOperations[0].Attempts
-			if len(attempts) != 2 || attempts[0].SemanticRound != 1 || attempts[1].SemanticRound != 1 || current.RunOperations[0].SemanticCycle != 1 {
-				t.Fatalf("persisted technical retry = %#v, cycle %d", attempts, current.RunOperations[0].SemanticCycle)
+			operation := findStoredOperation(t, current, "operation")
+			attempts := operation.Attempts
+			if len(attempts) != 2 || attempts[0].SemanticRound != 1 || attempts[1].SemanticRound != 1 || operation.SemanticCycle != 1 {
+				t.Fatalf("persisted technical retry = %#v, cycle %d", attempts, operation.SemanticCycle)
 			}
 		})
 	}
+}
+
+func findStoredOperation(t *testing.T, model *implementationstate.Run, id implementationstate.OperationID) implementationstate.Operation {
+	t.Helper()
+	for _, operation := range model.RunOperations {
+		if operation.ID == id {
+			return operation
+		}
+	}
+	t.Fatalf("missing run operation %q", id)
+	return implementationstate.Operation{}
 }
 
 func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {

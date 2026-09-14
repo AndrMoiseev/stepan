@@ -27,17 +27,23 @@ type InitialRequiredChecks struct {
 	Repository string
 	Selection  implementationconfig.CheckSelection
 	Runner     CheckRunner
-	Operation  implementationstate.OperationID
-	Result     implementationstate.ResultID
+	// MaxCycles is the configured bound for required-check convergence. A
+	// command that generates ordinary code restarts the complete set from its
+	// first configured check; this limit keeps that recovery finite.
+	MaxCycles      int
+	ProtectedPaths []string
+	Operation      implementationstate.OperationID
+	Result         implementationstate.ResultID
 }
 
 // InitialRequiredChecksResult exposes the bounded diagnostics that a UI can
 // show to the user. Full output, post-command states, and this exact summary
 // are retained as immutable evidence in the run store.
 type InitialRequiredChecksResult struct {
-	Set        CheckSet
-	Diagnostic string
-	Evidence   implementationstate.EvidenceRef
+	Set         CheckSet
+	Convergence RequiredCheckConvergence
+	Diagnostic  string
+	Evidence    implementationstate.EvidenceRef
 }
 
 // RunInitialRequiredChecks runs the complete configured required set once on
@@ -70,12 +76,19 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	if err != nil {
 		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline check publisher: %w", err))
 	}
-	set, runErr := RunRequiredChecksWithReporter(ctx, input.Selection, input.Runner, publisher)
+	observer, err := NewWorkspaceCheckObserver(ctx, input.Repository, input.Run, input.Journal, input.ProtectedPaths)
+	if err != nil {
+		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline workspace observer: %w", err))
+	}
+	convergence, runErr := RunRequiredChecksUntilStable(ctx, input.Selection, input.Runner, &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}, input.MaxCycles)
+	set := initialCheckSet(convergence)
 	diagnostic := initialCheckDiagnostic(set, runErr)
-	evidence, publishErr := publishInitialCheckEvidence(input.Journal, input.Result, set, runErr)
-	result := InitialRequiredChecksResult{Set: set, Diagnostic: diagnostic, Evidence: evidence}
+	persistenceContext, cancelPersistence := context.WithTimeout(context.WithoutCancel(ctx), checkResultPersistenceTimeout)
+	defer cancelPersistence()
+	evidence, publishErr := publishInitialCheckEvidence(input.Journal, input.Result, convergence, runErr)
+	result := InitialRequiredChecksResult{Set: set, Convergence: convergence, Diagnostic: diagnostic, Evidence: evidence}
 	if publishErr != nil {
-		return pauseInitialChecks(ctx, input, result, fmt.Errorf("publish baseline check diagnostics: %w", publishErr))
+		return pauseInitialChecks(persistenceContext, input, result, fmt.Errorf("publish baseline check diagnostics: %w", publishErr))
 	}
 
 	status := implementationstate.ResultSucceeded
@@ -86,7 +99,7 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
 		}
 	}
-	if _, err := input.StateStore.RecordRunAttemptOutcome(ctx, input.Run, input.Operation, outcome, diagnostic); err != nil {
+	if _, err := input.StateStore.RecordRunAttemptOutcome(persistenceContext, input.Run, input.Operation, outcome, diagnostic); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline check outcome: %v", ErrInitialRequiredChecks, err)
 	}
 	state := finalInitialCheckedState(input.Run.CurrentState, set)
@@ -96,16 +109,21 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	}); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: record baseline check result: %v", ErrInitialRequiredChecks, err)
 	}
-	if state != input.Run.CurrentState {
+	if state != input.Run.CurrentState && input.Run.Status == implementationstate.RunActive {
 		if err := input.Run.ObserveCodeState(state); err != nil {
 			return InitialRequiredChecksResult{}, fmt.Errorf("%w: record checked baseline state: %v", ErrInitialRequiredChecks, err)
 		}
 	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+	if status == implementationstate.ResultSucceeded {
+		if err := input.Run.RecordInitialBaselinePass(input.Operation, input.Result); err != nil {
+			return InitialRequiredChecksResult{}, fmt.Errorf("%w: record passed initial baseline: %v", ErrInitialRequiredChecks, err)
+		}
+	}
+	if _, err := input.StateStore.Record(persistenceContext, input.Run); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline check result: %v", ErrInitialRequiredChecks, err)
 	}
 	if status != implementationstate.ResultSucceeded {
-		return pauseInitialChecks(ctx, input, result, nil)
+		return pauseInitialChecks(persistenceContext, input, result, nil)
 	}
 	return result, nil
 }
@@ -114,7 +132,7 @@ func validateInitialRequiredChecks(input InitialRequiredChecks) error {
 	if input.Run == nil || input.StateStore == nil || input.Journal == nil || input.Runner == nil || strings.TrimSpace(input.Repository) == "" || input.Operation == "" || input.Result == "" {
 		return fmt.Errorf("%w: run, store, journal, repository, runner, operation, and result are required", ErrInitialRequiredChecks)
 	}
-	if input.Run.Status != implementationstate.RunActive || input.Run.TaskExtractionPending || len(input.Run.Tasks) == 0 || input.Run.CurrentState != input.Run.Identity.BaselineState {
+	if input.Run.Status != implementationstate.RunActive || input.Run.TaskExtractionPending || len(input.Run.Tasks) == 0 || len(input.Run.Assignments) != 0 || input.MaxCycles <= 0 {
 		return fmt.Errorf("%w: checks must run once after extraction on the current initial baseline", ErrInitialRequiredChecks)
 	}
 	return nil
@@ -171,20 +189,29 @@ type initialCheckResultEvidence struct {
 	Presentation *CheckPresentation `json:"presentation,omitempty"`
 }
 
-func publishInitialCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, set CheckSet, setErr error) (implementationstate.EvidenceRef, error) {
-	evidence := initialCheckSetEvidence{Kind: set.Kind, Results: make([]initialCheckResultEvidence, 0, len(set.Results))}
+func initialCheckSet(convergence RequiredCheckConvergence) CheckSet {
+	if len(convergence.Cycles) == 0 {
+		return CheckSet{Kind: CheckSetRequired}
+	}
+	return convergence.Cycles[len(convergence.Cycles)-1].Set
+}
+
+func publishInitialCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, convergence RequiredCheckConvergence, setErr error) (implementationstate.EvidenceRef, error) {
+	evidence := initialCheckSetEvidence{Kind: CheckSetRequired}
 	if setErr != nil {
 		evidence.Error = setErr.Error()
 	}
-	for _, result := range set.Results {
-		item := initialCheckResultEvidence{Name: result.Name, Status: result.Status, Presentation: result.Presentation}
-		if result.Command.Program != "" {
-			item.Command = RenderCheckCommand(result.Command)
+	for _, cycle := range convergence.Cycles {
+		for _, result := range cycle.Set.Results {
+			item := initialCheckResultEvidence{Name: result.Name, Status: result.Status, Presentation: result.Presentation}
+			if result.Command.Program != "" {
+				item.Command = RenderCheckCommand(result.Command)
+			}
+			if result.Err != nil {
+				item.Error = result.Err.Error()
+			}
+			evidence.Results = append(evidence.Results, item)
 		}
-		if result.Err != nil {
-			item.Error = result.Err.Error()
-		}
-		evidence.Results = append(evidence.Results, item)
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
