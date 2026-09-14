@@ -122,11 +122,16 @@ type OrchestratorStartInput struct {
 // initial assignment selection. Its contents cannot be substituted with an
 // arbitrary role context at the production session boundary.
 type BrieferStartContext struct {
-	start RoleStartContext
+	assignmentID implementationstate.AssignmentID
+	start        RoleStartContext
 }
 
 func (context BrieferStartContext) roleStartContext() RoleStartContext {
 	return context.start
+}
+
+func (context BrieferStartContext) assignment() implementationstate.AssignmentID {
+	return context.assignmentID
 }
 
 // FinalReviewerStartInput is intentionally independent. A new final-review
@@ -222,8 +227,8 @@ func BuildOrchestratorStartContext(input OrchestratorStartInput) (RoleStartConte
 // renders the whole current machine task tree, including derived statuses and
 // current progress. Reading the specification through the run journal keeps
 // the prompt tied to the exact evidence version recorded in the run.
-func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Run) (BrieferStartContext, error) {
-	if journal == nil || run == nil || run.TaskExtractionPending || len(run.Tasks) == 0 {
+func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (BrieferStartContext, error) {
+	if journal == nil || run == nil || strings.TrimSpace(string(assignmentID)) == "" || run.TaskExtractionPending || len(run.Tasks) == 0 {
 		return BrieferStartContext{}, fmt.Errorf("%w: briefer requires an extracted run and journal", ErrInvalidRoleContext)
 	}
 	specification, err := journal.Read(run.Identity.Specification)
@@ -235,7 +240,7 @@ func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Ru
 	}
 
 	data := strings.Builder{}
-	fmt.Fprintf(&data, "# Complete specification\n\n%s\n\n# Full machine task list and statuses\n\n", strings.TrimSpace(string(specification)))
+	fmt.Fprintf(&data, "# Assignment\n\n%s\n\n# Complete specification\n\n%s\n\n# Full machine task list and statuses\n\n", assignmentID, strings.TrimSpace(string(specification)))
 	leafTotal, leafPending, leafAccepted, leafComplete := 0, 0, 0, 0
 	for _, task := range run.Tasks {
 		status, err := run.TaskStatus(task.ID)
@@ -272,7 +277,7 @@ func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Ru
 	if err != nil {
 		return BrieferStartContext{}, err
 	}
-	return BrieferStartContext{start: start}, nil
+	return BrieferStartContext{assignmentID: assignmentID, start: start}, nil
 }
 
 func taskHasChild(run *implementationstate.Run, id implementationstate.TaskID) bool {

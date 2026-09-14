@@ -97,21 +97,26 @@ func (owner *SessionOwner) Orchestrator(ctx context.Context, start RoleStartCont
 	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeOrchestrator, role: ResponseRoleOrchestrator}, start)
 }
 
-// Briefer returns the run-scoped briefer conversation. It accepts only the
-// opaque context produced by BuildBrieferStartContext, so initial selection
-// cannot start from a caller-provided fragment of the run inputs.
-func (owner *SessionOwner) Briefer(ctx context.Context, start BrieferStartContext) (*AgentSession, error) {
-	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer}, start.roleStartContext())
+// Briefer returns the conversation for one assignment. It accepts only the
+// opaque context produced by BuildBrieferStartContext, so an assignment cannot
+// start from a caller-provided fragment or substitute another assignment's
+// bootstrap. Repeated calls for this assignment deliberately continue the
+// same session for later brief refinements.
+func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implementationstate.AssignmentID, start BrieferStartContext) (*AgentSession, error) {
+	if strings.TrimSpace(string(assignmentID)) == "" || assignmentID != start.assignment() {
+		return nil, errors.New("implementation briefer session requires its matching assignment ID")
+	}
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(assignmentID)}, start.roleStartContext())
 }
 
-// Assignment returns the briefer, implementer, or task-reviewer conversation
+// Assignment returns the implementer or task-reviewer conversation
 // for one assignment. A different assignment gets an entirely new session for
 // each role, while follow-up work for this assignment keeps its conversation.
 func (owner *SessionOwner) Assignment(ctx context.Context, assignmentID implementationstate.AssignmentID, role ResponseRole, start RoleStartContext) (*AgentSession, error) {
 	if strings.TrimSpace(string(assignmentID)) == "" {
 		return nil, errors.New("implementation assignment session requires an assignment ID")
 	}
-	if role != ResponseRoleBriefer && role != ResponseRoleImplementer && role != ResponseRoleTaskReviewer {
+	if role != ResponseRoleImplementer && role != ResponseRoleTaskReviewer {
 		return nil, fmt.Errorf("implementation assignment session does not support role %q", role)
 	}
 	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeAssignment, role: role, id: string(assignmentID)}, start)

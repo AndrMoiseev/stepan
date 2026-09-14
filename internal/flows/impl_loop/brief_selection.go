@@ -54,13 +54,18 @@ type BriefSelectionResult struct {
 // controller. Its controlled call is private so ordinary production callers
 // cannot run selection with a hand-built session or message.
 type BriefSelectionCall struct {
-	call ControlledAgentCall
+	assignmentID implementationstate.AssignmentID
+	call         ControlledAgentCall
 }
 
 // BriefSelectionCallInput names the controller-owned values for a selection
 // operation. Session and message are deliberately absent: NewBriefSelectionCall
 // obtains the former from the typed briefer bootstrap and fixes the latter.
 type BriefSelectionCallInput struct {
+	// AssignmentID is allocated by the controller before the briefer session
+	// starts. It binds selection, the eventual durable assignment, and later
+	// assignment-scoped briefer refinements to one lifecycle.
+	AssignmentID     implementationstate.AssignmentID
 	Repository       string
 	Policy           AgentCallPolicy
 	Run              *implementationstate.Run
@@ -82,11 +87,22 @@ func NewBriefSelectionCall(ctx context.Context, owner *SessionOwner, input Brief
 	if owner == nil {
 		return BriefSelectionCall{}, fmt.Errorf("%w: session owner is required", ErrBriefSelection)
 	}
-	start, err := BuildBrieferStartContext(input.Journal, input.Run)
+	if strings.TrimSpace(string(input.AssignmentID)) == "" {
+		return BriefSelectionCall{}, fmt.Errorf("%w: assignment ID is required before starting briefer", ErrBriefSelection)
+	}
+	if input.Run == nil || hasOpenBriefSelection(input.Run) {
+		return BriefSelectionCall{}, fmt.Errorf("%w: no next assignment can be selected", ErrBriefSelection)
+	}
+	for _, assignment := range input.Run.Assignments {
+		if assignment.ID == input.AssignmentID {
+			return BriefSelectionCall{}, fmt.Errorf("%w: assignment identity already exists", ErrBriefSelection)
+		}
+	}
+	start, err := BuildBrieferStartContext(input.Journal, input.Run, input.AssignmentID)
 	if err != nil {
 		return BriefSelectionCall{}, fmt.Errorf("%w: build briefer start context: %v", ErrBriefSelection, err)
 	}
-	session, err := owner.Briefer(ctx, start)
+	session, err := owner.Briefer(ctx, input.AssignmentID, start)
 	if err != nil {
 		return BriefSelectionCall{}, fmt.Errorf("%w: start briefer session: %v", ErrBriefSelection, err)
 	}
@@ -96,16 +112,17 @@ func NewBriefSelectionCall(ctx context.Context, owner *SessionOwner, input Brief
 		Limits: input.Limits, Expectation: input.Expectation, Message: briefSelectionMessage,
 		Timeout: input.Timeout, ValidateResponse: input.ValidateResponse,
 	}
-	if err := validateBriefSelectionCall("new-assignment", call); err != nil {
+	if err := validateBriefSelectionCall(input.AssignmentID, call); err != nil {
 		return BriefSelectionCall{}, err
 	}
-	return BriefSelectionCall{call: call}, nil
+	return BriefSelectionCall{assignmentID: input.AssignmentID, call: call}, nil
 }
 
 // ExecuteBriefSelection invokes the initial, run-scoped briefer response with
 // the normal controlled-call retry semantics. Only after binding and prefix
 // validation succeeds does it create and durably record the stable assignment.
-func ExecuteBriefSelection(ctx context.Context, assignmentID implementationstate.AssignmentID, selection BriefSelectionCall) (BriefSelectionResult, error) {
+func ExecuteBriefSelection(ctx context.Context, selection BriefSelectionCall) (BriefSelectionResult, error) {
+	assignmentID := selection.assignmentID
 	call := selection.call
 	if err := validateBriefSelectionCall(assignmentID, call); err != nil {
 		return BriefSelectionResult{}, err

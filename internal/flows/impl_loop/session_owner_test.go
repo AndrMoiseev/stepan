@@ -26,7 +26,7 @@ func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
 	}
 
 	assignmentA := implementationstate.AssignmentID("assignment-a")
-	brieferA, err := owner.Assignment(context.Background(), assignmentA, ResponseRoleBriefer, sessionStartContext(t, ResponseRoleBriefer))
+	brieferA, err := owner.Briefer(context.Background(), assignmentA, sessionBrieferStartContext(t, assignmentA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,12 @@ func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
 
 	assignmentB := implementationstate.AssignmentID("assignment-b")
 	for _, role := range []ResponseRole{ResponseRoleBriefer, ResponseRoleImplementer, ResponseRoleTaskReviewer} {
-		next, err := owner.Assignment(context.Background(), assignmentB, role, sessionStartContext(t, role))
+		var next *AgentSession
+		if role == ResponseRoleBriefer {
+			next, err = owner.Briefer(context.Background(), assignmentB, sessionBrieferStartContext(t, assignmentB))
+		} else {
+			next, err = owner.Assignment(context.Background(), assignmentB, role, sessionStartContext(t, role))
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,6 +110,9 @@ func TestSessionOwnerRejectsInvalidScopesAndClosedOwner(t *testing.T) {
 	owner := newSessionOwnerForTest(t, factory)
 	if _, err := owner.Assignment(context.Background(), "", ResponseRoleImplementer, sessionStartContext(t, ResponseRoleImplementer)); err == nil {
 		t.Fatal("empty assignment ID was accepted")
+	}
+	if _, err := owner.Assignment(context.Background(), "assignment", ResponseRoleBriefer, sessionStartContext(t, ResponseRoleBriefer)); err == nil {
+		t.Fatal("briefer was accepted through generic assignment session")
 	}
 	if _, err := owner.Assignment(context.Background(), "assignment", ResponseRoleExplorer, sessionStartContext(t, ResponseRoleExplorer)); err == nil {
 		t.Fatal("Explorer was accepted as an assignment session")
@@ -172,6 +180,11 @@ func sessionStartContext(t *testing.T, role ResponseRole) RoleStartContext {
 		t.Fatal(err)
 	}
 	return start
+}
+
+func sessionBrieferStartContext(t *testing.T, assignmentID implementationstate.AssignmentID) BrieferStartContext {
+	t.Helper()
+	return BrieferStartContext{assignmentID: assignmentID, start: sessionStartContext(t, ResponseRoleBriefer)}
 }
 
 type sessionRuntimeFactory struct {
