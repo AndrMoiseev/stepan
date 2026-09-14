@@ -27,6 +27,10 @@ const (
 	// to Explorer.
 	AgentRoleBriefer  AgentRole = "briefer"
 	AgentRoleExecutor AgentRole = "executor"
+	// AgentRoleTaskReviewer is deliberately read-only; retaining a distinct
+	// role makes a prohibited write attributable to the reviewer rather than
+	// to the executor whose work it is inspecting.
+	AgentRoleTaskReviewer AgentRole = "task_reviewer"
 	// AgentRoleExplorer is read-only. It is retained in the call-policy
 	// record so a detected write is attributed to Explorer rather than another
 	// controller role.
@@ -131,10 +135,10 @@ func normalizeAgentCallPolicy(policy AgentCallPolicy) (AgentCallPolicy, error) {
 	if policy.Role == "" || strings.TrimSpace(policy.CallID) == "" {
 		return AgentCallPolicy{}, errors.New("agent call policy requires role and call ID")
 	}
-	if policy.Role != AgentRoleOrchestrator && policy.Role != AgentRoleBriefer && policy.Role != AgentRoleExecutor && policy.Role != AgentRoleExplorer {
+	if policy.Role != AgentRoleOrchestrator && policy.Role != AgentRoleBriefer && policy.Role != AgentRoleExecutor && policy.Role != AgentRoleTaskReviewer && policy.Role != AgentRoleExplorer {
 		return AgentCallPolicy{}, fmt.Errorf("agent call role %q cannot write the workspace", policy.Role)
 	}
-	if (policy.Role == AgentRoleOrchestrator || policy.Role == AgentRoleBriefer || policy.Role == AgentRoleExplorer) && policy.AllowUnprotected {
+	if (policy.Role == AgentRoleOrchestrator || policy.Role == AgentRoleBriefer || policy.Role == AgentRoleTaskReviewer || policy.Role == AgentRoleExplorer) && policy.AllowUnprotected {
 		return AgentCallPolicy{}, errors.New("read-only agent role must use an explicit path boundary")
 	}
 	collections := []*[]string{&policy.AllowedPaths, &policy.AllowedRoots, &policy.ProtectedPaths}

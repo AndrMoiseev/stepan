@@ -441,6 +441,68 @@ type Assignment struct {
 	AcceptanceHistory []AcceptanceEvidence
 	Commit            *CommitEvidence
 	Counters          CycleCounters
+	// TaskReviews is the durable discussion for this assignment.  It is kept
+	// separately from operation results because a result proves an observed
+	// reviewer turn, while the discussion is what binds later turns and an
+	// executor dispute to stable finding identifiers.
+	TaskReviews []TaskReviewRecord
+}
+
+// FindingStatus is owned exclusively by the task reviewer.  In particular an
+// executor may dispute a finding but cannot turn Open into Resolved itself.
+type FindingStatus string
+
+const (
+	FindingOpen     FindingStatus = "open"
+	FindingResolved FindingStatus = "resolved"
+	FindingRetained FindingStatus = "retained"
+)
+
+func (s FindingStatus) valid() bool {
+	return s == FindingOpen || s == FindingResolved || s == FindingRetained
+}
+
+// TaskReviewFinding is a stable, controller-retained finding.  Basis is the
+// explicit defect, brief requirement, or project rule that permits a blocking
+// review finding; it intentionally has no generic "preference" value.
+type TaskReviewFinding struct {
+	ID             string
+	Problem        string
+	Location       string
+	Basis          string
+	ExpectedResult string
+	Status         FindingStatus
+	Resolution     string
+}
+
+func (f TaskReviewFinding) valid() bool {
+	return strings.TrimSpace(f.ID) != "" && strings.TrimSpace(f.Problem) != "" && strings.TrimSpace(f.Location) != "" && strings.TrimSpace(f.Basis) != "" && strings.TrimSpace(f.ExpectedResult) != "" && f.Status.valid() && (f.Status == FindingOpen || strings.TrimSpace(f.Resolution) != "")
+}
+
+// TaskReviewRecord preserves every semantic review round, including a
+// re-consideration of an executor dispute.  The result ID links the discussion
+// to the operation evidence; discussion is never inferred from a model prompt.
+type TaskReviewRecord struct {
+	OperationID OperationID
+	ResultID    ResultID
+	Round       uint64
+	State       EvidenceRef
+	Findings    []TaskReviewFinding
+	Discussion  string
+}
+
+func (r TaskReviewRecord) valid() bool {
+	if r.OperationID == "" || r.ResultID == "" || r.Round == 0 || !r.State.valid() {
+		return false
+	}
+	seen := make(map[string]bool, len(r.Findings))
+	for _, finding := range r.Findings {
+		if !finding.valid() || seen[finding.ID] {
+			return false
+		}
+		seen[finding.ID] = true
+	}
+	return true
 }
 
 // FinalAcceptanceEvidence proves completion of the run rather than of one
@@ -951,6 +1013,45 @@ func (r *Run) AddResult(assignmentID AssignmentID, result OperationResult) error
 		assignment.Counters.MandatoryChecksCycle = nextCycle(assignment.Counters.MandatoryChecksCycle)
 	}
 	return nil
+}
+
+// RecordTaskReview retains a reviewer-controlled decision after the matching
+// review operation has completed.  The method deliberately does not accept an
+// executor identity: only controller code which has validated a task-reviewer
+// response can record a resolution.
+func (r *Run) RecordTaskReview(assignmentID AssignmentID, record TaskReviewRecord) error {
+	assignment, err := r.activeAssignment(assignmentID)
+	if err != nil {
+		return err
+	}
+	if !record.valid() || record.Round != uint64(len(assignment.TaskReviews)+1) || record.State != r.CurrentState {
+		return fmt.Errorf("%w: invalid task review record", ErrInvalidState)
+	}
+	operation := assignment.operation(record.OperationID)
+	result := assignment.result(record.ResultID)
+	if operation == nil || result == nil || result.OperationID != operation.ID || operation.Kind != OperationReview || operation.Counter != CycleCounterAssignmentReview || result.State != record.State || result.Basis != operation.Basis {
+		return fmt.Errorf("%w: task review record does not match review evidence", ErrInvalidState)
+	}
+	assignment.TaskReviews = append(assignment.TaskReviews, cloneTaskReview(record))
+	return nil
+}
+
+// OpenTaskReviewFindings returns the current unresolved reviewer findings.
+// A clone prevents callers from bypassing reviewer ownership by mutating
+// persisted state in-place.
+func (r *Run) OpenTaskReviewFindings(assignmentID AssignmentID) []TaskReviewFinding {
+	assignment := r.assignment(assignmentID)
+	if assignment == nil || len(assignment.TaskReviews) == 0 {
+		return nil
+	}
+	latest := assignment.TaskReviews[len(assignment.TaskReviews)-1]
+	findings := make([]TaskReviewFinding, 0, len(latest.Findings))
+	for _, finding := range latest.Findings {
+		if finding.Status == FindingOpen || finding.Status == FindingRetained {
+			findings = append(findings, finding)
+		}
+	}
+	return findings
 }
 
 // AcceptAssignment records the successful evidence before a commit is tried.
@@ -1567,6 +1668,16 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 			return fmt.Errorf("%w: invalid result", ErrInvalidState)
 		}
 	}
+	for index, review := range assignment.TaskReviews {
+		if !review.valid() || review.Round != uint64(index+1) {
+			return fmt.Errorf("%w: invalid task review history", ErrInvalidState)
+		}
+		operation := assignment.operation(review.OperationID)
+		result := assignment.result(review.ResultID)
+		if operation == nil || result == nil || result.OperationID != operation.ID || operation.Kind != OperationReview || operation.Counter != CycleCounterAssignmentReview || result.State != review.State || result.Basis != operation.Basis {
+			return fmt.Errorf("%w: task review history lacks matching evidence", ErrInvalidState)
+		}
+	}
 	for _, evidence := range assignment.AcceptanceHistory {
 		if assignment.validateAcceptance(evidence, false) != nil {
 			return fmt.Errorf("%w: invalid historical acceptance", ErrInvalidState)
@@ -2011,4 +2122,9 @@ func cloneFinalAcceptance(evidence FinalAcceptanceEvidence) *FinalAcceptanceEvid
 	evidence.CheckResultIDs = slices.Clone(evidence.CheckResultIDs)
 	evidence.OpenFindingIDs = slices.Clone(evidence.OpenFindingIDs)
 	return &evidence
+}
+
+func cloneTaskReview(record TaskReviewRecord) TaskReviewRecord {
+	record.Findings = slices.Clone(record.Findings)
+	return record
 }

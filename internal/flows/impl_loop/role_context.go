@@ -108,6 +108,17 @@ type TaskRoleStartInput struct {
 	Checks       []CheckCatalogEntry
 }
 
+// TaskReviewerStartInput is deliberately richer than the executor contract:
+// every reviewer round sees the whole current assignment diff, mandatory-check
+// evidence, and the retained review discussion in addition to the live brief
+// and live rules.  These are controller observations, never model assertions.
+type TaskReviewerStartInput struct {
+	TaskRoleStartInput
+	AssignmentDiff       string
+	RequiredCheckResults string
+	PreviousDiscussion   string
+}
+
 // OrchestratorStartInput is the run-level context for extracting, reflecting,
 // or adding tasks. The package is opaque because OpenSpec loading belongs to a
 // later, dedicated component.
@@ -173,6 +184,31 @@ func BuildImplementerStartContext(input TaskRoleStartInput) (RoleStartContext, e
 // index as the executor. The differing instructions only change role duties.
 func BuildTaskReviewerStartContext(input TaskRoleStartInput) (RoleStartContext, error) {
 	return buildTaskRoleStartContext(ResponseRoleTaskReviewer, input)
+}
+
+// BuildTaskReviewerReviewContext supplies the complete review packet for the
+// first reviewer turn. Later rounds continue the same reviewer session and
+// receive the controller-rendered prior discussion as the next turn message.
+func BuildTaskReviewerReviewContext(input TaskReviewerStartInput) (RoleStartContext, error) {
+	if strings.TrimSpace(input.AssignmentDiff) == "" || strings.TrimSpace(input.RequiredCheckResults) == "" {
+		return RoleStartContext{}, fmt.Errorf("%w: reviewer requires assignment diff and required-check evidence", ErrInvalidRoleContext)
+	}
+	start, err := buildTaskRoleStartContext(ResponseRoleTaskReviewer, input.TaskRoleStartInput)
+	if err != nil {
+		return RoleStartContext{}, err
+	}
+	data := strings.Builder{}
+	data.WriteString(start.StartMessage)
+	fmt.Fprintf(&data, "\n\n# Entire current assignment diff\n\n%s\n\n# Required check evidence\n\n%s\n\n# Previous review discussion\n\n%s\n", strings.TrimSpace(input.AssignmentDiff), strings.TrimSpace(input.RequiredCheckResults), nonEmptyReviewDiscussion(input.PreviousDiscussion))
+	start.StartMessage = data.String()
+	return start, nil
+}
+
+func nonEmptyReviewDiscussion(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "No previous review findings."
+	}
+	return strings.TrimSpace(value)
 }
 
 func buildTaskRoleStartContext(role ResponseRole, input TaskRoleStartInput) (RoleStartContext, error) {
@@ -389,7 +425,7 @@ func RoleInstructions(role ResponseRole) (string, error) {
 	case ResponseRoleImplementer:
 		specific = "Implement only the current brief. You may edit permitted implementation files, but never change specification, briefs, rules, configuration, run state, or Git metadata. Do not execute commands; request configured checks by name or ask the controller for Explorer. Escalate an incomplete or conflicting brief."
 	case ResponseRoleTaskReviewer:
-		specific = "Review the current brief, indexed rules, assignment diff, and results supplied in later turns. Do not edit files or execute commands. Reject unsupported behavior changes and escalate an incomplete or conflicting brief."
+		specific = "Review the current brief, indexed rules, complete assignment diff, required-check evidence, and prior discussion supplied by the controller. Do not edit files or execute commands. A blocking finding must cite a concrete defect, an explicit brief requirement, or an indexed project rule and a location; personal style preferences beyond those rules cannot block. Review every modification of an existing test: accept it only when the brief explains the behavior change and necessary coverage is preserved or replaced; deleting, disabling, or weakening a test merely to pass checks must be a blocking finding. Reject unsupported behavior changes and escalate an incomplete or conflicting brief."
 	case ResponseRoleExplorer:
 		specific = "Investigate only the controller's specific question and boundaries. Do not edit files, execute commands, or delegate. Return confirmed facts, unknowns, and file or symbol references."
 	case ResponseRoleFinalReviewer:
