@@ -30,6 +30,7 @@ type ControlledAgentCall struct {
 	Policy       AgentCallPolicy
 	Run          *implementationstate.Run
 	Journal      *runstore.Run
+	StateStore   *runstore.StateStore
 	AssignmentID implementationstate.AssignmentID // empty for run-scoped work
 	OperationID  implementationstate.OperationID
 	Limits       implementationstate.CycleLimits
@@ -67,12 +68,13 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 	}
 
 	message := call.Message
+	session := call.Session
 	var attempts uint64
 	for {
 		if err := ctx.Err(); err != nil {
 			return ControlledAgentCallResult{Attempts: attempts}, errors.Join(ErrAgentCallCancelled, err)
 		}
-		attempt, err := reserveAgentAttempt(call)
+		attempt, err := reserveAgentAttempt(ctx, call)
 		if err != nil {
 			return ControlledAgentCallResult{Attempts: attempts}, err
 		}
@@ -84,39 +86,73 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		// write boundary.
 		outcome, err := ObserveAgentCall(context.WithoutCancel(ctx), call.Repository, call.Policy, call.Run, call.Journal, func() error {
 			var turnErr error
-			raw, turnErr = runBoundedAgentTurn(ctx, call.Session, message, timeout)
+			raw, turnErr = runBoundedAgentTurn(ctx, session, message, timeout)
 			return turnErr
 		})
 		if err != nil {
+			if outcomeErr := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, err.Error()); outcomeErr != nil {
+				return ControlledAgentCallResult{Attempts: attempts}, errors.Join(err, outcomeErr)
+			}
 			return ControlledAgentCallResult{Attempts: attempts}, err
 		}
 		if outcome.Disposition == CallExecutionBlocked {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, outcome.Diagnostic); err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, fmt.Errorf("%s", outcome.Diagnostic)
 		}
 
 		if errors.Is(outcome.InvocationError, ErrAgentCallCancelled) || errors.Is(outcome.InvocationError, context.Canceled) {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptInterrupted, outcome.InvocationError.Error()); err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			_ = session.Close()
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, outcome.InvocationError
 		}
 		if outcome.Disposition == CallRetry {
-			message = retryPrompt(outcome.Diagnostic)
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, outcome.Diagnostic); err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			session, err = recreateAgentSession(ctx, session)
+			if err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			message = retryPrompt(call.Message, outcome.Diagnostic)
 			continue
 		}
 		if outcome.InvocationError != nil {
-			message = retryPrompt(outcome.InvocationError.Error())
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, outcome.InvocationError.Error()); err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			session, err = recreateAgentSession(ctx, session)
+			if err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			message = retryPrompt(call.Message, outcome.InvocationError.Error())
 			continue
 		}
 		response, bindErr := BindAgentResponse(call.Expectation, raw)
 		if bindErr != nil {
-			message = retryPrompt(bindErr.Error())
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, bindErr.Error()); err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			session, err = recreateAgentSession(ctx, session)
+			if err != nil {
+				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+			message = retryPrompt(call.Message, bindErr.Error())
 			continue
+		}
+		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
+			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 		}
 		return ControlledAgentCallResult{Response: response, Snapshot: outcome.Snapshot, Attempts: attempts}, nil
 	}
 }
 
 func validateControlledAgentCall(call ControlledAgentCall) error {
-	if call.Session == nil || call.Run == nil || call.Journal == nil || call.Repository == "" || call.OperationID == "" {
-		return errors.New("controlled agent call requires session, repository, run, journal, and operation ID")
+	if call.Session == nil || call.Run == nil || call.Journal == nil || call.StateStore == nil || call.Repository == "" || call.OperationID == "" {
+		return errors.New("controlled agent call requires session, repository, run, journal, state store, and operation ID")
 	}
 	if call.Expectation.Binding.CallID == "" || call.Policy.CallID != call.Expectation.Binding.CallID {
 		return errors.New("controlled agent call policy and response binding must share a call ID")
@@ -124,15 +160,34 @@ func validateControlledAgentCall(call ControlledAgentCall) error {
 	return nil
 }
 
-func reserveAgentAttempt(call ControlledAgentCall) (implementationstate.OperationAttempt, error) {
+func reserveAgentAttempt(ctx context.Context, call ControlledAgentCall) (implementationstate.OperationAttempt, error) {
 	if call.AssignmentID != "" {
-		return call.Run.StartAssignmentAttemptWithLimits(call.AssignmentID, call.OperationID, call.Limits)
+		attempt, _, err := call.StateStore.RecordAssignmentAttemptStartWithLimits(ctx, call.Run, call.AssignmentID, call.OperationID, call.Limits)
+		return attempt, err
 	}
-	return call.Run.StartRunAttemptWithLimits(call.OperationID, call.Limits)
+	attempt, _, err := call.StateStore.RecordRunAttemptStartWithLimits(ctx, call.Run, call.OperationID, call.Limits)
+	return attempt, err
 }
 
-func retryPrompt(diagnostic string) string {
-	return "The previous response was not accepted by the controller: " + diagnostic + ". Repeat the same requested action and return a valid structured response."
+func recordAgentAttemptOutcome(ctx context.Context, call ControlledAgentCall, outcome implementationstate.AttemptOutcome, diagnostic string) error {
+	if call.AssignmentID != "" {
+		_, err := call.StateStore.RecordAssignmentAttemptOutcome(ctx, call.Run, call.AssignmentID, call.OperationID, outcome, diagnostic)
+		return err
+	}
+	_, err := call.StateStore.RecordRunAttemptOutcome(ctx, call.Run, call.OperationID, outcome, diagnostic)
+	return err
+}
+
+func recreateAgentSession(ctx context.Context, session *AgentSession) (*AgentSession, error) {
+	next, err := session.Recreate(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("recreate implementation agent session for technical retry: %w", err)
+	}
+	return next, nil
+}
+
+func retryPrompt(action, diagnostic string) string {
+	return "The previous response was not accepted by the controller: " + diagnostic + ". Repeat the original requested action and return a valid structured response.\n\nOriginal requested action:\n" + action
 }
 
 func runBoundedAgentTurn(parent context.Context, session *AgentSession, message string, timeout time.Duration) (json.RawMessage, error) {

@@ -259,6 +259,28 @@ func (p LimitPause) valid() bool {
 type OperationAttempt struct {
 	Number        uint64 `json:"number"`
 	SemanticRound uint64 `json:"semantic_round"`
+	// Outcome and Diagnostic are populated after an externally dispatched
+	// attempt returns. They deliberately live on the attempt rather than an
+	// OperationResult: a technical failure must be retained while the same
+	// operation remains eligible for a retry.
+	Outcome    AttemptOutcome `json:"outcome,omitempty"`
+	Diagnostic string         `json:"diagnostic,omitempty"`
+}
+
+// AttemptOutcome describes the controller's observation of one externally
+// dispatched attempt. An empty outcome is the conservative durable state left
+// by a crash between recording the start and observing the external action.
+type AttemptOutcome string
+
+const (
+	AttemptSucceeded   AttemptOutcome = "succeeded"
+	AttemptFailed      AttemptOutcome = "failed"
+	AttemptInterrupted AttemptOutcome = "interrupted"
+	AttemptRejected    AttemptOutcome = "rejected"
+)
+
+func (outcome AttemptOutcome) valid() bool {
+	return outcome == "" || outcome == AttemptSucceeded || outcome == AttemptFailed || outcome == AttemptInterrupted || outcome == AttemptRejected
 }
 
 // Operation records a controller-requested agent, check, or review action.
@@ -294,7 +316,7 @@ func (o Operation) valid() bool {
 		return false
 	}
 	for index, attempt := range o.Attempts {
-		if attempt.Number != uint64(index+1) || (o.Counter == CycleCounterNone && (attempt.SemanticRound != 0 || o.SemanticCycle != 0)) || (o.Counter != CycleCounterNone && (attempt.SemanticRound == 0 || o.SemanticCycle == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound))) {
+		if attempt.Number != uint64(index+1) || !attempt.Outcome.valid() || (attempt.Outcome == "" && attempt.Diagnostic != "") || (o.Counter == CycleCounterNone && (attempt.SemanticRound != 0 || o.SemanticCycle != 0)) || (o.Counter != CycleCounterNone && (attempt.SemanticRound == 0 || o.SemanticCycle == 0 || (index > 0 && attempt.SemanticRound != o.Attempts[0].SemanticRound))) {
 			return false
 		}
 	}
@@ -995,6 +1017,17 @@ func (r *Run) StartAssignmentAttemptWithLimits(assignmentID AssignmentID, operat
 	return assignment.startAttempt(operation)
 }
 
+// RecordAssignmentAttemptOutcome records the post-dispatch technical outcome
+// without completing the operation. A failed or malformed agent turn can
+// therefore be retried while remaining visible after recovery.
+func (r *Run) RecordAssignmentAttemptOutcome(assignmentID AssignmentID, operationID OperationID, outcome AttemptOutcome, diagnostic string) error {
+	assignment, err := r.assignmentForAttemptOutcome(assignmentID)
+	if err != nil {
+		return err
+	}
+	return recordAttemptOutcome(assignment.operation(operationID), outcome, diagnostic)
+}
+
 // StartRunAttempt reserves a run-level operation attempt before external
 // dispatch. It follows the same durable-record-before-dispatch rule as
 // assignment work.
@@ -1034,6 +1067,28 @@ func (r *Run) StartRunAttemptWithLimits(operationID OperationID, limits CycleLim
 		}
 	}
 	return r.startRunAttempt(operation)
+}
+
+// RecordRunAttemptOutcome is the run-scoped counterpart of
+// RecordAssignmentAttemptOutcome.
+func (r *Run) RecordRunAttemptOutcome(operationID OperationID, outcome AttemptOutcome, diagnostic string) error {
+	if r.Status != RunActive && r.Status != RunPaused {
+		return fmt.Errorf("%w: run cannot record an attempt outcome", ErrInvalidState)
+	}
+	return recordAttemptOutcome(r.runOperation(operationID), outcome, diagnostic)
+}
+
+func recordAttemptOutcome(operation *Operation, outcome AttemptOutcome, diagnostic string) error {
+	if operation == nil || outcome == "" || !outcome.valid() || len(operation.Attempts) == 0 {
+		return fmt.Errorf("%w: invalid attempt outcome", ErrInvalidState)
+	}
+	attempt := &operation.Attempts[len(operation.Attempts)-1]
+	if attempt.Outcome != "" {
+		return fmt.Errorf("%w: attempt outcome is already recorded", ErrInvalidState)
+	}
+	attempt.Outcome = outcome
+	attempt.Diagnostic = diagnostic
+	return nil
 }
 
 func (r *Run) allowAssignmentAttempt(assignmentID AssignmentID, assignment *Assignment, operation *Operation, limits CycleLimits) error {
@@ -1627,6 +1682,20 @@ func (r *Run) assignmentIndex(id AssignmentID) int {
 func (r *Run) activeAssignment(id AssignmentID) (*Assignment, error) {
 	if err := r.requireActive(); err != nil {
 		return nil, err
+	}
+	index := r.assignmentIndex(id)
+	if index < 0 || r.Assignments[index].Status != AssignmentActive {
+		return nil, fmt.Errorf("%w: assignment is not active", ErrInvalidTransition)
+	}
+	return &r.Assignments[index], nil
+}
+
+// assignmentForAttemptOutcome admits a paused run as well as an active one:
+// a post-call safety check can pause the run before its already-dispatched
+// attempt has been durably described.
+func (r *Run) assignmentForAttemptOutcome(id AssignmentID) (*Assignment, error) {
+	if r.Status != RunActive && r.Status != RunPaused {
+		return nil, fmt.Errorf("%w: run cannot record an attempt outcome", ErrInvalidState)
 	}
 	index := r.assignmentIndex(id)
 	if index < 0 || r.Assignments[index].Status != AssignmentActive {

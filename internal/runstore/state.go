@@ -287,6 +287,42 @@ func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state 
 	})
 }
 
+// RecordAssignmentAttemptOutcome persists the technical observation made
+// after an assignment-scoped external attempt. Unlike an OperationResult, it
+// leaves the operation open for a bounded technical retry.
+func (s *StateStore) RecordAssignmentAttemptOutcome(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, outcome implementationstate.AttemptOutcome, diagnostic string) (implementationstate.Event, error) {
+	return s.recordAttemptOutcome(ctx, state, func(candidate *implementationstate.Run) error {
+		return candidate.RecordAssignmentAttemptOutcome(assignmentID, operationID, outcome, diagnostic)
+	})
+}
+
+// RecordRunAttemptOutcome is the run-scoped counterpart of
+// RecordAssignmentAttemptOutcome.
+func (s *StateStore) RecordRunAttemptOutcome(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID, outcome implementationstate.AttemptOutcome, diagnostic string) (implementationstate.Event, error) {
+	return s.recordAttemptOutcome(ctx, state, func(candidate *implementationstate.Run) error {
+		return candidate.RecordRunAttemptOutcome(operationID, outcome, diagnostic)
+	})
+}
+
+func (s *StateStore) recordAttemptOutcome(ctx context.Context, state *implementationstate.Run, record func(*implementationstate.Run) error) (implementationstate.Event, error) {
+	if state == nil {
+		return implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+	}
+	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
+	if err != nil {
+		return implementationstate.Event{}, err
+	}
+	candidate := candidateEvent.State
+	if err := record(candidate); err != nil {
+		return implementationstate.Event{}, err
+	}
+	event, err := s.Record(ctx, candidate)
+	if event.Sequence != 0 {
+		*state = *candidate
+	}
+	return event, err
+}
+
 func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool)) (implementationstate.OperationAttempt, implementationstate.Event, error) {
 	if state == nil {
 		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -19,11 +20,12 @@ func TestInvokeControlledAgentCallRetriesCrashAndMalformedResponse(t *testing.T)
 		t.Fatalf("default timeout = %s, want 30m", DefaultAgentCallTimeout)
 	}
 	for _, test := range []struct {
-		name    string
-		outputs []controlledTurn
+		name         string
+		outputs      []controlledTurn
+		firstOutcome implementationstate.AttemptOutcome
 	}{
-		{"crash", []controlledTurn{{err: agentruntime.ErrRuntimeExited}, {raw: controlledResponse(t, "accepted after crash")}}},
-		{"malformed response", []controlledTurn{{raw: json.RawMessage(`{}`)}, {raw: controlledResponse(t, "accepted after repair")}}},
+		{"crash", []controlledTurn{{err: agentruntime.ErrRuntimeExited}, {raw: controlledResponse(t, "accepted after crash")}}, implementationstate.AttemptFailed},
+		{"malformed response", []controlledTurn{{raw: json.RawMessage(`{}`)}, {raw: controlledResponse(t, "accepted after repair")}}, implementationstate.AttemptRejected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := &controlledCallRuntime{turns: test.outputs}
@@ -37,6 +39,14 @@ func TestInvokeControlledAgentCallRetriesCrashAndMalformedResponse(t *testing.T)
 			}
 			if len(runtime.messages) != 2 || !strings.Contains(runtime.messages[1], "previous response was not accepted") {
 				t.Fatalf("retry messages = %#v", runtime.messages)
+			}
+			recovered, _, err := call.StateStore.Current(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempts := recovered.RunOperations[0].Attempts
+			if len(attempts) != 2 || attempts[0].Outcome != test.firstOutcome || attempts[0].Diagnostic == "" || attempts[1].Outcome != implementationstate.AttemptSucceeded {
+				t.Fatalf("persisted technical outcomes = %#v", attempts)
 			}
 		})
 	}
@@ -101,6 +111,70 @@ func TestInvokeControlledAgentCallRejectsRestoredViolationBeforeRetry(t *testing
 	}
 }
 
+func TestInvokeControlledAgentCallPersistsTechnicalFailureAndLimitPause(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{err: agentruntime.ErrRuntimeExited}}}
+	call := controlledCallFixture(t, runtime)
+	call.Limits.TechnicalAttempts = 1
+
+	_, err := InvokeControlledAgentCall(context.Background(), call)
+	if !errors.Is(err, implementationstate.ErrLimitExceeded) {
+		t.Fatalf("call error = %v, want technical limit", err)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered, sequence, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sequence < 3 || recovered.Status != implementationstate.RunPaused || recovered.LimitPause == nil || !recovered.LimitPause.Technical {
+		t.Fatalf("recovered durable boundary = sequence %d, state %#v", sequence, recovered)
+	}
+	attempts := recovered.RunOperations[0].Attempts
+	if len(attempts) != 1 || attempts[0].Outcome != implementationstate.AttemptFailed || !strings.Contains(attempts[0].Diagnostic, agentruntime.ErrRuntimeExited.Error()) {
+		t.Fatalf("recovered technical outcome = %#v", attempts)
+	}
+}
+
+func TestInvokeControlledAgentCallRecreatesTerminatedSessionForRetry(t *testing.T) {
+	factory := &terminatedSessionFactory{turns: []controlledTurn{
+		{waitForInterrupt: true},
+		{raw: controlledResponse(t, "accepted from a fresh session")},
+	}}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+	start := sessionStartContext(t, ResponseRoleImplementer)
+	session, err := owner.Assignment(context.Background(), "assignment", ResponseRoleImplementer, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Session = session
+	call.Timeout = 10 * time.Millisecond
+
+	result, err := InvokeControlledAgentCall(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Attempts != 2 || result.Response.Message == nil || *result.Response.Message != "accepted from a fresh session" {
+		t.Fatalf("retry result = %#v", result)
+	}
+	if factory.created() != 2 || !factory.runtime(0).isClosed() {
+		t.Fatalf("runtime lifecycle = created %d, first closed %t", factory.created(), factory.runtime(0).isClosed())
+	}
+	if message := factory.runtime(1).lastMessage(); !strings.Contains(message, call.Message) || !strings.Contains(message, "Original requested action") {
+		t.Fatalf("fresh session retry did not receive original action: %q", message)
+	}
+	if current, err := owner.Assignment(context.Background(), "assignment", ResponseRoleImplementer, start); err != nil || current == session {
+		t.Fatalf("owner retained terminated session: session=%p current=%p err=%v", session, current, err)
+	}
+}
+
 func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) ControlledAgentCall {
 	t.Helper()
 	store, err := runstore.New(t.TempDir())
@@ -111,17 +185,54 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 	if err != nil {
 		t.Fatal(err)
 	}
+	stateStore, err := runstore.OpenState(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stateStore.Close() })
+	repository := newSnapshotRepository(t)
+	baseline := controlledCallReference(t, journal, "baseline")
+	specification := controlledCallReference(t, journal, "specification")
+	taskList := controlledCallReference(t, journal, "tasks")
+	configuration := controlledCallReference(t, journal, "configuration")
+	model, err := implementationstate.NewRun(implementationstate.RunIdentity{
+		ID:             journal.ID(),
+		Change:         "change",
+		Repository:     repository,
+		WorkCopy:       repository,
+		Branch:         "feature",
+		BaselineCommit: "base",
+		BaselineState:  baseline,
+		Specification:  specification,
+		TaskList:       taskList,
+		Configuration:  configuration,
+	}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
+	if err := model.AddRunOperation(implementationstate.Operation{ID: "agent-operation", Kind: implementationstate.OperationAgent, Counter: implementationstate.CycleCounterNone, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
 	expectation := expectationFor(ResponseRoleImplementer, ResponseImplementationReady)
 	return ControlledAgentCall{
-		Session:    &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "thread"},
-		Repository: newSnapshotRepository(t),
+		Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) {
+			return &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "thread"}, nil
+		}},
+		Repository: repository,
 		Policy:     AgentCallPolicy{Role: AgentRoleExecutor, CallID: expectation.Binding.CallID, AllowUnprotected: true},
-		Run: &implementationstate.Run{Status: implementationstate.RunActive, RunOperations: []implementationstate.Operation{{
-			ID: "agent-operation", Kind: implementationstate.OperationAgent, Counter: implementationstate.CycleCounterNone,
-			Basis: implementationstate.AcceptanceBasis{Specification: implementationstate.EvidenceRef{ID: "spec", Digest: "v1"}, Configuration: implementationstate.EvidenceRef{ID: "config", Digest: "v1"}},
-		}}},
-		Journal: journal, OperationID: "agent-operation", Limits: controlledCallLimits(), Expectation: expectation, Message: "perform the requested action",
+		Run:        model,
+		Journal:    journal, StateStore: stateStore, OperationID: "agent-operation", Limits: controlledCallLimits(), Expectation: expectation, Message: "perform the requested action",
 	}
+}
+
+func controlledCallReference(t *testing.T, run *runstore.Run, id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	t.Helper()
+	reference, err := run.Publish(id, []byte(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reference
 }
 
 func controlledCallLimits() implementationstate.CycleLimits {
@@ -215,4 +326,102 @@ func (runtime *controlledCallRuntime) waitForTurn(want int, timeout time.Duratio
 		time.Sleep(time.Millisecond)
 	}
 	return false
+}
+
+// terminatedSessionFactory models adapter runtimes that cannot accept another
+// turn after Interrupt or a runtime failure. A retry must therefore open a
+// distinct runtime and thread through SessionOwner.
+type terminatedSessionFactory struct {
+	mu       sync.Mutex
+	turns    []controlledTurn
+	runtimes []*terminatedSessionRuntime
+}
+
+func (factory *terminatedSessionFactory) Preflight(implementationconfig.RuntimeProfile) error {
+	return nil
+}
+
+func (factory *terminatedSessionFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if len(factory.turns) == 0 {
+		return nil, errors.New("unexpected replacement runtime")
+	}
+	runtime := &terminatedSessionRuntime{turn: factory.turns[0]}
+	factory.turns = factory.turns[1:]
+	factory.runtimes = append(factory.runtimes, runtime)
+	return runtime, nil
+}
+
+func (factory *terminatedSessionFactory) created() int {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return len(factory.runtimes)
+}
+
+func (factory *terminatedSessionFactory) runtime(index int) *terminatedSessionRuntime {
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	return factory.runtimes[index]
+}
+
+type terminatedSessionRuntime struct {
+	mu        sync.Mutex
+	turn      controlledTurn
+	closed    bool
+	interrupt chan struct{}
+	messages  []string
+}
+
+func (runtime *terminatedSessionRuntime) StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	return "fresh-thread", nil
+}
+
+func (runtime *terminatedSessionRuntime) RunTurn(_ agentruntime.Thread, message string) (json.RawMessage, error) {
+	runtime.mu.Lock()
+	if runtime.closed {
+		runtime.mu.Unlock()
+		return nil, agentruntime.ErrRuntimeClosed
+	}
+	runtime.messages = append(runtime.messages, message)
+	turn := runtime.turn
+	if turn.waitForInterrupt {
+		runtime.interrupt = make(chan struct{})
+	}
+	interrupt := runtime.interrupt
+	runtime.mu.Unlock()
+	if turn.waitForInterrupt {
+		<-interrupt
+		return nil, agentruntime.ErrTurnInterrupted
+	}
+	return turn.raw, turn.err
+}
+
+func (runtime *terminatedSessionRuntime) Interrupt() error {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.closed = true
+	if runtime.interrupt != nil {
+		close(runtime.interrupt)
+		runtime.interrupt = nil
+	}
+	return nil
+}
+
+func (runtime *terminatedSessionRuntime) CloseThread(agentruntime.Thread) error { return nil }
+func (runtime *terminatedSessionRuntime) Close() error                          { return nil }
+
+func (runtime *terminatedSessionRuntime) isClosed() bool {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	return runtime.closed
+}
+
+func (runtime *terminatedSessionRuntime) lastMessage() string {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if len(runtime.messages) == 0 {
+		return ""
+	}
+	return runtime.messages[len(runtime.messages)-1]
 }

@@ -1,5 +1,15 @@
 # Technical debt — autonomous-implementation-loop
 
+## TD-7.4-001 — файловая policy не связана с фактической ролью сессии
+
+- Origin: task 7.4 initial review; affected locations: `internal/flows/impl_loop/controlled_agent_call.go` and `agent_call_guard.go`.
+- Status: `open`.
+- Potential problem: validation ties policy only to the call ID, not to `Session.Role`/`Expectation.Role`, and the guard role vocabulary does not represent all read-only roles. Future routing could therefore supply an executor policy to a read-only role.
+- Evidence: there are no production call sites yet; current validation does not enforce role consistency or derive write scope from the session role.
+- Expected impact: a future integration may weaken post-call enforcement or attribute a violation to the wrong role.
+- Classification: technical debt because the problematic route is not currently reachable in production and no typical supported-use failure exists yet.
+- Possible follow-up: derive policy from the session role, validate it against the response expectation, represent all roles in violation records, and give read-only roles no writable scope.
+
 ## TASK-4.3-007 — closing content race in a pre-dirty tracked file
 
 - Origin: task 4.3 final task rereview; affected location: `internal/gitsnapshot/snapshot.go`, `captureLocal` and `verifyLocalState`.

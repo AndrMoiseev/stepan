@@ -60,6 +60,11 @@ type AgentSession struct {
 	runtime agentruntime.Runtime
 	thread  agentruntime.Thread
 	owner   *SessionOwner
+	start   RoleStartContext
+	// restart is only used by narrowly scoped test adapters. Production
+	// sessions are recreated by their SessionOwner from the saved start
+	// context, never by resuming a provider-specific conversation.
+	restart func(context.Context) (*AgentSession, error)
 
 	mu     sync.Mutex
 	closed bool
@@ -168,9 +173,53 @@ func (owner *SessionOwner) newSessionLocked(ctx context.Context, role ResponseRo
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("start implementation session for role %q: %w", role, err), runtime.Close())
 	}
-	session := &AgentSession{Role: role, runtime: runtime, thread: thread, owner: owner}
+	session := &AgentSession{Role: role, runtime: runtime, thread: thread, owner: owner, start: start}
 	owner.sessions[session] = struct{}{}
 	return session, nil
+}
+
+// Recreate discards this provider runtime and opens a new runtime/thread from
+// the same immutable role start context. It is the retry boundary for calls
+// that may have terminated a provider session through an interrupt or crash.
+func (session *AgentSession) Recreate(ctx context.Context) (*AgentSession, error) {
+	if session == nil {
+		return nil, ErrSessionClosed
+	}
+	if session.owner == nil {
+		if session.restart != nil {
+			return session.restart(ctx)
+		}
+		return nil, ErrSessionClosed
+	}
+	return session.owner.recreate(ctx, session)
+}
+
+func (owner *SessionOwner) recreate(ctx context.Context, session *AgentSession) (*AgentSession, error) {
+	owner.mu.Lock()
+	if owner.closed {
+		owner.mu.Unlock()
+		return nil, ErrSessionOwnerClosed
+	}
+	delete(owner.sessions, session)
+	keys := make([]sessionKey, 0, 1)
+	for key, current := range owner.persistent {
+		if current == session {
+			keys = append(keys, key)
+			delete(owner.persistent, key)
+		}
+	}
+	next, createErr := owner.newSessionLocked(ctx, session.Role, session.start)
+	if createErr == nil {
+		for _, key := range keys {
+			owner.persistent[key] = next
+		}
+	}
+	owner.mu.Unlock()
+	closeErr := session.close()
+	if createErr != nil {
+		return nil, errors.Join(fmt.Errorf("recreate implementation session for role %q: %w", session.Role, createErr), closeErr)
+	}
+	return next, closeErr
 }
 
 // RunTurn continues this role's provider conversation. Calls are serialized
