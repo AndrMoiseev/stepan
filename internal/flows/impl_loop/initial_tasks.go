@@ -66,12 +66,12 @@ func PersistInitialTaskExtraction(ctx context.Context, stateStore *runstore.Stat
 	if stateStore == nil || run == nil {
 		return fmt.Errorf("%w: extraction state is required", ErrTaskExtraction)
 	}
+	if err := validateInitialTaskExtractionResponse(run, response); err != nil {
+		return err
+	}
 	tasks, err := DecodeExtractedTasks(response.TaskIDs, response.TaskPayloads)
 	if err != nil {
 		return err
-	}
-	if response.Kind != ResponseTasksExtracted || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
-		return fmt.Errorf("%w: response is not bound to pending run", ErrTaskExtraction)
 	}
 	if err := run.CompleteInitialTaskExtraction(tasks); err != nil {
 		return err
@@ -90,6 +90,16 @@ func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall)
 	if call.Run == nil || !call.Run.TaskExtractionPending || call.AssignmentID != "" || call.Expectation.Role != ResponseRoleOrchestrator || call.Expectation.State != ResponseStateExtractingTasks {
 		return ControlledAgentCallResult{}, fmt.Errorf("%w: invalid initial extraction call", ErrTaskExtraction)
 	}
+	callerValidation := call.ValidateResponse
+	call.ValidateResponse = func(response AgentResponse) error {
+		if err := validateInitialTaskExtractionResponse(call.Run, response); err != nil {
+			return err
+		}
+		if callerValidation != nil {
+			return callerValidation(response)
+		}
+		return nil
+	}
 	result, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return result, err
@@ -98,6 +108,14 @@ func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall)
 		return result, err
 	}
 	return result, nil
+}
+
+func validateInitialTaskExtractionResponse(run *implementationstate.Run, response AgentResponse) error {
+	if run == nil || response.Kind != ResponseTasksExtracted || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
+		return fmt.Errorf("%w: response is not bound to pending run", ErrTaskExtraction)
+	}
+	_, err := DecodeExtractedTasks(response.TaskIDs, response.TaskPayloads)
+	return err
 }
 
 // BeginNewChange accepts only a change that has not already supplied a run in

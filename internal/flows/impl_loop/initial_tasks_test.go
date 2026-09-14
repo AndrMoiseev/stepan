@@ -154,20 +154,29 @@ func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stateStore.Close()
+	invalid := responsePayloadMap(ResponseTasksExtracted)
+	invalid["task_ids"] = []string{"A", "B", "A1"}
+	invalid["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"B","parent_id":"","title":"B"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}
+	invalidRaw, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
 	payload := responsePayloadMap(ResponseTasksExtracted)
-	payload["task_ids"] = []string{"A"}
-	payload["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`}
+	payload["task_ids"] = []string{"A", "A1"}
+	payload["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: raw}}}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: invalidRaw}, {raw: raw}}}
 	expectation := ResponseExpectation{Role: ResponseRoleOrchestrator, State: ResponseStateExtractingTasks, Scope: ResponseScopeRun, Binding: boundExtraction(identity)}
-	call := ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) { return nil, errors.New("unexpected retry") }}, Repository: repository, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: "extract"}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation, Message: "extract"}
+	call := ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) {
+		return &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "thread"}, nil
+	}}, Repository: repository, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: "extract"}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation, Message: "extract"}
 	if _, err := ExecuteInitialTaskExtraction(context.Background(), call); err != nil {
 		t.Fatal(err)
 	}
-	if run.TaskExtractionPending || len(run.RunResults) != 1 || len(run.Tasks) != 1 {
+	if run.TaskExtractionPending || len(run.RunResults) != 1 || len(run.Tasks) != 2 || len(run.RunOperations[0].Attempts) != 2 || run.RunOperations[0].Attempts[0].Outcome != implementationstate.AttemptRejected || run.RunOperations[0].Attempts[1].Outcome != implementationstate.AttemptSucceeded {
 		t.Fatalf("completed extraction = %#v", run)
 	}
 }

@@ -209,3 +209,23 @@
 - Expected impact: an unusually cased invocation could reopen the same logical change after a closed run.
 - Classification: technical debt because it depends on atypical noncanonical input and the approved contract does not define case normalization for change identifiers.
 - Possible follow-up: define a canonical change identity or compare canonical package-directory identity, with a Windows regression.
+
+## TD-8.2-002 — resume repeats comparison against the raw saved work-copy path
+
+- Origin: task 8.2 rereview cycle 1; affected location: `internal/flows/impl_loop/controller_lock.go` (`FindUnclosedRun`).
+- Status: `open`.
+- Potential problem: a cleaned saved work-copy identity can pass the first comparison but a redundant second comparison uses the raw path and declines the same run.
+- Evidence: a stored path with `.` or a trailing separator may be equivalent after cleaning but differ in the raw confirmation.
+- Expected impact: an unusually noncanonical saved identity may not be resumable.
+- Classification: technical debt because normal controller lease-derived identities are canonical.
+- Possible follow-up: return after the single cleaned identity comparison and cover an equivalent noncanonical stored path.
+
+## TD-8.2-003 — failed extraction persistence can leave the caller's model ahead of durable state
+
+- Origin: task 8.2 rereview cycle 1; affected location: `internal/flows/impl_loop/initial_tasks.go` (`PersistInitialTaskExtraction`).
+- Status: `open`.
+- Potential problem: the caller's run is mutated before `StateStore.Record`, so a pre-event persistence failure can leave memory completed while the journal remains pending.
+- Evidence: an already-cancelled record context can fail before durable publication after tasks/result were installed in memory.
+- Expected impact: same-process retry may reject extraction until the model is reloaded; careless callers could inspect state inconsistent with the durable source of truth.
+- Classification: technical debt because recovery from the journal restores the correct pending state and the failure path is uncommon.
+- Possible follow-up: mutate a cloned candidate and publish/update the caller only after durable success, matching runstore transition helpers.
