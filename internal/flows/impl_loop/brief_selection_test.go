@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -103,6 +104,50 @@ func TestValidateBriefSelectionResponseRejectsWrongBinding(t *testing.T) {
 	}
 }
 
+func TestNewBriefSelectionCallStartsBrieferWithCompleteRuntimeContext(t *testing.T) {
+	run, stateStore, journal, repository, expectation := newBriefSelectionFixture(t)
+	defer stateStore.Close()
+	if err := PrepareBriefSelection(context.Background(), stateStore, run, "select"); err != nil {
+		t.Fatal(err)
+	}
+	factory := &sessionRuntimeFactory{}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+
+	selection, err := NewBriefSelectionCall(context.Background(), owner, BriefSelectionCallInput{
+		Repository: repository,
+		Policy:     AgentCallPolicy{Role: AgentRoleBriefer, CallID: expectation.Binding.CallID},
+		Run:        run, Journal: journal, StateStore: stateStore, OperationID: "select",
+		Limits: controlledCallLimits(), Expectation: expectation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.call.Session == nil || selection.call.Session.Role != ResponseRoleBriefer || selection.call.Message != briefSelectionMessage {
+		t.Fatalf("selection call was not controller-built: %#v", selection.call)
+	}
+	configs := factory.configurations()
+	if len(configs) != 1 {
+		t.Fatalf("briefer sessions = %d, want 1", len(configs))
+	}
+	context := configs[0].BootstrapInstructions
+	for _, required := range []string{
+		"COMPLETE-SPECIFICATION-MARKER", "# Full machine task list and statuses",
+		"order=0 id=root parent=(root) status=pending title=parent",
+		"order=1 id=A parent=root status=pending title=A",
+		"order=2 id=B parent=root status=pending title=B",
+		"order=3 id=C parent=root status=pending title=C",
+		"# Current progress", "Leaf tasks: total=3 pending=3 accepted_awaiting_commit=0 complete=0",
+	} {
+		if !strings.Contains(context, required) {
+			t.Fatalf("briefer runtime context lacks %q:\n%s", required, context)
+		}
+	}
+	if configs[0].WorkspaceWriteAllowed {
+		t.Fatal("briefer runtime received workspace write access")
+	}
+}
+
 func newBriefSelectionFixture(t *testing.T) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
 	t.Helper()
 	repository := newGitWorkspace(t)
@@ -115,7 +160,11 @@ func newBriefSelectionFixture(t *testing.T) (*implementationstate.Run, *runstore
 		t.Fatal(err)
 	}
 	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
-		value, err := journal.Publish(id, []byte(id))
+		contents := []byte(id)
+		if id == "specification" {
+			contents = []byte("# Specification\nCOMPLETE-SPECIFICATION-MARKER\n")
+		}
+		value, err := journal.Publish(id, contents)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,8 +205,8 @@ func newBriefSelectionFixture(t *testing.T) (*implementationstate.Run, *runstore
 	return run, stateStore, journal, repository, expectation
 }
 
-func briefSelectionCall(run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, repository string, expectation ResponseExpectation, runtime *controlledCallRuntime) ControlledAgentCall {
-	return ControlledAgentCall{
+func briefSelectionCall(run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, repository string, expectation ResponseExpectation, runtime *controlledCallRuntime) BriefSelectionCall {
+	return BriefSelectionCall{call: ControlledAgentCall{
 		Session: &AgentSession{Role: ResponseRoleBriefer, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) {
 			return &AgentSession{Role: ResponseRoleBriefer, runtime: runtime, thread: "thread"}, nil
 		}},
@@ -170,7 +219,7 @@ func briefSelectionCall(run *implementationstate.Run, stateStore *runstore.State
 		Limits:      controlledCallLimits(),
 		Expectation: expectation,
 		Message:     "select the next assignment",
-	}
+	}}
 }
 
 func briefReadyResponse(t *testing.T, taskIDs []implementationstate.TaskID) json.RawMessage {

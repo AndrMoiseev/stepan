@@ -41,6 +41,7 @@ type sessionScope string
 
 const (
 	sessionScopeOrchestrator sessionScope = "orchestrator"
+	sessionScopeBriefer      sessionScope = "briefer"
 	sessionScopeAssignment   sessionScope = "assignment"
 	sessionScopeFinalReview  sessionScope = "final_review"
 )
@@ -94,6 +95,13 @@ func NewSessionOwner(prepared PreparedRuntimes, base agentruntime.ThreadConfig) 
 // provider-specific resumed session.
 func (owner *SessionOwner) Orchestrator(ctx context.Context, start RoleStartContext) (*AgentSession, error) {
 	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeOrchestrator, role: ResponseRoleOrchestrator}, start)
+}
+
+// Briefer returns the run-scoped briefer conversation. It accepts only the
+// opaque context produced by BuildBrieferStartContext, so initial selection
+// cannot start from a caller-provided fragment of the run inputs.
+func (owner *SessionOwner) Briefer(ctx context.Context, start BrieferStartContext) (*AgentSession, error) {
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer}, start.roleStartContext())
 }
 
 // Assignment returns the briefer, implementer, or task-reviewer conversation

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -49,10 +50,63 @@ type BriefSelectionResult struct {
 	TaskIDs      []implementationstate.TaskID
 }
 
+// BriefSelectionCall is an initial briefer invocation constructed by the
+// controller. Its controlled call is private so ordinary production callers
+// cannot run selection with a hand-built session or message.
+type BriefSelectionCall struct {
+	call ControlledAgentCall
+}
+
+// BriefSelectionCallInput names the controller-owned values for a selection
+// operation. Session and message are deliberately absent: NewBriefSelectionCall
+// obtains the former from the typed briefer bootstrap and fixes the latter.
+type BriefSelectionCallInput struct {
+	Repository       string
+	Policy           AgentCallPolicy
+	Run              *implementationstate.Run
+	Journal          *runstore.Run
+	StateStore       *runstore.StateStore
+	OperationID      implementationstate.OperationID
+	Limits           implementationstate.CycleLimits
+	Expectation      ResponseExpectation
+	Timeout          time.Duration
+	ValidateResponse func(AgentResponse) error
+}
+
+const briefSelectionMessage = "Select the next assignment from the controller-supplied complete specification, machine task list, statuses, and progress. Return a self-contained brief with the selected non-empty contiguous prefix of pending leaf tasks."
+
+// NewBriefSelectionCall builds the only production call path for initial
+// selection. It first constructs the complete, evidence-backed briefer
+// context, then starts the typed briefer session with that context.
+func NewBriefSelectionCall(ctx context.Context, owner *SessionOwner, input BriefSelectionCallInput) (BriefSelectionCall, error) {
+	if owner == nil {
+		return BriefSelectionCall{}, fmt.Errorf("%w: session owner is required", ErrBriefSelection)
+	}
+	start, err := BuildBrieferStartContext(input.Journal, input.Run)
+	if err != nil {
+		return BriefSelectionCall{}, fmt.Errorf("%w: build briefer start context: %v", ErrBriefSelection, err)
+	}
+	session, err := owner.Briefer(ctx, start)
+	if err != nil {
+		return BriefSelectionCall{}, fmt.Errorf("%w: start briefer session: %v", ErrBriefSelection, err)
+	}
+	call := ControlledAgentCall{
+		Session: session, Repository: input.Repository, Policy: input.Policy, Run: input.Run,
+		Journal: input.Journal, StateStore: input.StateStore, OperationID: input.OperationID,
+		Limits: input.Limits, Expectation: input.Expectation, Message: briefSelectionMessage,
+		Timeout: input.Timeout, ValidateResponse: input.ValidateResponse,
+	}
+	if err := validateBriefSelectionCall("new-assignment", call); err != nil {
+		return BriefSelectionCall{}, err
+	}
+	return BriefSelectionCall{call: call}, nil
+}
+
 // ExecuteBriefSelection invokes the initial, run-scoped briefer response with
 // the normal controlled-call retry semantics. Only after binding and prefix
 // validation succeeds does it create and durably record the stable assignment.
-func ExecuteBriefSelection(ctx context.Context, assignmentID implementationstate.AssignmentID, call ControlledAgentCall) (BriefSelectionResult, error) {
+func ExecuteBriefSelection(ctx context.Context, assignmentID implementationstate.AssignmentID, selection BriefSelectionCall) (BriefSelectionResult, error) {
+	call := selection.call
 	if err := validateBriefSelectionCall(assignmentID, call); err != nil {
 		return BriefSelectionResult{}, err
 	}

@@ -269,3 +269,33 @@
 - Expected impact: future maintenance could accept evidence in one path and reject it in the other.
 - Classification: technical debt because current predicates agree and no present behavior is broken.
 - Possible follow-up: construct `InitialBaselineEvidence` once and validate it through the shared helper.
+
+## TD-8.4-001 — briefer read-only policy can still permit explicit writable paths
+
+- Origin: task 8.4 initial review; affected location: `internal/flows/impl_loop/agent_call_guard.go` (`normalizeAgentCallPolicy`).
+- Status: `open`.
+- Potential problem: the briefer policy rejects `AllowUnprotected` but does not require `AllowedPaths` and `AllowedRoots` to be empty, so a misconfigured call can authorize writes for this read-only role.
+- Evidence: `AgentRoleBriefer` follows the shared allowlist path after the boolean read-only check.
+- Expected impact: an incorrectly constructed future briefer call could accept writes to explicitly allowed locations.
+- Classification: technical debt because the ordinary briefer call uses empty writable allowlists and no typical supported flow currently grants them.
+- Possible follow-up: require empty writable allowlists for the briefer and add a focused policy regression.
+
+## TD-8.4-002 — assignment persistence failure can leave the caller model ahead of durable state
+
+- Origin: task 8.4 initial review; affected location: `internal/flows/impl_loop/brief_selection.go` (`ExecuteBriefSelection`).
+- Status: `open`.
+- Potential problem: `StartAssignment` mutates the supplied run before `StateStore.Record` uses the invocation context; cancellation or persistence failure can leave memory with an assignment absent from the journal.
+- Evidence: the transition and persistence happen sequentially on the caller-owned model without a durable clone/update boundary.
+- Expected impact: a same-process retry may observe inconsistent assignment state until reloading from the journal.
+- Classification: technical debt because this requires a narrow cancellation or persistence-failure timing and journal recovery remains authoritative.
+- Possible follow-up: transition a clone and publish with a bounded controller persistence context before replacing caller state.
+
+## TD-8.4-003 — committed-task reselection lacks a direct regression
+
+- Origin: task 8.4 initial review; affected location: `internal/flows/impl_loop/brief_selection_test.go`.
+- Status: `open`.
+- Potential problem: tests reject selection while an assignment is still active but do not directly exercise a response that reselects an already committed task when the next pending prefix has advanced.
+- Evidence: the existing reselection fixture stops at an active assignment; production uses `PendingLeafTasks` and appears correct by inspection.
+- Expected impact: a future regression in pending-task filtering might not be caught by task-specific coverage.
+- Classification: technical debt because current production prefix validation excludes committed tasks and no present behavior failure is demonstrated.
+- Possible follow-up: commit task A in the fixture, reject a repeated A response, then accept B on retry.

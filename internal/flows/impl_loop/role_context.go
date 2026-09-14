@@ -13,6 +13,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 var ErrInvalidRoleContext = errors.New("invalid implementation role context")
@@ -117,6 +118,17 @@ type OrchestratorStartInput struct {
 	StageResults    []string
 }
 
+// BrieferStartContext is an opaque, controller-built bootstrap payload for
+// initial assignment selection. Its contents cannot be substituted with an
+// arbitrary role context at the production session boundary.
+type BrieferStartContext struct {
+	start RoleStartContext
+}
+
+func (context BrieferStartContext) roleStartContext() RoleStartContext {
+	return context.start
+}
+
 // FinalReviewerStartInput is intentionally independent. A new final-review
 // session receives the current complete specification, current rules, and the
 // aggregate diff only; it cannot receive implementation-round history,
@@ -204,6 +216,80 @@ func BuildOrchestratorStartContext(input OrchestratorStartInput) (RoleStartConte
 		}
 	}
 	return newRoleStartContext(ResponseRoleOrchestrator, data.String())
+}
+
+// BuildBrieferStartContext reads the captured complete specification and
+// renders the whole current machine task tree, including derived statuses and
+// current progress. Reading the specification through the run journal keeps
+// the prompt tied to the exact evidence version recorded in the run.
+func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Run) (BrieferStartContext, error) {
+	if journal == nil || run == nil || run.TaskExtractionPending || len(run.Tasks) == 0 {
+		return BrieferStartContext{}, fmt.Errorf("%w: briefer requires an extracted run and journal", ErrInvalidRoleContext)
+	}
+	specification, err := journal.Read(run.Identity.Specification)
+	if err != nil {
+		return BrieferStartContext{}, fmt.Errorf("%w: read complete specification: %v", ErrInvalidRoleContext, err)
+	}
+	if strings.TrimSpace(string(specification)) == "" {
+		return BrieferStartContext{}, fmt.Errorf("%w: complete specification is empty", ErrInvalidRoleContext)
+	}
+
+	data := strings.Builder{}
+	fmt.Fprintf(&data, "# Complete specification\n\n%s\n\n# Full machine task list and statuses\n\n", strings.TrimSpace(string(specification)))
+	leafTotal, leafPending, leafAccepted, leafComplete := 0, 0, 0, 0
+	for _, task := range run.Tasks {
+		status, err := run.TaskStatus(task.ID)
+		if err != nil {
+			return BrieferStartContext{}, fmt.Errorf("%w: derive status for task %q: %v", ErrInvalidRoleContext, task.ID, err)
+		}
+		parent := string(task.ParentID)
+		if parent == "" {
+			parent = "(root)"
+		}
+		fmt.Fprintf(&data, "- order=%d id=%s parent=%s status=%s title=%s\n", task.Order, task.ID, parent, status, task.Title)
+		if !taskHasChild(run, task.ID) {
+			leafTotal++
+			switch status {
+			case implementationstate.TaskPending:
+				leafPending++
+			case implementationstate.TaskAcceptedAwaitingCommit:
+				leafAccepted++
+			case implementationstate.TaskComplete:
+				leafComplete++
+			}
+		}
+	}
+	fmt.Fprintf(&data, "\n# Current progress\n\nRun: %s\nRun status: %s\nInitial baseline: %s\nLeaf tasks: total=%d pending=%d accepted_awaiting_commit=%d complete=%d\n", run.Identity.ID, run.Status, run.InitialBaselineStatus, leafTotal, leafPending, leafAccepted, leafComplete)
+	if len(run.Assignments) == 0 {
+		data.WriteString("Assignments: none\n")
+	} else {
+		data.WriteString("Assignments:\n")
+		for _, assignment := range run.Assignments {
+			fmt.Fprintf(&data, "- id=%s status=%s tasks=%s\n", assignment.ID, assignment.Status, strings.Join(taskIDStrings(assignment.TaskIDs), ","))
+		}
+	}
+	start, err := newRoleStartContext(ResponseRoleBriefer, data.String())
+	if err != nil {
+		return BrieferStartContext{}, err
+	}
+	return BrieferStartContext{start: start}, nil
+}
+
+func taskHasChild(run *implementationstate.Run, id implementationstate.TaskID) bool {
+	for _, task := range run.Tasks {
+		if task.ParentID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func taskIDStrings(ids []implementationstate.TaskID) []string {
+	values := make([]string, len(ids))
+	for index, id := range ids {
+		values[index] = string(id)
+	}
+	return values
 }
 
 // BuildFinalReviewerStartContext prepares a clean final-review round without
