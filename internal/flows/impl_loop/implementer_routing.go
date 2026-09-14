@@ -19,6 +19,21 @@ type ImplementerCheckRoute struct {
 	OriginatingCall ControlledAgentCall
 	Transition      ImplementerTransitionInput
 	Continuation    ControlledAgentCall
+	// ContinuationTransition owns the distinct check operation/result used
+	// when the feedback turn returns implementation_ready. It is deliberately
+	// separate from Transition: a narrow requested set can never be reused as
+	// evidence for the mandatory required set.
+	ContinuationTransition ImplementerTransitionInput
+	// FurtherContinuations make repeated checks_requested feedback cycles
+	// finite and controller-owned. Each item supplies the next executor call
+	// and its distinct check operation/result IDs; the configured request
+	// counter remains the semantic upper bound.
+	FurtherContinuations []ImplementerContinuation
+}
+
+type ImplementerContinuation struct {
+	Call       ControlledAgentCall
+	Transition ImplementerTransitionInput
 }
 
 // ImplementerCheckRouteResult keeps the initial response, durable check
@@ -28,57 +43,77 @@ type ImplementerCheckRouteResult struct {
 	Response             AgentResponse
 	ResponseAttempts     uint64
 	Checks               ImplementerTransitionResult
+	RequiredChecks       ImplementerTransitionResult
 	Feedback             string
 	ContinuationResponse AgentResponse
 	ContinuationAttempts uint64
+	session              *AgentSession
 }
 
-// RouteImplementerChecks dispatches the originating executor turn, validates
-// that its response is bound to that exact call, runs controller-selected
-// checks, then dispatches the controller-owned continuation on the same
-// AgentSession. implementation_ready is intentionally not routed here: it
-// begins mandatory acceptance, whose correction/review path belongs to later
-// lifecycle work.
+// RouteImplementerChecks is the controller-owned executor dispatcher for the
+// two task-9.1 responses. implementation_ready immediately starts a complete
+// required set. checks_requested runs its narrow set, feeds the same live
+// session, and dispatches the next turn; a ready response from that next turn
+// immediately starts a distinct complete required set. No branch accepts,
+// commits, or completes the assignment.
 func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (ImplementerCheckRouteResult, error) {
 	if err := validateImplementerCheckRoute(route); err != nil {
 		return ImplementerCheckRouteResult{}, err
 	}
-	origin := route.OriginatingCall
-	previousValidation := origin.ValidateResponse
-	origin.ValidateResponse = func(response AgentResponse) error {
-		if response.Kind != ResponseChecksRequested {
-			return fmt.Errorf("%w: originating executor response must be checks_requested", ErrInvalidImplementerRoute)
+	currentCall := route.OriginatingCall
+	currentTransition := route.Transition
+	continuations := append([]ImplementerContinuation{{Call: route.Continuation, Transition: route.ContinuationTransition}}, route.FurtherContinuations...)
+	seenCallIDs := map[string]bool{currentCall.Expectation.Binding.CallID: true}
+	var result ImplementerCheckRouteResult
+	for turn := 0; ; turn++ {
+		if turn > 0 {
+			if len(continuations) == 0 {
+				return result, fmt.Errorf("%w: checks_requested has no controller-owned continuation capacity", ErrInvalidImplementerRoute)
+			}
+			next := continuations[0]
+			continuations = continuations[1:]
+			if err := validateImplementerContinuation(next.Call, next.Transition, route.OriginatingCall); err != nil {
+				return result, err
+			}
+			if seenCallIDs[next.Call.Expectation.Binding.CallID] {
+				return result, fmt.Errorf("%w: continuation call ID is reused", ErrInvalidImplementerRoute)
+			}
+			seenCallIDs[next.Call.Expectation.Binding.CallID] = true
+			currentCall, currentTransition = next.Call, next.Transition
 		}
-		if err := ValidateImplementerTransitionResponse(route.Transition.Selection, route.Transition.Run, route.Transition.AssignmentID, route.Transition.BriefID, response); err != nil {
-			return err
+		previousValidation := currentCall.ValidateResponse
+		currentCall.ValidateResponse = implementerRouteResponseValidator(currentTransition, previousValidation)
+		if turn > 0 {
+			currentCall.Session = result.session
+			currentCall.Message = result.Feedback
 		}
-		if previousValidation != nil {
-			return previousValidation(response)
+		turnResult, err := InvokeControlledAgentCall(ctx, currentCall)
+		if err != nil {
+			if turn == 0 {
+				result.ResponseAttempts = turnResult.Attempts
+			} else {
+				result.ContinuationAttempts = turnResult.Attempts
+			}
+			return result, err
 		}
-		return nil
+		checks, err := ApplyImplementerTransition(ctx, currentTransition, turnResult.Response)
+		if turn == 0 {
+			result.Response, result.ResponseAttempts, result.Checks = turnResult.Response, turnResult.Attempts, checks
+		} else {
+			result.ContinuationResponse, result.ContinuationAttempts = turnResult.Response, turnResult.Attempts
+		}
+		if err != nil {
+			return result, err
+		}
+		if turnResult.Response.Kind == ResponseImplementationReady {
+			result.RequiredChecks = checks
+			return result, nil
+		}
+		result.Feedback = ImplementerCheckFeedback(checks)
+		// Keep the live session that produced this turn for the next iteration.
+		result.ContinuationResponse = turnResult.Response
+		result.session = turnResult.Session
 	}
-
-	originResult, err := InvokeControlledAgentCall(ctx, origin)
-	if err != nil {
-		return ImplementerCheckRouteResult{ResponseAttempts: originResult.Attempts}, err
-	}
-	checks, err := ApplyImplementerTransition(ctx, route.Transition, originResult.Response)
-	if err != nil {
-		return ImplementerCheckRouteResult{Response: originResult.Response, ResponseAttempts: originResult.Attempts}, err
-	}
-	feedback := ImplementerCheckFeedback(checks)
-	continuation := route.Continuation
-	continuation.Session = originResult.Session
-	continuation.Message = feedback
-	continuationResult, err := InvokeControlledAgentCall(ctx, continuation)
-	if err != nil {
-		return ImplementerCheckRouteResult{Response: originResult.Response, ResponseAttempts: originResult.Attempts, Checks: checks, Feedback: feedback, ContinuationAttempts: continuationResult.Attempts}, err
-	}
-	return ImplementerCheckRouteResult{
-		Response: originResult.Response, ResponseAttempts: originResult.Attempts,
-		Checks: checks, Feedback: feedback,
-		ContinuationResponse: continuationResult.Response, ContinuationAttempts: continuationResult.Attempts,
-	}, nil
 }
 
 func validateImplementerCheckRoute(route ImplementerCheckRoute) error {
@@ -101,8 +136,13 @@ func validateImplementerCheckRoute(route ImplementerCheckRoute) error {
 	if origin.Run != route.Transition.Run || origin.Journal != route.Transition.Journal || origin.StateStore != route.Transition.StateStore || origin.AssignmentID != route.Transition.AssignmentID || !sameImplementerBinding(origin.Expectation.Binding, implementerTransitionBinding(route.Transition)) {
 		return fmt.Errorf("%w: transition is not bound to the exact originating executor call", ErrInvalidImplementerRoute)
 	}
+	if !isImplementerAgentOperation(origin.Run, origin.AssignmentID, origin.OperationID, origin.Expectation.Binding.BriefID) {
+		return fmt.Errorf("%w: originating call requires a dedicated executor operation", ErrInvalidImplementerRoute)
+	}
+	return nil
+}
 
-	continuation := route.Continuation
+func validateImplementerContinuation(continuation ControlledAgentCall, transition ImplementerTransitionInput, origin ControlledAgentCall) error {
 	if continuation.Session != nil && continuation.Session != origin.Session {
 		return fmt.Errorf("%w: continuation must use the originating executor session", ErrInvalidImplementerRoute)
 	}
@@ -118,7 +158,28 @@ func validateImplementerCheckRoute(route ImplementerCheckRoute) error {
 	if !isImplementerAgentOperation(origin.Run, origin.AssignmentID, origin.OperationID, origin.Expectation.Binding.BriefID) || !isImplementerAgentOperation(origin.Run, origin.AssignmentID, continuation.OperationID, continuation.Expectation.Binding.BriefID) {
 		return fmt.Errorf("%w: executor calls require dedicated executor operations", ErrInvalidImplementerRoute)
 	}
+	if err := validateImplementerTransitionInput(transition); err != nil {
+		return fmt.Errorf("%w: continuation transition: %v", ErrInvalidImplementerRoute, err)
+	}
+	if transition.Run != origin.Run || transition.StateStore != origin.StateStore || transition.Journal != origin.Journal || !sameImplementerBinding(continuation.Expectation.Binding, implementerTransitionBinding(transition)) {
+		return fmt.Errorf("%w: continuation transition is not bound to the continuation call", ErrInvalidImplementerRoute)
+	}
 	return nil
+}
+
+func implementerRouteResponseValidator(input ImplementerTransitionInput, previous func(AgentResponse) error) func(AgentResponse) error {
+	return func(response AgentResponse) error {
+		if response.Kind != ResponseChecksRequested && response.Kind != ResponseImplementationReady {
+			return fmt.Errorf("%w: executor response must be checks_requested or implementation_ready", ErrInvalidImplementerRoute)
+		}
+		if err := ValidateImplementerTransitionResponse(input.Selection, input.Run, input.AssignmentID, input.BriefID, response); err != nil {
+			return err
+		}
+		if previous != nil {
+			return previous(response)
+		}
+		return nil
+	}
 }
 
 func implementerTransitionBinding(input ImplementerTransitionInput) ResponseBinding {

@@ -35,7 +35,9 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 	originExpectation := fixture.executorExpectation("executor-origin-call")
 	continuationExpectation := fixture.executorExpectation("executor-continuation-call")
 	transition := fixture.input("requested-checks", "requested-checks-result")
-	transition.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+	requiredTransition := fixture.input("required-checks", "required-checks-result")
+	transition.Runner = CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		fixture.runner.commands = append(fixture.runner.commands, command)
 		return checkexec.Result{ExitCode: 0, Stdout: []byte("bounded executor diagnostic")}, nil
 	})
 
@@ -49,11 +51,12 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 			Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationExpectation.Binding.CallID, AllowUnprotected: true},
 			Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-continuation", Limits: controlledCallLimits(), Expectation: continuationExpectation,
 		},
+		ContinuationTransition: requiredTransition,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response.Kind != ResponseChecksRequested || result.ContinuationResponse.Kind != ResponseImplementationReady || result.ResponseAttempts != 1 || result.ContinuationAttempts != 1 {
+	if result.Response.Kind != ResponseChecksRequested || result.ContinuationResponse.Kind != ResponseImplementationReady || result.ResponseAttempts != 1 || result.ContinuationAttempts != 1 || !result.RequiredChecks.RequiredAcceptance {
 		t.Fatalf("route result = %#v", result)
 	}
 	if got, want := runtime.threads, []any{"same-executor-thread", "same-executor-thread"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
@@ -69,6 +72,38 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 	}
 	if strings.Contains(result.Feedback, "CHECK") || strings.Contains(result.Feedback, "Env") {
 		t.Fatalf("feedback exposed command environment:\n%s", result.Feedback)
+	}
+	assertRunOrder(t, fixture.runner, "test_auth", "lint", "test_all")
+	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+		t.Fatalf("automatic required checks accepted or committed assignment: %#v", fixture.run.Assignments[0])
+	}
+}
+
+func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterNone}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}}}
+	originExpectation := fixture.executorExpectation("executor-origin-call")
+	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
+		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}, Repository: fixture.repository, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originExpectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: originExpectation, Message: "implement the assignment"},
+		Transition:      fixture.input("required-checks", "required-checks-result"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseImplementationReady || result.ResponseAttempts != 1 || !result.RequiredChecks.RequiredAcceptance || len(runtime.messages) != 1 {
+		t.Fatalf("initial ready route = %#v, turns=%#v", result, runtime.messages)
+	}
+	assertRunOrder(t, fixture.runner, "lint", "test_all")
+	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+		t.Fatalf("initial ready accepted or committed assignment: %#v", fixture.run.Assignments[0])
 	}
 }
 
