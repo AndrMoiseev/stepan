@@ -642,3 +642,23 @@
 - Expected impact: future production wiring can omit a required fresh role session or construct an incomplete context without focused recovery coverage detecting it.
 - Classification: technical debt because the provider-neutral restoration primitives exist and no ordinary current production caller demonstrating a broken dispatch path is established.
 - Possible follow-up: add a durable recovery dispatcher deriving active scopes/contexts from run and journal data, with all-role and pending-continuation tests.
+
+## TASK-12.1-D001 — interactive driver lifecycle coverage is incomplete
+
+- Origin: task 12.1 initial review; affected location: `internal/flows/impl_loop/interactive_test.go`.
+- Status: `open`.
+- Potential problem: focused tests directly dispatch lifecycle commands rather than driving successful `/implement` into blocked work and then entering `/pause` or `/stop` through the UI loop.
+- Evidence: closed-state behavior is likewise exercised through policy/direct dispatch rather than an end-to-end fake prompt sequence.
+- Expected impact: the explicit UI acceptance sequence can regress while direct controller tests remain green.
+- Classification: technical debt because the production failure is tracked separately as critical and the missing sequences are a coverage gap.
+- Possible follow-up: add fake-UI driver sequences for implement→blocked→pause, resume-check interruption, and stop→closed menu/state.
+
+## TASK-12.1-D002 — lifecycle policy is duplicated across switches
+
+- Origin: task 12.1 initial review; affected location: `internal/flows/impl_loop/interactive.go`.
+- Status: `open`.
+- Potential problem: command visibility and lifecycle-specific rejection messages are maintained in parallel switches.
+- Evidence: policy and explanation branches independently enumerate lifecycle states.
+- Expected impact: a future lifecycle change can make menu availability and unavailable explanations drift.
+- Classification: technical debt because current branches are aligned and no behavior defect follows today.
+- Possible follow-up: centralize visibility and unavailable reasons in one per-lifecycle policy table.

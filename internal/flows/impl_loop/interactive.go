@@ -290,18 +290,154 @@ func statusMessage(run *implementationstate.Run) string {
 // particular, it receives the already filtered menu and cannot turn an
 // unavailable command into a lifecycle action.
 type ImplementationInteractiveUI interface {
-	Prompt(CommandMenu) (string, error)
+	// Prompt must return promptly when ctx is canceled. The driver cancels a
+	// pending prompt to publish a completed background result or to shut down
+	// without leaving an input goroutine behind.
+	Prompt(context.Context, CommandMenu) (string, error)
 	Report(string)
 	ReportError(error)
 }
 
-// RunImplementationInteractive drives command input without owning lifecycle
-// transitions. A canceled input exits cleanly; all command mutation remains in
-// ImplementationInteractiveController.Dispatch.
+type interactiveWorkResult struct {
+	message string
+	err     error
+}
+
+type implementationInteractiveDriver struct {
+	controller ImplementationInteractiveController
+	ui         ImplementationInteractiveUI
+	workCancel context.CancelFunc
+	workDone   chan interactiveWorkResult
+}
+
+func (driver *implementationInteractiveDriver) workActive() bool { return driver.workDone != nil }
+
+func (driver *implementationInteractiveDriver) startWork(parent context.Context, work func(context.Context) (string, error)) error {
+	if driver.workActive() {
+		return errors.New("implementation work is already running")
+	}
+	ctx, cancel := context.WithCancel(parent)
+	driver.workCancel = cancel
+	driver.workDone = make(chan interactiveWorkResult, 1)
+	go func(done chan<- interactiveWorkResult) {
+		message, err := work(ctx)
+		done <- interactiveWorkResult{message: message, err: err}
+	}(driver.workDone)
+	return nil
+}
+
+func (driver *implementationInteractiveDriver) finishWork() {
+	if driver.workCancel != nil {
+		driver.workCancel()
+	}
+	driver.workCancel = nil
+	driver.workDone = nil
+}
+
+func (driver *implementationInteractiveDriver) reportWork(result interactiveWorkResult) {
+	driver.finishWork()
+	if result.err != nil {
+		driver.ui.ReportError(result.err)
+		return
+	}
+	if result.message != "" {
+		driver.ui.Report(result.message)
+	}
+}
+
+func (driver *implementationInteractiveDriver) stopWork() {
+	if !driver.workActive() {
+		return
+	}
+	driver.workCancel()
+	result := <-driver.workDone
+	driver.finishWork()
+	// The caller is leaving the UI, so the cancellation is expected. An
+	// otherwise meaningful error is still surfaced deterministically before
+	// returning to the caller.
+	if result.err != nil && !errors.Is(result.err, context.Canceled) {
+		driver.ui.ReportError(result.err)
+	}
+}
+
+func (driver *implementationInteractiveDriver) beginImplement(ctx context.Context, change string) (string, error) {
+	run, err := driver.controller.current(ctx)
+	if err != nil {
+		return "", err
+	}
+	lifecycle := lifecycleForRun(run.Run)
+	if !commandAvailable(lifecycle, CommandImplement) {
+		return unavailableCommandReason(lifecycle, CommandImplement), nil
+	}
+	if driver.controller.Start == nil {
+		return "", errors.New("implementation start route is not configured")
+	}
+	started, err := driver.controller.Start(ctx, change)
+	if err != nil {
+		return "", err
+	}
+	if started == nil {
+		return "", errors.New("implementation start route returned no run")
+	}
+	if err := driver.startWork(ctx, func(workCtx context.Context) (string, error) {
+		if err := driver.controller.continueRun(workCtx, started); err != nil {
+			return "", err
+		}
+		return "implementation run is waiting for the next controller action", nil
+	}); err != nil {
+		return "", err
+	}
+	return "implementation run started", nil
+}
+
+func (driver *implementationInteractiveDriver) beginResume(ctx context.Context) (string, error) {
+	run, err := driver.controller.current(ctx)
+	if err != nil {
+		return "", err
+	}
+	lifecycle := lifecycleForRun(run.Run)
+	if !commandAvailable(lifecycle, CommandResume) {
+		return unavailableCommandReason(lifecycle, CommandResume), nil
+	}
+	if err := driver.startWork(ctx, func(workCtx context.Context) (string, error) {
+		_, message, err := driver.controller.Dispatch(workCtx, string(CommandResume))
+		return message, err
+	}); err != nil {
+		return "", err
+	}
+	return "implementation run is resuming", nil
+}
+
+func (driver *implementationInteractiveDriver) handle(ctx context.Context, input string) (string, error) {
+	parsed, err := ParseInteractiveCommand(input)
+	if err != nil {
+		return "", err
+	}
+	if driver.workActive() && (parsed.Command == CommandImplement || parsed.Command == CommandResume) {
+		return "implementation work is already running", nil
+	}
+	switch parsed.Command {
+	case CommandImplement:
+		return driver.beginImplement(ctx, parsed.Change)
+	case CommandResume:
+		return driver.beginResume(ctx)
+	default:
+		_, message, err := driver.controller.Dispatch(ctx, input)
+		return message, err
+	}
+}
+
+// RunImplementationInteractive runs long-lived continuation and resume work
+// in one controller-owned background slot. The prompt remains live while an
+// agent or required check owns UserRunControl, so /pause, /stop, and /status
+// can be routed immediately. A completed worker cancels the pending prompt,
+// reports exactly one result, and then presents a fresh lifecycle menu.
 func RunImplementationInteractive(ctx context.Context, controller ImplementationInteractiveController, ui ImplementationInteractiveUI) error {
 	if ui == nil {
 		return ErrInteractiveInputCanceled
 	}
+	driver := implementationInteractiveDriver{controller: controller, ui: ui}
+	defer driver.stopWork()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -310,19 +446,59 @@ func RunImplementationInteractive(ctx context.Context, controller Implementation
 		if err != nil {
 			return err
 		}
-		input, err := ui.Prompt(menu)
-		if err != nil {
-			if errors.Is(err, ErrInteractiveInputCanceled) {
+
+		promptCtx, cancelPrompt := context.WithCancel(ctx)
+		type promptResult struct {
+			input string
+			err   error
+		}
+		promptDone := make(chan promptResult, 1)
+		go func() {
+			input, err := ui.Prompt(promptCtx, menu)
+			promptDone <- promptResult{input: input, err: err}
+		}()
+
+		if driver.workActive() {
+			select {
+			case result := <-driver.workDone:
+				cancelPrompt()
+				<-promptDone
+				driver.reportWork(result)
+				continue
+			case result := <-promptDone:
+				cancelPrompt()
+				if result.err != nil {
+					if errors.Is(result.err, ErrInteractiveInputCanceled) {
+						return nil
+					}
+					return result.err
+				}
+				message, handleErr := driver.handle(ctx, result.input)
+				if handleErr != nil {
+					ui.ReportError(handleErr)
+				} else if message != "" {
+					ui.Report(message)
+				}
+				continue
+			case <-ctx.Done():
+				cancelPrompt()
+				<-promptDone
+				return ctx.Err()
+			}
+		}
+
+		result := <-promptDone
+		cancelPrompt()
+		if result.err != nil {
+			if errors.Is(result.err, ErrInteractiveInputCanceled) {
 				return nil
 			}
-			return err
+			return result.err
 		}
-		_, message, err := controller.Dispatch(ctx, input)
-		if err != nil {
-			ui.ReportError(err)
-			continue
-		}
-		if message != "" {
+		message, handleErr := driver.handle(ctx, result.input)
+		if handleErr != nil {
+			ui.ReportError(handleErr)
+		} else if message != "" {
 			ui.Report(message)
 		}
 	}

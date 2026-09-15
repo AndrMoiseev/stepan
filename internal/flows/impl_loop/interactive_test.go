@@ -234,6 +234,99 @@ func TestRunImplementationInteractiveReportsManuallyEnteredUnavailableCommand(t 
 	}
 }
 
+func TestRunImplementationInteractiveAcceptsStatusAndPauseWhileContinueRuns(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	ui := &blockedWorkUI{started: started}
+	var current *InteractiveRun
+	controller := ImplementationInteractiveController{
+		Current: func(context.Context) (*InteractiveRun, error) { return current, nil },
+		Start: func(context.Context, string) (*InteractiveRun, error) {
+			current = &InteractiveRun{Run: run, Control: control}
+			return current, nil
+		},
+		Continue: func(ctx context.Context, active *InteractiveRun) error {
+			operation, finish, err := active.Control.BeginOperation(ctx)
+			if err != nil {
+				return err
+			}
+			defer finish()
+			close(started)
+			<-operation.Done()
+			return context.Cause(operation)
+		},
+	}
+
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != implementationstate.RunPaused {
+		t.Fatalf("run status after pause during continue = %s", run.Status)
+	}
+	if len(ui.menus) < 3 || ui.menus[1].Lifecycle != LifecycleActive || ui.menus[2].Lifecycle != LifecycleActive {
+		t.Fatalf("menus did not remain live during active continuation: %#v", ui.menus)
+	}
+	if !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandPause, CommandStop, CommandStatus}) {
+		t.Fatalf("active continuation menu = %#v", ui.menus[1])
+	}
+	if !slices.Contains(ui.messages, "implementation run initial-baseline is active") || !slices.Contains(ui.messages, "implementation run paused") {
+		t.Fatalf("messages while continuation was active = %#v", ui.messages)
+	}
+	if len(ui.errors) != 1 || !errors.Is(ui.errors[0], ErrUserOperationInterrupted) {
+		t.Fatalf("background interruption result = %#v", ui.errors)
+	}
+}
+
+func TestRunImplementationInteractiveEOFJoinsBackgroundWork(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	ui := &eofDuringWorkUI{started: started}
+	var current *InteractiveRun
+	controller := ImplementationInteractiveController{
+		Current: func(context.Context) (*InteractiveRun, error) { return current, nil },
+		Start: func(context.Context, string) (*InteractiveRun, error) {
+			current = &InteractiveRun{Run: run, Control: control}
+			return current, nil
+		},
+		Continue: func(ctx context.Context, active *InteractiveRun) error {
+			operation, finish, err := active.Control.BeginOperation(ctx)
+			if err != nil {
+				return err
+			}
+			defer func() {
+				finish()
+				close(finished)
+			}()
+			close(started)
+			<-operation.Done()
+			return context.Cause(operation)
+		},
+	}
+
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("EOF returned before background work stopped")
+	}
+	if len(ui.errors) != 0 {
+		t.Fatalf("expected cancellation during EOF to be quiet, got %#v", ui.errors)
+	}
+}
+
 func TestStatusIsReadOnly(t *testing.T) {
 	run, state, _, _ := newInitialCheckRun(t)
 	defer state.Close()
@@ -262,7 +355,7 @@ type interactiveUIFake struct {
 	errors   []error
 }
 
-func (ui *interactiveUIFake) Prompt(menu CommandMenu) (string, error) {
+func (ui *interactiveUIFake) Prompt(_ context.Context, menu CommandMenu) (string, error) {
 	ui.menus = append(ui.menus, menu)
 	if len(ui.inputs) == 0 {
 		return "", ErrInteractiveInputCanceled
@@ -274,3 +367,66 @@ func (ui *interactiveUIFake) Prompt(menu CommandMenu) (string, error) {
 
 func (ui *interactiveUIFake) Report(message string) { ui.messages = append(ui.messages, message) }
 func (ui *interactiveUIFake) ReportError(err error) { ui.errors = append(ui.errors, err) }
+
+type blockedWorkUI struct {
+	started  <-chan struct{}
+	step     int
+	menus    []CommandMenu
+	messages []string
+	errors   []error
+}
+
+func (ui *blockedWorkUI) Prompt(ctx context.Context, menu CommandMenu) (string, error) {
+	ui.menus = append(ui.menus, menu)
+	switch ui.step {
+	case 0:
+		ui.step++
+		return "/implement change", nil
+	case 1:
+		select {
+		case <-ui.started:
+			ui.step++
+			return "/status", nil
+		case <-ctx.Done():
+			return "", ErrInteractiveInputCanceled
+		}
+	case 2:
+		ui.step++
+		return "/pause", nil
+	default:
+		// The background result may have been delivered just before the next
+		// prompt is constructed. EOF still exercises driver shutdown without
+		// keeping the fake input goroutine alive.
+		return "", ErrInteractiveInputCanceled
+	}
+}
+
+func (ui *blockedWorkUI) Report(message string) { ui.messages = append(ui.messages, message) }
+func (ui *blockedWorkUI) ReportError(err error) { ui.errors = append(ui.errors, err) }
+
+type eofDuringWorkUI struct {
+	started <-chan struct{}
+	step    int
+	errors  []error
+}
+
+func (ui *eofDuringWorkUI) Prompt(ctx context.Context, _ CommandMenu) (string, error) {
+	switch ui.step {
+	case 0:
+		ui.step++
+		return "/implement change", nil
+	case 1:
+		select {
+		case <-ui.started:
+			ui.step++
+			return "", ErrInteractiveInputCanceled
+		case <-ctx.Done():
+			return "", ErrInteractiveInputCanceled
+		}
+	default:
+		return "", ErrInteractiveInputCanceled
+	}
+}
+
+func (*eofDuringWorkUI) Report(string)            {}
+func (ui *eofDuringWorkUI) ReportError(err error) { ui.errors = append(ui.errors, err) }
