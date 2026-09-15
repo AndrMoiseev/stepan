@@ -46,12 +46,24 @@ type ResumeInput struct {
 	// ConfigurationLoader is an optional deterministic seam for callers that
 	// own settings discovery. The default reloads both standard settings files.
 	ConfigurationLoader func(string) (implementationconfig.Configuration, error)
+	// ClassifySpecificationChange is the controller's deterministic product
+	// decision for a changed complete specification. It must distinguish an
+	// update compatible with this run from one that requires fresh scope.
+	// Without it a changed specification is held on a diagnostic pause rather
+	// than silently assuming either outcome.
+	ClassifySpecificationChange func(previous, current []byte) (SpecificationChange, error)
 
 	// SessionOwner is optional. When supplied with SessionBase, a changed
 	// effective configuration closes the old owner and installs a fresh one so
 	// no provider conversation keeps an old profile in its bootstrap context.
 	SessionOwner **SessionOwner
 	SessionBase  agentruntime.ThreadConfig
+}
+
+// SpecificationChange is the controller-provided result of comparing the
+// previous complete OpenSpec package to the newly loaded package.
+type SpecificationChange struct {
+	RequiresNewScope bool
 }
 
 // ResumeResult describes the reconciled inputs. Manual changes are observed
@@ -71,9 +83,10 @@ type ResumeResult struct {
 // validated but deliberately excluded from version comparisons: their content
 // alone cannot invalidate acceptance. On a malformed configuration, rules, or
 // unverifiable saved workspace fingerprint the run remains paused with a
-// durable execution-block diagnostic. A changed complete specification closes
-// the run. Successful reconciliation makes the run active; callers then apply
-// the required-check gate before dispatching any further work.
+// durable execution-block diagnostic. A controller-classified scope change
+// closes the run; a compatible specification refreshes durable inputs.
+// Successful reconciliation makes the run active; callers then apply the
+// required-check gate before dispatching any further work.
 func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if err := validateResumeInput(input); err != nil {
 		return ResumeResult{}, err
@@ -91,16 +104,31 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if err != nil {
 		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode the complete OpenSpec specification", err)
 	}
-	if changed, err := referencePayloadChanged(input.Journal, input.Run.Identity.Specification, specification); err != nil {
+	specificationChanged, err := referencePayloadChanged(input.Journal, input.Run.Identity.Specification, specification)
+	if err != nil {
 		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify saved OpenSpec specification", err)
-	} else if changed {
-		if err := candidate.Close("complete OpenSpec specification changed; define a new implementation scope before starting another run"); err != nil {
-			return ResumeResult{}, err
+	}
+	if specificationChanged {
+		if input.ClassifySpecificationChange == nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "classify changed complete OpenSpec specification", errors.New("controller did not classify whether the specification change requires new scope"))
 		}
-		if err := persistResumeCandidate(ctx, input, candidate); err != nil {
-			return ResumeResult{}, err
+		previousSpecification, readErr := input.Journal.Read(input.Run.Identity.Specification)
+		if readErr != nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "read saved complete OpenSpec specification", readErr)
 		}
-		return ResumeResult{}, ErrResumeScopeChanged
+		change, classifyErr := input.ClassifySpecificationChange(previousSpecification, specification)
+		if classifyErr != nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "classify changed complete OpenSpec specification", classifyErr)
+		}
+		if change.RequiresNewScope {
+			if err := candidate.Close("complete OpenSpec specification changed and requires a new implementation scope"); err != nil {
+				return ResumeResult{}, err
+			}
+			if err := persistResumeCandidate(ctx, input, candidate); err != nil {
+				return ResumeResult{}, err
+			}
+			return ResumeResult{}, ErrResumeScopeChanged
+		}
 	}
 
 	configuration, checks, rules, prepared, err := loadResumeConfiguration(input)
@@ -136,7 +164,14 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 		if marshalErr != nil {
 			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode manually changed working-copy fingerprint", marshalErr)
 		}
-		if rulesOnlyWorkspaceChange(ctx, workspace, input.Repository, expected, actual, rules) {
+		pendingCommit := pendingCommitWorkspace(input.Run, expected, actual)
+		rulesOnly := rulesOnlyWorkspaceChange(ctx, workspace, input.Repository, expected, actual, rules)
+		if !pendingCommit && !rulesOnly {
+			if err := verifyResumeGitControl(expected, actual); err != nil {
+				return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify branch, HEAD, and index before accepting manual changes", err)
+			}
+		}
+		if pendingCommit || rulesOnly {
 			// Rules are read afresh but never versioned. Their content is not a
 			// code-state input and therefore cannot reopen an accepted assignment.
 			workspaceChanged = false
@@ -156,12 +191,24 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 			return ResumeResult{}, err
 		}
 	}
-	if configurationChanged {
-		configurationRef, publishErr := publishResumeEvidence(input.Journal, "resume-configuration", configurationBytes)
-		if publishErr != nil {
-			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "preserve effective implementation configuration", publishErr)
+	if specificationChanged || configurationChanged {
+		specificationRef := candidate.Identity.Specification
+		if specificationChanged {
+			specificationRef, err = publishResumeEvidence(input.Journal, "resume-specification", specification)
+			if err != nil {
+				return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "preserve compatible complete OpenSpec specification", err)
+			}
 		}
-		if err := candidate.RefreshAcceptanceInputs(candidate.Identity.Specification, configurationRef); err != nil {
+		configurationRef := candidate.Identity.Configuration
+		if configurationChanged {
+			configurationRef, publishErr := publishResumeEvidence(input.Journal, "resume-configuration", configurationBytes)
+			if publishErr != nil {
+				return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "preserve effective implementation configuration", publishErr)
+			}
+			if err := candidate.RefreshAcceptanceInputs(specificationRef, configurationRef); err != nil {
+				return ResumeResult{}, err
+			}
+		} else if err := candidate.RefreshAcceptanceInputs(specificationRef, configurationRef); err != nil {
 			return ResumeResult{}, err
 		}
 	}
@@ -261,7 +308,7 @@ type resumeWorkspaceComparer interface {
 }
 
 func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after gitsnapshot.Snapshot, rules implementationconfig.RulesFileValidation) bool {
-	if rules.Root == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.IndexHash != after.IndexHash || before.SubmodulesHash != after.SubmodulesHash {
+	if rules.DocumentPaths == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.SubmodulesHash != after.SubmodulesHash {
 		return false
 	}
 	comparer, ok := workspace.(resumeWorkspaceComparer)
@@ -272,18 +319,57 @@ func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, r
 	if err != nil || len(paths) == 0 {
 		return false
 	}
-	relativeRoot, err := filepath.Rel(repository, rules.Root)
-	if err != nil || filepath.IsAbs(relativeRoot) {
-		return false
+	ruleDocuments := strings.Split(rules.DocumentPaths, "\x00")
+	documents := make(map[string]struct{}, len(ruleDocuments))
+	for _, document := range ruleDocuments {
+		relative, err := filepath.Rel(repository, document)
+		if err != nil || filepath.IsAbs(relative) {
+			return false
+		}
+		documents[filepath.ToSlash(filepath.Clean(relative))] = struct{}{}
 	}
-	root := filepath.ToSlash(filepath.Clean(relativeRoot))
 	for _, path := range paths {
 		path = filepath.ToSlash(filepath.Clean(path))
-		if path != root && !strings.HasPrefix(path, root+"/") {
+		if _, ok := documents[path]; !ok {
 			return false
 		}
 	}
 	return true
+}
+
+func verifyResumeGitControl(expected, actual gitsnapshot.Snapshot) error {
+	if actual.HeadRef == "" {
+		return errors.New("working copy is detached from its implementation branch")
+	}
+	if actual.HeadRef != expected.HeadRef {
+		return fmt.Errorf("working-copy branch changed from %q to %q", expected.HeadRef, actual.HeadRef)
+	}
+	if actual.HeadOID != expected.HeadOID {
+		return fmt.Errorf("working-copy HEAD changed from %q to %q", expected.HeadOID, actual.HeadOID)
+	}
+	if actual.IndexHash != expected.IndexHash {
+		return errors.New("working-copy index changed outside a proven pending commit")
+	}
+	if actual.SubmodulesHash != expected.SubmodulesHash {
+		return errors.New("working-copy submodules changed")
+	}
+	return nil
+}
+
+func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsnapshot.Snapshot) bool {
+	if run == nil || actual.HeadRef != expected.HeadRef || actual.HeadOID != expected.HeadOID || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
+		return false
+	}
+	for _, assignment := range run.Assignments {
+		if assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+			continue
+		}
+		intent := assignment.Acceptance.PendingCommit
+		if intent.OperationID != "" && actual.HeadOID == intent.ParentCommit && actual.TreeOID == intent.Tree {
+			return true
+		}
+	}
+	return false
 }
 
 func resumeSpecification(pkg openspec.Package) ([]byte, error) {

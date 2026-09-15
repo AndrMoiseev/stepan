@@ -84,6 +84,9 @@ func TestResumeInvalidConfigurationLeavesDurableDiagnosticPause(t *testing.T) {
 
 func TestResumeClosesWhenCompleteSpecificationChanges(t *testing.T) {
 	fixture := newResumeFixture(t, "")
+	fixture.classify = func([]byte, []byte) (SpecificationChange, error) {
+		return SpecificationChange{RequiresNewScope: true}, nil
+	}
 	writeResumeFile(t, filepath.Join(fixture.repository, "openspec", "changes", "change", "proposal.md"), "changed scope\n")
 
 	_, err := Resume(context.Background(), fixture.input())
@@ -92,6 +95,24 @@ func TestResumeClosesWhenCompleteSpecificationChanges(t *testing.T) {
 	}
 	if fixture.run.Status != implementationstate.RunClosed || fixture.run.CloseReason == "" {
 		t.Fatalf("scope change did not close run: %#v", fixture.run)
+	}
+}
+
+func TestResumeRefreshesCompatibleSpecificationChange(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	fixture.classify = func(previous, current []byte) (SpecificationChange, error) {
+		if string(previous) == string(current) {
+			t.Fatal("classifier did not receive distinct specification versions")
+		}
+		return SpecificationChange{}, nil
+	}
+	writeResumeFile(t, filepath.Join(fixture.repository, "openspec", "changes", "change", "proposal.md"), "compatible clarification\n")
+
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.run.Status != implementationstate.RunActive || fixture.run.Identity.Specification == fixture.specification {
+		t.Fatalf("compatible specification was not refreshed: %#v", fixture.run)
 	}
 }
 
@@ -111,14 +132,93 @@ func TestResumeRulesContentOnlyDoesNotInvalidateCurrentAcceptanceState(t *testin
 	}
 }
 
+func TestResumeRulesClassificationUsesExactValidatedMarkdownDocuments(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		path          string
+		staged        bool
+		wantWorkspace bool
+	}{
+		{name: "root markdown rule", path: "rules/AGENTS.md"},
+		{name: "staged markdown rule", path: "rules/AGENTS.md", staged: true},
+		{name: "sibling code", path: "rules/helper.go", wantWorkspace: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newResumeFixture(t, "rules/AGENTS.md")
+			fixture.workspace.actual.TreeOID = "changed-" + test.name
+			fixture.workspace.actual.StatusHash = "changed-status-" + test.name
+			if test.staged {
+				fixture.workspace.actual.IndexHash = "staged-rules-index"
+			}
+			fixture.workspace.paths = []string{test.path}
+			writeResumeFile(t, filepath.Join(fixture.repository, filepath.FromSlash(test.path)), "changed\n")
+			result, err := Resume(context.Background(), fixture.input())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.WorkspaceChanged != test.wantWorkspace {
+				t.Fatalf("WorkspaceChanged = %v, want %v", result.WorkspaceChanged, test.wantWorkspace)
+			}
+		})
+	}
+}
+
+func TestResumePausesForChangedGitControlButPreservesUnstagedEdits(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		change    func(*gitsnapshot.Snapshot)
+		wantError bool
+	}{
+		{name: "changed branch", change: func(s *gitsnapshot.Snapshot) { s.HeadRef = "refs/heads/other" }, wantError: true},
+		{name: "detached head", change: func(s *gitsnapshot.Snapshot) { s.HeadRef = "" }, wantError: true},
+		{name: "unrelated commit", change: func(s *gitsnapshot.Snapshot) { s.HeadOID = "other-head" }, wantError: true},
+		{name: "staged index", change: func(s *gitsnapshot.Snapshot) { s.IndexHash = "other-index" }, wantError: true},
+		{name: "unstaged edit", change: func(s *gitsnapshot.Snapshot) { s.TreeOID, s.StatusHash = "manual-tree", "manual-status" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newResumeFixture(t, "")
+			test.change(&fixture.workspace.actual)
+			fixture.workspace.paths = []string{"code.go"}
+			result, err := Resume(context.Background(), fixture.input())
+			if test.wantError {
+				if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implementationstate.RunPaused {
+					t.Fatalf("unsafe Git control change was accepted: err=%v run=%#v", err, fixture.run)
+				}
+				return
+			}
+			if err != nil || !result.WorkspaceChanged || fixture.run.Status != implementationstate.RunActive {
+				t.Fatalf("unstaged edit was not retained: err=%v result=%#v run=%#v", err, result, fixture.run)
+			}
+		})
+	}
+}
+
+func TestResumePreservesAcceptedPendingCommitAfterInformationalReflection(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	preparePendingCommitReflection(t, fixture)
+	fixture.workspace.actual.TreeOID = "informational-reflection-tree"
+	fixture.workspace.actual.StatusHash = "informational-reflection-status"
+	fixture.workspace.paths = []string{"openspec/changes/change/tasks.md"}
+
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	assignment := fixture.run.Assignments[0]
+	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.Tree != "informational-reflection-tree" {
+		t.Fatalf("resume invalidated accepted pending commit after informational reflection: %#v", fixture.run)
+	}
+}
+
 type resumeFixture struct {
-	repository string
-	run        *implementationstate.Run
-	journal    *runstore.Run
-	state      *runstore.StateStore
-	baseline   implementationstate.EvidenceRef
-	workspace  *resumeWorkspace
-	load       func(string) (implementationconfig.Configuration, error)
+	repository    string
+	run           *implementationstate.Run
+	journal       *runstore.Run
+	state         *runstore.StateStore
+	baseline      implementationstate.EvidenceRef
+	specification implementationstate.EvidenceRef
+	workspace     *resumeWorkspace
+	load          func(string) (implementationconfig.Configuration, error)
+	classify      func([]byte, []byte) (SpecificationChange, error)
 }
 
 func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
@@ -189,11 +289,62 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
-	return &resumeFixture{repository: repository, run: run, journal: journal, state: state, baseline: baseline, workspace: &resumeWorkspace{actual: expected}, load: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}
+	return &resumeFixture{repository: repository, run: run, journal: journal, state: state, baseline: baseline, specification: specRef, workspace: &resumeWorkspace{actual: expected}, load: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}
 }
 
 func (fixture *resumeFixture) input() ResumeInput {
-	return ResumeInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace, ConfigurationLoader: fixture.load}
+	return ResumeInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace, ConfigurationLoader: fixture.load, ClassifySpecificationChange: fixture.classify}
+}
+
+func preparePendingCommitReflection(t *testing.T, fixture *resumeFixture) {
+	t.Helper()
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline-check", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.run.StartRunAttempt("baseline-check"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-check-result", OperationID: "baseline-check", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.RecordInitialBaselinePass("baseline-check", "baseline-check-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	brief, err := fixture.journal.Publish("pending-brief", []byte("brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []implementationstate.Operation{{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}} {
+		if err := fixture.run.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fixture.run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acceptance := implementationstate.AcceptanceEvidence{BriefID: "brief", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: implementationstate.CommitIntent{OperationID: "commit", ParentCommit: "head", Tree: "informational-reflection-tree", Message: "commit accepted work"}}
+	if err := fixture.run.AcceptAssignment("assignment", acceptance); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.Pause("commit hook failed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func resumeTestConfiguration(t *testing.T, model, rulesFile string) implementationconfig.Configuration {

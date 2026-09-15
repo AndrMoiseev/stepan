@@ -21,6 +21,10 @@ import (
 type RulesFileValidation struct {
 	File string
 	Root string
+	// DocumentPaths is the NUL-separated list of exact Markdown documents
+	// checked in this pass. It intentionally remains comparable so existing
+	// callers can treat a no-rules result as the zero value.
+	DocumentPaths string
 }
 
 // ValidateRulesFile resolves and validates the optional project rules_file.
@@ -62,13 +66,14 @@ func (configuration Configuration) ValidateRulesFile(repositoryRoot string) (Rul
 	if err := validator.scanDirectory(rulesRoot); err != nil {
 		return RulesFileValidation{}, configurationError("project", "rules_file: "+err.Error())
 	}
-	return RulesFileValidation{File: rulesFile, Root: rulesRoot}, nil
+	return RulesFileValidation{File: rulesFile, Root: rulesRoot, DocumentPaths: strings.Join(validator.documents, "\x00")}, nil
 }
 
 type rulesValidator struct {
 	repository string
 	rulesRoot  string
 	ancestors  map[string]struct{}
+	documents  []string
 }
 
 func (validator *rulesValidator) scanDirectory(directory string) error {
@@ -115,6 +120,7 @@ func (validator *rulesValidator) scanDirectory(directory string) error {
 		if err := validator.validateDocument(path); err != nil {
 			return err
 		}
+		validator.documents = append(validator.documents, filepath.Clean(path))
 	}
 	return nil
 }

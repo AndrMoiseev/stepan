@@ -602,3 +602,23 @@
 - Expected impact: misleading recovery evidence on the uncommon combination of hook-modified content and a caller operation ID different from the durable intent.
 - Classification: technical debt because no ordinary controller path demonstrating that combined trigger is established.
 - Possible follow-up: consistently use `intent.OperationID` for reconciled evidence and artifact IDs once a pending intent exists.
+
+## TD11.3-001 — failed SessionOwner replacement is not retried
+
+- Origin: task 11.3 initial review; affected locations: `internal/flows/impl_loop/resume.go` session-owner replacement path.
+- Status: `open`.
+- Potential problem: the new configuration reference can become durable before old-session cleanup succeeds; the old owner is then closed but retained, and a later resume sees no configuration difference and does not retry replacement.
+- Evidence: `SessionOwner.Close` marks the owner closed even when cleanup returns an error, while replacement is conditional on configuration equality.
+- Expected impact: after an uncommon runtime cleanup failure, the next resume can activate with an unusable closed owner.
+- Classification: technical debt because it requires a session cleanup failure during the narrow refresh transition.
+- Possible follow-up: persist a pending-refresh marker or make session transition retry independently of configuration-reference equality.
+
+## TD11.3-002 — session recreation coverage does not prove a usable runtime
+
+- Origin: task 11.3 initial review; affected locations: `internal/flows/impl_loop/resume.go`, `internal/flows/impl_loop/resume_test.go`.
+- Status: `open`.
+- Potential problem: the recreation test permits nil factories and verifies only pointer replacement, yielding an owner whose first real role request would lack a prepared runtime.
+- Evidence: factory-less preflight is skipped and the test never starts a role session with the changed profile/model.
+- Expected impact: wiring regressions in applying reloaded profiles to usable sessions may escape focused coverage.
+- Classification: technical debt because production can supply prepared factories and no ordinary broken wiring path is demonstrated.
+- Possible follow-up: require prepared factories on the ready-to-run path and exercise an actual role session created from the reloaded profile.
