@@ -91,6 +91,28 @@ func NewSessionOwner(prepared PreparedRuntimes, base agentruntime.ThreadConfig) 
 	}, nil
 }
 
+// MatchesPrepared reports whether this live owner was built from the same
+// effective role profiles as prepared. An owner without a complete prepared
+// plan cannot prove that it is safe to continue after a configuration reload,
+// so callers must replace it before dispatching new work.
+func (owner *SessionOwner) MatchesPrepared(prepared PreparedRuntimes) bool {
+	if owner == nil {
+		return false
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed || len(owner.prepared.roles) == 0 || len(prepared.roles) == 0 || len(owner.prepared.roles) != len(prepared.roles) {
+		return false
+	}
+	for role, current := range owner.prepared.roles {
+		next, ok := prepared.roles[role]
+		if !ok || current.Profile != next.Profile {
+			return false
+		}
+	}
+	return true
+}
+
 // Orchestrator returns the one conversation for this owner. Repeated calls in
 // the same working process continue that conversation rather than starting a
 // provider-specific resumed session.

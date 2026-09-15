@@ -182,6 +182,59 @@ func TestResumeReloadsChangedConfigurationAndRecreatesSessionOwner(t *testing.T)
 	}
 }
 
+func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	factory := &resumeProfileRuntimeFactory{}
+	initial := resumeTestConfiguration(t, "initial-model", "")
+	preparedInitial, err := PrepareRuntimes(initial, map[string]RuntimeFactory{"test": factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := NewSessionOwner(preparedInitial, threadConfigForTest(fixture.repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := old.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); err != nil {
+		t.Fatal(err)
+	}
+	owner := old
+	changed := resumeTestConfiguration(t, "changed-model", "")
+	fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+	input := fixture.input()
+	input.Factories = map[string]RuntimeFactory{"test": factory}
+	input.SessionOwner = &owner
+	input.SessionBase = threadConfigForTest(fixture.repository)
+	input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+		return checkexec.Result{ExitCode: 1, Stderr: []byte("required check failed")}, nil
+	})
+
+	first, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.ConfigurationChanged || first.SessionsRecreated || owner != old || fixture.run.Status != implementationstate.RunPaused {
+		t.Fatalf("failed gate unexpectedly replaced owner: result=%#v owner=%p old=%p run=%#v", first, owner, old, fixture.run)
+	}
+	input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil })
+
+	second, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ConfigurationChanged || !second.SessionsRecreated || owner == old || fixture.run.Status != implementationstate.RunActive {
+		t.Fatalf("successful second resume did not replace stale owner: result=%#v owner=%p old=%p run=%#v", second, owner, old, fixture.run)
+	}
+	if _, err := old.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); !errors.Is(err, ErrSessionOwnerClosed) {
+		t.Fatalf("old profile-A owner remained usable: %v", err)
+	}
+	if _, err := owner.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); err != nil {
+		t.Fatal(err)
+	}
+	if len(factory.created) < 2 || factory.created[0].Model != "initial-model" || factory.created[len(factory.created)-1].Model != "changed-model" {
+		t.Fatalf("owner sessions used profiles %#v, want initial then changed model", factory.created)
+	}
+}
+
 func TestResumeInvalidConfigurationLeavesDurableDiagnosticPause(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	fixture.load = func(string) (implementationconfig.Configuration, error) {
@@ -582,6 +635,17 @@ func resumeChecksConfiguration(t *testing.T, checks, required string) implementa
 		t.Fatal(err)
 	}
 	return configuration
+}
+
+type resumeProfileRuntimeFactory struct {
+	created []implementationconfig.RuntimeProfile
+}
+
+func (*resumeProfileRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error { return nil }
+
+func (factory *resumeProfileRuntimeFactory) Create(_ context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+	factory.created = append(factory.created, profile)
+	return &sessionRuntime{}, nil
 }
 
 func resumeSnapshot(tree, status string) gitsnapshot.Snapshot {

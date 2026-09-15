@@ -622,3 +622,13 @@
 - Expected impact: wiring regressions in applying reloaded profiles to usable sessions may escape focused coverage.
 - Classification: technical debt because production can supply prepared factories and no ordinary broken wiring path is demonstrated.
 - Possible follow-up: require prepared factories on the ready-to-run path and exercise an actual role session created from the reloaded profile.
+
+## SMELL-001 — mandatory-check gate plumbing is duplicated
+
+- Origin: task 11.4 initial review; affected locations: `internal/flows/impl_loop/resume_checks.go`, `initial_checks.go`, `final_review.go`.
+- Status: `open`.
+- Potential problem: publisher/observer setup, controlled execution, diagnostics, evidence persistence, and failure routing now have three similar implementations.
+- Evidence: the resume gate repeats the pipeline while parameterizing only its own uncounted operation and pause semantics.
+- Expected impact: future cancellation or durability fixes can drift across mandatory-check paths.
+- Classification: technical debt because the current required behavior is correct outside the separate critical finding and no typical runtime failure follows from duplication alone.
+- Possible follow-up: extract a shared mandatory-gate skeleton with explicit accounting, convergence, state-selection, and pause-policy parameters.

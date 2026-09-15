@@ -249,7 +249,15 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if input.Run.Status != implementationstate.RunActive {
 		return result, nil
 	}
-	if configurationChanged && input.SessionOwner != nil {
+	recreateSessions := configurationChanged
+	if input.SessionOwner != nil && *input.SessionOwner != nil && !(*input.SessionOwner).MatchesPrepared(prepared) {
+		// A prior resume may have made configuration B durable but stopped at
+		// the mandatory-check gate before replacing sessions created for A.
+		// Re-check the live owner on every successful gate so it can never
+		// continue with the old bootstrap profile.
+		recreateSessions = true
+	}
+	if recreateSessions && input.SessionOwner != nil {
 		owner, recreateErr := NewSessionOwner(prepared, input.SessionBase)
 		if recreateErr != nil {
 			return ResumeResult{}, recreateSessionsFailure(ctx, input, owner, recreateErr)
