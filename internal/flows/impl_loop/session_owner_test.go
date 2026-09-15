@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -240,10 +241,36 @@ func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (ag
 func (runtime *sessionRuntime) RunTurn(thread agentruntime.Thread, _ string) (json.RawMessage, error) {
 	runtime.turnCount++
 	kind := ResponseImplementationReady
-	if number, ok := thread.(int); ok && number > 0 && number <= len(runtime.configurations) && roleFromBootstrap(runtime.configurations[number-1].BootstrapInstructions) == ResponseRoleTaskReviewer {
-		kind = ResponseReviewPassed
+	var bootstrap string
+	if number, ok := thread.(int); ok && number > 0 && number <= len(runtime.configurations) {
+		bootstrap = runtime.configurations[number-1].BootstrapInstructions
+		switch roleFromBootstrap(bootstrap) {
+		case ResponseRoleOrchestrator:
+			kind = ResponseProgressReflected
+		case ResponseRoleBriefer:
+			kind = ResponseBriefReady
+		case ResponseRoleTaskReviewer, ResponseRoleFinalReviewer:
+			kind = ResponseReviewPassed
+		}
 	}
 	response := responsePayloadMap(kind)
+	if kind == ResponseBriefReady {
+		for _, line := range strings.Split(bootstrap, "\n") {
+			for _, field := range strings.Fields(line) {
+				if strings.Contains(line, " status=pending ") && strings.HasPrefix(field, "id=") {
+					response["task_ids"] = []string{strings.TrimPrefix(field, "id=")}
+					break
+				}
+				if strings.HasPrefix(line, "- id=") && strings.HasPrefix(field, "tasks=") {
+					response["task_ids"] = strings.Split(strings.TrimPrefix(field, "tasks="), ",")
+					break
+				}
+			}
+			if ids, ok := response["task_ids"].([]string); ok && len(ids) != 0 && ids[0] != "task-1" {
+				break
+			}
+		}
+	}
 	if kind == ResponseReviewPassed {
 		response["message"] = "review passed after restart"
 		response["references"] = []string{"durable assignment diff", "required check evidence"}

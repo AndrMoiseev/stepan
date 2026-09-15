@@ -126,6 +126,10 @@ type CommitAcceptedAssignmentInput struct {
 	// an agent suggestion and it is recorded before Commit is called.
 	Preparation CommitPreparation
 	Control     CommitControl
+	// Observer is used only when a durable commit intent already exists. It is
+	// normally GitCommitObserver; the seam keeps restart reconciliation
+	// independently testable without changing the mutation contract.
+	Observer CommitObserver
 }
 
 type CommitAcceptedAssignmentResult struct {
@@ -151,7 +155,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	intent, pending := pendingCommitIntent(input.Run, input.AssignmentID)
 	if pending {
 		recovery, err := ReconcilePendingCommit(ctx, ReconcilePendingCommitInput{
-			Run: input.Run, StateStore: input.StateStore, Repository: input.Repository, AssignmentID: input.AssignmentID,
+			Run: input.Run, StateStore: input.StateStore, Repository: input.Repository, AssignmentID: input.AssignmentID, Observer: input.Observer,
 		})
 		if err != nil {
 			return CommitAcceptedAssignmentResult{Intent: intent}, err

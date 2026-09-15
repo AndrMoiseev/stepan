@@ -63,14 +63,19 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 		Specification: input.Run.Identity.Specification,
 		Configuration: input.Run.Identity.Configuration,
 	}
-	if err := input.Run.AddRunOperation(implementationstate.Operation{
-		ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis,
-		Description: "initial required checks", Counter: implementationstate.CycleCounterNone,
-	}); err != nil {
-		return InitialRequiredChecksResult{}, fmt.Errorf("%w: create baseline operation: %v", ErrInitialRequiredChecks, err)
-	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
-		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline operation: %v", ErrInitialRequiredChecks, err)
+	existing := finalRunOperation(input.Run, input.Operation)
+	if existing == nil {
+		if err := input.Run.AddRunOperation(implementationstate.Operation{
+			ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis,
+			Description: "initial required checks", Counter: implementationstate.CycleCounterNone,
+		}); err != nil {
+			return InitialRequiredChecksResult{}, fmt.Errorf("%w: create baseline operation: %v", ErrInitialRequiredChecks, err)
+		}
+		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+			return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline operation: %v", ErrInitialRequiredChecks, err)
+		}
+	} else if existing.Kind != implementationstate.OperationCheck || existing.Basis != basis || existing.Description != "initial required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
+		return InitialRequiredChecksResult{}, fmt.Errorf("%w: baseline operation cannot be resumed", ErrInitialRequiredChecks)
 	}
 	if _, _, err := input.StateStore.RecordRunAttemptStart(ctx, input.Run, input.Operation); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: reserve baseline check attempt: %v", ErrInitialRequiredChecks, err)

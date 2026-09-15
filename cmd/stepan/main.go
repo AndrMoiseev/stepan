@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 
@@ -174,25 +175,37 @@ func classifyImplementationSpecification(previous, current []byte) (impl_loop.Sp
 	if err != nil {
 		return impl_loop.SpecificationChange{}, fmt.Errorf("decode current resume specification: %w", err)
 	}
-	if len(before) != len(after) {
-		return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+	requiresNewScope := len(before) != len(after)
+	indeterminate := make([]string, 0)
+	paths := make([]string, 0, len(before))
+	for path := range before {
+		paths = append(paths, path)
 	}
-	for path, saved := range before {
+	sort.Strings(paths)
+	for _, path := range paths {
+		saved := before[path]
 		latest, ok := after[path]
 		if !ok {
-			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+			requiresNewScope = true
+			continue
 		}
 		if normalizeImplementationMarkdown(saved.Content) == normalizeImplementationMarkdown(latest.Content) {
 			continue
 		}
 		switch implementationSpecificationDocumentKind(path) {
 		case "proposal", "specification":
-			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+			requiresNewScope = true
 		case "design":
-			return impl_loop.SpecificationChange{}, fmt.Errorf("semantic change to %s cannot be safely classified as compatible or new scope", path)
+			indeterminate = append(indeterminate, path)
 		default:
-			return impl_loop.SpecificationChange{}, fmt.Errorf("unrecognized resume specification document %s", path)
+			indeterminate = append(indeterminate, path)
 		}
+	}
+	if requiresNewScope {
+		return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+	}
+	if len(indeterminate) != 0 {
+		return impl_loop.SpecificationChange{}, fmt.Errorf("semantic changes to %s cannot be safely classified as compatible or new scope", strings.Join(indeterminate, ", "))
 	}
 	return impl_loop.SpecificationChange{}, nil
 }

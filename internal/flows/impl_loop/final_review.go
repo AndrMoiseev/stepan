@@ -57,11 +57,16 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 		return FinalRequiredChecksResult{}, err
 	}
 	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis, Description: "final required checks"}); err != nil {
-		return FinalRequiredChecksResult{}, fmt.Errorf("%w: create final check operation: %v", ErrFinalAcceptanceRoute, err)
-	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
-		return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check operation: %v", ErrFinalAcceptanceRoute, err)
+	existing := finalRunOperation(input.Run, input.Operation)
+	if existing == nil {
+		if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis, Description: "final required checks"}); err != nil {
+			return FinalRequiredChecksResult{}, fmt.Errorf("%w: create final check operation: %v", ErrFinalAcceptanceRoute, err)
+		}
+		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+			return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check operation: %v", ErrFinalAcceptanceRoute, err)
+		}
+	} else if existing.Kind != implementationstate.OperationCheck || existing.Basis != basis || existing.Description != "final required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
+		return FinalRequiredChecksResult{}, fmt.Errorf("%w: final check operation cannot be resumed", ErrFinalAcceptanceRoute)
 	}
 	if _, _, err := input.StateStore.RecordRunAttemptStart(ctx, input.Run, input.Operation); err != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: reserve final check attempt: %v", ErrFinalAcceptanceRoute, err)
@@ -266,11 +271,16 @@ func runFinalReviewerTurn(ctx context.Context, input FinalReviewInput, session *
 		return FinalReviewResult{}, fmt.Errorf("%w: an independent final reviewer session is required", ErrFinalAcceptanceRoute)
 	}
 	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, Basis: basis, Description: "independent final review", Counter: implementationstate.CycleCounterFinalReview}); err != nil {
-		return FinalReviewResult{}, fmt.Errorf("%w: create final review operation: %v", ErrFinalAcceptanceRoute, err)
-	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
-		return FinalReviewResult{}, fmt.Errorf("%w: persist final review operation: %v", ErrFinalAcceptanceRoute, err)
+	existing := finalRunOperation(input.Run, input.OperationID)
+	if existing == nil {
+		if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, Basis: basis, Description: "independent final review", Counter: implementationstate.CycleCounterFinalReview}); err != nil {
+			return FinalReviewResult{}, fmt.Errorf("%w: create final review operation: %v", ErrFinalAcceptanceRoute, err)
+		}
+		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+			return FinalReviewResult{}, fmt.Errorf("%w: persist final review operation: %v", ErrFinalAcceptanceRoute, err)
+		}
+	} else if existing.Kind != implementationstate.OperationReview || existing.Basis != basis || existing.Description != "independent final review" || existing.Counter != implementationstate.CycleCounterFinalReview || finalRunResultForOperation(input.Run, existing.ID) != nil {
+		return FinalReviewResult{}, fmt.Errorf("%w: final review operation cannot be resumed", ErrFinalAcceptanceRoute)
 	}
 	binding := ResponseBinding{CallID: input.CallID, RunID: input.Run.Identity.ID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
 	call := finalReviewerCall(input, session, input.OperationID, ResponseExpectation{Role: ResponseRoleFinalReviewer, State: ResponseStateFinalReview, Scope: ResponseScopeRun, Binding: binding}, "Review the complete specification and aggregate final diff. Return a structured final review result.")

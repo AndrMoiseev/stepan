@@ -161,6 +161,28 @@ func TestImplementationStartupCompositionProvidesEnvelopeAndScopeDecisionForEver
 	}
 }
 
+func TestProductionSpecificationClassifierGivesNewScopeDeterministicPrecedence(t *testing.T) {
+	proposal := implementationSpecificationDocument{Path: "openspec/changes/change/proposal.md", Content: "# Proposal\n\nOriginal scope.\n"}
+	design := implementationSpecificationDocument{Path: "openspec/changes/change/design.md", Content: "# Design\n\nOriginal design.\n"}
+	specification := implementationSpecificationDocument{Path: "openspec/changes/change/specs/feature/spec.md", Content: "## Requirement\n\nOriginal behavior.\n"}
+	before := productionResumeSpecification(t, false, proposal, design, specification)
+	proposal.Content = "# Proposal\n\nExpanded scope.\n"
+	design.Content = "# Design\n\nChanged architecture.\n"
+
+	orders := [][]implementationSpecificationDocument{
+		{proposal, design, specification},
+		{design, specification, proposal},
+		{specification, proposal, design},
+	}
+	for index := 0; index < 24; index++ {
+		documents := orders[index%len(orders)]
+		change, err := classifyImplementationSpecification(before, productionResumeSpecification(t, index%2 == 0, documents...))
+		if err != nil || !change.RequiresNewScope {
+			t.Fatalf("order %d: change=%#v err=%v", index, change, err)
+		}
+	}
+}
+
 func productionResumeSpecification(t *testing.T, indent bool, documents ...implementationSpecificationDocument) []byte {
 	t.Helper()
 	for index := range documents {

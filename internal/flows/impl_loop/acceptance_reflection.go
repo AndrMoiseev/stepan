@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -61,23 +62,38 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		Specification: input.Run.Identity.Specification,
 		Configuration: input.Run.Identity.Configuration,
 	}
-	if reflectionOperationExists(input.Run, input.ReflectionOperationID) {
-		return AcceptanceReflectionResult{}, fmt.Errorf("%w: reflection operation already exists", ErrAcceptanceReflection)
+	assignment := assignmentByID(input.Run, input.AssignmentID)
+	if assignment == nil {
+		return AcceptanceReflectionResult{}, fmt.Errorf("%w: assignment is missing", ErrAcceptanceReflection)
 	}
-	if err := input.Run.AcceptAssignment(input.AssignmentID, input.Acceptance); err != nil {
-		return AcceptanceReflectionResult{}, fmt.Errorf("%w: accept assignment: %v", ErrAcceptanceReflection, err)
+	operation := finalRunOperation(input.Run, input.ReflectionOperationID)
+	if assignment.Status == implementationstate.AssignmentActive {
+		if operation != nil {
+			return AcceptanceReflectionResult{}, fmt.Errorf("%w: reflection operation already exists before acceptance", ErrAcceptanceReflection)
+		}
+		if err := input.Run.AcceptAssignment(input.AssignmentID, input.Acceptance); err != nil {
+			return AcceptanceReflectionResult{}, fmt.Errorf("%w: accept assignment: %v", ErrAcceptanceReflection, err)
+		}
+	} else if assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		return AcceptanceReflectionResult{}, fmt.Errorf("%w: assignment is neither review-ready nor accepted", ErrAcceptanceReflection)
+	} else if !reflect.DeepEqual(*assignment.Acceptance, input.Acceptance) {
+		return AcceptanceReflectionResult{}, fmt.Errorf("%w: supplied acceptance differs from durable assignment acceptance", ErrAcceptanceReflection)
 	}
-	if err := input.Run.AddRunOperation(implementationstate.Operation{
-		ID: input.ReflectionOperationID, Kind: implementationstate.OperationAgent,
-		Basis: basis, Description: "reflect accepted task progress in tasks.md",
-	}); err != nil {
-		return AcceptanceReflectionResult{}, fmt.Errorf("%w: create reflection operation: %v", ErrAcceptanceReflection, err)
-	}
-	// This is intentionally one record before an external agent call. It has
-	// both the pending commit intent and the reserved reflection operation, so
-	// recovery can resume without treating a checkbox as proof of completion.
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
-		return AcceptanceReflectionResult{}, fmt.Errorf("%w: persist accepted assignment: %v", ErrAcceptanceReflection, err)
+	if operation == nil {
+		if err := input.Run.AddRunOperation(implementationstate.Operation{
+			ID: input.ReflectionOperationID, Kind: implementationstate.OperationAgent,
+			Basis: basis, Description: "reflect accepted task progress in tasks.md",
+		}); err != nil {
+			return AcceptanceReflectionResult{}, fmt.Errorf("%w: create reflection operation: %v", ErrAcceptanceReflection, err)
+		}
+		// This is intentionally one record before an external agent call. It has
+		// both the accepted state and the reserved reflection operation, so
+		// recovery can resume without treating a checkbox as proof of completion.
+		if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+			return AcceptanceReflectionResult{}, fmt.Errorf("%w: persist accepted assignment: %v", ErrAcceptanceReflection, err)
+		}
+	} else if operation.Kind != implementationstate.OperationAgent || operation.Basis != basis || operation.Description != "reflect accepted task progress in tasks.md" || finalRunResultForOperation(input.Run, operation.ID) != nil {
+		return AcceptanceReflectionResult{}, fmt.Errorf("%w: reflection operation cannot be resumed", ErrAcceptanceReflection)
 	}
 
 	binding := ResponseBinding{
@@ -129,6 +145,18 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		return AcceptanceReflectionResult{Call: result}, fmt.Errorf("%w: persist reflection result: %v", ErrAcceptanceReflection, err)
 	}
 	return AcceptanceReflectionResult{Call: result}, nil
+}
+
+func finalRunResultForOperation(run *implementationstate.Run, operationID implementationstate.OperationID) *implementationstate.OperationResult {
+	if run == nil {
+		return nil
+	}
+	for index := range run.RunResults {
+		if run.RunResults[index].OperationID == operationID {
+			return &run.RunResults[index]
+		}
+	}
+	return nil
 }
 
 func publishReflectionWorkspace(journal *runstore.Run, resultID implementationstate.ResultID, snapshot gitsnapshot.Snapshot) (implementationstate.EvidenceRef, error) {

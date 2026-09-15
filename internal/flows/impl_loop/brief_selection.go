@@ -28,14 +28,19 @@ func PrepareBriefSelection(ctx context.Context, stateStore *runstore.StateStore,
 		return fmt.Errorf("%w: no next assignment can be selected", ErrBriefSelection)
 	}
 	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{
-		ID: operationID, Kind: implementationstate.OperationAgent, Basis: basis,
-		Description: "select next assignment", Counter: implementationstate.CycleCounterNone,
-	}); err != nil {
-		return fmt.Errorf("%w: create briefer operation: %v", ErrBriefSelection, err)
-	}
-	if _, err := stateStore.Record(ctx, run); err != nil {
-		return fmt.Errorf("%w: persist briefer operation: %v", ErrBriefSelection, err)
+	existing := finalRunOperation(run, operationID)
+	if existing == nil {
+		if err := run.AddRunOperation(implementationstate.Operation{
+			ID: operationID, Kind: implementationstate.OperationAgent, Basis: basis,
+			Description: "select next assignment", Counter: implementationstate.CycleCounterNone,
+		}); err != nil {
+			return fmt.Errorf("%w: create briefer operation: %v", ErrBriefSelection, err)
+		}
+		if _, err := stateStore.Record(ctx, run); err != nil {
+			return fmt.Errorf("%w: persist briefer operation: %v", ErrBriefSelection, err)
+		}
+	} else if existing.Kind != implementationstate.OperationAgent || existing.Basis != basis || existing.Description != "select next assignment" || existing.Counter != implementationstate.CycleCounterNone || finalRunResultForOperation(run, existing.ID) != nil {
+		return fmt.Errorf("%w: briefer selection operation cannot be resumed", ErrBriefSelection)
 	}
 	return nil
 }

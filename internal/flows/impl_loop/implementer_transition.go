@@ -114,14 +114,19 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		description = "required acceptance checks"
 	}
 	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{
-		ID: input.OperationID, Kind: implementationstate.OperationCheck, BriefID: input.BriefID,
-		Basis: basis, Description: description, Counter: counter,
-	}); err != nil {
-		return ImplementerTransitionResult{}, fmt.Errorf("%w: create check operation: %v", ErrImplementerTransition, err)
-	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
-		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check operation: %v", ErrImplementerTransition, err)
+	existing := assignmentOperation(input.Run, input.AssignmentID, input.OperationID)
+	if existing == nil {
+		if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{
+			ID: input.OperationID, Kind: implementationstate.OperationCheck, BriefID: input.BriefID,
+			Basis: basis, Description: description, Counter: counter,
+		}); err != nil {
+			return ImplementerTransitionResult{}, fmt.Errorf("%w: create check operation: %v", ErrImplementerTransition, err)
+		}
+		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+			return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check operation: %v", ErrImplementerTransition, err)
+		}
+	} else if existing.Kind != implementationstate.OperationCheck || existing.BriefID != input.BriefID || existing.Basis != basis || existing.Description != description || existing.Counter != counter || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
+		return ImplementerTransitionResult{}, fmt.Errorf("%w: check operation cannot be resumed", ErrImplementerTransition)
 	}
 	if _, _, err := input.StateStore.RecordAssignmentAttemptStartWithLimits(ctx, input.Run, input.AssignmentID, input.OperationID, input.Limits); err != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: reserve check attempt: %w", ErrImplementerTransition, err)

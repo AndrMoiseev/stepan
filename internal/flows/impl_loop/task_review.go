@@ -177,11 +177,16 @@ type assignmentBrief struct {
 
 func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *AgentSession, briefID implementationstate.BriefID, message, diffBase string) (TaskReviewResult, error) {
 	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, BriefID: briefID, Basis: basis, Description: "task review", Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
-		return TaskReviewResult{}, fmt.Errorf("%w: create review operation: %v", ErrInvalidTaskReviewRoute, err)
-	}
-	if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
-		return TaskReviewResult{}, fmt.Errorf("%w: persist review operation: %v", ErrInvalidTaskReviewRoute, err)
+	existing := assignmentOperation(input.Run, input.AssignmentID, input.OperationID)
+	if existing == nil {
+		if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, BriefID: briefID, Basis: basis, Description: "task review", Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+			return TaskReviewResult{}, fmt.Errorf("%w: create review operation: %v", ErrInvalidTaskReviewRoute, err)
+		}
+		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
+			return TaskReviewResult{}, fmt.Errorf("%w: persist review operation: %v", ErrInvalidTaskReviewRoute, err)
+		}
+	} else if existing.Kind != implementationstate.OperationReview || existing.BriefID != briefID || existing.Basis != basis || existing.Description != "task review" || existing.Counter != implementationstate.CycleCounterAssignmentReview || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
+		return TaskReviewResult{}, fmt.Errorf("%w: review operation cannot be resumed", ErrInvalidTaskReviewRoute)
 	}
 	binding := ResponseBinding{CallID: input.CallID, RunID: input.Run.Identity.ID, AssignmentID: input.AssignmentID, BriefID: briefID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
 	call := ControlledAgentCall{Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleTaskReviewer, CallID: input.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: input.OperationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleTaskReviewer, State: ResponseStateTaskReview, Scope: ResponseScopeAssignment, Binding: binding}, Message: message}

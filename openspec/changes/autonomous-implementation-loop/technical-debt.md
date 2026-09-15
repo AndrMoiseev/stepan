@@ -722,3 +722,13 @@
 - Expected impact: retained recovery history can make startup memory proportional to the full journal and potentially quadratic in accumulated snapshot data.
 - Classification: technical debt because ordinary current journals remain modest and no typical startup failure is demonstrated; performance/load validation was not requested.
 - Possible follow-up: validate the stream while retaining only the necessary event/result window or explicit action metadata.
+
+## TASK-12.2-D004 — resume specification evidence has duplicated private codecs
+
+- Origin: task 12.2 exceptional correction-cycle-4 rereview; affected locations: `internal/flows/impl_loop/resume.go`, `cmd/stepan/main.go`.
+- Status: `open`.
+- Potential problem: the resume layer privately produces `Path`/`Version`/`Content` evidence while the application independently recreates its decoding and validation contract.
+- Evidence: producer and classifier maintain separate anonymous JSON shapes and hash validation logic.
+- Expected impact: future evidence-format changes can drift between producer and consumer and turn otherwise valid resumes into diagnostic pauses.
+- Classification: technical debt because the current formats and validation agree and the remaining correction can preserve behavior without widening the typed interface.
+- Possible follow-up: expose a typed specification-evidence codec at the implementation-loop boundary and reuse it in both producer and classifier.
