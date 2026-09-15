@@ -126,7 +126,10 @@ func acceptanceReflectionFixture(t *testing.T, repository string) (*implementati
 		return value
 	}
 	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("specification"), TaskList: ref("tasks"), Configuration: ref("configuration")}
-	run, err := implementationstate.NewRun(identity, []implementationstate.Task{{ID: "A", Order: 0, Title: "source task"}})
+	run, err := implementationstate.NewRun(identity, []implementationstate.Task{
+		{ID: "parent", Order: 0, Title: "parent task"},
+		{ID: "A", ParentID: "parent", Order: 1, Title: "source task"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1182,6 +1182,26 @@ func (r *Run) AcceptAssignment(assignmentID AssignmentID, evidence AcceptanceEvi
 	return nil
 }
 
+// SetPendingCommitIntent records the exact commit which the controller is
+// about to create. Acceptance can precede an informational tasks.md update,
+// so the final Git tree is not known until that update is complete. The intent
+// is nevertheless durable before the first Git mutation.
+func (r *Run) SetPendingCommitIntent(assignmentID AssignmentID, intent CommitIntent) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	index := r.assignmentIndex(assignmentID)
+	if index < 0 {
+		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
+	}
+	assignment := &r.Assignments[index]
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !intent.valid() {
+		return fmt.Errorf("%w: assignment cannot receive a commit intent", ErrInvalidTransition)
+	}
+	assignment.Acceptance.PendingCommit = intent
+	return nil
+}
+
 // CommitAssignment is the only transition that completes selected leaves.
 func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidence) error {
 	if err := r.requireActive(); err != nil {
@@ -2020,7 +2040,7 @@ func (a *Assignment) accept(e AcceptanceEvidence) error {
 }
 
 func (a *Assignment) validateAcceptance(e AcceptanceEvidence, requireCurrentBrief bool) error {
-	if !e.State.valid() || !e.Basis.valid() || !e.PendingCommit.valid() || !a.hasBrief(e.BriefID) || (requireCurrentBrief && (len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID)) || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
+	if !e.State.valid() || !e.Basis.valid() || !a.hasBrief(e.BriefID) || (requireCurrentBrief && (len(a.Briefs) == 0 || a.Briefs[len(a.Briefs)-1].ID != e.BriefID)) || len(e.CheckResultIDs) == 0 || e.ReviewResultID == "" || hasDuplicateResultIDs(e.CheckResultIDs) {
 		return fmt.Errorf("%w: incomplete acceptance evidence", ErrInvalidState)
 	}
 	for _, resultID := range e.CheckResultIDs {
