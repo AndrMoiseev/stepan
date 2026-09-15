@@ -172,6 +172,25 @@ type BootstrapperStartInput struct {
 	Repository string
 }
 
+// BootstrapProjectContext is the read-only, controller-collected view used by
+// the standalone bootstrap mode. Settings are deliberately already scrubbed:
+// credentials are runtime configuration, never bootstrap input.
+type BootstrapProjectContext struct {
+	Repository      string
+	ProjectFiles    []string
+	CI              []BootstrapContextDocument
+	Scripts         []BootstrapContextDocument
+	UserSettings    string
+	ProjectSettings string
+}
+
+// BootstrapContextDocument is a bounded, repository-relative text document
+// selected by the controller. It is not an instruction channel.
+type BootstrapContextDocument struct {
+	Path    string
+	Content string
+}
+
 // BuildBootstrapperStartContext binds a bootstrapper session to the current
 // repository without leaking any implementation-run identity or credentials.
 func BuildBootstrapperStartContext(input BootstrapperStartInput) (RoleStartContext, error) {
@@ -179,6 +198,62 @@ func BuildBootstrapperStartContext(input BootstrapperStartInput) (RoleStartConte
 		return RoleStartContext{}, fmt.Errorf("%w: bootstrapper requires an absolute repository", ErrInvalidRoleContext)
 	}
 	return newRoleStartContext(ResponseRoleBootstrapper, "# Bootstrap repository\n\n"+filepath.Clean(input.Repository))
+}
+
+// BuildBootstrapperRequest renders the one controller-owned initial request.
+// It explicitly records that configured checks are data for a later proposal,
+// not authority to execute a process in bootstrap mode.
+func BuildBootstrapperRequest(input BootstrapProjectContext) (string, error) {
+	if !filepath.IsAbs(input.Repository) {
+		return "", fmt.Errorf("%w: bootstrap project context requires an absolute repository", ErrInvalidRoleContext)
+	}
+	// This second sanitization is intentional: callers may construct the
+	// context in tests or a future UI seam rather than through the filesystem
+	// collector, but neither path may carry authorization into a prompt.
+	input.UserSettings = sanitizeBootstrapJSON([]byte(input.UserSettings))
+	input.ProjectSettings = sanitizeBootstrapJSON([]byte(input.ProjectSettings))
+	for index := range input.CI {
+		input.CI[index].Content = sanitizeBootstrapText(input.CI[index].Content)
+	}
+	for index := range input.Scripts {
+		input.Scripts[index].Content = sanitizeBootstrapText(input.Scripts[index].Content)
+	}
+	for _, document := range append(append([]BootstrapContextDocument{}, input.CI...), input.Scripts...) {
+		if strings.TrimSpace(document.Path) == "" || filepath.IsAbs(document.Path) || strings.HasPrefix(filepath.ToSlash(document.Path), "../") {
+			return "", fmt.Errorf("%w: bootstrap context has an invalid document path", ErrInvalidRoleContext)
+		}
+	}
+	var data strings.Builder
+	fmt.Fprintf(&data, "# Bootstrap project context\n\nRepository: %s\n\n## Project files\n", filepath.Clean(input.Repository))
+	if len(input.ProjectFiles) == 0 {
+		data.WriteString("No recognized project metadata files were found.\n")
+	} else {
+		for _, file := range input.ProjectFiles {
+			fmt.Fprintf(&data, "- %s\n", file)
+		}
+	}
+	renderBootstrapDocuments(&data, "CI configuration (read-only)", input.CI)
+	renderBootstrapDocuments(&data, "Project scripts (read-only)", input.Scripts)
+	fmt.Fprintf(&data, "\n## Existing non-secret user implementation settings\n\n%s\n\n## Existing non-secret project implementation settings\n\n%s\n\nPropose both configuration levels. You have no authority to execute checks or any other command; checks are configuration data only. If more codebase facts are needed, return exploration_requested and let the controller start Explorer.\n", bootstrapContextPlaceholder(input.UserSettings), bootstrapContextPlaceholder(input.ProjectSettings))
+	return data.String(), nil
+}
+
+func renderBootstrapDocuments(data *strings.Builder, heading string, documents []BootstrapContextDocument) {
+	fmt.Fprintf(data, "\n## %s\n", heading)
+	if len(documents) == 0 {
+		data.WriteString("None found.\n")
+		return
+	}
+	for _, document := range documents {
+		fmt.Fprintf(data, "\n### %s\n\n%s\n", document.Path, bootstrapContextPlaceholder(document.Content))
+	}
+}
+
+func bootstrapContextPlaceholder(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "No settings supplied."
+	}
+	return strings.TrimSpace(value)
 }
 
 // RoleStartContext is the complete immutable bootstrap payload for one role.

@@ -817,3 +817,12 @@
 - Expected impact: large logs increase UI cost and several uncommon stages can be attributed or summarized imprecisely.
 - Classification: consolidated technical debt from the review's noncritical performance, maintainability, and presentation findings.
 - Possible follow-up: use typed bounded progress events with structured role/platform/result metadata and operation-scoped timing/reasons.
+
+## TASK-13.1-D001 — bootstrap profile input is not cancellation-aware
+
+- Origin: task 13.1 initial review; affected location: `cmd/stepan/main.go`.
+- Status: `open`.
+- Potential problem: profile selection checks cancellation before `ReadString` but cannot interrupt a read already blocked waiting for newline.
+- Expected impact: Ctrl+C during provider/model/reasoning input can wait until newline or EOF before shutdown.
+- Classification: noncritical interaction/shutdown debt; completed input and task acceptance paths work.
+- Possible follow-up: reuse a single context-aware stdin pump and select between input and `ctx.Done()`.
