@@ -4,10 +4,14 @@ package impl_loop
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
@@ -52,5 +56,128 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	}
 	if result.Commit.CommitID != strings.TrimSpace(git(t, repository, "rev-parse", "HEAD")) {
 		t.Fatalf("committed state did not retain actual HEAD: %#v", result.Commit)
+	}
+}
+
+func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.T) {
+	repository := newGitWorkspace(t)
+	switchToBranch(t, repository, "implementation")
+	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	acceptCommitFixture(t, stateStore, run)
+
+	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\necho hook rejected >&2\nexit 1\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	preparation := captureCommitPreparation(t, repository)
+	message := "Implement source task"
+	response := commitResponse(run, "commit-1", message)
+
+	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
+	if !errors.Is(err, ErrAssignmentCommit) || !strings.Contains(run.PauseReason, "hook rejected") {
+		t.Fatalf("hook refusal error=%v pause=%q", err, run.PauseReason)
+	}
+	parentStatus, _ := run.TaskStatus("parent")
+	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || parentStatus != implementationstate.TaskPending {
+		t.Fatalf("hook refusal did not preserve awaiting commit state: %#v", run)
+	}
+	persisted, _, persistErr := runstore.ReadJournalCurrent(journal)
+	if persistErr != nil || persisted.Status != implementationstate.RunPaused || persisted.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || !strings.Contains(persisted.PauseReason, "hook rejected") {
+		t.Fatalf("hook refusal pause was not durable: run=%#v error=%v", persisted, persistErr)
+	}
+	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "1" {
+		t.Fatalf("hook refusal created or rewrote commits: count=%s", count)
+	}
+	if status := git(t, repository, "status", "--porcelain=v1"); !strings.Contains(status, "implementation.txt") {
+		t.Fatalf("hook refusal reset accepted work: %q", status)
+	}
+}
+
+func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.T) {
+	repository := newGitWorkspace(t)
+	switchToBranch(t, repository, "implementation")
+	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	acceptCommitFixture(t, stateStore, run)
+
+	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nprintf 'hook content\\n' > hook.txt\ngit add -- hook.txt\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	message := "Implement source task"
+	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", message), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
+		t.Fatalf("hook content change error=%v result=%#v", err, first)
+	}
+	firstCommit := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentActive || run.LeafStatus["A"] != implementationstate.TaskPending || run.Assignments[0].Commit != nil || len(run.Assignments[0].AcceptanceHistory) != 1 {
+		t.Fatalf("hook-modified commit was incorrectly completed or paused: %#v", run)
+	}
+	if got := git(t, repository, "show", "HEAD:hook.txt"); got != "hook content\n" {
+		t.Fatalf("hook-created commit content = %q", got)
+	}
+
+	// The original hook-created commit remains in history. The changed state is
+	// accepted again and the correction is recorded by a distinct commit.
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted and corrected code\n")
+	reacceptAfterHook(t, run, stateStore)
+	secondMessage := "Correct hook-modified result"
+	second, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", secondMessage), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	if err != nil || second.Commit.CommitID == "" {
+		t.Fatalf("corrective commit error=%v result=%#v", err, second)
+	}
+	if second.Commit.ParentCommit != firstCommit || strings.TrimSpace(git(t, repository, "rev-parse", "HEAD^")) != firstCommit {
+		t.Fatalf("corrective commit rewrote hook-created commit: first=%s second=%#v", firstCommit, second.Commit)
+	}
+	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "3" {
+		t.Fatalf("commit count=%s, want initial plus hook and corrective commits", count)
+	}
+}
+
+func captureCommitPreparation(t *testing.T, repository string) CommitPreparation {
+	t.Helper()
+	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := CommitPreparationFromSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return preparation
+}
+
+func commitResponse(run *implementationstate.Run, operationID implementationstate.OperationID, message string) AgentResponse {
+	return AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: string(operationID) + "-call", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
+}
+
+func writeGitHook(t *testing.T, repository, name, body string) {
+	t.Helper()
+	path := filepath.Join(repository, ".git", "hooks", name)
+	writeGitWorkspaceFile(t, path, body)
+	if err := os.Chmod(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reacceptAfterHook(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore) {
+	t.Helper()
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	for _, operation := range []implementationstate.Operation{
+		{ID: "check-after-hook", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks},
+		{ID: "review-after-hook", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview},
+	} {
+		if err := run.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(operation.ID + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-after-hook-result"}, ReviewResultID: "review-after-hook-result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
 	}
 }

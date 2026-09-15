@@ -3,6 +3,7 @@ package impl_loop
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,6 +17,12 @@ import (
 
 // ErrAssignmentCommit identifies an invalid controller-owned commit step.
 var ErrAssignmentCommit = errors.New("invalid assignment commit")
+
+// ErrCommitReacceptanceRequired reports a commit made by Git whose resulting
+// content is no longer the content that passed acceptance. The commit is
+// deliberately retained; the assignment is reopened so the changed working
+// state can pass the ordinary acceptance cycle and be fixed by a new commit.
+var ErrCommitReacceptanceRequired = errors.New("commit result requires repeated acceptance")
 
 // CommitPreparation is the already-observed Git state for the one local
 // commit. It is captured by the controller's existing post-operation snapshot
@@ -33,6 +40,10 @@ type CommitObservation struct {
 	ParentCommit string
 	Tree         string
 	Message      string
+	// Worktree is captured after Git has completed the commit and all normal
+	// hooks. It is required to distinguish a matching commit from a hook that
+	// left additional or differently staged work behind.
+	Worktree gitsnapshot.Snapshot
 }
 
 // CommitControl is the narrow mutation seam for one assignment commit. The
@@ -84,9 +95,13 @@ func (GitCommitControl) Commit(ctx context.Context, repository, message string) 
 	if err != nil {
 		return CommitObservation{}, err
 	}
+	worktree, err := gitsnapshot.Capture(ctx, repository)
+	if err != nil {
+		return CommitObservation{}, fmt.Errorf("capture working copy after commit: %w", err)
+	}
 	return CommitObservation{
 		CommitID: strings.TrimSpace(string(commitID)), ParentCommit: strings.TrimSpace(string(parent)),
-		Tree: strings.TrimSpace(string(tree)), Message: strings.TrimRight(string(observedMessage), "\r\n"),
+		Tree: strings.TrimSpace(string(tree)), Message: strings.TrimRight(string(observedMessage), "\r\n"), Worktree: worktree,
 	}, nil
 }
 
@@ -96,6 +111,7 @@ func (GitCommitControl) Commit(ctx context.Context, repository, message string) 
 type CommitAcceptedAssignmentInput struct {
 	Run          *implementationstate.Run
 	StateStore   *runstore.StateStore
+	Journal      *runstore.Run
 	Repository   string
 	AssignmentID implementationstate.AssignmentID
 	OperationID  implementationstate.OperationID
@@ -108,8 +124,9 @@ type CommitAcceptedAssignmentInput struct {
 }
 
 type CommitAcceptedAssignmentResult struct {
-	Intent implementationstate.CommitIntent
-	Commit implementationstate.CommitEvidence
+	Intent               implementationstate.CommitIntent
+	Commit               implementationstate.CommitEvidence
+	ReacceptanceRequired bool
 }
 
 // CommitAcceptedAssignment stages accepted code and its informational
@@ -136,7 +153,13 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	}
 	observed, err := control.Commit(ctx, input.Repository, message)
 	if err != nil {
-		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: create Git commit: %v", ErrAssignmentCommit, err)
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("Git commit was refused or failed: %w", err))
+	}
+	if canReacceptChangedCommit(intent, observed) {
+		return reconcileChangedCommit(ctx, input, intent, observed)
+	}
+	if !commitMatchesIntent(intent, observed) || !worktreeMatchesCommit(observed) {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("actual commit or working copy does not match accepted intent: commit=%q parent=%q tree=%q", observed.CommitID, observed.ParentCommit, observed.Tree))
 	}
 	commit := implementationstate.CommitEvidence{OperationID: input.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
 	if err := input.Run.CommitAssignment(input.AssignmentID, commit); err != nil {
@@ -146,6 +169,60 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 		return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, fmt.Errorf("%w: persist completed assignment: %v", ErrAssignmentCommit, err)
 	}
 	return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, nil
+}
+
+func commitMatchesIntent(intent implementationstate.CommitIntent, observed CommitObservation) bool {
+	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Tree == intent.Tree && observed.Message == intent.Message
+}
+
+func worktreeMatchesCommit(observed CommitObservation) bool {
+	return observed.Worktree.HeadOID == observed.CommitID && observed.Worktree.TreeOID == observed.Tree
+}
+
+// commitContentChanged identifies hook-produced source or worktree changes.
+// A changed commit tree or a dirty post-hook worktree must not be completed
+// using acceptance evidence for the old tree. Message-only mismatches are
+// instead paused: reaccepting unchanged files could not create a corrective
+// commit, but the unexpected commit remains untouched for user reconciliation.
+func canReacceptChangedCommit(intent implementationstate.CommitIntent, observed CommitObservation) bool {
+	// Only the tree/worktree is allowed to differ for an ordinary hook. A
+	// changed parent, message, or HEAD is ambiguous Git control-state drift and
+	// must stay paused rather than being misclassified as safe reacceptance.
+	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Message == intent.Message && observed.Worktree.HeadOID == observed.CommitID && (observed.Tree != intent.Tree || observed.Worktree.TreeOID != observed.Tree)
+}
+
+func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentInput, intent implementationstate.CommitIntent, observed CommitObservation) (CommitAcceptedAssignmentResult, error) {
+	if input.Journal == nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, errors.New("hook changed commit content but no run journal is available to record the actual working state"))
+	}
+	stateData, err := json.Marshal(observed.Worktree)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("encode hook-modified working state: %w", err))
+	}
+	stateID := implementationstate.EvidenceID(fmt.Sprintf("%s-commit-reconciliation-state", input.OperationID))
+	state, err := input.Journal.Publish(stateID, stateData)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("publish hook-modified working state: %w", err))
+	}
+	if err := input.Run.ReopenAssignment(input.AssignmentID, state); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("reopen assignment for hook-modified content: %w", err))
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent, ReacceptanceRequired: true}, fmt.Errorf("%w: persist hook-modified assignment state: %v", ErrAssignmentCommit, err)
+	}
+	return CommitAcceptedAssignmentResult{Intent: intent, ReacceptanceRequired: true}, fmt.Errorf("%w: actual tree %q or working copy differed from accepted tree %q", ErrCommitReacceptanceRequired, observed.Tree, intent.Tree)
+}
+
+func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmentInput, cause error) error {
+	if input.Run.Status == implementationstate.RunActive {
+		if err := input.Run.Pause(cause.Error()); err != nil {
+			return errors.Join(cause, fmt.Errorf("pause awaiting commit: %w", err))
+		}
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		return fmt.Errorf("%w: persist paused commit state: %v", ErrAssignmentCommit, errors.Join(cause, err))
+	}
+	return fmt.Errorf("%w: %v", ErrAssignmentCommit, cause)
 }
 
 func validateCommitAcceptedAssignmentInput(input CommitAcceptedAssignmentInput) error {

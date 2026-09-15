@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -103,7 +104,7 @@ func (fake *commitControlFake) Commit(_ context.Context, _ string, message strin
 	if fake.commitErr != nil {
 		return CommitObservation{}, fake.commitErr
 	}
-	return CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message}, nil
+	return CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message, Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: "code-and-progress-tree"}}, nil
 }
 
 func commitStringPointer(value string) *string { return &value }
