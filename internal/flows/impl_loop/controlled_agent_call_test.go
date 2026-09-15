@@ -58,7 +58,7 @@ func (w *scriptedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Sna
 
 func (w *unchangedWorkspaceControl) Capture(context.Context, string) (gitsnapshot.Snapshot, error) {
 	w.captures++
-	return gitsnapshot.Snapshot{HeadOID: "unchanged", TreeOID: "unchanged"}, nil
+	return gitsnapshot.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
 }
 
 func (w *unchangedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
@@ -67,7 +67,7 @@ func (w *unchangedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Sn
 }
 
 func (*unchangedWorkspaceControl) RestorePaths(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot, []string) (gitsnapshot.Snapshot, error) {
-	return gitsnapshot.Snapshot{HeadOID: "unchanged", TreeOID: "unchanged"}, nil
+	return gitsnapshot.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
 }
 
 func (*unchangedWorkspaceControl) EnsureUnchanged(context.Context, string, gitsnapshot.Snapshot) error {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -50,6 +51,10 @@ type ExplorerRouteResult struct {
 	Attempts                   uint64
 	SourceContinuationResponse AgentResponse
 	SourceContinuationAttempts uint64
+	// SourceContinuationSnapshot is the controller observation made after the
+	// continued source turn. Run-scoped routes use it to keep a final review
+	// bound to the exact state accepted by its required checks.
+	SourceContinuationSnapshot gitsnapshot.Snapshot
 	Paused                     bool
 	PauseReason                string
 }
@@ -118,6 +123,7 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 		Response: result.Response, Attempts: result.Attempts,
 		ContinuationMessage:        explorerContinuation(result.Response),
 		SourceContinuationResponse: sourceResult.Response, SourceContinuationAttempts: sourceResult.Attempts,
+		SourceContinuationSnapshot: sourceResult.Snapshot,
 	}, nil
 }
 

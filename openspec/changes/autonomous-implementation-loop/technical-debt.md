@@ -513,3 +513,32 @@
 - Expected impact: later recovery can trust incomplete reconciliation evidence until a route-specific read fails.
 - Classification: technical debt because normal controller publication produces valid refs and no ordinary path corrupts them.
 - Possible follow-up: include reconciled commit state and basis refs in the runstore evidence graph and add tamper/orphan tests.
+## TD-10.4-001 — final transitions mutate live state before durability
+
+- Origin: task 10.4 initial review; affected location: `internal/flows/impl_loop/final_review.go`.
+- Status: `open`.
+- Potential problem: final check, review, and success transitions mutate the caller run before state recording succeeds.
+- Evidence: persistence failure can leave memory ahead of JSONL and make retry conflict with duplicate/terminal state.
+- Expected impact: transient storage failures may require restart recovery.
+- Classification: technical debt because ordinary durable execution succeeds and later recovery work covers interrupted operations.
+- Possible follow-up: record cloned candidates and adopt only after durability.
+
+## TD-10.4-002 — final-review route coverage is narrow
+
+- Origin: task 10.4 initial review; affected location: `internal/flows/impl_loop/final_review_test.go`.
+- Status: `open`.
+- Potential problem: initial tests bypass parts of `StartFinalReview` and omit several response/recovery branches.
+- Evidence: aggregate assembly, clarification, execution blocking, and persistence failures lack direct route coverage.
+- Expected impact: uncommon transition regressions may escape focused tests.
+- Classification: technical debt except for the explicit Explorer/freshness defects tracked as critical findings.
+- Possible follow-up: add a table-driven final-review state-machine suite.
+
+## TD-10.4-003 — final-review repository input is weakly bound
+
+- Origin: task 10.4 initial review; affected location: `internal/flows/impl_loop/final_review.go` input validation.
+- Status: `open`.
+- Potential problem: repository is only nonempty, not canonicalized and bound to persisted work-copy identity.
+- Evidence: controller miswiring could check/review another repository.
+- Expected impact: incorrect final evidence under a future erroneous caller.
+- Classification: technical debt because current controller wiring supplies the selected repository and no typical mismatched caller is demonstrated.
+- Possible follow-up: bind canonical repository identity to durable run identity.
