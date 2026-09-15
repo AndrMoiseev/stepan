@@ -130,6 +130,10 @@ func ExecuteBriefSelection(ctx context.Context, selection BriefSelectionCall) (B
 	}
 	callerValidation := call.ValidateResponse
 	call.ValidateResponse = func(response AgentResponse) error {
+		if response.Kind == ResponseExecutionBlocked {
+			_, err := ExecutionBlockFromResponse(response)
+			return err
+		}
 		if err := validateBriefSelectionResponse(call.Run, call.Expectation, response); err != nil {
 			return err
 		}
@@ -141,6 +145,16 @@ func ExecuteBriefSelection(ctx context.Context, selection BriefSelectionCall) (B
 	result, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return BriefSelectionResult{Call: result}, err
+	}
+	if result.Response.Kind == ResponseExecutionBlocked {
+		block, err := ExecutionBlockFromResponse(result.Response)
+		if err != nil {
+			return BriefSelectionResult{Call: result}, err
+		}
+		if err := PersistExecutionBlock(ctx, call.StateStore, call.Run, block); err != nil {
+			return BriefSelectionResult{Call: result}, err
+		}
+		return BriefSelectionResult{Call: result}, nil
 	}
 	if err := call.Run.StartAssignment(assignmentID, result.Response.TaskIDs); err != nil {
 		return BriefSelectionResult{Call: result}, fmt.Errorf("%w: create assignment: %v", ErrBriefSelection, err)

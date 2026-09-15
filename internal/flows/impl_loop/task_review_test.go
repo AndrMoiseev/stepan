@@ -55,6 +55,21 @@ func TestTaskReviewKeepsReviewerOwnedFindingsAcrossDisputeRounds(t *testing.T) {
 	}
 }
 
+func TestTaskReviewerExecutionBlockedPausesWithoutReviewRecord(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	reviewer := &AgentSession{Role: ResponseRoleTaskReviewer, runtime: runtime, thread: "reviewer"}
+	input := TaskReviewInput{Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", OperationID: "blocked-review", ResultID: "blocked-review-result", CallID: "blocked-review-call", Limits: controlledCallLimits()}
+	result, err := runTaskReviewerTurn(context.Background(), input, reviewer, "brief", "review", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(fixture.run.Assignments[0].TaskReviews) != 0 || len(runtime.messages) != 1 {
+		t.Fatalf("reviewer execution block advanced review: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
+	}
+}
+
 func TestTaskReviewerRejectsPreferenceAsBlockingFinding(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()

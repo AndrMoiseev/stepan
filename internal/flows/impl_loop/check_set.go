@@ -78,6 +78,19 @@ func (set CheckSet) Succeeded() bool {
 	return true
 }
 
+// executionBlockedResult identifies failures that the executor cannot repair
+// by changing assignment code. A non-zero program exit remains ordinary
+// implementation feedback; an unavailable configured command or controller
+// infrastructure failure requires user remediation instead.
+func (set CheckSet) executionBlockedResult() (CheckSetResult, bool) {
+	for _, result := range set.Results {
+		if result.Status == CheckNotApplicable || result.Result.Failure == checkexec.FailureLaunch || result.Result.Failure == checkexec.FailureInfrastructure {
+			return result, true
+		}
+	}
+	return CheckSetResult{}, false
+}
+
 // CheckRunner is the direct-command boundary. It is injected to keep set
 // ordering tests deterministic; DirectCheckRunner connects production calls to
 // checkexec from tasks 5.1 and 5.2.

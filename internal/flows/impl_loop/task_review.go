@@ -175,6 +175,10 @@ func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *Ag
 	call := ControlledAgentCall{Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleTaskReviewer, CallID: input.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: input.OperationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleTaskReviewer, State: ResponseStateTaskReview, Scope: ResponseScopeAssignment, Binding: binding}, Message: message}
 	call.Timeout = input.Timeout
 	call.ValidateResponse = func(response AgentResponse) error {
+		if response.Kind == ResponseExecutionBlocked {
+			_, err := ExecutionBlockFromResponse(response)
+			return err
+		}
 		if err := validateTaskReviewerResponse(input.Run, input.AssignmentID, response); err != nil {
 			return err
 		}
@@ -187,6 +191,16 @@ func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *Ag
 	turn, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return TaskReviewResult{Session: session, Attempts: turn.Attempts, DiffBase: diffBase}, err
+	}
+	if turn.Response.Kind == ResponseExecutionBlocked {
+		block, err := ExecutionBlockFromResponse(turn.Response)
+		if err != nil {
+			return TaskReviewResult{Response: turn.Response, Session: turn.Session, Attempts: turn.Attempts, DiffBase: diffBase}, err
+		}
+		if err := PersistExecutionBlock(ctx, input.StateStore, input.Run, block); err != nil {
+			return TaskReviewResult{Response: turn.Response, Session: turn.Session, Attempts: turn.Attempts, DiffBase: diffBase}, err
+		}
+		return TaskReviewResult{Response: turn.Response, Session: turn.Session, Attempts: turn.Attempts, DiffBase: diffBase}, nil
 	}
 	record, resultStatus, err := taskReviewRecord(input.Run, input.AssignmentID, input.OperationID, input.ResultID, turn.Response)
 	if err != nil {

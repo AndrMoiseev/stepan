@@ -181,6 +181,37 @@ func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
 	}
 }
 
+func TestExecuteInitialTaskExtractionPausesForExecutionBlockedWithoutImportingTasks(t *testing.T) {
+	store := mustControllerStore(t, t.TempDir())
+	journal, err := store.Create("blocked-extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+		value, err := journal.Publish(id, []byte(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	repository := newFilesystemWorkspace(t)
+	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "branch", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("spec"), TaskList: ref("tasks"), Configuration: ref("config")}
+	run, stateStore, err := PrepareInitialTaskExtraction(context.Background(), journal, identity, "extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	expectation := ResponseExpectation{Role: ResponseRoleOrchestrator, State: ResponseStateExtractingTasks, Scope: ResponseScopeRun, Binding: boundExtraction(identity)}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	result, err := ExecuteInitialTaskExtraction(context.Background(), ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"}, Repository: repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: expectation.Binding.CallID}, Run: run, Journal: journal, StateStore: stateStore, OperationID: "extract", Limits: controlledCallLimits(), Expectation: expectation})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseExecutionBlocked || run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || !run.TaskExtractionPending || len(run.Tasks) != 0 || len(runtime.messages) != 1 {
+		t.Fatalf("orchestrator execution block imported or retried work: result=%#v run=%#v turns=%#v", result, run, runtime.messages)
+	}
+}
+
 func extractedRunIdentity() implementationstate.RunIdentity {
 	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
 		return implementationstate.EvidenceRef{ID: id, Digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}

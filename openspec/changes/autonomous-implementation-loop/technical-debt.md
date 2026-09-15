@@ -419,3 +419,22 @@
 - Expected impact: a caller relying directly on the returned session pointer after a rare technical recreation can receive a closed session, despite the controlled-call result contract promising the live session.
 - Classification: technical debt because normal later routing looks up the replacement through `SessionOwner` and the issue requires a continuation retry/recreation.
 - Possible follow-up: propagate the effective continuation session through the Explorer route result and assert it in a recreation regression.
+## TD-9.5-001 — persisted pause can contain execution and limit reasons simultaneously
+
+- Origin: task 9.5 initial review; affected location: `internal/implementationstate/state.go` (`validateLifecycle`).
+- Status: `open`.
+- Potential problem: validation accepts a paused state containing both `ExecutionBlock` and `LimitPause`, without tying `PauseReason` to one exclusive pause kind.
+- Evidence: lifecycle validation checks both payloads independently but does not reject their coexistence.
+- Expected impact: malformed replayed state or a future erroneous caller could make `Resume` both reset a limit counter and discard an execution block.
+- Classification: technical debt because current public transition methods do not construct this combination; the trigger needs malformed state or future controller misuse.
+- Possible follow-up: enforce mutually exclusive pause payloads and consistency between pause kind and reason.
+
+## TD-9.5-002 — cancellation window before durable Explorer execution pause
+
+- Origin: task 9.5 initial review; affected location: `internal/flows/impl_loop/explorer_routing.go` (`persistExplorerExecutionBlocked`).
+- Status: `open`.
+- Potential problem: cancellation after a valid Explorer `execution_blocked` response but before `StateStore.Record` can leave the run active after restart.
+- Evidence: the accepted pause is persisted with the cancellable parent context.
+- Expected impact: the diagnostic must be obtained again after the narrow cancellation interleaving.
+- Classification: technical debt because it requires cancellation in a small post-response persistence window; ordinary execution persists the pause.
+- Possible follow-up: persist the accepted block under a bounded non-cancellable context.

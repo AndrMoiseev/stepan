@@ -92,6 +92,10 @@ func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall)
 	}
 	callerValidation := call.ValidateResponse
 	call.ValidateResponse = func(response AgentResponse) error {
+		if response.Kind == ResponseExecutionBlocked {
+			_, err := ExecutionBlockFromResponse(response)
+			return err
+		}
 		if err := validateInitialTaskExtractionResponse(call.Run, response); err != nil {
 			return err
 		}
@@ -103,6 +107,13 @@ func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall)
 	result, err := InvokeControlledAgentCall(ctx, call)
 	if err != nil {
 		return result, err
+	}
+	if result.Response.Kind == ResponseExecutionBlocked {
+		block, err := ExecutionBlockFromResponse(result.Response)
+		if err != nil {
+			return result, err
+		}
+		return result, PersistExecutionBlock(ctx, call.StateStore, call.Run, block)
 	}
 	if err := PersistInitialTaskExtraction(ctx, call.StateStore, call.Run, call.OperationID, result.Response); err != nil {
 		return result, err

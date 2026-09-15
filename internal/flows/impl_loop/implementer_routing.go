@@ -112,6 +112,21 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 			}
 			return result, err
 		}
+		if turnResult.Response.Kind == ResponseExecutionBlocked {
+			block, err := ExecutionBlockFromResponse(turnResult.Response)
+			if err != nil {
+				return result, err
+			}
+			if err := PersistExecutionBlock(ctx, currentTransition.StateStore, currentTransition.Run, block); err != nil {
+				return result, err
+			}
+			if turn == 0 {
+				result.Response, result.ResponseAttempts = turnResult.Response, turnResult.Attempts
+			} else {
+				result.ContinuationResponse, result.ContinuationAttempts = turnResult.Response, turnResult.Attempts
+			}
+			return result, nil
+		}
 		checks, err := ApplyImplementerTransition(ctx, currentTransition, turnResult.Response)
 		if turn == 0 {
 			result.Response, result.ResponseAttempts, result.Checks = turnResult.Response, turnResult.Attempts, checks
@@ -123,6 +138,9 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 		}
 		if turnResult.Response.Kind == ResponseImplementationReady {
 			result.RequiredChecks = checks
+			if checks.ExecutionBlock != nil {
+				return result, nil
+			}
 			if checks.Set.Succeeded() && !checks.WorkspaceChanged {
 				if err := CanStartTaskReview(route.Transition.Run, route.Transition.AssignmentID); err != nil {
 					return result, err
@@ -239,6 +257,10 @@ func validateImplementerContinuation(continuation ControlledAgentCall, transitio
 
 func implementerRouteResponseValidator(input ImplementerTransitionInput, previous func(AgentResponse) error) func(AgentResponse) error {
 	return func(response AgentResponse) error {
+		if response.Kind == ResponseExecutionBlocked {
+			_, err := ExecutionBlockFromResponse(response)
+			return err
+		}
 		if response.Kind != ResponseChecksRequested && response.Kind != ResponseImplementationReady {
 			return fmt.Errorf("%w: executor response must be checks_requested or implementation_ready", ErrInvalidImplementerRoute)
 		}

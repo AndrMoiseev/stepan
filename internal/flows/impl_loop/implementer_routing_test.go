@@ -108,6 +108,76 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 	}
 }
 
+func TestRouteImplementerChecksPausesForExecutorExecutionBlockedWithoutChecks(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	expectation := fixture.executorExpectation("executor-origin-call")
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{
+		OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "executor"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: expectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: expectation},
+		Transition:      fixture.input("blocked-checks", "blocked-checks-result"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.runner.commands) != 0 {
+		t.Fatalf("executor execution block advanced work: result=%#v run=%#v turns=%#v checks=%#v", result, fixture.run, runtime.messages, fixture.runner.commands)
+	}
+}
+
+func TestRouteImplementerChecksPausesForUnavailableRequiredCheckInfrastructure(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(*implementerTransitionFixture, *ImplementerTransitionInput)
+	}{
+		{name: "platform command unavailable", prepare: func(fixture *implementerTransitionFixture, _ *ImplementerTransitionInput) {
+			check := fixture.selection.Checks["lint"]
+			check.Available = false
+			fixture.selection.Checks["lint"] = check
+		}},
+		{name: "check launch failure", prepare: func(_ *implementerTransitionFixture, input *ImplementerTransitionInput) {
+			input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+				return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureLaunch}, errors.New("configured tool is missing")
+			})
+		}},
+		{name: "check infrastructure failure", prepare: func(_ *implementerTransitionFixture, input *ImplementerTransitionInput) {
+			input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+				return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureInfrastructure}, errors.New("process supervisor is unavailable")
+			})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementerTransitionFixture(t)
+			defer fixture.state.Close()
+			basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+				t.Fatal(err)
+			}
+			transition := fixture.input("required-checks", "required-checks-result")
+			test.prepare(&fixture, &transition)
+			expectation := fixture.executorExpectation("executor-origin-call")
+			runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseImplementationReady)}}}
+			result, err := RouteImplementerChecks(context.Background(), ImplementerCheckRoute{OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "executor"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: expectation.Binding.CallID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-origin", Limits: controlledCallLimits(), Expectation: expectation}, Transition: transition})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.RequiredChecks.ExecutionBlock == nil || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.run.Assignments[0].Results) != 1 || fixture.run.Assignments[0].Results[0].Status != implementationstate.ResultFailed || CanStartTaskReview(fixture.run, "assignment") == nil {
+				t.Fatalf("required infrastructure failure was treated as executor feedback: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
+			}
+		})
+	}
+}
+
 func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()

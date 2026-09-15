@@ -69,6 +69,22 @@ func TestExecuteBriefSelectionRejectsGapsParentsAndPartialTasksBeforeAssignment(
 	}
 }
 
+func TestExecuteBriefSelectionPausesForExecutionBlockedWithoutAssignment(t *testing.T) {
+	run, stateStore, journal, repository, expectation := newBriefSelectionFixture(t)
+	defer stateStore.Close()
+	if err := PrepareBriefSelection(context.Background(), stateStore, run, "select"); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	result, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("assignment-1", run, stateStore, journal, repository, expectation, runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Call.Response.Kind != ResponseExecutionBlocked || run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || len(run.Assignments) != 0 || len(runtime.messages) != 1 {
+		t.Fatalf("brief-selection execution block advanced work: result=%#v run=%#v turns=%#v", result, run, runtime.messages)
+	}
+}
+
 func TestExecuteBriefSelectionRejectsReselectingAnActiveAssignment(t *testing.T) {
 	run, stateStore, journal, repository, expectation := newBriefSelectionFixture(t)
 	defer stateStore.Close()

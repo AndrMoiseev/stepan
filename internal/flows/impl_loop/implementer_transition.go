@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -54,6 +55,10 @@ type ImplementerTransitionResult struct {
 	// for any mutation during the complete set, including a later reversion.
 	// Such a set is deliberately nonterminal and consumes one mandatory round.
 	WorkspaceChanged bool
+	// ExecutionBlock is populated only for a required check that could not run
+	// because of environment/configuration or controller infrastructure. Its
+	// failed result remains durable evidence and the executor is not continued.
+	ExecutionBlock *implementationstate.ExecutionBlock
 }
 
 // ValidateImplementerTransitionResponse is suitable for
@@ -180,7 +185,24 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 	if _, recordErr := input.StateStore.Record(persistContext, input.Run); recordErr != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check result: %v", ErrImplementerTransition, recordErr)
 	}
-	return ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired, WorkspaceChanged: workspaceChanged}, nil
+	transition := ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired, WorkspaceChanged: workspaceChanged}
+	if kind == CheckSetRequired {
+		if failed, blocked := set.executionBlockedResult(); blocked {
+			block, blockErr := ExecutionBlockForUserRemediation(
+				"run required check "+failed.Name, checkExecutionDiagnostic(failed, diagnostic),
+				[]string{"ran the configured required check " + failed.Name},
+				"repair the required-check environment or project configuration without weakening the check, then explicitly resume or close the run",
+			)
+			if blockErr != nil {
+				return ImplementerTransitionResult{}, blockErr
+			}
+			if err := PersistExecutionBlock(persistContext, input.StateStore, input.Run, block); err != nil {
+				return ImplementerTransitionResult{}, err
+			}
+			transition.ExecutionBlock = &block
+		}
+	}
+	return transition, nil
 }
 
 func validateImplementerTransitionInput(input ImplementerTransitionInput) error {
@@ -241,6 +263,16 @@ func checkSetDiagnostic(set CheckSet, setErr error) string {
 		parts = append(parts, part)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func checkExecutionDiagnostic(result CheckSetResult, fallback string) string {
+	if result.Err != nil {
+		return result.Err.Error()
+	}
+	if result.Result.Failure != checkexec.FailureNone {
+		return fmt.Sprintf("required check %q failed with %s", result.Name, result.Result.Failure)
+	}
+	return fallback
 }
 
 func publishImplementerCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, set CheckSet, setErr error) (implementationstate.EvidenceRef, error) {
