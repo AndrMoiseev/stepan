@@ -3,6 +3,7 @@ package implementationstate
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -504,6 +505,44 @@ func TestPauseResumesButClosedAndSucceededRunsDoNot(t *testing.T) {
 	}
 	if err := run.Succeed(); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("Succeed() closed run error = %v", err)
+	}
+}
+
+func TestExecutionBlockedIsResumableButPreservesUserRemediationDetails(t *testing.T) {
+	run := newTestRun(t)
+	block := ExecutionBlock{
+		BlockedAction:      "run required checks",
+		Diagnostic:         "configured compiler is not installed",
+		Attempts:           []string{"checked PATH", "read project settings"},
+		RequiredUserAction: "install the configured compiler",
+	}
+	if err := run.PauseExecutionBlocked(block); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != RunPaused || run.ExecutionBlock == nil || !reflect.DeepEqual(*run.ExecutionBlock, block) || run.PauseReason != "execution_blocked: run required checks" {
+		t.Fatalf("execution block was not retained: %#v", run)
+	}
+	// A block pauses dependent work; it cannot be converted into a new scope
+	// or a relaxed acceptance by a state transition.
+	if err := run.StartAssignment("assignment", []TaskID{"task-a"}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("blocked run started assignment: %v", err)
+	}
+	event, err := NewRunStateEvent(1, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := event.Apply(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.ExecutionBlock == nil || !reflect.DeepEqual(*restored.ExecutionBlock, block) {
+		t.Fatalf("durable execution block = %#v", restored.ExecutionBlock)
+	}
+	if err := restored.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if restored.ExecutionBlock != nil {
+		t.Fatalf("resume retained already-remediated execution block: %#v", restored.ExecutionBlock)
 	}
 }
 

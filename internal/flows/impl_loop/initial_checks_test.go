@@ -29,7 +29,7 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	}
 	assertRunOrder(t, runner, "lint")
 	assertResultStatuses(t, result.Set, CheckFailed, CheckNotRun, CheckNotRun)
-	if run.Status != implementationstate.RunPaused || run.PauseReason != initialRequiredChecksPauseReason {
+	if run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || run.ExecutionBlock.BlockedAction != "run the initial required checks" || !strings.Contains(run.ExecutionBlock.Diagnostic, "lint baseline failed") || len(run.ExecutionBlock.Attempts) != 1 || !strings.Contains(run.ExecutionBlock.RequiredUserAction, "repair the environment") {
 		t.Fatalf("baseline failure did not pause the run: %#v", run)
 	}
 	if len(run.Assignments) != 0 {
@@ -55,7 +55,7 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunPaused || len(current.RunResults) != 1 || current.RunResults[0].State != run.CurrentState {
+	if current.Status != implementationstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != run.ExecutionBlock.Diagnostic || len(current.RunResults) != 1 || current.RunResults[0].State != run.CurrentState {
 		t.Fatalf("durable paused baseline state = %#v", current)
 	}
 }
@@ -140,7 +140,7 @@ func TestInitialRequiredChecksBlocksProtectedMutationWithDurableEvidence(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != implementationstate.RunPaused || run.PauseReason != initialRequiredChecksPauseReason || run.InitialBaseline != nil || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultFailed {
+	if run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || run.InitialBaseline != nil || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultFailed {
 		t.Fatalf("protected baseline mutation was not durably blocked: result=%#v run=%#v", result, run)
 	}
 	violation, err := os.ReadFile(journal.ViolationJournalPath())

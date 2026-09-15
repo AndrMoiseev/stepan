@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,7 +133,7 @@ func TestRouteExplorerExecutionBlockedDurablyPausesWithoutSourceContinuation(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunPaused || !strings.Contains(current.PauseReason, "tool is not installed") || !strings.Contains(current.PauseReason, "install the configured tool") || !strings.Contains(current.PauseReason, "checked PATH") {
+	if current.Status != implementationstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != "tool is not installed" || current.ExecutionBlock.RequiredUserAction != "install the configured tool" || !slices.Equal(current.ExecutionBlock.Attempts, []string{"checked PATH", "read project settings"}) {
 		t.Fatalf("durable execution-blocked pause = %#v", current)
 	}
 }

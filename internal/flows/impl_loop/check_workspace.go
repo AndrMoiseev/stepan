@@ -257,7 +257,13 @@ func protectedCheckPaths(paths, protected []string) []string {
 
 func (o *WorkspaceCheckObserver) block(cause error) error {
 	if o != nil && o.run != nil && o.run.Status == implementationstate.RunActive {
-		if err := o.run.Pause(executionBlockedPauseReason); err != nil {
+		block := implementationstate.ExecutionBlock{
+			BlockedAction:      "safely observe or restore check-generated file changes",
+			Diagnostic:         cause.Error(),
+			Attempts:           []string{"captured the check workspace delta and could not safely recover it"},
+			RequiredUserAction: "inspect and repair the working copy, then explicitly resume or close the run",
+		}
+		if err := o.run.PauseExecutionBlocked(block); err != nil {
 			return errors.Join(cause, fmt.Errorf("pause execution-blocked run: %w", err))
 		}
 	}

@@ -172,13 +172,16 @@ func validateExplorerRoute(route ExplorerRoute) error {
 }
 
 func persistExplorerExecutionBlocked(ctx context.Context, call ControlledAgentCall, response AgentResponse) (string, error) {
-	reason := fmt.Sprintf("execution_blocked: Explorer blocked action: %s; diagnostic: %s; attempts: %s; required user action: %s", *response.BlockedAction, *response.Diagnostic, strings.Join(response.Attempts, "; "), *response.RequiredUserAction)
+	block, err := ExecutionBlockFromResponse(response)
+	if err != nil {
+		return "", err
+	}
 	event, err := implementationstate.NewRunStateEvent(1, call.Run)
 	if err != nil {
 		return "", fmt.Errorf("clone Explorer execution-blocked state: %w", err)
 	}
 	candidate := *event.State
-	if err := candidate.Pause(reason); err != nil {
+	if err := candidate.PauseExecutionBlocked(block); err != nil {
 		return "", fmt.Errorf("pause Explorer execution-blocked run: %w", err)
 	}
 	written, err := call.StateStore.Record(ctx, &candidate)
@@ -188,7 +191,7 @@ func persistExplorerExecutionBlocked(ctx context.Context, call ControlledAgentCa
 	if err != nil {
 		return "", fmt.Errorf("persist Explorer execution-blocked pause: %w", err)
 	}
-	return reason, nil
+	return candidate.PauseReason, nil
 }
 
 func validateSourceContinuation(route ExplorerRoute) error {

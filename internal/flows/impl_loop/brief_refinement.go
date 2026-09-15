@@ -216,7 +216,11 @@ func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInp
 		}
 	}
 	if response.Kind == ResponseExecutionBlocked {
-		if err := candidate.Pause(briefExecutionBlockedPauseReason(response)); err != nil {
+		block, err := ExecutionBlockFromResponse(response)
+		if err != nil {
+			return BriefRefinementResult{}, err
+		}
+		if err := candidate.PauseExecutionBlocked(block); err != nil {
 			return BriefRefinementResult{}, err
 		}
 	}
@@ -511,7 +515,11 @@ func persistBriefExplorerOutcome(ctx context.Context, input BriefRefinementInput
 		return err
 	}
 	if response.Kind == ResponseExecutionBlocked {
-		if err := candidate.Pause(briefExecutionBlockedPauseReason(response)); err != nil {
+		block, err := ExecutionBlockFromResponse(response)
+		if err != nil {
+			return err
+		}
+		if err := candidate.PauseExecutionBlocked(block); err != nil {
 			return err
 		}
 	}
@@ -697,8 +705,4 @@ func briefClarificationCloseReason(response AgentResponse) string {
 		parts = append(parts, "recommendation: "+strings.TrimSpace(*response.Recommendation))
 	}
 	return strings.Join(parts, "; ")
-}
-
-func briefExecutionBlockedPauseReason(response AgentResponse) string {
-	return fmt.Sprintf("execution_blocked: brief refinement blocked action: %s; diagnostic: %s; attempts: %s; required user action: %s", *response.BlockedAction, *response.Diagnostic, strings.Join(response.Attempts, "; "), *response.RequiredUserAction)
 }

@@ -200,7 +200,13 @@ func validateCallPath(path string) (string, error) {
 
 func blockAgentCall(run *implementationstate.Run, cause error) (AgentCallOutcome, error) {
 	if run.Status == implementationstate.RunActive {
-		if err := run.Pause(executionBlockedPauseReason); err != nil {
+		block := implementationstate.ExecutionBlock{
+			BlockedAction:      "cannot safely attribute or restore agent file changes",
+			Diagnostic:         cause.Error(),
+			Attempts:           []string{"captured the agent-call workspace delta and could not safely recover it"},
+			RequiredUserAction: "inspect and repair the working copy, then explicitly resume or close the run",
+		}
+		if err := run.PauseExecutionBlocked(block); err != nil {
 			return AgentCallOutcome{}, errors.Join(cause, fmt.Errorf("pause execution-blocked run: %w", err))
 		}
 	}

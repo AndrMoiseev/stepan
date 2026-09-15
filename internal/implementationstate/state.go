@@ -546,6 +546,29 @@ type FinalAcceptanceEvidence struct {
 	OpenFindingIDs []EvidenceID
 }
 
+// ExecutionBlock records a condition that prevents the controller from
+// safely continuing work. It is deliberately distinct from CloseReason:
+// execution failures are remediated by the user and may be resumed, whereas a
+// material specification question closes the run for a new scope.
+type ExecutionBlock struct {
+	BlockedAction      string
+	Diagnostic         string
+	Attempts           []string
+	RequiredUserAction string
+}
+
+func (b ExecutionBlock) valid() bool {
+	if strings.TrimSpace(b.BlockedAction) == "" || strings.TrimSpace(b.Diagnostic) == "" || strings.TrimSpace(b.RequiredUserAction) == "" || len(b.Attempts) == 0 {
+		return false
+	}
+	for _, attempt := range b.Attempts {
+		if strings.TrimSpace(attempt) == "" {
+			return false
+		}
+	}
+	return true
+}
+
 // Run is the portable in-memory representation for future JSONL and SQLite
 // stores. Markdown checkbox state is deliberately absent.
 type Run struct {
@@ -576,6 +599,7 @@ type Run struct {
 	RunExplorerCounters map[string]uint64 `json:"run_explorer_counters,omitempty"`
 	RunExplorerCycles   map[string]uint64 `json:"run_explorer_cycles,omitempty"`
 	PauseReason         string
+	ExecutionBlock      *ExecutionBlock `json:"execution_block,omitempty"`
 	LimitPause          *LimitPause
 	CloseReason         string
 }
@@ -851,19 +875,19 @@ func (r *Run) Validate() error {
 func (r *Run) validateLifecycle() error {
 	switch r.Status {
 	case RunActive:
-		if r.PauseReason != "" || r.CloseReason != "" || r.LimitPause != nil {
+		if r.PauseReason != "" || r.ExecutionBlock != nil || r.CloseReason != "" || r.LimitPause != nil {
 			return fmt.Errorf("%w: active run has stop reason", ErrInvalidState)
 		}
 	case RunPaused:
-		if strings.TrimSpace(r.PauseReason) == "" || r.CloseReason != "" || (r.LimitPause != nil && !r.LimitPause.valid()) {
+		if strings.TrimSpace(r.PauseReason) == "" || r.CloseReason != "" || (r.ExecutionBlock != nil && !r.ExecutionBlock.valid()) || (r.LimitPause != nil && !r.LimitPause.valid()) {
 			return fmt.Errorf("%w: paused run lacks pause reason", ErrInvalidState)
 		}
 	case RunClosed:
-		if strings.TrimSpace(r.CloseReason) == "" || r.PauseReason != "" || r.LimitPause != nil {
+		if strings.TrimSpace(r.CloseReason) == "" || r.PauseReason != "" || r.ExecutionBlock != nil || r.LimitPause != nil {
 			return fmt.Errorf("%w: closed run lacks close reason", ErrInvalidState)
 		}
 	case RunSucceeded:
-		if r.PauseReason != "" || r.CloseReason != "" || r.LimitPause != nil {
+		if r.PauseReason != "" || r.ExecutionBlock != nil || r.CloseReason != "" || r.LimitPause != nil {
 			return fmt.Errorf("%w: succeeded run has stop reason", ErrInvalidState)
 		}
 	}
@@ -1620,7 +1644,24 @@ func (r *Run) Pause(reason string) error {
 	if r.Status != RunActive || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: run cannot be paused", ErrInvalidTransition)
 	}
-	r.Status, r.PauseReason, r.LimitPause = RunPaused, reason, nil
+	r.Status, r.PauseReason, r.ExecutionBlock, r.LimitPause = RunPaused, reason, nil, nil
+	return nil
+}
+
+// PauseExecutionBlocked durably marks a user-remediable execution failure.
+// It cannot modify configuration, required checks, tasks, or scope; callers
+// must wait for an explicit resume after the user has corrected the cause.
+func (r *Run) PauseExecutionBlocked(block ExecutionBlock) error {
+	if r.Status != RunActive || !block.valid() {
+		return fmt.Errorf("%w: run cannot be execution-blocked", ErrInvalidTransition)
+	}
+	r.Status = RunPaused
+	r.PauseReason = "execution_blocked: " + block.BlockedAction
+	r.ExecutionBlock = &ExecutionBlock{
+		BlockedAction: block.BlockedAction, Diagnostic: block.Diagnostic,
+		Attempts: slices.Clone(block.Attempts), RequiredUserAction: block.RequiredUserAction,
+	}
+	r.LimitPause = nil
 	return nil
 }
 
@@ -1633,7 +1674,7 @@ func (r *Run) Resume() error {
 			return err
 		}
 	}
-	r.Status, r.PauseReason, r.LimitPause = RunActive, "", nil
+	r.Status, r.PauseReason, r.ExecutionBlock, r.LimitPause = RunActive, "", nil, nil
 	return nil
 }
 
@@ -1641,7 +1682,7 @@ func (r *Run) Close(reason string) error {
 	if (r.Status != RunActive && r.Status != RunPaused) || strings.TrimSpace(reason) == "" {
 		return fmt.Errorf("%w: run cannot close", ErrInvalidTransition)
 	}
-	r.Status, r.CloseReason, r.PauseReason, r.LimitPause = RunClosed, reason, "", nil
+	r.Status, r.CloseReason, r.PauseReason, r.ExecutionBlock, r.LimitPause = RunClosed, reason, "", nil, nil
 	return nil
 }
 

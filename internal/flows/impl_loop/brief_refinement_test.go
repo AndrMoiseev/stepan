@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -220,7 +221,7 @@ func TestRefineBriefPersistsExecutionBlockedWithoutTechnicalRetry(t *testing.T) 
 		t.Fatal(err)
 	}
 	stored := assignmentResultForOperation(run, "assignment-1", "refine-blocked")
-	if !result.Paused || run.Status != implementationstate.RunPaused || len(runtime.messages) != 1 || stored == nil || stored.Status != implementationstate.ResultFailed || !strings.Contains(run.PauseReason, "required user action") {
+	if !result.Paused || run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || run.ExecutionBlock.Diagnostic != "tool is not installed" || run.ExecutionBlock.RequiredUserAction != "install the configured tool" || !slices.Equal(run.ExecutionBlock.Attempts, []string{"checked PATH", "read project settings"}) || len(runtime.messages) != 1 || stored == nil || stored.Status != implementationstate.ResultFailed {
 		t.Fatalf("execution_blocked did not preserve a resumable diagnostic: result=%#v run=%#v stored=%#v", result, run, stored)
 	}
 }

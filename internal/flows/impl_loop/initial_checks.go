@@ -141,7 +141,22 @@ func validateInitialRequiredChecks(input InitialRequiredChecks) error {
 
 func pauseInitialChecks(ctx context.Context, input InitialRequiredChecks, result InitialRequiredChecksResult, cause error) (InitialRequiredChecksResult, error) {
 	if input.Run.Status == implementationstate.RunActive {
-		if err := input.Run.Pause(initialRequiredChecksPauseReason); err != nil {
+		diagnostic := strings.TrimSpace(result.Diagnostic)
+		if diagnostic == "" && cause != nil {
+			diagnostic = cause.Error()
+		}
+		if diagnostic == "" {
+			diagnostic = initialRequiredChecksPauseReason
+		}
+		block, blockErr := ExecutionBlockForUserRemediation(
+			"run the initial required checks", diagnostic,
+			[]string{"ran the configured initial required-check set without changing implementation scope"},
+			"repair the environment or project configuration, then explicitly resume or close the run",
+		)
+		if blockErr != nil {
+			return result, errors.Join(cause, blockErr)
+		}
+		if err := input.Run.PauseExecutionBlocked(block); err != nil {
 			return result, errors.Join(cause, fmt.Errorf("pause after initial required checks: %w", err))
 		}
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
