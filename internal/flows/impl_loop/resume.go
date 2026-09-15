@@ -202,6 +202,12 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 		}
 	}
 
+	// A user /stop may cancel a slow configuration reload. Do not let that
+	// stale resume candidate reactivate a run after its controlling driver has
+	// joined the canceled operation and closed it.
+	if err := ctx.Err(); err != nil {
+		return ResumeResult{}, err
+	}
 	if err := candidate.Resume(); err != nil {
 		return ResumeResult{}, err
 	}

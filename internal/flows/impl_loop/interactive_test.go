@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -327,6 +329,95 @@ func TestRunImplementationInteractiveEOFJoinsBackgroundWork(t *testing.T) {
 	}
 }
 
+func TestRunImplementationInteractiveStopJoinsBlockedResumeBeforeClosing(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	configuration, err := fixture.load(fixture.repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaderStarted := make(chan struct{})
+	releaseLoader := make(chan struct{})
+	fixture.load = func(string) (implementationconfig.Configuration, error) {
+		close(loaderStarted)
+		<-releaseLoader
+		return configuration, nil
+	}
+	checks, continued := 0, 0
+	input := fixture.input()
+	input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+		checks++
+		return checkexec.Result{}, nil
+	})
+	control, err := NewUserRunControl(fixture.run, fixture.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := &blockedResumeStopUI{loaderStarted: loaderStarted, releaseLoader: releaseLoader}
+	controller := ImplementationInteractiveController{
+		Current: func(context.Context) (*InteractiveRun, error) {
+			return &InteractiveRun{Run: fixture.run, Control: control, ResumeInput: input}, nil
+		},
+		Continue: func(context.Context, *InteractiveRun) error {
+			continued++
+			return nil
+		},
+	}
+
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.run.Status != implementationstate.RunClosed || checks != 0 || continued != 0 {
+		t.Fatalf("stop during resume = status %s, checks %d, continue %d", fixture.run.Status, checks, continued)
+	}
+	persisted, _, err := fixture.state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Status != implementationstate.RunClosed {
+		t.Fatalf("durable status after stopped resume = %s", persisted.Status)
+	}
+	if len(ui.menus) < 2 || !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandStop, CommandStatus}) {
+		t.Fatalf("resuming menu exposed unusable commands: %#v", ui.menus)
+	}
+}
+
+func TestRunImplementationInteractiveRefreshesMenuWhenResumeChecksBecomeActive(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	checkStarted := make(chan struct{})
+	checks := 0
+	input := fixture.input()
+	input.Runner = CheckRunnerFunc(func(ctx context.Context, _ checkexec.Command) (checkexec.Result, error) {
+		checks++
+		close(checkStarted)
+		<-ctx.Done()
+		return checkexec.Result{Failure: checkexec.FailureCanceled}, ctx.Err()
+	})
+	control, err := NewUserRunControl(fixture.run, fixture.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := &resumePhaseUI{checkStarted: checkStarted}
+	controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) {
+		return &InteractiveRun{Run: fixture.run, Control: control, ResumeInput: input}, nil
+	}}
+
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	if checks != 1 || fixture.run.Status != implementationstate.RunPaused {
+		t.Fatalf("paused resume check = checks %d status %s", checks, fixture.run.Status)
+	}
+	if len(ui.menus) < 3 {
+		t.Fatalf("expected initial, resuming, and active menus; got %#v", ui.menus)
+	}
+	if !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandStop, CommandStatus}) {
+		t.Fatalf("pre-check resume menu = %#v", ui.menus[1])
+	}
+	if !slices.Equal(commandsFromHints(ui.menus[2].Commands), []InteractiveCommand{CommandPause, CommandStop, CommandStatus}) {
+		t.Fatalf("active resume-check menu = %#v", ui.menus[2])
+	}
+}
+
 func TestStatusIsReadOnly(t *testing.T) {
 	run, state, _, _ := newInitialCheckRun(t)
 	defer state.Close()
@@ -430,3 +521,61 @@ func (ui *eofDuringWorkUI) Prompt(ctx context.Context, _ CommandMenu) (string, e
 
 func (*eofDuringWorkUI) Report(string)            {}
 func (ui *eofDuringWorkUI) ReportError(err error) { ui.errors = append(ui.errors, err) }
+
+type blockedResumeStopUI struct {
+	loaderStarted <-chan struct{}
+	releaseLoader chan struct{}
+	step          int
+	menus         []CommandMenu
+}
+
+func (ui *blockedResumeStopUI) Prompt(_ context.Context, menu CommandMenu) (string, error) {
+	ui.menus = append(ui.menus, menu)
+	switch ui.step {
+	case 0:
+		ui.step++
+		return "/resume", nil
+	case 1:
+		<-ui.loaderStarted
+		close(ui.releaseLoader)
+		ui.step++
+		return "/stop", nil
+	default:
+		return "", ErrInteractiveInputCanceled
+	}
+}
+
+func (*blockedResumeStopUI) Report(string)     {}
+func (*blockedResumeStopUI) ReportError(error) {}
+
+type resumePhaseUI struct {
+	checkStarted <-chan struct{}
+	step         int
+	menus        []CommandMenu
+}
+
+func (ui *resumePhaseUI) Prompt(ctx context.Context, menu CommandMenu) (string, error) {
+	ui.menus = append(ui.menus, menu)
+	switch ui.step {
+	case 0:
+		ui.step++
+		return "/resume", nil
+	case 1:
+		ui.step++
+		select {
+		case <-ui.checkStarted:
+			<-ctx.Done() // phase notification must cancel and refresh this prompt.
+			return "", ErrInteractiveInputCanceled
+		case <-ctx.Done():
+			return "", ErrInteractiveInputCanceled
+		}
+	case 2:
+		ui.step++
+		return "/pause", nil
+	default:
+		return "", ErrInteractiveInputCanceled
+	}
+}
+
+func (*resumePhaseUI) Report(string)     {}
+func (*resumePhaseUI) ReportError(error) {}

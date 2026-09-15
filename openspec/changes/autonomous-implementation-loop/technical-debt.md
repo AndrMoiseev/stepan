@@ -662,3 +662,13 @@
 - Expected impact: a future lifecycle change can make menu availability and unavailable explanations drift.
 - Classification: technical debt because current branches are aligned and no behavior defect follows today.
 - Possible follow-up: centralize visibility and unavailable reasons in one per-lifecycle policy table.
+
+## TASK-12.1-D003 — successful user interruption is reported as an error
+
+- Origin: task 12.1 correction-cycle-1 rereview; affected locations: `internal/flows/impl_loop/interactive.go`, `interactive_test.go`.
+- Status: `open`.
+- Potential problem: after a successful pause, the expected `ErrUserOperationInterrupted` from background work is surfaced as an error.
+- Evidence: current driver reports the worker result independently of the successful lifecycle command.
+- Expected impact: users see an alarming failure message after an intentional successful pause/stop.
+- Classification: technical debt because durable lifecycle behavior is correct and this is error presentation rather than state loss.
+- Possible follow-up: classify expected user interruption as normal lifecycle completion.
