@@ -51,6 +51,10 @@ var (
 	// ErrUnsafePath reports a symlink or non-directory where the store needs a
 	// directory it owns.
 	ErrUnsafePath = errors.New("unsafe run store path")
+	// ErrStoreNotFound reports an absent run-store layout. Callers that only
+	// inspect startup state use it to retain the ordinary no-run experience
+	// without creating ~/.stepan merely to look for a previous run.
+	ErrStoreNotFound = errors.New("implementation run store not found")
 )
 
 // Store owns implementation runs below one Stepan data root. New accepts an
@@ -99,6 +103,36 @@ func (s *Store) RunIDs() ([]implementationstate.RunID, error) {
 // DefaultRoot returns the Stepan data root for a supplied home directory.
 func DefaultRoot(home string) string {
 	return filepath.Join(home, ".stepan")
+}
+
+// OpenExisting opens an already-created run store without creating any
+// directory. It is deliberately separate from New: ordinary application
+// startup must be able to discover an unfinished run without changing the
+// user's home directory when no implementation run has ever existed.
+func OpenExisting(root string) (*Store, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("%w: empty root", ErrUnsafePath)
+	}
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve run store root: %w", err)
+	}
+	if _, err := os.Lstat(absolute); errors.Is(err, os.ErrNotExist) {
+		return nil, ErrStoreNotFound
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect run store root: %w", err)
+	}
+	if err := requireDirectory(absolute); err != nil {
+		return nil, err
+	}
+	runs, err := childDirectory(absolute, RunsDirectoryName, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrStoreNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Store{root: absolute, runs: runs}, nil
 }
 
 // New creates the Stepan data root and its runs directory when absent. It

@@ -15,8 +15,10 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
+        - '^github\.com/AndrMoiseev/stepan/internal/runstore$'
         - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
     shouldNotDependsOn:

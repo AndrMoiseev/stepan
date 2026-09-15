@@ -12,8 +12,10 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
 	"github.com/AndrMoiseev/stepan/internal/flows/spec"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/usersettings"
 )
 
@@ -44,6 +46,14 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	startup, err := discoverImplementationStartup(ctx, root, os.UserHomeDir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "inspect implementation run:", err)
+		return 2
+	}
+	if startup != "" {
+		fmt.Fprintln(os.Stdout, startup)
+	}
 	factory, err := configuredRuntimeFactory(config, root, usersettings.NessyAuthToken, defaultRuntimeStarters())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start Stepan:", err)
@@ -68,6 +78,29 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	return 0
+}
+
+// discoverImplementationStartup is intentionally before runtime/session
+// composition. It uses only the JSONL status-read path, so an ordinary start
+// can show a saved implementation run without creating agent sessions or
+// triggering reconciliation checks. Those actions remain behind /resume.
+func discoverImplementationStartup(ctx context.Context, workCopy string, userHome func() (string, error)) (string, error) {
+	home, err := userHome()
+	if err != nil {
+		return "", fmt.Errorf("find user home for implementation run store: %w", err)
+	}
+	store, err := runstore.OpenExisting(runstore.DefaultRoot(home))
+	if errors.Is(err, runstore.ErrStoreNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	found, err := impl_loop.DiscoverStartupRun(ctx, store, workCopy)
+	if err != nil || found == nil {
+		return "", err
+	}
+	return impl_loop.FormatStartupSummary(found.Summary), nil
 }
 
 func configuredRuntimeFactory(config agentConfig, root string, load func() (string, error), starters runtimeStarters) (func(context.Context) (agentruntime.Runtime, error), error) {

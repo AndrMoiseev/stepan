@@ -682,3 +682,13 @@
 - Expected impact: a route may record ordinary cancellation/failure bookkeeping before terminal closure, although final lifecycle state remains closed.
 - Classification: technical debt because terminal stop is durable and the concern is uncommon diagnostic/history pollution rather than failure to stop.
 - Possible follow-up: use cancel-first only for resume preflight; for active work close through `UserRunControl` first, then join.
+
+## TASK-12.1-005 — unavailable pause can cancel an in-flight resume
+
+- Origin: task 12.1 final rereview after correction cycle 3; affected location: `internal/flows/impl_loop/interactive.go` unavailable-command/pause drain path.
+- Status: `open`.
+- Potential problem: the driver treats a nil dispatch error as proof that `/pause` executed, although a known unavailable command also returns nil plus a concise explanation. A manually typed hidden `/pause` during `resuming` can therefore cancel and join the resume worker.
+- Evidence: the unavailable paused-state branch returns a message without an error, after which the post-dispatch pause handling runs; with non-cancellable reconciliation this can also wait indefinitely.
+- Expected impact: an unavailable command mutates execution by aborting `/resume` and may emit a secondary cancellation error, contradicting the contextual-command requirement.
+- Classification: originally critical because it directly contradicts the explicit no-mutation behavior for unavailable commands. After the three-cycle global stop, the user explicitly directed on 2026-09-15 to record it as technical debt and continue; this entry preserves that waiver rather than claiming reviewer acceptance.
+- Possible follow-up: use a typed dispatch outcome or confirm an actual active-to-paused transition before draining the worker; add a blocked-resume manual-`/pause` regression proving explanation-only behavior.

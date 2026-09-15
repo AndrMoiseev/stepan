@@ -71,6 +71,16 @@ func TestRunLayoutAndRelatedFilesSurviveOpenAndClosedRuns(t *testing.T) {
 	}
 }
 
+func TestOpenExistingDoesNotCreateMissingStore(t *testing.T) {
+	root := filepath.Join(t.TempDir(), ".stepan")
+	if _, err := OpenExisting(root); !errors.Is(err, ErrStoreNotFound) {
+		t.Fatalf("open missing store error = %v, want ErrStoreNotFound", err)
+	}
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("read-only store open created %q: %v", root, err)
+	}
+}
+
 func TestReferenceRequiresPublishedUnchangedFile(t *testing.T) {
 	store, err := New(t.TempDir())
 	if err != nil {

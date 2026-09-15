@@ -101,6 +101,18 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 	if err != nil {
 		return nil, err
 	}
+	return findUnclosedRun(ctx, store, canonical)
+}
+
+// findUnclosedRun reads durable state for an already canonical working-copy
+// identity. Keeping this read-only primitive separate lets normal startup use
+// the Git root it has already resolved, without another Git invocation or a
+// controller lock.
+func findUnclosedRun(ctx context.Context, store *runstore.Store, canonical string) (*implementationstate.Run, error) {
+	if store == nil {
+		return nil, fmt.Errorf("find unclosed implementation run: nil run store")
+	}
+	canonical = filepath.Clean(canonical)
 	ids, err := store.RunIDs()
 	if err != nil {
 		return nil, err
@@ -120,7 +132,7 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 		if err != nil {
 			return nil, fmt.Errorf("read run %s status: %w", id, err)
 		}
-		if state.Status == implementationstate.RunClosed || state.Status == implementationstate.RunSucceeded {
+		if !isUnclosedStatus(state.Status) {
 			continue
 		}
 		if lockIdentity(filepath.Clean(state.Identity.WorkCopy)) != lockIdentity(canonical) {
@@ -131,6 +143,10 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 		}
 	}
 	return nil, nil
+}
+
+func isUnclosedStatus(status implementationstate.RunStatus) bool {
+	return status == implementationstate.RunActive || status == implementationstate.RunPaused
 }
 
 func lockIdentity(path string) string {
