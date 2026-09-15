@@ -140,6 +140,9 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if err != nil {
 		return CommitAcceptedAssignmentResult{}, err
 	}
+	if reconciled, ok := reusableReconciledCommit(input); ok {
+		return finalizeReconciledCommit(ctx, input, reconciled)
+	}
 	control := input.Control
 	if control == nil {
 		control = GitCommitControl{}
@@ -204,6 +207,10 @@ func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentI
 	if err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("publish hook-modified working state: %w", err))
 	}
+	reconciled := implementationstate.CommitEvidence{OperationID: input.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: state, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
+	if err := input.Run.RecordReconciledCommit(input.AssignmentID, reconciled); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("record hook-created commit for reconciliation: %w", err))
+	}
 	if err := input.Run.ReopenAssignment(input.AssignmentID, state); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("reopen assignment for hook-modified content: %w", err))
 	}
@@ -211,6 +218,41 @@ func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentI
 		return CommitAcceptedAssignmentResult{Intent: intent, ReacceptanceRequired: true}, fmt.Errorf("%w: persist hook-modified assignment state: %v", ErrAssignmentCommit, err)
 	}
 	return CommitAcceptedAssignmentResult{Intent: intent, ReacceptanceRequired: true}, fmt.Errorf("%w: actual tree %q or working copy differed from accepted tree %q", ErrCommitReacceptanceRequired, observed.Tree, intent.Tree)
+}
+
+// reusableReconciledCommit recognizes a hook-created commit only after a new
+// acceptance proves exactly the state published during reconciliation. The
+// current snapshot-derived preparation additionally proves that no later edit
+// requires a corrective child commit.
+func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implementationstate.CommitEvidence, bool) {
+	assignment := assignmentByID(input.Run, input.AssignmentID)
+	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		return implementationstate.CommitEvidence{}, false
+	}
+	for index := len(assignment.ReconciledCommits) - 1; index >= 0; index-- {
+		commit := assignment.ReconciledCommits[index]
+		if commit.State == assignment.Acceptance.State && commit.Basis == assignment.Acceptance.Basis && commit.CommitID == input.Preparation.ParentCommit && commit.Tree == input.Preparation.Tree {
+			return commit, true
+		}
+	}
+	return implementationstate.CommitEvidence{}, false
+}
+
+func finalizeReconciledCommit(ctx context.Context, input CommitAcceptedAssignmentInput, commit implementationstate.CommitEvidence) (CommitAcceptedAssignmentResult, error) {
+	intent := implementationstate.CommitIntent{OperationID: commit.OperationID, ParentCommit: commit.ParentCommit, Tree: commit.Tree, Message: commit.Message}
+	if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
+		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record reconciled commit intent: %v", ErrAssignmentCommit, err)
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: persist reconciled commit intent: %v", ErrAssignmentCommit, err)
+	}
+	if err := input.Run.CommitAssignment(input.AssignmentID, commit); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: complete reconciled commit: %v", ErrAssignmentCommit, err)
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, fmt.Errorf("%w: persist completed reconciled assignment: %v", ErrAssignmentCommit, err)
+	}
+	return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, nil
 }
 
 func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmentInput, cause error) error {

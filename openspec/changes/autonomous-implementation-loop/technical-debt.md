@@ -485,3 +485,22 @@
 - Expected impact: a valid local commit can remain unacknowledged until recovery.
 - Classification: technical debt because ordinary concise messages are unaffected and the trigger depends on message/configuration details.
 - Possible follow-up: use `--cleanup=verbatim` and add a multiline cleanup-sensitive fixture.
+## STD-10.3-001 — post-hook comparison omits index and submodule dimensions
+
+- Origin: task 10.3 initial review; affected location: `internal/flows/impl_loop/commit.go` post-hook reconciliation.
+- Status: `open`.
+- Potential problem: reconciliation compares only HEAD and tree although snapshots also model ref, real index, status, and submodules.
+- Evidence: index-only or submodule-only hook changes are not part of the committed-state invariant.
+- Expected impact: uncommon hook behavior could complete against stale acceptance.
+- Classification: technical debt because ordinary content-changing/refusing hooks are handled and these specialized hook mutations are not established as typical supported use.
+- Possible follow-up: centralize the committed-state invariant in `gitsnapshot` and add tagged index/submodule hook fixtures.
+
+## TD-10.3-001 — reconciliation transitions mutate live state before durability
+
+- Origin: task 10.3 initial review; affected location: `internal/flows/impl_loop/commit.go` changed-commit and pause transitions.
+- Status: `open`.
+- Potential problem: reopen/pause mutates the caller run before persistence succeeds.
+- Evidence: a storage failure leaves memory ahead of the journal and makes direct retry invalid.
+- Expected impact: transient persistence errors can require restart reconciliation.
+- Classification: technical debt because ordinary persistence succeeds and later recovery tasks cover interrupted Git reconciliation.
+- Possible follow-up: transition a clone, record it durably, then adopt the candidate.

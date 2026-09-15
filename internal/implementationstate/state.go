@@ -439,6 +439,10 @@ type Assignment struct {
 	Results           []OperationResult
 	Acceptance        *AcceptanceEvidence
 	AcceptanceHistory []AcceptanceEvidence
+	// ReconciledCommits records commits that Git created after a hook changed
+	// accepted content. They are evidence only: a task is not complete until a
+	// later acceptance proves the recorded state or a corrective child commit.
+	ReconciledCommits []CommitEvidence
 	Commit            *CommitEvidence
 	Counters          CycleCounters
 	// TaskReviews is the durable discussion for this assignment.  It is kept
@@ -1225,6 +1229,30 @@ func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidenc
 	return nil
 }
 
+// RecordReconciledCommit retains an observed hook-created commit before the
+// old acceptance is reopened. It deliberately does not complete tasks: the
+// caller must obtain acceptance for the commit's observed state first.
+func (r *Run) RecordReconciledCommit(assignmentID AssignmentID, evidence CommitEvidence) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	index := r.assignmentIndex(assignmentID)
+	if index < 0 {
+		return fmt.Errorf("%w: unknown assignment", ErrInvalidState)
+	}
+	assignment := &r.Assignments[index]
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !evidence.valid() || evidence.Basis != r.currentBasis() {
+		return fmt.Errorf("%w: assignment cannot retain reconciled commit", ErrInvalidTransition)
+	}
+	for _, prior := range assignment.ReconciledCommits {
+		if prior.CommitID == evidence.CommitID {
+			return fmt.Errorf("%w: duplicate reconciled commit", ErrInvalidState)
+		}
+	}
+	assignment.ReconciledCommits = append(assignment.ReconciledCommits, evidence)
+	return nil
+}
+
 // ReopenAssignment invalidates a pending acceptance when either its inputs or
 // observed code state changed. It retains every prior operation, result, and
 // acceptance record while returning its selected leaves to pending.
@@ -1830,6 +1858,11 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 	for _, evidence := range assignment.AcceptanceHistory {
 		if assignment.validateAcceptance(evidence, false) != nil {
 			return fmt.Errorf("%w: invalid historical acceptance", ErrInvalidState)
+		}
+	}
+	for _, evidence := range assignment.ReconciledCommits {
+		if !evidence.valid() {
+			return fmt.Errorf("%w: invalid reconciled commit", ErrInvalidState)
 		}
 	}
 	if assignment.Status == AssignmentActive && (assignment.Acceptance != nil || assignment.Commit != nil) {

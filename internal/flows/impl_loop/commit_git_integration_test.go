@@ -131,6 +131,50 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 	}
 }
 
+func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchanged(t *testing.T) {
+	repository := newGitWorkspace(t)
+	switchToBranch(t, repository, "implementation")
+	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
+	acceptCommitFixture(t, stateStore, run)
+
+	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nprintf 'hook content\\n' > hook.txt\ngit add -- hook.txt\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", "Implement source task"), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
+		t.Fatalf("hook content change error=%v result=%#v", err, first)
+	}
+	firstCommit := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	if err := stateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err = runstore.ReadJournalCurrent(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err = runstore.OpenState(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	if len(run.Assignments[0].ReconciledCommits) != 1 || run.Assignments[0].ReconciledCommits[0].CommitID != firstCommit {
+		t.Fatalf("reconciled commit did not survive journal reload: %#v", run.Assignments[0])
+	}
+
+	// No post-hook edit is made. Fresh acceptance therefore proves the exact
+	// hook-created commit and must not invoke Git or create an empty child.
+	reacceptAfterHook(t, run, stateStore)
+	completed, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", "Reaccept hook result"), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	if err != nil || completed.Commit.CommitID != firstCommit || completed.Intent.OperationID != "commit-1" {
+		t.Fatalf("unchanged reacceptance did not reuse hook commit: error=%v result=%#v", err, completed)
+	}
+	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+		t.Fatalf("unchanged reacceptance created a corrective commit: count=%s", count)
+	}
+	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete {
+		t.Fatalf("reused hook commit did not complete machine status: %#v", run)
+	}
+}
+
 func captureCommitPreparation(t *testing.T, repository string) CommitPreparation {
 	t.Helper()
 	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
