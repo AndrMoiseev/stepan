@@ -1,8 +1,9 @@
+//go:build git_integration
+
 package impl_loop
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,7 @@ import (
 )
 
 func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *testing.T) {
+	t.Parallel()
 	repository := newSnapshotRepository(t)
 	writeAgentFile(t, repository, "prior-executor.go", "pre-existing executor work\n")
 	run, journal := newAgentCallRun(t)
@@ -46,6 +48,7 @@ func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *te
 }
 
 func TestObserveAgentCallPreservesExecutorAllowedWorkAndRestoresProtectedFile(t *testing.T) {
+	t.Parallel()
 	repository := newSnapshotRepository(t)
 	writeAgentFile(t, repository, ".stepan/settings.json", "{\"protected\":true}\n")
 	run, journal := newAgentCallRun(t)
@@ -73,6 +76,7 @@ func TestObserveAgentCallPreservesExecutorAllowedWorkAndRestoresProtectedFile(t 
 }
 
 func TestObserveAgentCallRestoresNormalizedProtectedBytes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, attribute string
 		configure       func(*testing.T, string)
@@ -101,6 +105,7 @@ func TestObserveAgentCallRestoresNormalizedProtectedBytes(t *testing.T) {
 }
 
 func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *testing.T) {
+	t.Parallel()
 	repository := newSnapshotRepository(t)
 	run, journal := newAgentCallRun(t)
 
@@ -125,6 +130,7 @@ func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *te
 }
 
 func TestObserveAgentCallBlocksWhenTargetedRollbackIsImpossible(t *testing.T) {
+	t.Parallel()
 	repository := newSnapshotRepository(t)
 	writeAgentFile(t, repository, ".stepan/settings.json", "{\"protected\":true}\n")
 	run, journal := newAgentCallRun(t)
@@ -186,25 +192,4 @@ func assertAgentFile(t *testing.T, repository, relative, want string) {
 	if err != nil || string(contents) != want {
 		t.Fatalf("file %s = %q, %v; want %q", relative, contents, err, want)
 	}
-}
-
-func readViolationRecords(t *testing.T, run *runstore.Run) []runstore.ViolationRecord {
-	t.Helper()
-	contents, err := os.ReadFile(run.ViolationJournalPath())
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(contents)), "\n")
-	records := make([]runstore.ViolationRecord, 0, len(lines))
-	for _, line := range lines {
-		var record runstore.ViolationRecord
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatal(err)
-		}
-		records = append(records, record)
-	}
-	return records
 }

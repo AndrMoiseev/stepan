@@ -1,3 +1,5 @@
+//go:build git_integration
+
 package impl_loop
 
 import (
@@ -14,6 +16,7 @@ import (
 )
 
 func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*testing.T, string)
@@ -66,6 +69,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 }
 
 func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing.T) {
+	t.Parallel()
 	repository := newSnapshotRepository(t)
 	expected, err := gitsnapshot.Capture(context.Background(), repository)
 	if err != nil {
@@ -89,6 +93,7 @@ func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing
 }
 
 func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
+	t.Parallel()
 	run := &implementationstate.Run{Status: implementationstate.RunActive}
 	workspace := ensureErrorWorkspaceControl{
 		WorkspaceControl: &unchangedWorkspaceControl{},

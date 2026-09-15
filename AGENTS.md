@@ -35,6 +35,37 @@ notarization пока не поддерживаются.
 
 Для запуска тестов отдельного пакета используйте `go test ./путь/к/пакету`, например `go test ./internal/specflow`.
 
+## Наборы тестов
+
+Обычный запуск выполняет только быстрые изолированные тесты и не должен
+запускать внешние процессы:
+
+```powershell
+go test ./...
+```
+
+Контракты с настоящим Git запускаются отдельно:
+
+```powershell
+go test -parallel=4 -tags=git_integration ./...
+```
+
+Тесты управления дочерними процессами и fake CLI запускаются отдельно:
+
+```powershell
+go test -tags=process_integration ./...
+```
+
+Полная локальная проверка выполняет оба интеграционных набора:
+
+```powershell
+go test -parallel=4 -tags=git_integration,process_integration ./...
+```
+
+Файлы тестов, импортирующие `os/exec`, обязаны иметь build tag
+`git_integration`, `process_integration` или специальный ручной tag вроде
+`nessy_real_cli`. Это правило проверяется архитектурным тестом.
+
 ## Codex App Server: response schema
 
 Для `turn/start` schema в `text.format.schema` используйте flat object-schema:

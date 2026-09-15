@@ -1,3 +1,5 @@
+//go:build process_integration
+
 package nessyapp
 
 import (

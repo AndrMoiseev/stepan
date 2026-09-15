@@ -1,4 +1,4 @@
-//go:build !windows && !darwin
+//go:build process_integration && !windows && !darwin
 
 package nessyapp
 

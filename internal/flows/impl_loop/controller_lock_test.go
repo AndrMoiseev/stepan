@@ -1,3 +1,5 @@
+//go:build git_integration || process_integration
+
 package impl_loop
 
 import (
@@ -150,15 +152,6 @@ func TestControllerLocksForDifferentWorkingCopiesAreIndependent(t *testing.T) {
 		t.Fatalf("second repository lock: %v", err)
 	}
 	defer second.Close()
-}
-
-func mustControllerStore(t *testing.T, root string) *runstore.Store {
-	t.Helper()
-	store, err := runstore.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return store
 }
 
 func onlyControllerLockEntry(t *testing.T, store *runstore.Store) string {

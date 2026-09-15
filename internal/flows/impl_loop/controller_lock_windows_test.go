@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && (git_integration || process_integration)
 
 package impl_loop
 

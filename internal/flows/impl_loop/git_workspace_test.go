@@ -1,3 +1,5 @@
+//go:build git_integration
+
 package impl_loop
 
 import (
@@ -6,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -16,6 +17,7 @@ import (
 )
 
 func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
+	t.Parallel()
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
 	nested := filepath.Join(repository, "nested", "directory")
@@ -37,6 +39,7 @@ func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
 }
 
 func TestValidateNewStartFallsBackToLocalOriginHEAD(t *testing.T) {
+	t.Parallel()
 	repository := newGitWorkspace(t)
 	git(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
 	git(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
@@ -52,6 +55,7 @@ func TestValidateNewStartFallsBackToLocalOriginHEAD(t *testing.T) {
 }
 
 func TestValidateNewStartRejectsUnknownMainBranchWithConfigurationGuidance(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		setup func(*testing.T, string)
@@ -77,6 +81,7 @@ func TestValidateNewStartRejectsUnknownMainBranchWithConfigurationGuidance(t *te
 }
 
 func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		configuration implementationconfig.Configuration
@@ -102,6 +107,7 @@ func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *te
 }
 
 func TestValidateNewStartRejectsDetachedHEAD(t *testing.T) {
+	t.Parallel()
 	repository := newGitWorkspace(t)
 	git(t, repository, "checkout", "--detach", "--quiet", "HEAD")
 
@@ -112,6 +118,7 @@ func TestValidateNewStartRejectsDetachedHEAD(t *testing.T) {
 }
 
 func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*testing.T, string)
@@ -145,6 +152,7 @@ func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *t
 }
 
 func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
+	t.Parallel()
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
 	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`} {
@@ -156,6 +164,7 @@ func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
 }
 
 func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
+	t.Parallel()
 	t.Run("local branch wins over tag", func(t *testing.T) {
 		repository := newGitWorkspace(t)
 		git(t, repository, "tag", "main")
@@ -180,6 +189,7 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 }
 
 func TestValidateNewStartAcceptsConfiguredMainBranchWithoutLocalRef(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name      string
 		remoteRef bool
@@ -254,6 +264,7 @@ func TestValidateNewStartIgnoresRepositorySelectingGitEnvironment(t *testing.T) 
 }
 
 func TestValidateNewStartDoesNotHonorConfiguredSubmoduleIgnores(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		ignore string
@@ -300,18 +311,6 @@ func configurationWithMain(branch string) implementationconfig.Configuration {
 	return implementationconfig.Configuration{MainBranch: encoded}
 }
 
-func newGitWorkspace(t *testing.T) string {
-	t.Helper()
-	repository := t.TempDir()
-	git(t, repository, "init", "--quiet", "--initial-branch=main")
-	git(t, repository, "config", "user.name", "Stepan Tests")
-	git(t, repository, "config", "user.email", "stepan-tests@example.invalid")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "tracked.txt"), "initial\n")
-	git(t, repository, "add", "--", "tracked.txt")
-	git(t, repository, "commit", "--quiet", "-m", "initial")
-	return repository
-}
-
 func newGitWorkspaceWithSubmodule(t *testing.T) (string, string) {
 	t.Helper()
 	repository := newGitWorkspace(t)
@@ -348,24 +347,4 @@ func advanceSubmoduleCommit(t *testing.T, submodule string) {
 func switchToBranch(t *testing.T, repository, branch string) {
 	t.Helper()
 	git(t, repository, "switch", "--quiet", "-c", branch)
-}
-
-func writeGitWorkspaceFile(t *testing.T, path, contents string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func git(t *testing.T, repository string, arguments ...string) string {
-	t.Helper()
-	command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v: %s", strings.Join(arguments, " "), err, output)
-	}
-	return string(output)
 }

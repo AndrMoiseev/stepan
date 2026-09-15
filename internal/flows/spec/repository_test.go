@@ -1,3 +1,5 @@
+//go:build git_integration
+
 package specflow
 
 import (
@@ -11,8 +13,6 @@ import (
 	"testing"
 	"time"
 )
-
-var repositoryTestTime = time.Date(2026, 8, 30, 12, 0, 0, 0, time.FixedZone("MSK", 3*60*60))
 
 func TestFeatureRepositoryLoadsAndRewritesCRLFMemoryLog(t *testing.T) {
 	repoRoot := initRepository(t)

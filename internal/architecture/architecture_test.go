@@ -1,9 +1,14 @@
 package architecture
 
 import (
+	"bytes"
 	"go/build"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,10 +25,10 @@ func TestDependencies(t *testing.T) {
 
 func TestDependencyEvaluatorAllowsSharedInfrastructureForImplementationFlow(t *testing.T) {
 	result := evaluateFixture(t, loadConfig(t), map[string]string{
-		"internal/agentruntime/doc.go":              "package agentruntime\n",
-		"internal/implementationconfig/doc.go":      "package implementationconfig\n",
-		"internal/flows/spec/doc.go":                "package specflow\n",
-		"internal/flows/impl_loop/impl_loop.go":     "package impl_loop\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/agentruntime\"\nimport _ \"github.com/AndrMoiseev/stepan/internal/implementationconfig\"\n",
+		"internal/agentruntime/doc.go":          "package agentruntime\n",
+		"internal/implementationconfig/doc.go":  "package implementationconfig\n",
+		"internal/flows/spec/doc.go":            "package specflow\n",
+		"internal/flows/impl_loop/impl_loop.go": "package impl_loop\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/agentruntime\"\nimport _ \"github.com/AndrMoiseev/stepan/internal/implementationconfig\"\n",
 	})
 	assertPackagePasses(t, result, modulePath+"/internal/flows/impl_loop")
 }
@@ -42,6 +47,67 @@ func TestDependencyEvaluatorRejectsFlowDependencies(t *testing.T) {
 		"internal/flows/impl_loop/impl_loop.go": "package impl_loop\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/flows/spec\"\n",
 	})
 	assertPackageFailsForForbiddenFlowRule(t, implementationToSpec, modulePath+"/internal/flows/impl_loop", "internal/flows/spec")
+}
+
+func TestExternalProcessTestsDeclareIntegrationSuite(t *testing.T) {
+	root := filepath.Join("..", "..")
+	var unclassified []string
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(entry.Name(), "_test.go") {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		parsed, err := parser.ParseFile(token.NewFileSet(), path, contents, parser.ImportsOnly)
+		if err != nil {
+			return err
+		}
+		importsExec := false
+		for _, imported := range parsed.Imports {
+			name, err := strconv.Unquote(imported.Path.Value)
+			if err != nil {
+				return err
+			}
+			if name == "os/exec" {
+				importsExec = true
+				break
+			}
+		}
+		if !importsExec {
+			return nil
+		}
+		header := contents
+		if len(header) > 512 {
+			header = header[:512]
+		}
+		if bytes.Contains(header, []byte("git_integration")) || bytes.Contains(header, []byte("process_integration")) || bytes.Contains(header, []byte("nessy_real_cli")) {
+			return nil
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		unclassified = append(unclassified, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(unclassified)
+	if len(unclassified) != 0 {
+		t.Fatalf("tests importing os/exec must declare an integration build tag:\n%s", strings.Join(unclassified, "\n"))
+	}
 }
 
 func loadConfig(t *testing.T) *configuration.Config {

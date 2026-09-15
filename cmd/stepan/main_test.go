@@ -1,3 +1,5 @@
+//go:build git_integration || process_integration
+
 package main
 
 import (

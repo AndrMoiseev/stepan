@@ -1,3 +1,5 @@
+//go:build git_integration
+
 package specflow
 
 import (

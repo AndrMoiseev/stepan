@@ -1,3 +1,5 @@
+//go:build process_integration
+
 package nessyapp
 
 import (
@@ -216,12 +218,13 @@ func TestSeparateProcessesReceiveNoSiblingArtifactRoot(t *testing.T) {
 	if err := first.Start(); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = first.Close() })
 	t.Setenv("STEPAN_NESSYAPP_METADATA", secondMetadata)
 	second := NewProcess(Config{AuthToken: testAuthToken(t), Workspace: workspace, JSONContract: testJSONContract}, secondRoot)
 	if err := second.Start(); err != nil {
-		_ = first.Close()
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = second.Close() })
 
 	firstArgs := readFakeMetadata(t, firstMetadata).Args
 	secondArgs := readFakeMetadata(t, secondMetadata).Args
@@ -604,23 +607,23 @@ func canonicalForTest(t *testing.T, path string) string {
 func readFakeMetadata(t *testing.T, path string) fakeMetadata {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
-	var data []byte
-	var err error
+	var lastErr error
 	for time.Now().Before(deadline) {
-		data, err = os.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err == nil {
-			break
+			var metadata fakeMetadata
+			if err := json.Unmarshal(data, &metadata); err == nil {
+				return metadata
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = err
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	var metadata fakeMetadata
-	if err := json.Unmarshal(data, &metadata); err != nil {
-		t.Fatal(err)
-	}
-	return metadata
+	t.Fatalf("read complete fake metadata from %s: %v", path, lastErr)
+	return fakeMetadata{}
 }
 
 func envMap(environment []string) map[string]string {

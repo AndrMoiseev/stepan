@@ -1,3 +1,5 @@
+//go:build git_integration
+
 package gitsnapshot
 
 import (
@@ -15,6 +17,7 @@ import (
 )
 
 func TestCaptureCandidateChanges(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*testing.T, string)
@@ -68,6 +71,7 @@ func TestCaptureCandidateChanges(t *testing.T) {
 }
 
 func TestCaptureIsStableAndIgnoresIgnoredFiles(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	indexBefore := readIndex(t, repo)
 	first := mustCapture(t, repo)
@@ -86,6 +90,7 @@ func TestCaptureIsStableAndIgnoresIgnoredFiles(t *testing.T) {
 }
 
 func TestCaptureUsesWorkingTreeInsteadOfRealIndex(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	path := filepath.Join(repo, "tracked.txt")
 	write(t, path, "staged\n")
@@ -106,6 +111,7 @@ func TestCaptureUsesWorkingTreeInsteadOfRealIndex(t *testing.T) {
 }
 
 func TestCaptureDetectsMutationAndRecalculation(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
 	path := filepath.Join(repo, "tracked.txt")
@@ -170,6 +176,7 @@ func TestCaptureDetectsRealStateMutationDuringSecondHierarchyPass(t *testing.T) 
 }
 
 func TestCompareAndCheckBoundary(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	write(t, filepath.Join(repo, "outside-before.txt"), "dirty before baseline\n")
 	before := mustCapture(t, repo)
@@ -189,6 +196,7 @@ func TestCompareAndCheckBoundary(t *testing.T) {
 }
 
 func TestDiffAttributesOnlyCurrentInvocationChanges(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	write(t, filepath.Join(repo, "prior-uncommitted.txt"), "belongs to user\n")
 	before := mustCapture(t, repo)
@@ -208,6 +216,7 @@ func TestDiffAttributesOnlyCurrentInvocationChanges(t *testing.T) {
 }
 
 func TestDiffReportsHeadAndIndexFingerprints(t *testing.T) {
+	t.Parallel()
 	t.Run("index", func(t *testing.T) {
 		repo := newRepository(t)
 		write(t, filepath.Join(repo, "tracked.txt"), "unstaged\n")
@@ -241,6 +250,7 @@ func TestDiffReportsHeadAndIndexFingerprints(t *testing.T) {
 }
 
 func TestRestorePathsPreservesExactBytesAcrossGitFilters(t *testing.T) {
+	t.Parallel()
 	repository := newRepository(t)
 	runGit(t, repository, "config", "core.autocrlf", "true")
 	runGit(t, repository, "config", "filter.stepan.clean", "tr -d '\\r'")
@@ -274,6 +284,7 @@ func TestRestorePathsPreservesExactBytesAcrossGitFilters(t *testing.T) {
 }
 
 func TestRestorePathsRestoresExecutableMode(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows does not expose Unix executable mode")
 	}
@@ -301,6 +312,7 @@ func TestRestorePathsRestoresExecutableMode(t *testing.T) {
 }
 
 func TestEnsureUnchangedDetectsDirtySubmodule(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	child := newRepository(t)
 	childHead := strings.TrimSpace(runGit(t, child, "rev-parse", "HEAD"))
@@ -365,6 +377,7 @@ func TestCaptureRejectsCanonicalSubmoduleCycle(t *testing.T) {
 }
 
 func TestCaptureFingerprintsSymbolicHEAD(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*testing.T, string)
@@ -403,6 +416,7 @@ func TestCaptureFingerprintsSymbolicHEAD(t *testing.T) {
 }
 
 func TestCaptureUsesGitRootForSubdirectory(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	subdirectory := filepath.Join(repo, "nested", "directory")
 	if err := os.MkdirAll(subdirectory, 0o700); err != nil {
@@ -445,6 +459,7 @@ func TestCaptureIgnoresRepositorySelectionEnvironment(t *testing.T) {
 }
 
 func TestEnsureUnchangedDetectsUnexpectedChangesBetweenOperations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		change func(*testing.T, string)
@@ -476,6 +491,7 @@ func TestEnsureUnchangedDetectsUnexpectedChangesBetweenOperations(t *testing.T) 
 }
 
 func TestCompareReportsAllOutsideChanges(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
 	write(t, filepath.Join(repo, "docs", "changes", "features", "feature", "specification.md"), "inside\n")
@@ -505,6 +521,7 @@ func TestCompareReportsAllOutsideChanges(t *testing.T) {
 }
 
 func TestCompareRejectsChangedHead(t *testing.T) {
+	t.Parallel()
 	repo := newRepository(t)
 	before := mustCapture(t, repo)
 	write(t, filepath.Join(repo, "tracked.txt"), "new commit\n")
@@ -517,6 +534,7 @@ func TestCompareRejectsChangedHead(t *testing.T) {
 }
 
 func TestCheckBoundaryRejectsUnsafePaths(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"", ".", "../outside", filepath.Join(string(filepath.Separator), "outside")} {
 		if err := CheckBoundary([]string{path}, "docs/changes/features/feature"); err == nil {
 			t.Fatalf("path %q accepted", path)
