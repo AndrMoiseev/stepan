@@ -475,6 +475,29 @@ func ReadJournalCurrent(run *Run) (*implementationstate.Run, uint64, error) {
 	return current, journal.lastSequence, nil
 }
 
+// JournalStates returns the validated durable snapshots in their global event
+// order. It is a status-read helper: like ReadJournalCurrent it never opens or
+// rebuilds SQLite, which makes it safe for startup presentation.
+func JournalStates(run *Run) ([]implementationstate.Event, error) {
+	if run == nil {
+		return nil, fmt.Errorf("%w: nil run", ErrUnsafePath)
+	}
+	store := &StateStore{journalPath: filepath.Join(run.directory, JournalFileName), run: run}
+	verified := make(map[implementationstate.EvidenceRef]struct{})
+	events := make([]implementationstate.Event, 0)
+	_, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+		if err := store.verifyStateReferencesSeen(event.State, verified); err != nil {
+			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
+		}
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (s *StateStore) initialize(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 		PRAGMA journal_mode = DELETE;

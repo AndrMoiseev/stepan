@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -152,6 +153,76 @@ func TestControllerLocksForDifferentWorkingCopiesAreIndependent(t *testing.T) {
 		t.Fatalf("second repository lock: %v", err)
 	}
 	defer second.Close()
+}
+
+func TestDiscoverStartupRunKeepsLiveActiveOwnerNonResumable(t *testing.T) {
+	storeRoot := t.TempDir()
+	workCopy := newGitWorkspace(t)
+	store := mustControllerStore(t, storeRoot)
+	mustRecordControllerRun(t, store, "active-run", workCopy, implementationstate.RunActive)
+
+	command := exec.Command(os.Args[0], "-test.run=^TestControllerLockHelper$")
+	command.Env = append(os.Environ(), "STEPAN_LOCK_HELPER=1", "STEPAN_LOCK_STORE="+storeRoot, "STEPAN_LOCK_WORK_COPY="+workCopy)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Stderr = command.Stdout
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
+	scanner := bufio.NewScanner(stdout)
+	if !scanner.Scan() || scanner.Text() != "LOCKED" {
+		t.Fatalf("helper did not acquire lock: %q (%v)", scanner.Text(), scanner.Err())
+	}
+	found, err := DiscoverStartupRun(context.Background(), store, workCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || found.RecoveryRequired || found.Summary.Lifecycle != LifecycleActive {
+		t.Fatalf("live owner startup = %#v", found)
+	}
+	for _, hint := range CommandsForLifecycle(found.Summary.Lifecycle) {
+		if hint.Command == CommandResume {
+			t.Fatalf("live active owner exposed /resume: %#v", found.Summary)
+		}
+	}
+	if _, _, err := RecoverOwnRun(context.Background(), store, workCopy); !errors.Is(err, ErrControllerBusy) {
+		t.Fatalf("recovery while a controller owns the run = %v", err)
+	}
+	current, err := FindUnclosedRun(context.Background(), store, workCopy)
+	if err != nil || current.Status != implementationstate.RunActive {
+		t.Fatalf("discovery changed live active state = %#v, %v", current, err)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoverOwnRunTurnsOrphanedActiveStateIntoExplicitPause(t *testing.T) {
+	store := mustControllerStore(t, t.TempDir())
+	workCopy := newGitWorkspace(t)
+	mustRecordControllerRun(t, store, "orphaned-active", workCopy, implementationstate.RunActive)
+	recovered, control, err := RecoverOwnRun(context.Background(), store, workCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	if control == nil || recovered.Run.Status != implementationstate.RunPaused || !strings.Contains(recovered.Run.PauseReason, "interrupted") {
+		t.Fatalf("recovered active run = %#v", recovered.Run)
+	}
+	current, err := FindUnclosedRun(context.Background(), store, workCopy)
+	if err != nil || current.Status != implementationstate.RunPaused {
+		t.Fatalf("recovery did not durably pause interrupted run = %#v, %v", current, err)
+	}
 }
 
 func onlyControllerLockEntry(t *testing.T, store *runstore.Store) string {

@@ -19,6 +19,14 @@ func openControllerFileNoFollow(path string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), path), nil
 }
 
+func openExistingControllerFileNoFollow(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open existing controller lock without following links: %w", err)
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
 func tryLockControllerFile(file *os.File) error {
 	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 }

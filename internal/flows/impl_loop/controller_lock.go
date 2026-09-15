@@ -74,6 +74,70 @@ func AcquireController(ctx context.Context, store *runstore.Store, workCopy stri
 	return &ControllerLease{file: file, workCopy: canonical}, nil
 }
 
+// ControllerOwned reports whether another process currently owns the
+// controller lock for an already canonical working copy. Unlike AcquireController
+// it never creates the lock directory or lock file, so startup discovery stays
+// a read-only operation. A false result means a durable active run was left
+// without a live owner and can only be recovered by an explicit /resume.
+func ControllerOwned(ctx context.Context, store *runstore.Store, canonical string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if store == nil {
+		return false, fmt.Errorf("inspect controller ownership: nil run store")
+	}
+	canonical = filepath.Clean(canonical)
+	locks := filepath.Join(store.Root(), "controller-locks")
+	directory, err := os.Open(locks)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("open controller lock directory: %w", err)
+	}
+	defer directory.Close()
+	info, err := directory.Stat()
+	if err != nil || !info.IsDir() {
+		return false, fmt.Errorf("opened controller lock directory is unsafe: %s", locks)
+	}
+	pathInfo, err := os.Lstat(locks)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.IsDir() || !os.SameFile(info, pathInfo) {
+		return false, fmt.Errorf("controller lock directory is unsafe: %s", locks)
+	}
+	sum := sha256.Sum256([]byte(lockIdentity(canonical)))
+	path := filepath.Join(locks, hex.EncodeToString(sum[:])+".lock")
+	entry, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || entry.Mode()&os.ModeSymlink != 0 || !entry.Mode().IsRegular() {
+		return false, fmt.Errorf("controller lock entry is unsafe: %s", path)
+	}
+	file, err := openExistingControllerFileNoFollow(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !opened.Mode().IsRegular() {
+		return false, fmt.Errorf("opened controller lock entry is unsafe: %s", path)
+	}
+	current, err := os.Lstat(path)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return false, fmt.Errorf("controller lock entry changed while opening: %s", path)
+	}
+	if err := tryLockControllerFile(file); err != nil {
+		if isControllerLockBusy(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("inspect controller lock for %s: %w", canonical, err)
+	}
+	if err := unlockControllerFile(file); err != nil {
+		return false, fmt.Errorf("release controller ownership probe: %w", err)
+	}
+	return false, nil
+}
+
 // AcquireNewRunController atomically reserves controller ownership and rejects
 // a new run if an active or paused durable run already names this working copy.
 func AcquireNewRunController(ctx context.Context, store *runstore.Store, workCopy string) (*ControllerLease, error) {

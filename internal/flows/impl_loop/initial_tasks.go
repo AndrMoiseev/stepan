@@ -162,6 +162,33 @@ type ResumedRun struct {
 	StateStore *runstore.StateStore
 }
 
+// RecoverOwnRun acquires the controller lock only after an explicit user
+// command. A durable active state with no lock owner is an interrupted prior
+// process, not continuing work: it is first persisted as a pause and only the
+// normal /resume reconciliation may make it active again.
+func RecoverOwnRun(ctx context.Context, store *runstore.Store, workCopy string) (*ResumedRun, *UserRunControl, error) {
+	resumed, err := ContinueOwnRun(ctx, store, workCopy)
+	if err != nil {
+		return nil, nil, err
+	}
+	fail := func(err error) (*ResumedRun, *UserRunControl, error) {
+		return nil, nil, errors.Join(err, resumed.Close())
+	}
+	if resumed.Run.Status == implementationstate.RunActive {
+		if err := resumed.Run.Pause("previous Stepan controller was interrupted; explicit /resume required"); err != nil {
+			return fail(err)
+		}
+		if _, err := resumed.StateStore.Record(ctx, resumed.Run); err != nil {
+			return fail(fmt.Errorf("persist interrupted-controller pause: %w", err))
+		}
+	}
+	control, err := NewUserRunControl(resumed.Run, resumed.StateStore)
+	if err != nil {
+		return fail(err)
+	}
+	return resumed, control, nil
+}
+
 // ContinueOwnRun acquires controller ownership and opens the sole unclosed run
 // associated with workCopy. It never opens a closed run, and it cannot import
 // a run belonging to another work copy.

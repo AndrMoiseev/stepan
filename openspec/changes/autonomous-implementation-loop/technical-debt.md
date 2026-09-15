@@ -692,3 +692,23 @@
 - Expected impact: an unavailable command mutates execution by aborting `/resume` and may emit a secondary cancellation error, contradicting the contextual-command requirement.
 - Classification: originally critical because it directly contradicts the explicit no-mutation behavior for unavailable commands. After the three-cycle global stop, the user explicitly directed on 2026-09-15 to record it as technical debt and continue; this entry preserves that waiver rather than claiming reviewer acceptance.
 - Possible follow-up: use a typed dispatch outcome or confirm an actual active-to-paused transition before draining the worker; add a blocked-resume manual-`/pause` regression proving explanation-only behavior.
+
+## TASK-12.2-D001 — startup work-copy identity honors redirected Git environment
+
+- Origin: task 12.2 initial review; affected locations: `cmd/stepan/main.go`, `internal/flows/spec/workspace.go`.
+- Status: `open`.
+- Potential problem: startup reuses the planning resolver, which inherits `GIT_DIR`/`GIT_WORK_TREE`, rather than the implementation resolver that sanitizes Git-control variables.
+- Evidence: implementation discovery receives the planning resolver's repository path.
+- Expected impact: redirected Git environment can hide the current work-copy run or display another repository's run.
+- Classification: technical debt because ordinary unredirected startup is unaffected and no typical production configuration establishing the trigger was shown.
+- Possible follow-up: resolve implementation startup identity through `impl_loop.FindGitRoot` and add redirected-environment coverage.
+
+## TASK-12.2-D002 — unrelated corrupt run can break no-run startup
+
+- Origin: task 12.2 initial review; affected locations: `cmd/stepan/main.go`, `internal/flows/impl_loop/controller_lock.go`, `internal/runstore/state.go`.
+- Status: `open`.
+- Potential problem: ordinary startup validates every retained run before work-copy comparison, so malformed unrelated history aborts an application that has no implementation run for this repository.
+- Evidence: only a wholly absent store is treated as no-run; errors from unrelated journals propagate.
+- Expected impact: damaged retained history can prevent otherwise unchanged planning startup; discovery cost also grows with retained runs.
+- Classification: technical debt because it requires unrelated stored corruption and does not break the normal healthy-store path.
+- Possible follow-up: maintain trustworthy work-copy-addressable metadata/indexing and isolate unrelated history errors.

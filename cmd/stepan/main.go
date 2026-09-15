@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -46,13 +47,17 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	startup, err := discoverImplementationStartup(ctx, root, os.UserHomeDir)
+	startup, store, err := openImplementationStartup(ctx, root, os.UserHomeDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "inspect implementation run:", err)
 		return 2
 	}
-	if startup != "" {
-		fmt.Fprintln(os.Stdout, startup)
+	if startup != nil {
+		if err := runImplementationStartupInteractive(ctx, root, store, startup, newImplementationConsoleUI()); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		return 0
 	}
 	factory, err := configuredRuntimeFactory(config, root, usersettings.NessyAuthToken, defaultRuntimeStarters())
 	if err != nil {
@@ -84,23 +89,102 @@ func run(ctx context.Context, args []string) int {
 // composition. It uses only the JSONL status-read path, so an ordinary start
 // can show a saved implementation run without creating agent sessions or
 // triggering reconciliation checks. Those actions remain behind /resume.
-func discoverImplementationStartup(ctx context.Context, workCopy string, userHome func() (string, error)) (string, error) {
+func openImplementationStartup(ctx context.Context, workCopy string, userHome func() (string, error)) (*impl_loop.StartupRun, *runstore.Store, error) {
 	home, err := userHome()
 	if err != nil {
-		return "", fmt.Errorf("find user home for implementation run store: %w", err)
+		return nil, nil, fmt.Errorf("find user home for implementation run store: %w", err)
 	}
 	store, err := runstore.OpenExisting(runstore.DefaultRoot(home))
 	if errors.Is(err, runstore.ErrStoreNotFound) {
-		return "", nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 	found, err := impl_loop.DiscoverStartupRun(ctx, store, workCopy)
 	if err != nil || found == nil {
-		return "", err
+		return nil, nil, err
 	}
-	return impl_loop.FormatStartupSummary(found.Summary), nil
+	return found, store, nil
+}
+
+func runImplementationStartupInteractive(ctx context.Context, workCopy string, store *runstore.Store, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI) error {
+	if startup == nil || startup.Run == nil || store == nil {
+		return errors.New("implementation startup requires discovered run and store")
+	}
+	var owned *impl_loop.ResumedRun
+	var ownedInteractive *impl_loop.InteractiveRun
+	defer func() {
+		if owned != nil {
+			_ = owned.Close()
+		}
+	}()
+	return runDiscoveredImplementationInteractive(ctx, startup, ui, func(callCtx context.Context) (*impl_loop.InteractiveRun, error) {
+		if owned != nil {
+			return ownedInteractive, nil
+		}
+		resumed, control, err := impl_loop.RecoverOwnRun(callCtx, store, workCopy)
+		if err != nil {
+			return nil, err
+		}
+		owned = resumed
+		ownedInteractive = &impl_loop.InteractiveRun{Run: resumed.Run, Control: control, ResumeInput: impl_loop.ResumeInput{
+			Run: resumed.Run, StateStore: resumed.StateStore, Journal: resumed.Journal, Repository: workCopy,
+			Workspace: impl_loop.GitWorkspaceControl{}, Runner: impl_loop.DirectCheckRunner{},
+			ClassifySpecificationChange: func([]byte, []byte) (impl_loop.SpecificationChange, error) {
+				return impl_loop.SpecificationChange{}, errors.New("changed complete OpenSpec specification requires explicit scope classification")
+			},
+		}}
+		return ownedInteractive, nil
+	})
+}
+
+// runDiscoveredImplementationInteractive is the startup composition seam. It
+// does not recover a run itself: the supplied callback is invoked only after
+// a lifecycle command, which makes the no-auto-work property testable without
+// real providers, checks, or Git processes.
+func runDiscoveredImplementationInteractive(ctx context.Context, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, recover func(context.Context) (*impl_loop.InteractiveRun, error)) error {
+	if startup == nil || startup.Run == nil {
+		return errors.New("implementation startup requires discovered run")
+	}
+	current := &impl_loop.InteractiveRun{Run: startup.Run, RecoveryRequired: startup.RecoveryRequired, Recover: recover}
+	ui.Report(impl_loop.FormatStartupSummary(startup.Summary))
+	controller := impl_loop.ImplementationInteractiveController{Current: func(context.Context) (*impl_loop.InteractiveRun, error) { return current, nil }}
+	if recover != nil {
+		current.Recover = func(callCtx context.Context) (*impl_loop.InteractiveRun, error) {
+			next, err := recover(callCtx)
+			if err == nil && next != nil {
+				current = next
+			}
+			return current, err
+		}
+	}
+	return impl_loop.RunImplementationInteractive(ctx, controller, ui)
+}
+
+type implementationConsoleUI struct{ input *bufio.Reader }
+
+func newImplementationConsoleUI() *implementationConsoleUI {
+	return &implementationConsoleUI{input: bufio.NewReader(os.Stdin)}
+}
+func (u *implementationConsoleUI) Prompt(_ context.Context, menu impl_loop.CommandMenu) (string, error) {
+	for _, command := range menu.Commands {
+		fmt.Fprintf(os.Stdout, "%s — %s\n", command.Command, command.Description)
+	}
+	fmt.Fprint(os.Stdout, "You > ")
+	value, err := u.input.ReadString('\n')
+	if err != nil {
+		return "", impl_loop.ErrInteractiveInputCanceled
+	}
+	return value, nil
+}
+func (*implementationConsoleUI) Report(message string) {
+	if message != "" {
+		fmt.Fprintln(os.Stdout, message)
+	}
+}
+func (*implementationConsoleUI) ReportError(err error) {
+	fmt.Fprintln(os.Stderr, "implementation:", err)
 }
 
 func configuredRuntimeFactory(config agentConfig, root string, load func() (string, error), starters runtimeStarters) (func(context.Context) (agentruntime.Runtime, error), error) {

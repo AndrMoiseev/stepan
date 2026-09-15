@@ -160,6 +160,14 @@ type InteractiveRun struct {
 	Run         *implementationstate.Run
 	Control     *UserRunControl
 	ResumeInput ResumeInput
+	// Recover is installed for a run discovered after process startup. It takes
+	// the controller lock only for an explicit lifecycle command, so rendering
+	// discovery cannot revive an orphaned active run or disturb a live owner.
+	Recover func(context.Context) (*InteractiveRun, error)
+	// RecoveryRequired presents an active durable run left by a dead process as
+	// a resumable recovery candidate. Recover verifies ownership before writing
+	// the interruption pause; a live owner rejects that command without change.
+	RecoveryRequired bool
 }
 
 // ImplementationInteractiveController is the command dispatcher used by a
@@ -180,7 +188,7 @@ func (controller ImplementationInteractiveController) Menu(ctx context.Context) 
 	if err != nil {
 		return CommandMenu{}, err
 	}
-	lifecycle := lifecycleForRun(run.Run)
+	lifecycle := interactiveLifecycle(run)
 	return CommandMenu{Lifecycle: lifecycle, Commands: CommandsForLifecycle(lifecycle)}, nil
 }
 
@@ -196,9 +204,16 @@ func (controller ImplementationInteractiveController) Dispatch(ctx context.Conte
 	if err != nil {
 		return CommandMenu{}, "", err
 	}
-	lifecycle := lifecycleForRun(run.Run)
+	lifecycle := interactiveLifecycle(run)
 	if !commandAvailable(lifecycle, parsed.Command) {
 		return CommandMenu{Lifecycle: lifecycle, Commands: CommandsForLifecycle(lifecycle)}, unavailableCommandReason(lifecycle, parsed.Command), nil
+	}
+	if parsed.Command != CommandStatus && run.Recover != nil {
+		run, err = run.Recover(ctx)
+		if err != nil {
+			return CommandMenu{}, "", err
+		}
+		lifecycle = interactiveLifecycle(run)
 	}
 
 	switch parsed.Command {
@@ -277,12 +292,18 @@ func (controller ImplementationInteractiveController) continueRun(ctx context.Co
 }
 
 func (controller ImplementationInteractiveController) menuForRun(run *InteractiveRun) CommandMenu {
-	var state *implementationstate.Run
-	if run != nil {
-		state = run.Run
-	}
-	lifecycle := lifecycleForRun(state)
+	lifecycle := interactiveLifecycle(run)
 	return CommandMenu{Lifecycle: lifecycle, Commands: CommandsForLifecycle(lifecycle)}
+}
+
+func interactiveLifecycle(run *InteractiveRun) ImplementationLifecycle {
+	if run != nil && run.RecoveryRequired {
+		return LifecyclePaused
+	}
+	if run == nil {
+		return LifecycleNoRun
+	}
+	return lifecycleForRun(run.Run)
 }
 
 func statusMessage(run *implementationstate.Run) string {
@@ -412,7 +433,7 @@ func (driver *implementationInteractiveDriver) beginImplement(ctx context.Contex
 	if err != nil {
 		return "", err
 	}
-	lifecycle := lifecycleForRun(run.Run)
+	lifecycle := interactiveLifecycle(run)
 	if !commandAvailable(lifecycle, CommandImplement) {
 		return unavailableCommandReason(lifecycle, CommandImplement), nil
 	}
@@ -442,9 +463,15 @@ func (driver *implementationInteractiveDriver) beginResume(ctx context.Context) 
 	if err != nil {
 		return "", err
 	}
-	lifecycle := lifecycleForRun(run.Run)
+	lifecycle := interactiveLifecycle(run)
 	if !commandAvailable(lifecycle, CommandResume) {
 		return unavailableCommandReason(lifecycle, CommandResume), nil
+	}
+	if run.Recover != nil {
+		run, err = run.Recover(ctx)
+		if err != nil {
+			return "", err
+		}
 	}
 	// Closing this one-shot channel cannot be lost if a check starts before
 	// the driver reaches its select. The prompt is then canceled and rendered

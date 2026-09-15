@@ -11,13 +11,21 @@ import (
 )
 
 func openControllerFileNoFollow(path string) (*os.File, error) {
+	return openControllerFileNoFollowDisposition(path, windows.OPEN_ALWAYS)
+}
+
+func openExistingControllerFileNoFollow(path string) (*os.File, error) {
+	return openControllerFileNoFollowDisposition(path, windows.OPEN_EXISTING)
+}
+
+func openControllerFileNoFollowDisposition(path string, disposition uint32) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, fmt.Errorf("encode controller lock path: %w", err)
 	}
 	handle, err := windows.CreateFile(name, windows.GENERIC_READ|windows.GENERIC_WRITE,
 		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, nil,
-		windows.OPEN_ALWAYS, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+		disposition, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open controller lock without following reparse points: %w", err)
 	}

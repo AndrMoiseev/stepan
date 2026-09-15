@@ -3,6 +3,7 @@ package impl_loop
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -14,8 +15,9 @@ import (
 // no StateStore, controller lease, runtime, or check runner: discovery alone
 // must not be capable of continuing the run.
 type StartupRun struct {
-	Run     *implementationstate.Run
-	Summary StartupSummary
+	Run              *implementationstate.Run
+	Summary          StartupSummary
+	RecoveryRequired bool
 }
 
 // StartupSummary contains the small durable status panel rendered before an
@@ -38,7 +40,123 @@ func DiscoverStartupRun(ctx context.Context, store *runstore.Store, workCopy str
 	if err != nil || run == nil {
 		return nil, err
 	}
-	return &StartupRun{Run: run, Summary: SummarizeStartupRun(run)}, nil
+	journal, err := store.Open(run.Identity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("open discovered implementation run: %w", err)
+	}
+	events, err := runstore.JournalStates(journal)
+	if err != nil {
+		return nil, err
+	}
+	summary := SummarizeStartupRun(run)
+	if len(events) > 1 {
+		previous, current := events[len(events)-2].State, events[len(events)-1].State
+		summary.LastAction = journalLastAction(previous, current, summary.LastAction)
+		summary.Stage = journalStage(current, previous, summary.Stage)
+	}
+	recoveryRequired := false
+	if run.Status == implementationstate.RunActive {
+		owned, err := ControllerOwned(ctx, store, workCopy)
+		if err != nil {
+			return nil, err
+		}
+		if !owned {
+			recoveryRequired = true
+			summary.Lifecycle = LifecyclePaused
+			summary.StopReason = "previous Stepan controller was interrupted; explicit /resume required"
+		}
+	}
+	return &StartupRun{Run: run, Summary: summary, RecoveryRequired: recoveryRequired}, nil
+}
+
+func journalLastAction(previous, current *implementationstate.Run, fallback string) string {
+	if previous == nil || current == nil {
+		return fallback
+	}
+	if current.Status != previous.Status {
+		switch current.Status {
+		case implementationstate.RunPaused:
+			if operation := latestChangedOperation(previous, current); operation != nil && operation.UncountedResumeCheck {
+				return operationAction(operation) + " (failed)"
+			}
+			return "pause run"
+		case implementationstate.RunClosed:
+			return "close run"
+		case implementationstate.RunActive:
+			return "resume reconciliation"
+		}
+	}
+	if operation := latestChangedOperation(previous, current); operation != nil {
+		return operationAction(operation)
+	}
+	if assignment := latestChangedAssignment(previous, current); assignment != nil {
+		switch assignment.Status {
+		case implementationstate.AssignmentActive:
+			return "select assignment " + string(assignment.ID)
+		case implementationstate.AssignmentAcceptedAwaitingCommit:
+			return "accept assignment " + string(assignment.ID)
+		case implementationstate.AssignmentCommitted:
+			return "commit assignment " + string(assignment.ID)
+		}
+	}
+	if current.InitialBaselineStatus != previous.InitialBaselineStatus {
+		return "record initial required checks"
+	}
+	if current.TaskExtractionPending != previous.TaskExtractionPending {
+		return "record extracted implementation tasks"
+	}
+	return fallback
+}
+
+func latestChangedOperation(previous, current *implementationstate.Run) *implementationstate.Operation {
+	for index := len(current.RunOperations) - 1; index >= 0; index-- {
+		if index >= len(previous.RunOperations) || !reflect.DeepEqual(current.RunOperations[index], previous.RunOperations[index]) {
+			return &current.RunOperations[index]
+		}
+	}
+	for i := len(current.Assignments) - 1; i >= 0; i-- {
+		if i >= len(previous.Assignments) {
+			continue
+		}
+		for operation := len(current.Assignments[i].Operations) - 1; operation >= 0; operation-- {
+			if operation >= len(previous.Assignments[i].Operations) || !reflect.DeepEqual(current.Assignments[i].Operations[operation], previous.Assignments[i].Operations[operation]) {
+				return &current.Assignments[i].Operations[operation]
+			}
+		}
+	}
+	return nil
+}
+
+func latestChangedAssignment(previous, current *implementationstate.Run) *implementationstate.Assignment {
+	for index := len(current.Assignments) - 1; index >= 0; index-- {
+		if index >= len(previous.Assignments) || !reflect.DeepEqual(current.Assignments[index], previous.Assignments[index]) {
+			return &current.Assignments[index]
+		}
+	}
+	return nil
+}
+
+func operationAction(operation *implementationstate.Operation) string {
+	if operation == nil {
+		return ""
+	}
+	if operation.UncountedResumeCheck {
+		if strings.TrimSpace(operation.Description) != "" {
+			return "resume required check: " + operation.Description
+		}
+		return "resume required checks"
+	}
+	if strings.TrimSpace(operation.Description) != "" {
+		return operation.Description
+	}
+	return string(operation.Kind)
+}
+
+func journalStage(current, previous *implementationstate.Run, fallback string) string {
+	if operation := latestChangedOperation(previous, current); operation != nil && operation.UncountedResumeCheck {
+		return "resume required checks"
+	}
+	return fallback
 }
 
 // SummarizeStartupRun derives a human-readable startup panel from durable run
@@ -103,6 +221,8 @@ func startupStage(run *implementationstate.Run) string {
 		return "committing accepted assignment " + string(pendingCommitAssignment(run))
 	case activeAssignment(run) != "":
 		return "implementing assignment " + string(activeAssignment(run))
+	case len(run.PendingLeafTasks()) != 0:
+		return "selecting next assignment"
 	case run.FinalAcceptance == nil:
 		return "final acceptance"
 	default:

@@ -86,3 +86,117 @@ func TestDiscoverStartupRunSkipsClosedRunAndTerminalStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestStartupSummaryUsesLatestDurableTransitionForStageAndAction(t *testing.T) {
+	basis := implementationstate.AcceptanceBasis{
+		Specification: implementationstate.EvidenceRef{ID: "spec", Digest: "spec"},
+		Configuration: implementationstate.EvidenceRef{ID: "config", Digest: "config"},
+	}
+	assignmentOperation := implementationstate.Operation{ID: "implement", Kind: implementationstate.OperationAgent, Basis: basis, Description: "implement assignment"}
+	resumeOperation := implementationstate.Operation{ID: "resume-check", Kind: implementationstate.OperationCheck, Basis: basis, Description: "go test ./...", UncountedResumeCheck: true}
+	base := func() *implementationstate.Run {
+		return &implementationstate.Run{
+			Status:                implementationstate.RunActive,
+			InitialBaselineStatus: implementationstate.InitialBaselinePassed,
+			Tasks:                 []implementationstate.Task{{ID: "task", Title: "task"}},
+			LeafStatus:            map[implementationstate.TaskID]implementationstate.TaskStatus{"task": implementationstate.TaskPending},
+		}
+	}
+	for _, test := range []struct {
+		name, wantStage, wantAction string
+		previous, current           *implementationstate.Run
+	}{
+		{
+			name: "between assignments selects next", wantStage: "selecting next assignment", wantAction: "created implementation run",
+			previous: base(), current: base(),
+		},
+		{
+			name: "active assignment", wantStage: "implementing assignment assignment-1", wantAction: "implement assignment",
+			previous: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive}}
+				return r
+			}(),
+			current: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
+				return r
+			}(),
+		},
+		{
+			name: "resume check is newer than assignment operation", wantStage: "resume required checks", wantAction: "resume required check: go test ./...",
+			previous: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
+				return r
+			}(),
+			current: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
+				r.RunOperations = []implementationstate.Operation{resumeOperation}
+				return r
+			}(),
+		},
+		{
+			name: "accepted assignment awaits commit", wantStage: "committing accepted assignment assignment-1", wantAction: "accept assignment assignment-1",
+			previous: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive}}
+				return r
+			}(),
+			current: func() *implementationstate.Run {
+				r := base()
+				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentAcceptedAwaitingCommit}}
+				return r
+			}(),
+		},
+		{
+			name: "failed resume check", wantStage: "resume required checks", wantAction: "resume required check: go test ./... (failed)",
+			previous: base(), current: func() *implementationstate.Run {
+				r := base()
+				r.Status = implementationstate.RunPaused
+				r.PauseReason = "execution_blocked: resume checks"
+				r.ExecutionBlock = &implementationstate.ExecutionBlock{BlockedAction: "resume checks", Diagnostic: "tests failed", RequiredUserAction: "fix tests"}
+				r.RunOperations = []implementationstate.Operation{resumeOperation}
+				return r
+			}(),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			summary := SummarizeStartupRun(test.current)
+			summary.Stage = journalStage(test.current, test.previous, summary.Stage)
+			summary.LastAction = journalLastAction(test.previous, test.current, summary.LastAction)
+			if summary.Stage != test.wantStage || summary.LastAction != test.wantAction {
+				t.Fatalf("summary = %#v, want stage %q and action %q", summary, test.wantStage, test.wantAction)
+			}
+			if test.name == "failed resume check" && summary.StopReason != "tests failed" {
+				t.Fatalf("failed resume reason = %q", summary.StopReason)
+			}
+		})
+	}
+}
+
+func TestDiscoverStartupRunMarksOrphanedActiveRunRecoverableWithoutMutation(t *testing.T) {
+	run, state, journal, workCopy := newInitialCheckRun(t)
+	if _, err := state.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := runstore.OpenExisting(filepath.Dir(filepath.Dir(journal.Path())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := DiscoverStartupRun(context.Background(), store, workCopy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found == nil || !found.RecoveryRequired || found.Summary.Lifecycle != LifecyclePaused || !strings.Contains(found.Summary.StopReason, "interrupted") {
+		t.Fatalf("orphaned startup = %#v", found)
+	}
+	current, _, err := runstore.ReadJournalCurrent(journal)
+	if err != nil || current.Status != implementationstate.RunActive {
+		t.Fatalf("discovery mutated active run = %#v, %v", current, err)
+	}
+}
