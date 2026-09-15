@@ -732,3 +732,23 @@
 - Expected impact: future evidence-format changes can drift between producer and consumer and turn otherwise valid resumes into diagnostic pauses.
 - Classification: technical debt because the current formats and validation agree and the remaining correction can preserve behavior without widening the typed interface.
 - Possible follow-up: expose a typed specification-evidence codec at the implementation-loop boundary and reuse it in both producer and classifier.
+
+## TASK-12.2-D005 — resumable-operation validation is duplicated across controllers
+
+- Origin: task 12.2 exceptional correction-cycle-5 rereview; affected locations: `brief_selection.go`, `initial_checks.go`, `implementer_transition.go`, `task_review.go`, `final_review.go`, `acceptance_reflection.go`.
+- Status: `open`.
+- Potential problem: operation lookup, type/basis/description/result validation, and add-or-resume branching are repeated independently.
+- Evidence: each controller contains its own compatible resume validation sequence.
+- Expected impact: recovery-invariant changes require synchronized edits and can drift between stages.
+- Classification: technical debt because current covered controllers enforce their local invariants and this refactor is not needed to close the remaining correctness finding.
+- Possible follow-up: centralize typed operation-resumption validation in the durable-state layer.
+
+## TASK-12.2-D006 — failed-review disputes cannot resume through the discussion route
+
+- Origin: task 12.2 exceptional correction-cycle-5 rereview; affected locations: `restart_dispatch.go`, `implementer_transition.go`, `task_review.go`.
+- Status: `open`.
+- Potential problem: failed review recovery enters generic implementer validation, which rejects `review_disputed`, instead of forwarding the saved dispute through the existing reviewer discussion route.
+- Evidence: the normal route supports `RouteTaskReviewChanges`/`RouteTaskReviewDispute`, while restart dispatch does not reconstruct that branch.
+- Expected impact: a valid post-restart dispute can consume technical retries or pause instead of continuing discussion.
+- Classification: technical debt because it affects the narrower dispute branch; ordinary accepted and changes-requested review recovery remains in the active correction scope.
+- Possible follow-up: recover failed-review evidence and resume the existing reviewer discussion under its durable operation identity.

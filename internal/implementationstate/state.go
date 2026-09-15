@@ -1069,6 +1069,29 @@ func (r *Run) RecordInitialBaselinePass(operationID OperationID, resultID Result
 	if r.TaskExtractionPending || len(r.Assignments) != 0 {
 		return fmt.Errorf("%w: initial baseline cannot be recorded in this run state", ErrInvalidTransition)
 	}
+	return r.refreshInitialBaselinePass(operationID, resultID)
+}
+
+// RefreshInitialBaselinePass replaces stale initial evidence with a successful
+// uncounted resume gate. Unlike the first baseline transition it is valid after
+// assignments exist: a compatible specification or configuration refresh must
+// establish the new acceptance basis before any assignment or final evidence
+// can be classified as current.
+func (r *Run) RefreshInitialBaselinePass(operationID OperationID, resultID ResultID) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if r.TaskExtractionPending {
+		return fmt.Errorf("%w: initial baseline cannot be refreshed before task extraction", ErrInvalidTransition)
+	}
+	operation := r.runOperation(operationID)
+	if operation == nil || !operation.UncountedResumeCheck {
+		return fmt.Errorf("%w: initial baseline refresh requires an uncounted resume check", ErrInvalidState)
+	}
+	return r.refreshInitialBaselinePass(operationID, resultID)
+}
+
+func (r *Run) refreshInitialBaselinePass(operationID OperationID, resultID ResultID) error {
 	operation := r.runOperation(operationID)
 	result := r.runResult(resultID)
 	if operation == nil || result == nil || result.OperationID != operationID || operation.Kind != OperationCheck || operation.Counter != CycleCounterNone || result.Status != ResultSucceeded || result.State != r.CurrentState || result.Basis != r.currentBasis() || operation.Basis != result.Basis {

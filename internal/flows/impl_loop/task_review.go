@@ -390,11 +390,13 @@ func currentRequiredCheckEvidence(journal *runstore.Run, run *implementationstat
 	if assignment == nil {
 		return "", fmt.Errorf("%w: unknown assignment", ErrInvalidTaskReviewRoute)
 	}
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
 	for index := len(assignment.Results) - 1; index >= 0; index-- {
 		result := assignment.Results[index]
 		for operationIndex := range assignment.Operations {
 			operation := assignment.Operations[operationIndex]
-			if operation.ID != result.OperationID || operation.Counter != implementationstate.CycleCounterMandatoryChecks || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState {
+			if operation.ID != result.OperationID || operation.Counter != implementationstate.CycleCounterMandatoryChecks || operation.BriefID != briefID || operation.Basis != basis || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
 				continue
 			}
 			if len(result.Evidence) == 0 {

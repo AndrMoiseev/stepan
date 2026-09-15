@@ -606,12 +606,13 @@ func runHasOnlyCompletedTasks(run *implementationstate.Run) bool {
 }
 
 func currentSuccessfulFinalChecks(run *implementationstate.Run, id implementationstate.ResultID) bool {
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	for _, result := range run.RunResults {
-		if result.ID != id || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState {
+		if result.ID != id || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
 			continue
 		}
 		for _, operation := range run.RunOperations {
-			if operation.ID == result.OperationID && operation.Kind == implementationstate.OperationCheck && operation.Description == "final required checks" {
+			if operation.ID == result.OperationID && operation.Kind == implementationstate.OperationCheck && operation.Description == "final required checks" && operation.Basis == basis {
 				return true
 			}
 		}
