@@ -277,6 +277,75 @@ func TestRefineBriefRecoversExplorerAfterPersistenceFailures(t *testing.T) {
 	}
 }
 
+func TestRefineBriefRoutesPublishedExplorerRequestAfterZeroEventFailure(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{
+		{raw: briefExplorationRequest(t)},
+		{raw: responsePayload(t, ResponseExplorationResult)},
+		{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "recovered Explorer route")},
+	}}
+	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
+	defer store.Close()
+	defer owner.Close()
+	input := refinementInput(run, store, journal, repository, owner, "refine-published-request", "published-request-call")
+	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "published-request-explorer", ExplorerResultID: "published-request-explorer-result", ExplorerCallID: "published-request-explorer-call", ContinuationOperationID: "published-request-continuation", ContinuationResultID: "published-request-continuation-result"}
+
+	original, calls := recordBriefRefinementState, 0
+	t.Cleanup(func() { recordBriefRefinementState = original })
+	recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+		calls++
+		if calls == 2 { // The request artifact exists, but its state event does not.
+			return implementationstate.Event{}, errors.New("simulated zero-event state failure")
+		}
+		return original(ctx, stateStore, state)
+	}
+	if _, err := RefineBrief(context.Background(), input); err == nil {
+		t.Fatal("first refinement error = nil")
+	}
+	recordBriefRefinementState = original
+
+	result, err := RefineBrief(context.Background(), input)
+	if err != nil || result.Brief == nil || len(runtime.messages) != 3 || assignmentResult(run, "assignment-1", "published-request-explorer-result") == nil {
+		t.Fatalf("published Explorer request was not resumed exactly once: result=%#v err=%v messages=%d", result, err, len(runtime.messages))
+	}
+}
+
+func TestRefineBriefRoutesRecoveredSecondExplorerRequest(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{
+		{raw: briefExplorationRequest(t)},
+		{raw: responsePayload(t, ResponseExplorationResult)},
+		{raw: briefExplorationRequest(t)},
+		{raw: responsePayload(t, ResponseExplorationResult)},
+		{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after recovered second research")},
+	}}
+	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
+	defer store.Close()
+	defer owner.Close()
+	input := refinementInput(run, store, journal, repository, owner, "refine-recovered-second-explorer", "recovered-second-explorer-call")
+	input.Explorer = &BriefRefinementExplorer{
+		ExplorerOperationID: "recovered-second-explorer-one", ExplorerResultID: "recovered-second-explorer-one-result", ExplorerCallID: "recovered-second-explorer-one-call", ContinuationOperationID: "recovered-second-after-one", ContinuationResultID: "recovered-second-after-one-result",
+		Additional: []BriefRefinementExplorer{{ExplorerOperationID: "recovered-second-explorer-two", ExplorerResultID: "recovered-second-explorer-two-result", ExplorerCallID: "recovered-second-explorer-two-call", ContinuationOperationID: "recovered-second-after-two", ContinuationResultID: "recovered-second-after-two-result"}},
+	}
+
+	original, calls := recordBriefRefinementState, 0
+	t.Cleanup(func() { recordBriefRefinementState = original })
+	recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+		calls++
+		if calls == 5 { // The second source response is published but not yet recorded.
+			return implementationstate.Event{}, errors.New("simulated zero-event state failure")
+		}
+		return original(ctx, stateStore, state)
+	}
+	if _, err := RefineBrief(context.Background(), input); err == nil {
+		t.Fatal("first refinement error = nil")
+	}
+	recordBriefRefinementState = original
+
+	result, err := RefineBrief(context.Background(), input)
+	if err != nil || result.Brief == nil || len(runtime.messages) != 5 || assignmentResult(run, "assignment-1", "recovered-second-explorer-two-result") == nil {
+		t.Fatalf("recovered second Explorer request was not routed: result=%#v err=%v messages=%d", result, err, len(runtime.messages))
+	}
+}
+
 func TestRefineBriefSupportsConsecutiveExplorerRequestsWithoutSecondRefinementRound(t *testing.T) {
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefExplorationRequest(t)}, {raw: responsePayload(t, ResponseExplorationResult)}, {raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after two research episodes")}}}
 	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
