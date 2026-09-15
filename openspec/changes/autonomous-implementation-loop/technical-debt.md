@@ -752,3 +752,23 @@
 - Expected impact: a valid post-restart dispute can consume technical retries or pause instead of continuing discussion.
 - Classification: technical debt because it affects the narrower dispute branch; ordinary accepted and changes-requested review recovery remains in the active correction scope.
 - Possible follow-up: recover failed-review evidence and resume the existing reviewer discussion under its durable operation identity.
+
+## TASK-12.2-008 — recovered execution-blocked response can replay forever
+
+- Origin: task 12.2 exceptional correction-cycle-8 rereview; affected locations: `internal/flows/impl_loop/restart_dispatch.go`, `internal/implementationstate/state.go`.
+- Status: `open`.
+- Potential problem: replaying a durable `execution_blocked` response pauses the run without recording that the response was consumed, so remediation followed by another `/resume` selects and replays the same response again.
+- Evidence: the recovered block creates neither a consumed-response result nor a downstream operation; latest-operation classification remains unchanged after the pause is cleared.
+- Expected impact: some user-remediable blocks can enter a permanent resume/pause loop.
+- Classification: originally critical because it violates restart liveness. The user explicitly directed after cycle 8 to record all subsequent findings as technical debt, accept task 12.2, and continue; this entry preserves that waiver rather than claiming reviewer acceptance.
+- Possible follow-up: atomically persist a response-consumed/effect marker with the durable block and classify forward after remediation; add a remediation plus second-resume regression.
+
+## TASK-12.2-009 — compatible refresh cannot replay a stale assignment receipt
+
+- Origin: task 12.2 exceptional correction-cycle-8 rereview; affected locations: `internal/flows/impl_loop/restart_dispatch.go`, `internal/flows/impl_loop/controlled_agent_call.go`.
+- Status: `open`.
+- Potential problem: after a crash between durable agent success and response routing, a compatible specification/configuration refresh leaves the receipt and assignment operation bound to the old acceptance basis; restart selects it before checking basis and then rejects it against current inputs.
+- Evidence: succeeded result-less assignment operations are classified before basis freshness, while receipt validation correctly refuses the stale binding.
+- Expected impact: the combined crash-plus-compatible-refresh path durably pauses instead of continuing with fresh validation.
+- Classification: originally critical because accepted compatible changes are required to resume. The user explicitly directed after cycle 8 to record all subsequent findings as technical debt, accept task 12.2, and continue; this entry preserves that waiver rather than claiming reviewer acceptance.
+- Possible follow-up: retain stale receipts for audit, supersede the stale assignment operation with a current-basis operation, and add the combined refresh/replay regression.

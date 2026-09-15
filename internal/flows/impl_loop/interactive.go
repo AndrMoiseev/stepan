@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -187,6 +189,9 @@ type ImplementationInteractiveController struct {
 	Current  func(context.Context) (*InteractiveRun, error)
 	Start    func(context.Context, string) (*InteractiveRun, error)
 	Continue func(context.Context, *InteractiveRun) error
+	// Runtime is the platform of the process running Stepan. It is never a
+	// cross-compilation target and is presented as such in status output.
+	Runtime implementationconfig.Platform
 }
 
 // Menu derives selectable commands from the latest durable run snapshot.
@@ -326,6 +331,27 @@ func statusMessage(run *implementationstate.Run) string {
 	return fmt.Sprintf("implementation run %s is %s", run.Identity.ID, run.Status)
 }
 
+func (controller ImplementationInteractiveController) runtimePlatform() implementationconfig.Platform {
+	if controller.Runtime.OS != "" && controller.Runtime.Architecture != "" {
+		return controller.Runtime
+	}
+	return implementationconfig.HostPlatform()
+}
+
+func (run *InteractiveRun) artifactPath(reference implementationstate.EvidenceRef) (string, error) {
+	if run == nil || run.ResumeInput.Journal == nil {
+		return "", errors.New("run artifact store is unavailable")
+	}
+	return run.ResumeInput.Journal.ArtifactPath(reference)
+}
+
+func (run *InteractiveRun) readArtifact(reference implementationstate.EvidenceRef) ([]byte, error) {
+	if run == nil || run.ResumeInput.Journal == nil {
+		return nil, errors.New("run artifact store is unavailable")
+	}
+	return run.ResumeInput.Journal.Read(reference)
+}
+
 // ImplementationInteractiveUI is intentionally presentation-only. In
 // particular, it receives the already filtered menu and cannot turn an
 // unavailable command into a lifecycle action.
@@ -352,17 +378,19 @@ const (
 )
 
 type implementationInteractiveDriver struct {
-	controller ImplementationInteractiveController
-	ui         ImplementationInteractiveUI
-	workCancel context.CancelFunc
-	workDone   chan interactiveWorkResult
-	workPhase  interactiveWorkPhase
-	phaseReady <-chan struct{}
+	controller  ImplementationInteractiveController
+	ui          ImplementationInteractiveUI
+	workCancel  context.CancelFunc
+	workDone    chan interactiveWorkResult
+	workPhase   interactiveWorkPhase
+	phaseReady  <-chan struct{}
+	workRun     *InteractiveRun
+	workStarted time.Time
 }
 
 func (driver *implementationInteractiveDriver) workActive() bool { return driver.workDone != nil }
 
-func (driver *implementationInteractiveDriver) startWork(parent context.Context, phase interactiveWorkPhase, phaseReady <-chan struct{}, work func(context.Context) (string, error)) error {
+func (driver *implementationInteractiveDriver) startWork(parent context.Context, phase interactiveWorkPhase, phaseReady <-chan struct{}, run *InteractiveRun, work func(context.Context) (string, error)) error {
 	if driver.workActive() {
 		return errors.New("implementation work is already running")
 	}
@@ -371,6 +399,8 @@ func (driver *implementationInteractiveDriver) startWork(parent context.Context,
 	driver.workDone = make(chan interactiveWorkResult, 1)
 	driver.workPhase = phase
 	driver.phaseReady = phaseReady
+	driver.workRun = run
+	driver.workStarted = time.Now()
 	go func(done chan<- interactiveWorkResult) {
 		message, err := work(ctx)
 		done <- interactiveWorkResult{message: message, err: err}
@@ -386,6 +416,18 @@ func (driver *implementationInteractiveDriver) finishWork() {
 	driver.workDone = nil
 	driver.workPhase = interactiveWorkNone
 	driver.phaseReady = nil
+	driver.workRun = nil
+	driver.workStarted = time.Time{}
+}
+
+func (driver *implementationInteractiveDriver) reportProgress() {
+	if driver.workRun == nil {
+		return
+	}
+	driver.ui.Report(FormatImplementationProgress(ProgressPresentationInput{
+		Run: driver.workRun.Run, Runtime: driver.controller.runtimePlatform(), StartedAt: driver.workStarted,
+		ArtifactPath: driver.workRun.artifactPath, ReadArtifact: driver.workRun.readArtifact,
+	}))
 }
 
 func (driver *implementationInteractiveDriver) setWorkPhase(phase interactiveWorkPhase) {
@@ -416,6 +458,9 @@ func (driver *implementationInteractiveDriver) menu(ctx context.Context) (Comman
 }
 
 func (driver *implementationInteractiveDriver) reportWork(result interactiveWorkResult) {
+	// Capture the terminal or diagnostic-paused state before clearing the
+	// foreground duration and artifact context.
+	driver.reportProgress()
 	driver.finishWork()
 	if result.err != nil {
 		driver.ui.ReportError(result.err)
@@ -460,7 +505,7 @@ func (driver *implementationInteractiveDriver) beginImplement(ctx context.Contex
 	if started == nil {
 		return "", errors.New("implementation start route returned no run")
 	}
-	if err := driver.startWork(ctx, interactiveWorkActive, nil, func(workCtx context.Context) (string, error) {
+	if err := driver.startWork(ctx, interactiveWorkActive, nil, started, func(workCtx context.Context) (string, error) {
 		if err := driver.controller.continueRun(workCtx, started); err != nil {
 			return "", err
 		}
@@ -501,7 +546,7 @@ func (driver *implementationInteractiveDriver) beginResume(ctx context.Context) 
 		})
 	}
 	resumeRun.ResumeInput = resumeInput
-	if err := driver.startWork(ctx, interactiveWorkResuming, phaseReady, func(workCtx context.Context) (string, error) {
+	if err := driver.startWork(ctx, interactiveWorkResuming, phaseReady, &resumeRun, func(workCtx context.Context) (string, error) {
 		_, message, err := driver.controller.resume(workCtx, &resumeRun)
 		return message, err
 	}); err != nil {
@@ -562,6 +607,9 @@ interactiveLoop:
 		menu, err := driver.menu(ctx)
 		if err != nil {
 			return err
+		}
+		if driver.workActive() {
+			driver.reportProgress()
 		}
 
 		promptCtx, cancelPrompt := context.WithCancel(ctx)

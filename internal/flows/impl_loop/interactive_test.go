@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,6 +285,53 @@ func TestRunImplementationInteractiveAcceptsStatusAndPauseWhileContinueRuns(t *t
 	}
 	if len(ui.errors) != 1 || !errors.Is(ui.errors[0], ErrUserOperationInterrupted) {
 		t.Fatalf("background interruption result = %#v", ui.errors)
+	}
+}
+
+func TestRunImplementationInteractivePublishesConciseActiveProgressWithoutAgentTranscript(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	run.Tasks = []implementationstate.Task{{ID: "12.3", Title: "show progress"}}
+	run.Assignments = []implementationstate.Assignment{{
+		ID: "assignment-12", TaskIDs: []implementationstate.TaskID{"12.3"}, Status: implementationstate.AssignmentActive,
+		Operations: []implementationstate.Operation{{ID: "implement", Kind: implementationstate.OperationAgent, Description: "implement assignment", Attempts: []implementationstate.OperationAttempt{{Number: 1}}}},
+	}}
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	ui := &blockedWorkUI{started: started}
+	var current *InteractiveRun
+	controller := ImplementationInteractiveController{
+		Runtime: implementationconfig.Platform{OS: "windows", Architecture: "amd64"},
+		Current: func(context.Context) (*InteractiveRun, error) { return current, nil },
+		Start: func(context.Context, string) (*InteractiveRun, error) {
+			current = &InteractiveRun{Run: run, Control: control}
+			return current, nil
+		},
+		Continue: func(ctx context.Context, active *InteractiveRun) error {
+			operation, finish, err := active.Control.BeginOperation(ctx)
+			if err != nil {
+				return err
+			}
+			defer finish()
+			close(started)
+			<-operation.Done()
+			return context.Cause(operation)
+		},
+	}
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(ui.messages, "\n")
+	for _, want := range []string{"runtime platform: windows/amd64", "assignment: assignment-12 — 12.3 (show progress)", "current: implementer — implement assignment"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("live progress missing %q: %#v", want, ui.messages)
+		}
+	}
+	if strings.Contains(joined, "agent private transcript") {
+		t.Fatalf("interactive UI exposed agent transcript: %#v", ui.messages)
 	}
 }
 
