@@ -20,10 +20,21 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	tasks := filepath.Join(repository, "openspec", "changes", "change", "tasks.md")
 	writeGitWorkspaceFile(t, tasks, "- [x] source task\n")
 	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	// In the real flow this is the already-captured post-orchestrator snapshot
+	// returned by the controlled call. The commit step only derives facts from
+	// it and does no Git work until after StateStore.Record.
+	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := CommitPreparationFromSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	message := "Implement source task"
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 
-	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Control: GitCommitControl{}})
+	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
 	if err != nil {
 		t.Fatal(err)
 	}

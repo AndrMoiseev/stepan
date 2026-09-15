@@ -456,3 +456,32 @@
 - Expected impact: transient persistence failures can strand the live controller or expose in-memory/durable divergence.
 - Classification: technical debt because ordinary successful execution is correct and full restart reconciliation is partly assigned to later recovery tasks.
 - Possible follow-up: mutate cloned candidates, adopt only after journal durability, and resume existing reflection phases idempotently.
+## TD-10.2-001 — post-commit completion mutates live state before durable record
+
+- Origin: task 10.2 initial review; affected location: `internal/flows/impl_loop/commit.go`.
+- Status: `open`.
+- Potential problem: assignment/task completion mutates the caller run before the journal/projection record succeeds.
+- Evidence: a persistence failure leaves memory committed and makes direct retry conflict with terminal status.
+- Expected impact: transient persistence failure can require restart reconciliation before later records proceed.
+- Classification: technical debt because the Git commit remains identifiable and later recovery tasks explicitly reconcile interrupted Git operations.
+- Possible follow-up: persist completion on a cloned candidate idempotently, then adopt it.
+
+## TD-10.2-002 — commit repository target is weakly bound
+
+- Origin: task 10.2 initial review; affected location: `internal/flows/impl_loop/commit.go` input validation.
+- Status: `open`.
+- Potential problem: the destructive repository target is checked only for non-emptiness.
+- Evidence: a wiring or stale-path error can stage and commit a different repository while updating this run.
+- Expected impact: wrong-repository local commit and incorrect run completion under controller misuse.
+- Classification: technical debt because ordinary controller wiring supplies the selected repository and no current mismatched production caller is shown.
+- Possible follow-up: canonicalize and bind the target to persisted work-copy/repository identity.
+
+## TD-10.2-003 — Git message cleanup can break exact observation
+
+- Origin: task 10.2 initial review; affected location: `internal/flows/impl_loop/commit.go` Git commit invocation.
+- Status: `open`.
+- Potential problem: `git commit -m` may apply configured cleanup while observation requires exact message equality.
+- Evidence: cleanup-sensitive whitespace or blank lines can produce a commit and then fail intent comparison.
+- Expected impact: a valid local commit can remain unacknowledged until recovery.
+- Classification: technical debt because ordinary concise messages are unaffected and the trigger depends on message/configuration details.
+- Possible follow-up: use `--cleanup=verbatim` and add a multiline cleanup-sensitive fixture.

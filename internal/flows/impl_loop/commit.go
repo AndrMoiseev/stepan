@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -16,9 +17,9 @@ import (
 // ErrAssignmentCommit identifies an invalid controller-owned commit step.
 var ErrAssignmentCommit = errors.New("invalid assignment commit")
 
-// CommitPreparation is the Git state staged for the one local commit. It is
-// persisted before Git creates that commit, allowing later recovery to compare
-// the operation against an observed commit rather than retrying blindly.
+// CommitPreparation is the already-observed Git state for the one local
+// commit. It is captured by the controller's existing post-operation snapshot
+// before this commit step, then persisted before the first Git mutation.
 type CommitPreparation struct {
 	ParentCommit string
 	Tree         string
@@ -37,9 +38,9 @@ type CommitObservation struct {
 // CommitControl is the narrow mutation seam for one assignment commit. The
 // production implementation stages the current working copy (accepted code
 // plus the orchestrator's informational mark) and makes exactly one commit.
-// Tests use a fake and never start Git.
+// Intent preparation deliberately is not a method here: all external Git work
+// must happen after the full intent reaches durable state.
 type CommitControl interface {
-	Prepare(context.Context, string) (CommitPreparation, error)
 	Commit(context.Context, string, string) (CommitObservation, error)
 }
 
@@ -49,39 +50,15 @@ type GitCommitControl struct{}
 
 var _ CommitControl = GitCommitControl{}
 
-func (GitCommitControl) Prepare(ctx context.Context, repository string) (CommitPreparation, error) {
-	parent, err := runGitMutation(ctx, repository, "rev-parse", "HEAD")
-	if err != nil {
-		return CommitPreparation{}, err
+// CommitPreparationFromSnapshot derives the commit's expected parent and tree
+// from a snapshot the controller has already captured. It performs no Git or
+// filesystem action, preserving the durable-before-mutation boundary.
+func CommitPreparationFromSnapshot(snapshot gitsnapshot.Snapshot) (CommitPreparation, error) {
+	preparation := CommitPreparation{ParentCommit: strings.TrimSpace(snapshot.HeadOID), Tree: strings.TrimSpace(snapshot.TreeOID)}
+	if preparation.ParentCommit == "" || preparation.Tree == "" {
+		return CommitPreparation{}, fmt.Errorf("%w: captured snapshot lacks parent or tree", ErrAssignmentCommit)
 	}
-	index, err := os.CreateTemp("", "stepan-commit-index-*")
-	if err != nil {
-		return CommitPreparation{}, fmt.Errorf("create temporary Git index: %w", err)
-	}
-	indexPath := index.Name()
-	if err := index.Close(); err != nil {
-		return CommitPreparation{}, fmt.Errorf("close temporary Git index: %w", err)
-	}
-	if err := os.Remove(indexPath); err != nil && !os.IsNotExist(err) {
-		return CommitPreparation{}, fmt.Errorf("initialize temporary Git index: %w", err)
-	}
-	defer os.Remove(indexPath)
-	environment := append(gitMutationEnvironment(), "GIT_INDEX_FILE="+indexPath)
-	if _, err := runGitMutationWithEnvironment(ctx, repository, environment, "read-tree", "HEAD"); err != nil {
-		return CommitPreparation{}, err
-	}
-	if _, err := runGitMutationWithEnvironment(ctx, repository, environment, "add", "--all"); err != nil {
-		return CommitPreparation{}, err
-	}
-	tree, err := runGitMutationWithEnvironment(ctx, repository, environment, "write-tree")
-	if err != nil {
-		return CommitPreparation{}, err
-	}
-	prepared := CommitPreparation{ParentCommit: strings.TrimSpace(string(parent)), Tree: strings.TrimSpace(string(tree))}
-	if prepared.ParentCommit == "" || prepared.Tree == "" {
-		return CommitPreparation{}, errors.New("Git returned an empty parent or tree")
-	}
-	return prepared, nil
+	return preparation, nil
 }
 
 func (GitCommitControl) Commit(ctx context.Context, repository, message string) (CommitObservation, error) {
@@ -123,7 +100,11 @@ type CommitAcceptedAssignmentInput struct {
 	AssignmentID implementationstate.AssignmentID
 	OperationID  implementationstate.OperationID
 	Response     AgentResponse
-	Control      CommitControl
+	// Preparation is the post-reflection workspace snapshot turned into Git
+	// facts by CommitPreparationFromSnapshot. It is controller evidence, not
+	// an agent suggestion and it is recorded before Commit is called.
+	Preparation CommitPreparation
+	Control     CommitControl
 }
 
 type CommitAcceptedAssignmentResult struct {
@@ -146,11 +127,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if control == nil {
 		control = GitCommitControl{}
 	}
-	preparation, err := control.Prepare(ctx, input.Repository)
-	if err != nil {
-		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: prepare Git commit: %v", ErrAssignmentCommit, err)
-	}
-	intent := implementationstate.CommitIntent{OperationID: input.OperationID, ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
+	intent := implementationstate.CommitIntent{OperationID: input.OperationID, ParentCommit: input.Preparation.ParentCommit, Tree: input.Preparation.Tree, Message: message}
 	if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
 		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record commit intent: %v", ErrAssignmentCommit, err)
 	}
@@ -172,8 +149,8 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 }
 
 func validateCommitAcceptedAssignmentInput(input CommitAcceptedAssignmentInput) error {
-	if input.Run == nil || input.StateStore == nil || strings.TrimSpace(input.Repository) == "" || input.AssignmentID == "" || input.OperationID == "" {
-		return fmt.Errorf("%w: run, state store, repository, assignment, and operation are required", ErrAssignmentCommit)
+	if input.Run == nil || input.StateStore == nil || strings.TrimSpace(input.Repository) == "" || input.AssignmentID == "" || input.OperationID == "" || strings.TrimSpace(input.Preparation.ParentCommit) == "" || strings.TrimSpace(input.Preparation.Tree) == "" {
+		return fmt.Errorf("%w: run, state store, repository, assignment, operation, and prepared Git facts are required", ErrAssignmentCommit)
 	}
 	return nil
 }

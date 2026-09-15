@@ -10,7 +10,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
-func TestCommitAcceptedAssignmentPersistsIntentAndCompletesTasksOnlyAfterOneCommit(t *testing.T) {
+func TestCommitAcceptedAssignmentPersistsFullIntentBeforeFirstGitMutation(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
 	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
 	defer stateStore.Close()
@@ -21,7 +21,11 @@ func TestCommitAcceptedAssignmentPersistsIntentAndCompletesTasksOnlyAfterOneComm
 		Kind: ResponseImplementationReady, Message: &message,
 		Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList},
 	}
-	control := &commitControlFake{preparation: CommitPreparation{ParentCommit: "parent", Tree: "code-and-progress-tree"}}
+	preparation := CommitPreparation{ParentCommit: "parent", Tree: "code-and-progress-tree"}
+	control := &commitControlFake{}
+	// Commit is this fake's first and only Git mutation. Its callback proves
+	// the durable record is complete before the mutation starts, rather than
+	// merely before a later `git commit` after a staging/preparation call.
 	control.onCommit = func(actualMessage string) {
 		current, _, err := runstore.ReadJournalCurrent(journal)
 		if err != nil {
@@ -35,13 +39,13 @@ func TestCommitAcceptedAssignmentPersistsIntentAndCompletesTasksOnlyAfterOneComm
 	}
 
 	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
-		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Control: control,
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: control,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if control.prepareCalls != 1 || control.commitCalls != 1 {
-		t.Fatalf("Git calls prepare=%d commit=%d, want one of each", control.prepareCalls, control.commitCalls)
+	if control.commitCalls != 1 {
+		t.Fatalf("Git mutation calls = %d, want one commit", control.commitCalls)
 	}
 	for _, line := range []string{"Implement the accepted task", "Stepan-Run: " + string(run.Identity.ID), "Stepan-Assignment: assignment", "Stepan-Operation: commit-1"} {
 		if !strings.Contains(result.Intent.Message, line) {
@@ -61,9 +65,9 @@ func TestCommitAcceptedAssignmentLeavesAcceptedTasksPendingWhenGitFails(t *testi
 	acceptCommitFixture(t, stateStore, run)
 	message := "Implement the accepted task"
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
-	control := &commitControlFake{preparation: CommitPreparation{ParentCommit: "parent", Tree: "tree"}, commitErr: errors.New("hook rejected commit")}
+	control := &commitControlFake{commitErr: errors.New("hook rejected commit")}
 
-	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Control: control})
+	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: CommitPreparation{ParentCommit: "parent", Tree: "tree"}, Control: control})
 	parentStatus, _ := run.TaskStatus("parent")
 	if !errors.Is(err, ErrAssignmentCommit) || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || parentStatus != implementationstate.TaskPending {
 		t.Fatalf("failed Git commit changed task completion: error=%v run=%#v", err, run)
@@ -78,7 +82,7 @@ func TestCommitAcceptedAssignmentRejectsBlankOrUnboundImplementationMessage(t *t
 		{Kind: ResponseImplementationReady, Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}},
 		{Kind: ResponseImplementationReady, Message: commitStringPointer("message"), Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "other", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}},
 	} {
-		_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Control: &commitControlFake{}})
+		_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: CommitPreparation{ParentCommit: "parent", Tree: "tree"}, Control: &commitControlFake{}})
 		if !errors.Is(err, ErrAssignmentCommit) {
 			t.Fatalf("response %#v error = %v", response, err)
 		}
@@ -86,17 +90,9 @@ func TestCommitAcceptedAssignmentRejectsBlankOrUnboundImplementationMessage(t *t
 }
 
 type commitControlFake struct {
-	preparation  CommitPreparation
-	prepareErr   error
-	commitErr    error
-	prepareCalls int
-	commitCalls  int
-	onCommit     func(string)
-}
-
-func (fake *commitControlFake) Prepare(context.Context, string) (CommitPreparation, error) {
-	fake.prepareCalls++
-	return fake.preparation, fake.prepareErr
+	commitErr   error
+	commitCalls int
+	onCommit    func(string)
 }
 
 func (fake *commitControlFake) Commit(_ context.Context, _ string, message string) (CommitObservation, error) {
@@ -107,7 +103,7 @@ func (fake *commitControlFake) Commit(_ context.Context, _ string, message strin
 	if fake.commitErr != nil {
 		return CommitObservation{}, fake.commitErr
 	}
-	return CommitObservation{CommitID: "commit", ParentCommit: fake.preparation.ParentCommit, Tree: fake.preparation.Tree, Message: message}, nil
+	return CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message}, nil
 }
 
 func commitStringPointer(value string) *string { return &value }
