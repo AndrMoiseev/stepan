@@ -86,6 +86,19 @@ func latestJournalAction(events []implementationstate.Event) (string, bool) {
 			continue
 		}
 		if current.Status != previous.Status && current.Status == implementationstate.RunPaused {
+			// Some controller routes add the failed assignment result and the
+			// execution-blocked pause to one cloned candidate before recording a
+			// single event. Attribute that atomic transition to the result first.
+			if result := latestChangedRunResult(previous, current); result != nil {
+				if operation := runOperation(current, result.OperationID); operation != nil {
+					return operationAction(operation) + " (failed)", operation.UncountedResumeCheck
+				}
+			}
+			if result := latestChangedAssignmentResult(previous, current); result != nil {
+				if operation := startupAssignmentOperation(current, result.assignment, result.result.OperationID); operation != nil {
+					return operationAction(operation) + " (failed)", false
+				}
+			}
 			if action, resumeCheck, ok := resultActionAt(events, index-1); ok {
 				return action + " (failed)", resumeCheck
 			}

@@ -300,3 +300,57 @@ func TestStartupSummaryUsesAssignmentResultAndFollowingPause(t *testing.T) {
 		t.Fatalf("assignment result then pause action = %q, resume=%v", action, resume)
 	}
 }
+
+func TestStartupSummaryUsesAtomicAssignmentResultAndExecutionBlockedPause(t *testing.T) {
+	run, state, journal, _ := newInitialCheckRun(t)
+	defer state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt("baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	brief, err := journal.Publish("brief", []byte("assignment brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddOperation("assignment", implementationstate.Operation{ID: "implement", Kind: implementationstate.OperationAgent, Basis: basis, BriefID: "brief", Description: "implement assignment"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartAssignmentAttempt("assignment", "implement"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddResult("assignment", implementationstate.OperationResult{ID: "implement-result", OperationID: "implement", Status: implementationstate.ResultFailed, State: run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.PauseExecutionBlocked(implementationstate.ExecutionBlock{BlockedAction: "implement assignment", Diagnostic: "tool unavailable", Attempts: []string{"started executor"}, RequiredUserAction: "install tool"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	events, err := runstore.JournalStates(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := summarizeStartupJournal(run, events)
+	if summary.LastAction != "implement assignment (failed)" || summary.StopReason != "tool unavailable" {
+		t.Fatalf("atomic result+pause summary = %#v", summary)
+	}
+}

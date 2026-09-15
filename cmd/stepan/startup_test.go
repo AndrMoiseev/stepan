@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -123,14 +125,57 @@ func TestImplementationStartupCompositionProvidesEnvelopeAndScopeDecisionForEver
 			if err := json.Unmarshal(composition.EnvelopeSchema, &envelope); err != nil || envelope["type"] != "object" {
 				t.Fatalf("implementation envelope = %s, %v", composition.EnvelopeSchema, err)
 			}
-			compatible, err := composition.ClassifySpecificationChange([]byte("# Change\n\nRequirement A\n"), []byte("# Change  Requirement A"))
+			previous := productionResumeSpecification(t, false,
+				implementationSpecificationDocument{Path: "openspec/changes/change/proposal.md", Content: "# Change\r\n\r\nRequirement A\r\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/design.md", Content: "# Design\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/specs/feature/spec.md", Content: "## Requirement: A\n"},
+			)
+			compatible := impl_loop.SpecificationChange{}
+			current := productionResumeSpecification(t, true,
+				implementationSpecificationDocument{Path: "openspec/changes/change/proposal.md", Content: "# Change\n\nRequirement A\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/design.md", Content: "# Design\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/specs/feature/spec.md", Content: "## Requirement: A\n"},
+			)
+			compatible, err := composition.ClassifySpecificationChange(previous, current)
 			if err != nil || compatible.RequiresNewScope {
-				t.Fatalf("whitespace-only specification change = %#v, %v", compatible, err)
+				t.Fatalf("JSON/line-ending-only specification change = %#v, %v", compatible, err)
 			}
-			scope, err := composition.ClassifySpecificationChange([]byte("Requirement A"), []byte("Requirement B"))
-			if err != nil || !scope.RequiresNewScope {
-				t.Fatalf("semantic specification change = %#v, %v", scope, err)
+			scope := productionResumeSpecification(t, false,
+				implementationSpecificationDocument{Path: "openspec/changes/change/proposal.md", Content: "# Change\n\nRequirement B\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/design.md", Content: "# Design\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/specs/feature/spec.md", Content: "## Requirement: A\n"},
+			)
+			change, err := composition.ClassifySpecificationChange(current, scope)
+			if err != nil || !change.RequiresNewScope {
+				t.Fatalf("semantic specification change = %#v, %v", change, err)
+			}
+			indeterminate := productionResumeSpecification(t, false,
+				implementationSpecificationDocument{Path: "openspec/changes/change/proposal.md", Content: "# Change\n\nRequirement A\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/design.md", Content: "# Design\n\n## New structure\n"},
+				implementationSpecificationDocument{Path: "openspec/changes/change/specs/feature/spec.md", Content: "## Requirement: A\n"},
+			)
+			if change, err := composition.ClassifySpecificationChange(current, indeterminate); err == nil || change.RequiresNewScope {
+				t.Fatalf("indeterminate design change = %#v, %v", change, err)
 			}
 		})
 	}
+}
+
+func productionResumeSpecification(t *testing.T, indent bool, documents ...implementationSpecificationDocument) []byte {
+	t.Helper()
+	for index := range documents {
+		digest := sha256.Sum256([]byte(documents[index].Content))
+		documents[index].Version = hex.EncodeToString(digest[:])
+	}
+	var data []byte
+	var err error
+	if indent {
+		data, err = json.MarshalIndent(documents, "", "  ")
+	} else {
+		data, err = json.Marshal(documents)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

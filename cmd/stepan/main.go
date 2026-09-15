@@ -2,12 +2,17 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -141,25 +146,114 @@ func implementationStartupCompositionForConfig(config agentConfig, root string, 
 		SessionBase:                 agentruntime.ThreadConfig{Workspace: root},
 		ClassifySpecificationChange: classifyImplementationSpecification,
 		Continue: func(ctx context.Context, run *impl_loop.InteractiveRun, owner *impl_loop.SessionOwner) error {
-			if run == nil {
-				return errors.New("restart continuation has no implementation run")
+			if run == nil || run.ResumeResult == nil {
+				return errors.New("restart continuation has no successful resume result")
 			}
 			return impl_loop.DispatchRestartContinuation(ctx, impl_loop.RestartContinuationInput{
-				Owner: owner, Journal: run.ResumeInput.Journal, Run: run.Run, Repository: run.ResumeInput.Repository,
+				Owner: owner, Journal: run.ResumeInput.Journal, StateStore: run.ResumeInput.StateStore, Run: run.Run, Repository: run.ResumeInput.Repository,
+				Workspace: run.ResumeInput.Workspace, Runner: run.ResumeInput.Runner, UserControl: run.Control,
+				Configuration: run.ResumeResult.Configuration, Checks: run.ResumeResult.Checks, Rules: run.ResumeResult.Rules,
+				ProtectedPaths: run.ResumeInput.ProtectedPaths,
 			})
 		},
 	}
 }
 
-// classifyImplementationSpecification makes the only safe automatic
-// distinction available at this boundary: whitespace-only rendering changes
-// are compatible; any changed non-whitespace token is a new scope. This never
-// treats an unknown semantic edit as compatible.
+// classifyImplementationSpecification compares the versioned documents in
+// resumeSpecification evidence. JSON rendering and line-ending changes are
+// compatible. Adding/removing a requirement document or changing proposal or
+// specification content is a known new scope. A design-only semantic change
+// is deliberately indeterminate: Resume turns the error into a durable pause
+// instead of either silently accepting it or terminally closing the run.
 func classifyImplementationSpecification(previous, current []byte) (impl_loop.SpecificationChange, error) {
-	if strings.Join(strings.Fields(string(previous)), " ") == strings.Join(strings.Fields(string(current)), " ") {
-		return impl_loop.SpecificationChange{}, nil
+	before, err := decodeImplementationSpecification(previous)
+	if err != nil {
+		return impl_loop.SpecificationChange{}, fmt.Errorf("decode saved resume specification: %w", err)
 	}
-	return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+	after, err := decodeImplementationSpecification(current)
+	if err != nil {
+		return impl_loop.SpecificationChange{}, fmt.Errorf("decode current resume specification: %w", err)
+	}
+	if len(before) != len(after) {
+		return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+	}
+	for path, saved := range before {
+		latest, ok := after[path]
+		if !ok {
+			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+		}
+		if normalizeImplementationMarkdown(saved.Content) == normalizeImplementationMarkdown(latest.Content) {
+			continue
+		}
+		switch implementationSpecificationDocumentKind(path) {
+		case "proposal", "specification":
+			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+		case "design":
+			return impl_loop.SpecificationChange{}, fmt.Errorf("semantic change to %s cannot be safely classified as compatible or new scope", path)
+		default:
+			return impl_loop.SpecificationChange{}, fmt.Errorf("unrecognized resume specification document %s", path)
+		}
+	}
+	return impl_loop.SpecificationChange{}, nil
+}
+
+type implementationSpecificationDocument struct {
+	Path    string `json:"Path"`
+	Version string `json:"Version"`
+	Content string `json:"Content"`
+}
+
+func decodeImplementationSpecification(data []byte) (map[string]implementationSpecificationDocument, error) {
+	var documents []implementationSpecificationDocument
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&documents); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return nil, errors.New("resume specification has trailing JSON values")
+	}
+	decoded := make(map[string]implementationSpecificationDocument, len(documents))
+	for _, document := range documents {
+		path := filepath.ToSlash(filepath.Clean(document.Path))
+		if path != document.Path || path == "." || path == "" || filepath.IsAbs(path) || path == ".." || strings.HasPrefix(path, "../") {
+			return nil, fmt.Errorf("invalid document path %q", document.Path)
+		}
+		if implementationSpecificationDocumentKind(path) == "" {
+			return nil, fmt.Errorf("unrecognized resume specification document %s", path)
+		}
+		digest := sha256.Sum256([]byte(document.Content))
+		if document.Version != hex.EncodeToString(digest[:]) {
+			return nil, fmt.Errorf("document %s version does not match its content", path)
+		}
+		if _, exists := decoded[path]; exists {
+			return nil, fmt.Errorf("duplicate document path %s", path)
+		}
+		document.Path = path
+		decoded[path] = document
+	}
+	if len(decoded) == 0 {
+		return nil, errors.New("resume specification has no documents")
+	}
+	return decoded, nil
+}
+
+func normalizeImplementationMarkdown(content string) string {
+	return strings.ReplaceAll(content, "\r\n", "\n")
+}
+
+func implementationSpecificationDocumentKind(path string) string {
+	switch {
+	case strings.HasSuffix(path, "/proposal.md"):
+		return "proposal"
+	case strings.HasSuffix(path, "/design.md"):
+		return "design"
+	case strings.Contains(path, "/specs/") && strings.HasSuffix(path, ".md"):
+		return "specification"
+	default:
+		return ""
+	}
 }
 
 func runImplementationStartupInteractive(ctx context.Context, workCopy string, store *runstore.Store, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, composition implementationStartupComposition) error {

@@ -44,6 +44,89 @@ func TestDispatchRestartContinuationRestoresFreshOrchestratorFromDurableRun(t *t
 	fixture := newResumeFixture(t, "")
 	factory := &sessionRuntimeFactory{}
 	configuration := resumeTestConfiguration(t, "initial-model", "")
+	var owner *SessionOwner
+	resumeInput := fixture.input()
+	resumeInput.Factories = map[string]RuntimeFactory{"test": factory}
+	resumeInput.SessionOwner = &owner
+	resumeInput.SessionBase = agentruntime.ThreadConfig{Workspace: fixture.repository}
+	result, err := Resume(context.Background(), resumeInput)
+	if err != nil || owner == nil {
+		t.Fatalf("resume = %#v, owner=%p, err=%v", result, owner, err)
+	}
+	defer func() { _ = owner.Close() }()
+	before := len(fixture.run.RunOperations)
+	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: fixture.workspace, Runner: resumeInput.Runner, Configuration: configuration, Checks: result.Checks, Rules: result.Rules,
+	}); err != nil {
+		t.Fatalf("dispatch: %v; run=%#v", err, fixture.run)
+	}
+	if len(factory.configurations()) != 1 {
+		t.Fatalf("recovered role sessions = %d, want fresh orchestrator", len(factory.configurations()))
+	}
+	if fixture.run.InitialBaselineStatus != implementationstate.InitialBaselinePassed || len(fixture.run.RunOperations) <= before {
+		t.Fatalf("restart did not execute the next durable initial-check route: %#v", fixture.run)
+	}
+}
+
+func TestDispatchRestartContinuationPausesDurablyWhenSessionRestoreFails(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSessionOwner(PreparedRuntimes{}, agentruntime.ThreadConfig{Workspace: fixture.repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	configuration := resumeTestConfiguration(t, "initial-model", "")
+	checks, err := configuration.SelectHostChecks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		Configuration: configuration, Checks: checks,
+	})
+	if !errors.Is(err, ErrRestartContinuation) || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "restore orchestrator session" {
+		t.Fatalf("restore failure did not durably pause: run=%#v err=%v", fixture.run, err)
+	}
+	reopened, _, err := runstore.ReadJournalCurrent(fixture.journal)
+	if err != nil || reopened.Status != implementationstate.RunPaused || reopened.ExecutionBlock == nil {
+		t.Fatalf("durable restore pause = %#v, %v", reopened, err)
+	}
+}
+
+func TestDispatchRestartContinuationRestoresAssignmentRolesAndRunsImplementerRoute(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.run.StartRunAttempt("baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PersistBriefVersion(context.Background(), fixture.journal, fixture.state, fixture.run, "assignment", []implementationstate.TaskID{"task"}, "Implement the durable task."); err != nil {
+		t.Fatal(err)
+	}
+	factory := &sessionRuntimeFactory{}
+	configuration := resumeTestConfiguration(t, "initial-model", "")
 	prepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": factory})
 	if err != nil {
 		t.Fatal(err)
@@ -52,12 +135,101 @@ func TestDispatchRestartContinuationRestoresFreshOrchestratorFromDurableRun(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Close()
-	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{Owner: owner, Journal: fixture.journal, Run: fixture.run, Repository: fixture.repository}); err != nil {
+	defer func() { _ = owner.Close() }()
+	checks, err := configuration.SelectHostChecks()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(factory.configurations()) != 1 {
-		t.Fatalf("recovered role sessions = %d, want fresh orchestrator", len(factory.configurations()))
+	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: &unchangedWorkspaceControl{}, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		Configuration: configuration, Checks: checks,
+	}); err != nil {
+		t.Fatalf("dispatch: %v; run=%#v", err, fixture.run)
+	}
+	roles := map[ResponseRole]int{}
+	for _, config := range factory.configurations() {
+		roles[roleFromBootstrap(config.BootstrapInstructions)]++
+	}
+	if roles[ResponseRoleOrchestrator] != 1 || roles[ResponseRoleBriefer] != 1 || roles[ResponseRoleImplementer] != 1 {
+		t.Fatalf("restored assignment roles = %#v", roles)
+	}
+	assignment := assignmentByID(fixture.run, "assignment")
+	if assignment == nil || len(assignment.Operations) < 2 || len(assignment.Results) != 1 || assignment.Results[0].Status != implementationstate.ResultSucceeded {
+		t.Fatalf("restart did not execute/persist implementer route: %#v", assignment)
+	}
+	reopened, _, err := runstore.ReadJournalCurrent(fixture.journal)
+	if err != nil || reopened.Status != implementationstate.RunActive || len(reopened.Assignments[0].Results) != 1 {
+		t.Fatalf("durable assignment continuation = %#v, %v", reopened, err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reviewFactory := &sessionRuntimeFactory{}
+	reviewPrepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": reviewFactory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err = NewSessionOwner(reviewPrepared, agentruntime.ThreadConfig{Workspace: fixture.repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: &unchangedWorkspaceControl{}, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		Configuration: configuration, Checks: checks,
+	}); err != nil {
+		t.Fatalf("review-stage dispatch: %v; run=%#v", err, fixture.run)
+	}
+	reviewRoles := map[ResponseRole]int{}
+	for _, config := range reviewFactory.configurations() {
+		reviewRoles[roleFromBootstrap(config.BootstrapInstructions)]++
+	}
+	if reviewRoles[ResponseRoleOrchestrator] != 1 || reviewRoles[ResponseRoleBriefer] != 1 || reviewRoles[ResponseRoleImplementer] != 1 || reviewRoles[ResponseRoleTaskReviewer] != 1 {
+		t.Fatalf("restored review-stage roles = %#v", reviewRoles)
+	}
+	assignment = assignmentByID(fixture.run, "assignment")
+	if assignment == nil || len(assignment.TaskReviews) != 1 || len(assignment.Results) != 2 || assignment.Results[1].Status != implementationstate.ResultSucceeded {
+		t.Fatalf("restart did not execute/persist reviewer route: %#v", assignment)
+	}
+}
+
+func TestRestartAssignmentActionUsesLatestDurableOperationAndResult(t *testing.T) {
+	state := implementationstate.EvidenceRef{ID: "state", Digest: "digest"}
+	basis := implementationstate.AcceptanceBasis{Specification: implementationstate.EvidenceRef{ID: "spec", Digest: "spec"}, Configuration: implementationstate.EvidenceRef{ID: "config", Digest: "config"}}
+	operation := func(id string, kind implementationstate.OperationKind, counter implementationstate.CycleCounter) implementationstate.Operation {
+		return implementationstate.Operation{ID: implementationstate.OperationID(id), Kind: kind, BriefID: "brief", Basis: basis, Counter: counter}
+	}
+	result := func(operation string, status implementationstate.ResultStatus) implementationstate.OperationResult {
+		return implementationstate.OperationResult{ID: implementationstate.ResultID(operation + "-result"), OperationID: implementationstate.OperationID(operation), Status: status, State: state, Basis: basis}
+	}
+	for _, test := range []struct {
+		name        string
+		operations  []implementationstate.Operation
+		results     []implementationstate.OperationResult
+		want        restartAssignmentAction
+		interrupted bool
+		wantError   bool
+	}{
+		{name: "fresh assignment", want: restartAssignmentImplement},
+		{name: "successful mandatory checks", operations: []implementationstate.Operation{operation("checks", implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks)}, results: []implementationstate.OperationResult{result("checks", implementationstate.ResultSucceeded)}, want: restartAssignmentReview},
+		{name: "failed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultFailed)}, want: restartAssignmentImplement},
+		{name: "passed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultSucceeded)}, want: restartAssignmentAwaitingAcceptance},
+		{name: "interrupted implementer", operations: []implementationstate.Operation{operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)}, want: restartAssignmentImplement, interrupted: true},
+		{name: "completed implementer awaiting route", operations: []implementationstate.Operation{func() implementationstate.Operation {
+			value := operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)
+			value.Attempts = []implementationstate.OperationAttempt{{Number: 1, Outcome: implementationstate.AttemptSucceeded}}
+			return value
+		}()}, want: restartAssignmentImplement},
+		{name: "interrupted check", operations: []implementationstate.Operation{operation("checks", implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks)}, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run := &implementationstate.Run{CurrentState: state, Assignments: []implementationstate.Assignment{{ID: "assignment", Status: implementationstate.AssignmentActive, Operations: test.operations, Results: test.results}}}
+			action, interrupted, err := classifyRestartAssignmentAction(run, "assignment")
+			if (err != nil) != test.wantError || (!test.wantError && action != test.want) || (interrupted != nil) != test.interrupted {
+				t.Fatalf("action=%v interrupted=%#v err=%v", action, interrupted, err)
+			}
+		})
 	}
 }
 
@@ -329,6 +501,22 @@ func TestResumeRefreshesCompatibleSpecificationChange(t *testing.T) {
 	}
 	if fixture.run.Status != implementationstate.RunActive || fixture.run.Identity.Specification == fixture.specification {
 		t.Fatalf("compatible specification was not refreshed: %#v", fixture.run)
+	}
+}
+
+func TestResumePausesWhenSpecificationChangeIsIndeterminate(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	fixture.classify = func([]byte, []byte) (SpecificationChange, error) {
+		return SpecificationChange{}, errors.New("semantic design change is indeterminate")
+	}
+	writeResumeFile(t, filepath.Join(fixture.repository, "openspec", "changes", "change", "design.md"), "# Design\n\n## New structure\n")
+
+	_, err := Resume(context.Background(), fixture.input())
+	if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "indeterminate") {
+		t.Fatalf("indeterminate specification classification = run=%#v err=%v", fixture.run, err)
+	}
+	if fixture.run.Status == implementationstate.RunClosed {
+		t.Fatal("indeterminate specification change closed the run")
 	}
 }
 

@@ -160,6 +160,10 @@ type InteractiveRun struct {
 	Run         *implementationstate.Run
 	Control     *UserRunControl
 	ResumeInput ResumeInput
+	// ResumeResult is populated only after the explicit /resume gate succeeds.
+	// Restart continuation consumes these freshly reconciled configuration,
+	// check, rule, and runtime facts instead of reloading them a second time.
+	ResumeResult *ResumeResult
 	// Resume is an optional composition seam for the application boundary.
 	// Production leaves it nil and uses the durable Resume primitive below.
 	Resume func(context.Context, ResumeInput) (ResumeResult, error)
@@ -268,9 +272,11 @@ func (controller ImplementationInteractiveController) resume(ctx context.Context
 	if run.Resume != nil {
 		resume = run.Resume
 	}
-	if _, err := resume(ctx, input); err != nil {
+	result, err := resume(ctx, input)
+	if err != nil {
 		return controller.menuForRun(run), "", err
 	}
+	run.ResumeResult = &result
 	if err := controller.continueRun(ctx, run); err != nil {
 		return CommandMenu{}, "", err
 	}

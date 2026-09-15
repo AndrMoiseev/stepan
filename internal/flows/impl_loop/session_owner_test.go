@@ -237,9 +237,19 @@ func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (ag
 	return len(runtime.configurations), nil
 }
 
-func (runtime *sessionRuntime) RunTurn(agentruntime.Thread, string) (json.RawMessage, error) {
+func (runtime *sessionRuntime) RunTurn(thread agentruntime.Thread, _ string) (json.RawMessage, error) {
 	runtime.turnCount++
-	return json.RawMessage(`{"kind":"implementation_ready"}`), nil
+	kind := ResponseImplementationReady
+	if number, ok := thread.(int); ok && number > 0 && number <= len(runtime.configurations) && roleFromBootstrap(runtime.configurations[number-1].BootstrapInstructions) == ResponseRoleTaskReviewer {
+		kind = ResponseReviewPassed
+	}
+	response := responsePayloadMap(kind)
+	if kind == ResponseReviewPassed {
+		response["message"] = "review passed after restart"
+		response["references"] = []string{"durable assignment diff", "required check evidence"}
+	}
+	payload, _ := json.Marshal(response)
+	return payload, nil
 }
 
 func (runtime *sessionRuntime) CloseThread(agentruntime.Thread) error { return runtime.closeThreadErr }
