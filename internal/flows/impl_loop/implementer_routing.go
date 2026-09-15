@@ -136,11 +136,12 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 		if err != nil {
 			return result, err
 		}
+		if checks.ExecutionBlock != nil {
+			result.RequiredChecks = checks
+			return result, nil
+		}
 		if turnResult.Response.Kind == ResponseImplementationReady {
 			result.RequiredChecks = checks
-			if checks.ExecutionBlock != nil {
-				return result, nil
-			}
 			if checks.Set.Succeeded() && !checks.WorkspaceChanged {
 				if err := CanStartTaskReview(route.Transition.Run, route.Transition.AssignmentID); err != nil {
 					return result, err

@@ -438,3 +438,12 @@
 - Expected impact: the diagnostic must be obtained again after the narrow cancellation interleaving.
 - Classification: technical debt because it requires cancellation in a small post-response persistence window; ordinary execution persists the pause.
 - Possible follow-up: persist the accepted block under a bounded non-cancellable context.
+## TD-9.5-003 — check evidence and execution pause use separate durable events
+
+- Origin: task 9.5 rereview cycle 1; affected location: `internal/flows/impl_loop/implementer_transition.go`.
+- Status: `open`.
+- Potential problem: environmental check failure evidence is persisted before the execution pause in a second state event.
+- Evidence: process/host termination after the first record and before the second leaves restart state active with an environmental failure but no execution block.
+- Expected impact: recovery could dispatch more work despite the already recorded environment failure.
+- Classification: technical debt because it requires a narrow crash interleaving between two durable records.
+- Possible follow-up: persist result and pause in one cloned-state event or reclassify the latest failed result during recovery before dispatch.

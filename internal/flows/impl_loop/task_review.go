@@ -140,6 +140,10 @@ func RouteTaskReviewChanges(ctx context.Context, review TaskReviewResult, execut
 	}
 	previous := executorCall.ValidateResponse
 	executorCall.ValidateResponse = func(response AgentResponse) error {
+		if response.Kind == ResponseExecutionBlocked {
+			_, err := ExecutionBlockFromResponse(response)
+			return err
+		}
 		if response.Kind != ResponseImplementationReady && response.Kind != ResponseChecksRequested && response.Kind != ResponseReviewDisputed {
 			return fmt.Errorf("%w: executor must fix, check, or dispute review findings", ErrInvalidTaskReviewRoute)
 		}
@@ -155,7 +159,15 @@ func RouteTaskReviewChanges(ctx context.Context, review TaskReviewResult, execut
 		return nil
 	}
 	executorCall.Message = taskReviewChangesMessage(review.Record)
-	return InvokeControlledAgentCall(ctx, executorCall)
+	turn, err := InvokeControlledAgentCall(ctx, executorCall)
+	if err != nil || turn.Response.Kind != ResponseExecutionBlocked {
+		return turn, err
+	}
+	block, err := ExecutionBlockFromResponse(turn.Response)
+	if err != nil {
+		return turn, err
+	}
+	return turn, PersistExecutionBlock(ctx, executorCall.StateStore, executorCall.Run, block)
 }
 
 type assignmentBrief struct {

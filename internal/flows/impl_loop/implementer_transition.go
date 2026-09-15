@@ -186,21 +186,25 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check result: %v", ErrImplementerTransition, recordErr)
 	}
 	transition := ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired, WorkspaceChanged: workspaceChanged}
-	if kind == CheckSetRequired {
-		if failed, blocked := set.executionBlockedResult(); blocked {
-			block, blockErr := ExecutionBlockForUserRemediation(
-				"run required check "+failed.Name, checkExecutionDiagnostic(failed, diagnostic),
-				[]string{"ran the configured required check " + failed.Name},
-				"repair the required-check environment or project configuration without weakening the check, then explicitly resume or close the run",
-			)
-			if blockErr != nil {
-				return ImplementerTransitionResult{}, blockErr
-			}
-			if err := PersistExecutionBlock(persistContext, input.StateStore, input.Run, block); err != nil {
-				return ImplementerTransitionResult{}, err
-			}
-			transition.ExecutionBlock = &block
+	if failed, blocked := set.executionBlockedResult(); blocked {
+		blockedAction := "run requested check " + failed.Name
+		attempts := []string{"ran the configured requested check " + failed.Name}
+		requiredUserAction := "repair the check environment or project configuration without weakening the check, then explicitly resume or close the run"
+		if kind == CheckSetRequired {
+			blockedAction = "run required check " + failed.Name
+			attempts = []string{"ran the configured required check " + failed.Name}
+			requiredUserAction = "repair the required-check environment or project configuration without weakening the check, then explicitly resume or close the run"
 		}
+		block, blockErr := ExecutionBlockForUserRemediation(
+			blockedAction, checkExecutionDiagnostic(failed, diagnostic), attempts, requiredUserAction,
+		)
+		if blockErr != nil {
+			return ImplementerTransitionResult{}, blockErr
+		}
+		if err := PersistExecutionBlock(persistContext, input.StateStore, input.Run, block); err != nil {
+			return ImplementerTransitionResult{}, err
+		}
+		transition.ExecutionBlock = &block
 	}
 	return transition, nil
 }

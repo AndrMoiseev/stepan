@@ -70,6 +70,35 @@ func TestTaskReviewerExecutionBlockedPausesWithoutReviewRecord(t *testing.T) {
 	}
 }
 
+func TestRouteTaskReviewChangesPausesForExecutorExecutionBlocked(t *testing.T) {
+	fixture := newImplementerTransitionFixture(t)
+	defer fixture.state.Close()
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-review-changes", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	expectation := fixture.executorExpectation("executor-review-changes-call")
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	review := TaskReviewResult{Response: AgentResponse{Kind: ResponseChangesRequested, Binding: expectation.Binding}}
+	result, err := RouteTaskReviewChanges(context.Background(), review, ControlledAgentCall{
+		Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "executor"}, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: expectation.Binding.CallID, AllowUnprotected: true},
+		Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: "executor-review-changes", Limits: controlledCallLimits(), Expectation: expectation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 {
+		t.Fatalf("executor block after review changes advanced work: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
+	}
+	restarted, _, err := fixture.state.Current(context.Background())
+	if err != nil || restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil {
+		t.Fatalf("executor review block was not durable: run=%#v error=%v", restarted, err)
+	}
+}
+
 func TestTaskReviewerRejectsPreferenceAsBlockingFinding(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
