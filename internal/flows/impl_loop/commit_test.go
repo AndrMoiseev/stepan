@@ -75,6 +75,31 @@ func TestCommitAcceptedAssignmentLeavesAcceptedTasksPendingWhenGitFails(t *testi
 	}
 }
 
+func TestCommitAcceptedAssignmentRestoresCallerStateWhenIntentCannotBePersisted(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	acceptCommitFixture(t, stateStore, run)
+	if err := stateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	message := "Implement the accepted task"
+	control := &commitControlFake{}
+	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{
+		CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief",
+		Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList,
+	}}
+	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
+		Response: response, Preparation: CommitPreparation{ParentCommit: "parent", Tree: "tree"}, Control: control,
+	})
+	if !errors.Is(err, ErrAssignmentCommit) {
+		t.Fatalf("commit with closed store error = %v", err)
+	}
+	if control.commitCalls != 0 || run.Assignments[0].Acceptance.PendingCommit.OperationID != "" || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+		t.Fatalf("undurable intent reached caller or Git: calls=%d run=%#v", control.commitCalls, run)
+	}
+}
+
 func TestCommitAcceptedAssignmentRejectsBlankOrUnboundImplementationMessage(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
 	run, stateStore, _ := acceptanceReflectionFixture(t, repository)

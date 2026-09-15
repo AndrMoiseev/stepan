@@ -572,3 +572,13 @@
 - Expected impact: a narrow Go data race or stale transition candidate around operation start/completion.
 - Classification: technical debt because the required interleaving is narrow and no high-likelihood failure in typical supported use is established.
 - Possible follow-up: establish one serialized owner for all `Run` transitions or a shared synchronization boundary, with focused start/completion interleaving tests.
+
+## TD-11.1-002 — two incompatible command-control integration paths remain exposed
+
+- Origin: task 11.1 correction-cycle-1 rereview; affected locations: `internal/flows/impl_loop/user_control.go`, `initial_checks.go`, `implementer_transition.go`, and `final_review.go`.
+- Status: `open`.
+- Potential problem: the legacy `ControlledCheckRunner` controls only the low-level child, while corrected routes expose route-level `UserControl`; using the former alone recreates the narrow boundary and combining both produces nested registration/`ErrUserControlBusy`.
+- Evidence: both public integration paths remain available, but only route-level control spans durable post-command bookkeeping.
+- Expected impact: a future controller integration, notably task 12.1, could select or combine the wrong path.
+- Classification: technical debt because no current production caller uses the obsolete path and the correct route-level API is present and tested.
+- Possible follow-up: remove/deprecate `ControlledCheckRunner` or explicitly unwrap/reject it when route-level control is supplied, documenting one canonical integration path.

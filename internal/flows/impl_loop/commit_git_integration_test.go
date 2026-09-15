@@ -92,6 +92,57 @@ func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.
 	}
 }
 
+func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *testing.T) {
+	repository := newGitWorkspace(t)
+	switchToBranch(t, repository, "implementation")
+	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
+	acceptCommitFixture(t, stateStore, run)
+
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	preparation := captureCommitPreparation(t, repository)
+	message, err := messageForImplementationCommit(run, "assignment", "commit-1", commitResponse(run, "commit-1", "Implement source task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
+	if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	// This models the crash window: Git succeeds after the durable intent, but
+	// before CommitAssignment can write the completed machine state.
+	git(t, repository, "add", "--all")
+	git(t, repository, "commit", "--quiet", "-m", message)
+	created := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	if err := stateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, _, err := runstore.ReadJournalCurrent(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err = runstore.OpenState(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	result, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: recovered, StateStore: stateStore, Repository: repository, AssignmentID: "assignment",
+	})
+	if err != nil || !result.Adopted || result.Commit.CommitID != created {
+		t.Fatalf("reconcile created commit result=%#v error=%v", result, err)
+	}
+	if recovered.Assignments[0].Status != implementationstate.AssignmentCommitted || recovered.LeafStatus["A"] != implementationstate.TaskComplete {
+		t.Fatalf("recovered run did not complete exactly the committed assignment: %#v", recovered)
+	}
+	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+		t.Fatalf("reconciliation created another commit: count=%s", count)
+	}
+}
+
 func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")

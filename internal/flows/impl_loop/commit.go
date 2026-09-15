@@ -136,10 +136,6 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if err := validateCommitAcceptedAssignmentInput(input); err != nil {
 		return CommitAcceptedAssignmentResult{}, err
 	}
-	message, err := messageForImplementationCommit(input.Run, input.AssignmentID, input.OperationID, input.Response)
-	if err != nil {
-		return CommitAcceptedAssignmentResult{}, err
-	}
 	reconciled, ok, err := reusableReconciledCommit(input)
 	if err != nil {
 		return CommitAcceptedAssignmentResult{}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("verify retained hook-created commit: %w", err))
@@ -147,35 +143,74 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if ok {
 		return finalizeReconciledCommit(ctx, input, reconciled)
 	}
+	intent, pending := pendingCommitIntent(input.Run, input.AssignmentID)
+	if pending {
+		recovery, err := ReconcilePendingCommit(ctx, ReconcilePendingCommitInput{
+			Run: input.Run, StateStore: input.StateStore, Repository: input.Repository, AssignmentID: input.AssignmentID,
+		})
+		if err != nil {
+			return CommitAcceptedAssignmentResult{Intent: intent}, err
+		}
+		if recovery.Adopted {
+			return CommitAcceptedAssignmentResult{Intent: recovery.Intent, Commit: recovery.Commit}, nil
+		}
+		if !recovery.Retry {
+			return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: pending commit reconciliation made no decision", ErrAssignmentCommit)
+		}
+	} else {
+		beforeIntent, err := cloneCommitRun(input.Run)
+		if err != nil {
+			return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: checkpoint run before commit intent: %v", ErrAssignmentCommit, err)
+		}
+		message, err := messageForImplementationCommit(input.Run, input.AssignmentID, input.OperationID, input.Response)
+		if err != nil {
+			return CommitAcceptedAssignmentResult{}, err
+		}
+		intent = implementationstate.CommitIntent{OperationID: input.OperationID, ParentCommit: input.Preparation.ParentCommit, Tree: input.Preparation.Tree, Message: message}
+		if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
+			return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record commit intent: %v", ErrAssignmentCommit, err)
+		}
+		if event, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+			restoreUndurableCommitRun(input.Run, beforeIntent, event)
+			return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: persist commit intent: %v", ErrAssignmentCommit, err)
+		}
+	}
 	control := input.Control
 	if control == nil {
 		control = GitCommitControl{}
 	}
-	intent := implementationstate.CommitIntent{OperationID: input.OperationID, ParentCommit: input.Preparation.ParentCommit, Tree: input.Preparation.Tree, Message: message}
-	if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
-		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record commit intent: %v", ErrAssignmentCommit, err)
-	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
-		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: persist commit intent: %v", ErrAssignmentCommit, err)
-	}
-	observed, err := control.Commit(ctx, input.Repository, message)
+	observed, err := control.Commit(ctx, input.Repository, intent.Message)
 	if err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("Git commit was refused or failed: %w", err))
 	}
 	if canReacceptChangedCommit(intent, observed) {
 		return reconcileChangedCommit(ctx, input, intent, observed)
 	}
-	if !commitMatchesIntent(intent, observed) || !worktreeMatchesCommit(observed) {
+	if !commitMatchesIntent(intent, observed) || !commitHasExpectedTrailers(input.Run, input.AssignmentID, observed.Message) || !worktreeMatchesCommit(observed) {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("actual commit or working copy does not match accepted intent: commit=%q parent=%q tree=%q", observed.CommitID, observed.ParentCommit, observed.Tree))
 	}
-	commit := implementationstate.CommitEvidence{OperationID: input.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
+	commit := implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
+	beforeCompletion, err := cloneCommitRun(input.Run)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: checkpoint run before completed commit: %v", ErrAssignmentCommit, err)
+	}
 	if err := input.Run.CommitAssignment(input.AssignmentID, commit); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: verify Git commit: %v", ErrAssignmentCommit, err)
 	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+	if event, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		restoreUndurableCommitRun(input.Run, beforeCompletion, event)
 		return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, fmt.Errorf("%w: persist completed assignment: %v", ErrAssignmentCommit, err)
 	}
 	return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, nil
+}
+
+func pendingCommitIntent(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (implementationstate.CommitIntent, bool) {
+	assignment := assignmentByID(run, assignmentID)
+	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		return implementationstate.CommitIntent{}, false
+	}
+	intent := assignment.Acceptance.PendingCommit
+	return intent, intent.OperationID != "" && intent.ParentCommit != "" && intent.Tree != "" && strings.TrimSpace(intent.Message) != ""
 }
 
 func commitMatchesIntent(intent implementationstate.CommitIntent, observed CommitObservation) bool {
@@ -184,6 +219,57 @@ func commitMatchesIntent(intent implementationstate.CommitIntent, observed Commi
 
 func worktreeMatchesCommit(observed CommitObservation) bool {
 	return observed.Worktree.HeadOID == observed.CommitID && observed.Worktree.TreeOID == observed.Tree
+}
+
+func commitHasExpectedTrailers(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, message string) bool {
+	if run == nil {
+		return false
+	}
+	return hasExactlyOneTrailer(message, "Stepan-Run", string(run.Identity.ID)) &&
+		hasExactlyOneTrailer(message, "Stepan-Assignment", string(assignmentID)) &&
+		hasExactlyOneTrailer(message, "Stepan-Operation", string(pendingOperationID(run, assignmentID)))
+}
+
+func pendingOperationID(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) implementationstate.OperationID {
+	intent, ok := pendingCommitIntent(run, assignmentID)
+	if !ok {
+		return ""
+	}
+	return intent.OperationID
+}
+
+func hasExactlyOneTrailer(message, key, value string) bool {
+	expected := key + ": " + value
+	count := 0
+	for _, line := range strings.Split(strings.ReplaceAll(message, "\r\n", "\n"), "\n") {
+		if line == expected {
+			count++
+		}
+	}
+	return count == 1
+}
+
+// cloneCommitRun gives the commit boundary a reversible in-memory checkpoint.
+// StateStore.Record returns an event with a sequence only after the JSONL line
+// is durable. When it fails earlier, restoring this checkpoint prevents a
+// caller from treating an unrecorded intent or completed assignment as state
+// that recovery can rely on.
+func cloneCommitRun(run *implementationstate.Run) (*implementationstate.Run, error) {
+	data, err := json.Marshal(run)
+	if err != nil {
+		return nil, err
+	}
+	var clone implementationstate.Run
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
+func restoreUndurableCommitRun(run, before *implementationstate.Run, event implementationstate.Event) {
+	if run != nil && before != nil && event.Sequence == 0 {
+		*run = *before
+	}
 }
 
 // commitContentChanged identifies hook-produced source or worktree changes.
@@ -268,28 +354,43 @@ func finalizeReconciledCommit(ctx context.Context, input CommitAcceptedAssignmen
 	completed := commit
 	completed.State = assignment.Acceptance.State
 	completed.Basis = assignment.Acceptance.Basis
+	beforeIntent, err := cloneCommitRun(input.Run)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: checkpoint run before reconciled commit intent: %v", ErrAssignmentCommit, err)
+	}
 	if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
 		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record reconciled commit intent: %v", ErrAssignmentCommit, err)
 	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+	if event, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		restoreUndurableCommitRun(input.Run, beforeIntent, event)
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: persist reconciled commit intent: %v", ErrAssignmentCommit, err)
+	}
+	beforeCompletion, err := cloneCommitRun(input.Run)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: checkpoint run before reconciled completion: %v", ErrAssignmentCommit, err)
 	}
 	if err := input.Run.CommitAssignment(input.AssignmentID, completed); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: complete reconciled commit: %v", ErrAssignmentCommit, err)
 	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+	if event, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		restoreUndurableCommitRun(input.Run, beforeCompletion, event)
 		return CommitAcceptedAssignmentResult{Intent: intent, Commit: completed}, fmt.Errorf("%w: persist completed reconciled assignment: %v", ErrAssignmentCommit, err)
 	}
 	return CommitAcceptedAssignmentResult{Intent: intent, Commit: completed}, nil
 }
 
 func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmentInput, cause error) error {
+	beforePause, checkpointErr := cloneCommitRun(input.Run)
+	if checkpointErr != nil {
+		return fmt.Errorf("%w: checkpoint run before pause: %v", ErrAssignmentCommit, checkpointErr)
+	}
 	if input.Run.Status == implementationstate.RunActive {
 		if err := input.Run.Pause(cause.Error()); err != nil {
 			return errors.Join(cause, fmt.Errorf("pause awaiting commit: %w", err))
 		}
 	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+	if event, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+		restoreUndurableCommitRun(input.Run, beforePause, event)
 		return fmt.Errorf("%w: persist paused commit state: %v", ErrAssignmentCommit, errors.Join(cause, err))
 	}
 	return fmt.Errorf("%w: %v", ErrAssignmentCommit, cause)
