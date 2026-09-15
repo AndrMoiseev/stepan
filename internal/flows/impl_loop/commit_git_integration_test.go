@@ -22,7 +22,9 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
 	writeResumeGitSpecification(t, repository)
-	configuration := resumeTestConfiguration(t, "test-model", "")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Rules\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	configuration := resumeTestConfiguration(t, "test-model", "rules/rules.md")
 	store := mustControllerStore(t, t.TempDir())
 	journal, err := store.Create("resume-hook-refusal")
 	if err != nil {
@@ -76,8 +78,15 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	defer stateStore.Close()
 	prepareResumeCommitAcceptance(t, run, stateStore, journal)
 	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [x] task\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
-	preparation := captureCommitPreparation(t, repository)
+	reflection, err := workspace.Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordResumeReflectionEvidence(t, run, stateStore, journal, reflection)
+	preparation, err := CommitPreparationFromSnapshot(reflection)
+	if err != nil {
+		t.Fatal(err)
+	}
 	message := "Commit accepted task"
 	response := commitResponse(run, "commit-1", message)
 	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nexit 1\n")
@@ -87,6 +96,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("hook refusal lost pending acceptance: %#v", run)
 	}
+	writeGitWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Updated rules\n")
 	if err := os.Remove(filepath.Join(repository, ".git", "hooks", "pre-commit")); err != nil {
 		t.Fatal(err)
 	}
@@ -96,12 +106,43 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("resume invalidated accepted pending commit: %#v", run)
 	}
+	if intent := run.Assignments[0].Acceptance.PendingCommit; intent.Tree == preparation.Tree || intent.Tree == "" {
+		t.Fatalf("resume did not durably refresh pending tree after rules-only edit: %#v", intent)
+	}
 	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
 	if err != nil || result.Commit.CommitID == "" {
 		t.Fatalf("retry commit result=%#v err=%v", result, err)
 	}
 	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("commit count=%s, want exactly one retry commit", count)
+	}
+}
+
+func recordResumeReflectionEvidence(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, reflection gitsnapshot.Snapshot) {
+	t.Helper()
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implementationstate.Operation{ID: "reflect-progress", Kind: implementationstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt("reflect-progress"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordRunAttemptOutcome("reflect-progress", implementationstate.AttemptSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(reflection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := journal.Publish("reflect-progress-workspace", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(implementationstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
 	}
 }
 

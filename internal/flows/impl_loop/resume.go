@@ -152,6 +152,8 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	workspaceErr := workspace.EnsureUnchanged(ctx, input.Repository, expected)
 	workspaceChanged := workspaceErr != nil
 	var observed implementationstate.EvidenceRef
+	var refreshedPendingCommit implementationstate.AssignmentID
+	var refreshedPendingTree string
 	if workspaceChanged {
 		if !errors.Is(workspaceErr, gitsnapshot.ErrRepositoryDiverged) {
 			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify working-copy fingerprint", workspaceErr)
@@ -165,7 +167,11 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode manually changed working-copy fingerprint", marshalErr)
 		}
 		pendingCommit := pendingCommitWorkspace(input.Run, expected, actual)
-		reflectedTasks := reflectedTasksWorkspace(ctx, workspace, input.Repository, input.Run, input.Journal, expected, actual)
+		reflectedTasks, reflection := reflectedTasksThenRulesWorkspace(ctx, workspace, input.Repository, input.Run, input.Journal, expected, actual, rules)
+		if reflectedTasks {
+			refreshedPendingCommit = pendingCommitForReflection(input.Run, reflection)
+			refreshedPendingTree = actual.TreeOID
+		}
 		rulesOnly := rulesOnlyWorkspaceChange(ctx, workspace, input.Repository, expected, actual, rules)
 		if !pendingCommit && !reflectedTasks && !rulesOnly {
 			if err := verifyResumeGitControl(expected, actual); err != nil {
@@ -186,6 +192,11 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 
 	if err := candidate.Resume(); err != nil {
 		return ResumeResult{}, err
+	}
+	if refreshedPendingCommit != "" {
+		if err := candidate.RefreshPendingCommitIntentTree(refreshedPendingCommit, refreshedPendingTree); err != nil {
+			return ResumeResult{}, err
+		}
 	}
 	if workspaceChanged {
 		if err := candidate.ObserveCodeState(observed); err != nil {
@@ -376,21 +387,21 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsn
 	return false
 }
 
-func reflectedTasksWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual gitsnapshot.Snapshot) bool {
+func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual gitsnapshot.Snapshot, rules implementationconfig.RulesFileValidation) (bool, gitsnapshot.Snapshot) {
 	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
-		return false
+		// A hook refusal may stage the pending tree. The second delta below is
+		// still constrained by its durable reflection snapshot.
+		if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.SubmodulesHash != expected.SubmodulesHash {
+			return false, gitsnapshot.Snapshot{}
+		}
 	}
 	tasksPath, err := selectedChangeTasksPath(run.Identity.Change)
 	if err != nil {
-		return false
+		return false, gitsnapshot.Snapshot{}
 	}
 	comparer, ok := workspace.(resumeWorkspaceComparer)
 	if !ok {
-		return false
-	}
-	paths, err := comparer.Compare(ctx, repository, expected, actual)
-	if err != nil || len(paths) != 1 || filepath.ToSlash(filepath.Clean(paths[0])) != tasksPath {
-		return false
+		return false, gitsnapshot.Snapshot{}
 	}
 	for _, operation := range run.RunOperations {
 		if operation.Kind != implementationstate.OperationAgent || operation.Description != "reflect accepted task progress in tasks.md" {
@@ -405,16 +416,42 @@ func reflectedTasksWorkspace(ctx context.Context, workspace WorkspaceControl, re
 				continue
 			}
 			var reflected gitsnapshot.Snapshot
-			if json.Unmarshal(data, &reflected) == nil && sameResumeGitSnapshot(reflected, actual) {
-				return true
+			if json.Unmarshal(data, &reflected) != nil || !sameResumeGitControl(reflected, expected) {
+				continue
+			}
+			paths, compareErr := comparer.Compare(ctx, repository, expected, reflected)
+			if compareErr != nil || len(paths) != 1 || filepath.ToSlash(filepath.Clean(paths[0])) != tasksPath {
+				continue
+			}
+			if sameResumeGitSnapshot(reflected, actual) || rulesOnlyWorkspaceChange(ctx, workspace, repository, reflected, actual, rules) {
+				return true, reflected
 			}
 		}
 	}
-	return false
+	return false, gitsnapshot.Snapshot{}
+}
+
+func pendingCommitForReflection(run *implementationstate.Run, reflection gitsnapshot.Snapshot) implementationstate.AssignmentID {
+	if run == nil {
+		return ""
+	}
+	for _, assignment := range run.Assignments {
+		if assignment.Status == implementationstate.AssignmentAcceptedAwaitingCommit && assignment.Acceptance != nil {
+			intent := assignment.Acceptance.PendingCommit
+			if intent.OperationID != "" && intent.ParentCommit == reflection.HeadOID && intent.Tree == reflection.TreeOID {
+				return assignment.ID
+			}
+		}
+	}
+	return ""
 }
 
 func sameResumeGitSnapshot(left, right gitsnapshot.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
+}
+
+func sameResumeGitControl(left, right gitsnapshot.Snapshot) bool {
+	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.IndexHash == right.IndexHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
 func resumeSpecification(pkg openspec.Package) ([]byte, error) {

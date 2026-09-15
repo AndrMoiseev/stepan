@@ -211,11 +211,20 @@ func TestResumePreservesAcceptedPendingCommitAfterInformationalReflection(t *tes
 }
 
 func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T) {
-	fixture := newResumeFixture(t, "")
+	fixture := newResumeFixture(t, "rules/rules.md")
 	prepareAcceptedReflectionEvidence(t, fixture)
-	fixture.workspace.actual.TreeOID = "reflected-tasks-tree"
-	fixture.workspace.actual.StatusHash = "reflected-tasks-status"
-	fixture.workspace.paths = []string{"openspec/changes/change/tasks.md"}
+	fixture.workspace.actual.TreeOID = "reflected-tasks-and-rules-tree"
+	fixture.workspace.actual.StatusHash = "reflected-tasks-and-rules-status"
+	fixture.workspace.compare = func(before, after gitsnapshot.Snapshot) []string {
+		switch {
+		case before.TreeOID == "expected-tree" && after.TreeOID == "reflected-tasks-tree":
+			return []string{"openspec/changes/change/tasks.md"}
+		case before.TreeOID == "reflected-tasks-tree" && after.TreeOID == "reflected-tasks-and-rules-tree":
+			return []string{"rules/rules.md"}
+		default:
+			return nil
+		}
+	}
 
 	if _, err := Resume(context.Background(), fixture.input()); err != nil {
 		t.Fatal(err)
@@ -438,6 +447,7 @@ func writeResumeFile(t *testing.T, path, contents string) {
 type resumeWorkspace struct {
 	actual   gitsnapshot.Snapshot
 	paths    []string
+	compare  func(before, after gitsnapshot.Snapshot) []string
 	restores int
 }
 
@@ -454,7 +464,11 @@ func (workspace *resumeWorkspace) EnsureUnchanged(_ context.Context, _ string, e
 func sameResumeSnapshot(left, right gitsnapshot.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
-func (workspace *resumeWorkspace) Compare(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) ([]string, error) {
+
+func (workspace *resumeWorkspace) Compare(_ context.Context, _ string, before, after gitsnapshot.Snapshot) ([]string, error) {
+	if workspace.compare != nil {
+		return append([]string(nil), workspace.compare(before, after)...), nil
+	}
 	return append([]string(nil), workspace.paths...), nil
 }
 func (workspace *resumeWorkspace) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {

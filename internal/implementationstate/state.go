@@ -1278,6 +1278,26 @@ func (r *Run) SetPendingCommitIntent(assignmentID AssignmentID, intent CommitInt
 	return nil
 }
 
+// RefreshPendingCommitIntentTree replaces only the expected tree of a pending
+// controller commit. Resume uses it after proving that the sole post-intent
+// delta is permitted rules content; the parent, message, operation, accepted
+// state, and acceptance basis remain unchanged.
+func (r *Run) RefreshPendingCommitIntentTree(assignmentID AssignmentID, tree string) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	index := r.assignmentIndex(assignmentID)
+	if index < 0 || strings.TrimSpace(tree) == "" {
+		return fmt.Errorf("%w: assignment cannot refresh pending commit tree", ErrInvalidTransition)
+	}
+	assignment := &r.Assignments[index]
+	if assignment.Status != AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !assignment.Acceptance.PendingCommit.valid() {
+		return fmt.Errorf("%w: assignment cannot refresh pending commit tree", ErrInvalidTransition)
+	}
+	assignment.Acceptance.PendingCommit.Tree = tree
+	return nil
+}
+
 // CommitAssignment is the only transition that completes selected leaves.
 func (r *Run) CommitAssignment(assignmentID AssignmentID, evidence CommitEvidence) error {
 	if err := r.requireActive(); err != nil {
