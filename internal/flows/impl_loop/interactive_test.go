@@ -1,0 +1,276 @@
+package impl_loop
+
+import (
+	"context"
+	"errors"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+)
+
+func TestCommandsForLifecycleShowsOnlyValidCommands(t *testing.T) {
+	tests := []struct {
+		name      string
+		lifecycle ImplementationLifecycle
+		want      []InteractiveCommand
+	}{
+		{"no run", LifecycleNoRun, []InteractiveCommand{CommandImplement, CommandStatus}},
+		{"active", LifecycleActive, []InteractiveCommand{CommandPause, CommandStop, CommandStatus}},
+		{"paused", LifecyclePaused, []InteractiveCommand{CommandResume, CommandStop, CommandStatus}},
+		{"closed", LifecycleClosed, []InteractiveCommand{CommandImplement, CommandStatus}},
+		{"succeeded", LifecycleSucceeded, []InteractiveCommand{CommandImplement, CommandStatus}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			hints := CommandsForLifecycle(test.lifecycle)
+			got := make([]InteractiveCommand, 0, len(hints))
+			for _, hint := range hints {
+				got = append(got, hint.Command)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("menu commands = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestImplementationInteractiveControllerRejectsUnavailableCommandWithoutMutation(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	controller := ImplementationInteractiveController{
+		Current: func(context.Context) (*InteractiveRun, error) {
+			return &InteractiveRun{Run: run, Control: control}, nil
+		},
+		Start: func(context.Context, string) (*InteractiveRun, error) {
+			starts++
+			return nil, errors.New("must not start")
+		},
+	}
+
+	menu, message, err := controller.Dispatch(context.Background(), "/implement different-change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "/implement is unavailable while the run is active" {
+		t.Fatalf("unavailable command message = %q", message)
+	}
+	if menu.Lifecycle != LifecycleActive || starts != 0 || run.Status != implementationstate.RunActive {
+		t.Fatalf("unavailable command changed lifecycle: menu=%#v starts=%d run=%s", menu, starts, run.Status)
+	}
+}
+
+func TestImplementationInteractiveControllerPauseAndStopUseDurableUserControl(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		input   string
+		want    implementationstate.RunStatus
+		message string
+	}{
+		{"pause active work", "/pause", implementationstate.RunPaused, "implementation run paused"},
+		{"stop active work", "/stop", implementationstate.RunClosed, "implementation run closed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run, state, journal, _ := newInitialCheckRun(t)
+			defer state.Close()
+			control, err := NewUserRunControl(run, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) {
+				return &InteractiveRun{Run: run, Control: control}, nil
+			}}
+
+			menu, message, err := controller.Dispatch(context.Background(), test.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message != test.message || run.Status != test.want || menu.Lifecycle != lifecycleForRun(run) {
+				t.Fatalf("route result: menu=%#v message=%q run=%#v", menu, message, run)
+			}
+			persisted, _, err := state.Current(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if persisted.Status != test.want {
+				t.Fatalf("durable status = %s, want %s (journal %s)", persisted.Status, test.want, journal.ID())
+			}
+		})
+	}
+}
+
+func TestImplementationInteractiveControllerPauseAndStopInterruptActiveOperation(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input string
+		want  implementationstate.RunStatus
+	}{
+		{"pause", "/pause", implementationstate.RunPaused},
+		{"stop", "/stop", implementationstate.RunClosed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			run, state, _, _ := newInitialCheckRun(t)
+			defer state.Close()
+			control, err := NewUserRunControl(run, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation, finish, err := control.BeginOperation(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) {
+				return &InteractiveRun{Run: run, Control: control}, nil
+			}}
+			done := make(chan error, 1)
+			go func() {
+				_, _, dispatchErr := controller.Dispatch(context.Background(), test.input)
+				done <- dispatchErr
+			}()
+			select {
+			case <-operation.Done():
+			case <-time.After(time.Second):
+				t.Fatal("route did not interrupt active operation")
+			}
+			if !UserOperationInterrupted(operation) {
+				t.Fatalf("operation cancellation cause = %v", context.Cause(operation))
+			}
+			finish()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != test.want {
+				t.Fatalf("run status after route interruption = %s, want %s", run.Status, test.want)
+			}
+		})
+	}
+}
+
+func TestImplementationInteractiveControllerResumeUsesReconciliationGate(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	control, err := NewUserRunControl(fixture.run, fixture.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continued := 0
+	controller := ImplementationInteractiveController{
+		Current: func(context.Context) (*InteractiveRun, error) {
+			return &InteractiveRun{Run: fixture.run, Control: control, ResumeInput: fixture.input()}, nil
+		},
+		Continue: func(_ context.Context, run *InteractiveRun) error {
+			continued++
+			if run.Run.Status != implementationstate.RunActive {
+				t.Fatalf("continue received status %s", run.Run.Status)
+			}
+			return nil
+		},
+	}
+
+	menu, message, err := controller.Dispatch(context.Background(), "/resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "implementation run resumed" || fixture.run.Status != implementationstate.RunActive || continued != 1 {
+		t.Fatalf("resume route = menu=%#v message=%q status=%s continued=%d", menu, message, fixture.run.Status, continued)
+	}
+	if menu.Lifecycle != LifecycleActive {
+		t.Fatalf("post-resume menu lifecycle = %v", menu.Lifecycle)
+	}
+}
+
+func TestRunImplementationInteractiveRendersActiveThenPausedMenu(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := &interactiveUIFake{inputs: []string{"/pause"}}
+	controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) {
+		return &InteractiveRun{Run: run, Control: control}, nil
+	}}
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	if len(ui.menus) != 2 {
+		t.Fatalf("prompt menus = %d, want active then paused", len(ui.menus))
+	}
+	if ui.menus[0].Lifecycle != LifecycleActive || ui.menus[1].Lifecycle != LifecyclePaused {
+		t.Fatalf("prompt lifecycles = %#v", ui.menus)
+	}
+	if !slices.Equal(commandsFromHints(ui.menus[0].Commands), []InteractiveCommand{CommandPause, CommandStop, CommandStatus}) || !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandResume, CommandStop, CommandStatus}) {
+		t.Fatalf("rendered menus = %#v", ui.menus)
+	}
+	if !slices.Equal(ui.messages, []string{"implementation run paused"}) {
+		t.Fatalf("reported messages = %#v", ui.messages)
+	}
+}
+
+func TestRunImplementationInteractiveReportsManuallyEnteredUnavailableCommand(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	control, err := NewUserRunControl(run, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ui := &interactiveUIFake{inputs: []string{"/resume"}}
+	controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) {
+		return &InteractiveRun{Run: run, Control: control}, nil
+	}}
+	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ui.messages, []string{"/resume is unavailable while the run is active"}) {
+		t.Fatalf("unavailable-command feedback = %#v", ui.messages)
+	}
+	if run.Status != implementationstate.RunActive || len(ui.errors) != 0 {
+		t.Fatalf("unavailable command mutated run or reported an error: run=%s errors=%#v", run.Status, ui.errors)
+	}
+}
+
+func TestStatusIsReadOnly(t *testing.T) {
+	run, state, _, _ := newInitialCheckRun(t)
+	defer state.Close()
+	controller := ImplementationInteractiveController{Current: func(context.Context) (*InteractiveRun, error) { return &InteractiveRun{Run: run}, nil }}
+	_, message, err := controller.Dispatch(context.Background(), "/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "implementation run initial-baseline is active" || run.Status != implementationstate.RunActive {
+		t.Fatalf("status route mutated run: message=%q state=%#v", message, run)
+	}
+}
+
+func commandsFromHints(hints []CommandHint) []InteractiveCommand {
+	result := make([]InteractiveCommand, 0, len(hints))
+	for _, hint := range hints {
+		result = append(result, hint.Command)
+	}
+	return result
+}
+
+type interactiveUIFake struct {
+	inputs   []string
+	menus    []CommandMenu
+	messages []string
+	errors   []error
+}
+
+func (ui *interactiveUIFake) Prompt(menu CommandMenu) (string, error) {
+	ui.menus = append(ui.menus, menu)
+	if len(ui.inputs) == 0 {
+		return "", ErrInteractiveInputCanceled
+	}
+	input := ui.inputs[0]
+	ui.inputs = ui.inputs[1:]
+	return input, nil
+}
+
+func (ui *interactiveUIFake) Report(message string) { ui.messages = append(ui.messages, message) }
+func (ui *interactiveUIFake) ReportError(err error) { ui.errors = append(ui.errors, err) }
