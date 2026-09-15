@@ -504,3 +504,12 @@
 - Expected impact: transient persistence errors can require restart reconciliation.
 - Classification: technical debt because ordinary persistence succeeds and later recovery tasks cover interrupted Git reconciliation.
 - Possible follow-up: transition a clone, record it durably, then adopt the candidate.
+## TD-10.3-002 — reconciled commit evidence refs are not included in runstore reference validation
+
+- Origin: task 10.3 rereview cycle 1; affected location: `internal/runstore/state.go` (`stateEvidenceRefs`).
+- Status: `open`.
+- Potential problem: `Assignment.ReconciledCommits` state/basis references are omitted from linked evidence verification.
+- Evidence: orphaned or tampered reconciliation artifacts can escape the generic state reference walk.
+- Expected impact: later recovery can trust incomplete reconciliation evidence until a route-specific read fails.
+- Classification: technical debt because normal controller publication produces valid refs and no ordinary path corrupts them.
+- Possible follow-up: include reconciled commit state and basis refs in the runstore evidence graph and add tamper/orphan tests.

@@ -160,12 +160,32 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 		t.Fatalf("reconciled commit did not survive journal reload: %#v", run.Assignments[0])
 	}
 
-	// No post-hook edit is made. Fresh acceptance therefore proves the exact
-	// hook-created commit and must not invoke Git or create an empty child.
+	// No post-hook edit is made. A fresh check may publish the same snapshot
+	// under a new evidence ID, so completion must compare verified digest rather
+	// than EvidenceRef equality and must not invoke Git or create an empty child.
+	originalState := run.Assignments[0].ReconciledCommits[0].State
+	snapshotData, err := journal.Read(originalState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	freshState, err := journal.Publish("fresh-check-state-after-reload", snapshotData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshState.ID == originalState.ID || freshState.Digest != originalState.Digest {
+		t.Fatalf("fresh equivalent state = %#v, original = %#v", freshState, originalState)
+	}
+	if err := run.ObserveCodeState(freshState); err != nil {
+		t.Fatal(err)
+	}
 	reacceptAfterHook(t, run, stateStore)
-	completed, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", "Reaccept hook result"), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	control := &failOnCallCommitControl{}
+	completed, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", "Reaccept hook result"), Preparation: captureCommitPreparation(t, repository), Control: control})
 	if err != nil || completed.Commit.CommitID != firstCommit || completed.Intent.OperationID != "commit-1" {
 		t.Fatalf("unchanged reacceptance did not reuse hook commit: error=%v result=%#v", err, completed)
+	}
+	if control.calls != 0 {
+		t.Fatalf("reused hook commit invoked a second Git commit %d times", control.calls)
 	}
 	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("unchanged reacceptance created a corrective commit: count=%s", count)
@@ -173,6 +193,13 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete {
 		t.Fatalf("reused hook commit did not complete machine status: %#v", run)
 	}
+}
+
+type failOnCallCommitControl struct{ calls int }
+
+func (control *failOnCallCommitControl) Commit(context.Context, string, string) (CommitObservation, error) {
+	control.calls++
+	return CommitObservation{}, errors.New("reused hook commit must not invoke Git")
 }
 
 func captureCommitPreparation(t *testing.T, repository string) CommitPreparation {

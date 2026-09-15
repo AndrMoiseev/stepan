@@ -140,7 +140,11 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if err != nil {
 		return CommitAcceptedAssignmentResult{}, err
 	}
-	if reconciled, ok := reusableReconciledCommit(input); ok {
+	reconciled, ok, err := reusableReconciledCommit(input)
+	if err != nil {
+		return CommitAcceptedAssignmentResult{}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("verify retained hook-created commit: %w", err))
+	}
+	if ok {
 		return finalizeReconciledCommit(ctx, input, reconciled)
 	}
 	control := input.Control
@@ -224,35 +228,59 @@ func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentI
 // acceptance proves exactly the state published during reconciliation. The
 // current snapshot-derived preparation additionally proves that no later edit
 // requires a corrective child commit.
-func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implementationstate.CommitEvidence, bool) {
+func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implementationstate.CommitEvidence, bool, error) {
 	assignment := assignmentByID(input.Run, input.AssignmentID)
 	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
-		return implementationstate.CommitEvidence{}, false
+		return implementationstate.CommitEvidence{}, false, nil
+	}
+	if len(assignment.ReconciledCommits) != 0 && input.Journal == nil {
+		return implementationstate.CommitEvidence{}, false, errors.New("run journal is required to verify retained hook-created commit")
 	}
 	for index := len(assignment.ReconciledCommits) - 1; index >= 0; index-- {
 		commit := assignment.ReconciledCommits[index]
-		if commit.State == assignment.Acceptance.State && commit.Basis == assignment.Acceptance.Basis && commit.CommitID == input.Preparation.ParentCommit && commit.Tree == input.Preparation.Tree {
-			return commit, true
+		if commit.Basis != assignment.Acceptance.Basis || commit.CommitID != input.Preparation.ParentCommit || commit.Tree != input.Preparation.Tree || commit.State.Digest != assignment.Acceptance.State.Digest {
+			continue
 		}
+		// Different evidence IDs are expected after a fresh check publishes the
+		// same snapshot. Verify both immutable artifacts, then compare their
+		// content identity (digest), not their transport IDs.
+		if err := input.Journal.VerifyReference(commit.State); err != nil {
+			return implementationstate.CommitEvidence{}, false, fmt.Errorf("verify reconciled state %q: %w", commit.State.ID, err)
+		}
+		if err := input.Journal.VerifyReference(assignment.Acceptance.State); err != nil {
+			return implementationstate.CommitEvidence{}, false, fmt.Errorf("verify accepted state %q: %w", assignment.Acceptance.State.ID, err)
+		}
+		return commit, true, nil
 	}
-	return implementationstate.CommitEvidence{}, false
+	return implementationstate.CommitEvidence{}, false, nil
 }
 
 func finalizeReconciledCommit(ctx context.Context, input CommitAcceptedAssignmentInput, commit implementationstate.CommitEvidence) (CommitAcceptedAssignmentResult, error) {
 	intent := implementationstate.CommitIntent{OperationID: commit.OperationID, ParentCommit: commit.ParentCommit, Tree: commit.Tree, Message: commit.Message}
+	assignment := assignmentByID(input.Run, input.AssignmentID)
+	if assignment == nil || assignment.Acceptance == nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: accepted assignment disappeared before reconciled completion", ErrAssignmentCommit)
+	}
+	// The retained observation remains in ReconciledCommits with its original
+	// artifact ID. CommitAssignment records the newly accepted equivalent state
+	// so its exact-state invariant remains true even when fresh checks used a
+	// new evidence transport ID for identical snapshot content.
+	completed := commit
+	completed.State = assignment.Acceptance.State
+	completed.Basis = assignment.Acceptance.Basis
 	if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
 		return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record reconciled commit intent: %v", ErrAssignmentCommit, err)
 	}
 	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: persist reconciled commit intent: %v", ErrAssignmentCommit, err)
 	}
-	if err := input.Run.CommitAssignment(input.AssignmentID, commit); err != nil {
+	if err := input.Run.CommitAssignment(input.AssignmentID, completed); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: complete reconciled commit: %v", ErrAssignmentCommit, err)
 	}
 	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
-		return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, fmt.Errorf("%w: persist completed reconciled assignment: %v", ErrAssignmentCommit, err)
+		return CommitAcceptedAssignmentResult{Intent: intent, Commit: completed}, fmt.Errorf("%w: persist completed reconciled assignment: %v", ErrAssignmentCommit, err)
 	}
-	return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, nil
+	return CommitAcceptedAssignmentResult{Intent: intent, Commit: completed}, nil
 }
 
 func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmentInput, cause error) error {
