@@ -79,6 +79,32 @@ func TestFinalBlockingFindingCannotCloseTheRun(t *testing.T) {
 	}
 }
 
+func TestFinalReviewerExecutionBlockedPausesWithoutFinalReviewResult(t *testing.T) {
+	fixture := newCompletedFinalFixture(t)
+	defer fixture.state.Close()
+	if _, err := RunFinalRequiredChecks(context.Background(), FinalRequiredChecks{
+		Run: fixture.run, Workspace: &unchangedWorkspaceControl{}, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
+		Selection: fixture.selection, Runner: fixture.runner, MaxCycles: 3, Operation: "final-checks", Result: "final-checks-result",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	result, err := runFinalReviewerTurn(context.Background(), FinalReviewInput{
+		Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
+		CheckResult: "final-checks-result", OperationID: "final-review", ResultID: "final-review-result", CallID: "final-review-call", RoundID: "round-1", Limits: controlledCallLimits(),
+	}, &AgentSession{Role: ResponseRoleFinalReviewer, runtime: runtime, thread: "final-reviewer"}, "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.Kind != ResponseExecutionBlocked || result.Attempts != 1 || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" || len(fixture.run.ExecutionBlock.Attempts) != 2 || fixture.run.ExecutionBlock.RequiredUserAction != "install the configured tool" || fixture.run.FinalAcceptance != nil || finalRunResult(fixture.run, "final-review-result") != nil {
+		t.Fatalf("final reviewer execution block advanced acceptance: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
+	}
+	restarted, _, err := fixture.state.Current(context.Background())
+	if err != nil || restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil || restarted.FinalAcceptance != nil || finalRunResult(restarted, "final-review-result") != nil {
+		t.Fatalf("final reviewer execution block was not durable: run=%#v error=%v", restarted, err)
+	}
+}
+
 func TestFinalReviewRoutesExplorerAndContinuesTheSameReviewerSession(t *testing.T) {
 	fixture := newCompletedFinalFixture(t)
 	defer fixture.state.Close()

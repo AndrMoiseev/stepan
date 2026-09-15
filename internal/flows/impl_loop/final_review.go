@@ -577,6 +577,10 @@ func currentSuccessfulFinalChecks(run *implementationstate.Run, id implementatio
 }
 
 func validateFinalReviewerResponse(response AgentResponse) error {
+	if response.Kind == ResponseExecutionBlocked {
+		_, err := ExecutionBlockFromResponse(response)
+		return err
+	}
 	if response.Kind != ResponseReviewPassed && response.Kind != ResponseChangesRequested && response.Kind != ResponseClarificationNeeded && response.Kind != ResponseExplorationRequested {
 		return fmt.Errorf("%w: final reviewer must pass, request blocking changes, raise a specification question, or request exploration", ErrFinalAcceptanceRoute)
 	}
