@@ -99,10 +99,23 @@ func (s InitialBaselineStatus) valid() bool {
 // child is a unit of implementation. Parent status is calculated from children
 // and is never independently persisted or changed.
 type Task struct {
-	ID       TaskID
-	ParentID TaskID
-	Order    int
-	Title    string
+	ID            TaskID
+	ParentID      TaskID
+	Order         int
+	Title         string
+	FinalFindings []FinalFindingReference `json:"final_findings,omitempty"`
+}
+
+// FinalFindingReference makes a corrective task traceable to the durable
+// failed final-review result that required it. Source tasks deliberately have
+// no such reference.
+type FinalFindingReference struct {
+	ReviewResultID ResultID `json:"review_result_id"`
+	FindingID      string   `json:"finding_id"`
+}
+
+func (r FinalFindingReference) valid() bool {
+	return r.ReviewResultID != "" && strings.TrimSpace(r.FindingID) != ""
 }
 
 // TaskStatus is persisted only for leaves. Parent status is derived by
@@ -718,6 +731,48 @@ func (r *Run) CompleteInitialTaskExtraction(tasks []Task) error {
 	return nil
 }
 
+// AppendFinalFindingTasks appends root leaf tasks after a failed final review.
+// It deliberately leaves completed source tasks and all prior assignments
+// untouched; the normal briefer, implementer, checks, review, and commit
+// transitions own the newly pending leaves.
+func (r *Run) AppendFinalFindingTasks(tasks []Task) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	if !r.hasCurrentInitialBaseline() || r.hasOpenAssignment() || len(tasks) == 0 {
+		return fmt.Errorf("%w: final finding tasks require a completed run task list", ErrInvalidTransition)
+	}
+	for _, status := range r.LeafStatus {
+		if status != TaskComplete {
+			return fmt.Errorf("%w: final finding tasks require completed prior leaves", ErrInvalidTransition)
+		}
+	}
+	seen := make(map[TaskID]bool, len(r.Tasks)+len(tasks))
+	for _, task := range r.Tasks {
+		seen[task.ID] = true
+	}
+	for index, task := range tasks {
+		if task.ID == "" || strings.TrimSpace(task.Title) == "" || task.ParentID != "" || task.Order != len(r.Tasks)+index || seen[task.ID] || len(task.FinalFindings) == 0 {
+			return fmt.Errorf("%w: invalid appended final finding task", ErrInvalidState)
+		}
+		findingSeen := make(map[string]bool, len(task.FinalFindings))
+		for _, finding := range task.FinalFindings {
+			key := string(finding.ReviewResultID) + "\x00" + finding.FindingID
+			if !finding.valid() || findingSeen[key] || !r.isFailedFinalReview(finding.ReviewResultID) {
+				return fmt.Errorf("%w: invalid final finding provenance", ErrInvalidState)
+			}
+			findingSeen[key] = true
+		}
+		seen[task.ID] = true
+	}
+	for _, task := range tasks {
+		r.Tasks = append(r.Tasks, cloneTask(task))
+		r.LeafStatus[task.ID] = TaskPending
+	}
+	r.invalidateFinalAcceptance()
+	return nil
+}
+
 // Validate checks serializable state loaded by a future store.
 func (r *Run) Validate() error {
 	if r == nil || r.Identity.validate() != nil || !r.Status.valid() || !r.CurrentState.valid() {
@@ -907,6 +962,14 @@ func (r *Run) validateStructure() error {
 		if task.ID == "" || task.Title == "" || task.Order != index || seen[task.ID].ID != "" {
 			return fmt.Errorf("%w: invalid ordered task at %d", ErrInvalidState, index)
 		}
+		findingSeen := make(map[string]bool, len(task.FinalFindings))
+		for _, finding := range task.FinalFindings {
+			key := string(finding.ReviewResultID) + "\x00" + finding.FindingID
+			if !finding.valid() || findingSeen[key] || !r.isFailedFinalReview(finding.ReviewResultID) {
+				return fmt.Errorf("%w: task %q has invalid final finding provenance", ErrInvalidState, task.ID)
+			}
+			findingSeen[key] = true
+		}
 		if task.ParentID != "" {
 			parent, ok := seen[task.ParentID]
 			if !ok || parent.Order >= task.Order {
@@ -916,6 +979,15 @@ func (r *Run) validateStructure() error {
 		seen[task.ID] = task
 	}
 	return nil
+}
+
+func (r *Run) isFailedFinalReview(id ResultID) bool {
+	result := r.runResult(id)
+	if result == nil || result.Status != ResultFailed {
+		return false
+	}
+	operation := r.runOperation(result.OperationID)
+	return operation != nil && operation.Kind == OperationReview && operation.Counter == CycleCounterFinalReview
 }
 
 func (r *Run) isLeaf(id TaskID) bool {
@@ -2304,6 +2376,11 @@ func cloneFinalAcceptance(evidence FinalAcceptanceEvidence) *FinalAcceptanceEvid
 	evidence.CheckResultIDs = slices.Clone(evidence.CheckResultIDs)
 	evidence.OpenFindingIDs = slices.Clone(evidence.OpenFindingIDs)
 	return &evidence
+}
+
+func cloneTask(task Task) Task {
+	task.FinalFindings = slices.Clone(task.FinalFindings)
+	return task
 }
 
 func cloneTaskReview(record TaskReviewRecord) TaskReviewRecord {
