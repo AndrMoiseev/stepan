@@ -6,9 +6,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
@@ -34,6 +37,122 @@ func TestResumeReconcilesPausedRunAndPreservesManualWorkingCopyChanges(t *testin
 	}
 	if fixture.workspace.restores != 0 {
 		t.Fatalf("resume restored manual worktree changes %d times", fixture.workspace.restores)
+	}
+}
+
+func TestResumeRunsEntireRequiredSetWithoutConsumingAttempts(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	fixture.load = func(string) (implementationconfig.Configuration, error) {
+		return resumeChecksConfiguration(t, `{
+"lint":{"kind":"lint","command":{"program":"lint","args":[]}},
+"test_all":{"kind":"tests","command":{"program":"test_all","args":[]}},
+"build":{"kind":"build","command":{"program":"build","args":[]}}}`, `["lint","test_all","build"]`), nil
+	}
+	var calls []string
+	input := fixture.input()
+	input.Runner = CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		calls = append(calls, command.Program)
+		return checkexec.Result{}, nil
+	})
+
+	result, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := calls, []string{"lint", "test_all", "build"}; !slices.Equal(got, want) {
+		t.Fatalf("resume required-check order = %#v, want %#v", got, want)
+	}
+	if fixture.run.Status != implementationstate.RunActive || !result.ResumeChecks.Succeeded() || result.ResumeCheckEvidence.ID == "" {
+		t.Fatalf("resume did not return active only after fresh required evidence: result=%#v run=%#v", result, fixture.run)
+	}
+	operation := fixture.run.RunOperations[len(fixture.run.RunOperations)-1]
+	if !operation.UncountedResumeCheck || operation.Counter != implementationstate.CycleCounterNone || len(operation.Attempts) != 0 {
+		t.Fatalf("resume checks consumed attempts: %#v", operation)
+	}
+	if len(fixture.run.RunResults) != 1 || fixture.run.RunResults[0].Status != implementationstate.ResultSucceeded {
+		t.Fatalf("resume checks did not retain successful result: %#v", fixture.run.RunResults)
+	}
+}
+
+func TestResumeInterruptedRequiredCommandRestartsCompleteSetFromFirstCheck(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	fixture.load = func(string) (implementationconfig.Configuration, error) {
+		return resumeChecksConfiguration(t, `{
+"lint":{"kind":"lint","command":{"program":"lint","args":[]}},
+"test_all":{"kind":"tests","command":{"program":"test_all","args":[]}}}`, `["lint","test_all"]`), nil
+	}
+	var calls []string
+	interrupted := true
+	firstContext, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	input := fixture.input()
+	input.Runner = CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		calls = append(calls, command.Program)
+		if interrupted {
+			interrupted = false
+			cancelFirst()
+			return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureCanceled, Stderr: []byte("process ended during lint")}, context.Canceled
+		}
+		return checkexec.Result{}, nil
+	})
+
+	first, err := Resume(firstContext, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.run.Status != implementationstate.RunPaused || first.ResumeChecks.Results[0].Status != CheckFailed || first.ResumeChecks.Results[1].Status != CheckNotRun || fixture.run.RunResults[0].Status != implementationstate.ResultInterrupted {
+		t.Fatalf("interrupted resume check did not remain a diagnostic pause: result=%#v run=%#v", first, fixture.run)
+	}
+	second, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := calls, []string{"lint", "lint", "test_all"}; !slices.Equal(got, want) {
+		t.Fatalf("resume continued an interrupted set instead of restarting it: %#v, want %#v", got, want)
+	}
+	if fixture.run.Status != implementationstate.RunActive || !second.ResumeChecks.Succeeded() {
+		t.Fatalf("second resume did not establish fresh full evidence: result=%#v run=%#v", second, fixture.run)
+	}
+	for _, operation := range fixture.run.RunOperations {
+		if operation.UncountedResumeCheck && len(operation.Attempts) != 0 {
+			t.Fatalf("resume check retained an attempt: %#v", operation)
+		}
+	}
+}
+
+func TestResumeRequiredCheckFailurePersistsPauseAndDoesNotCreateSessions(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	changed := resumeTestConfiguration(t, "changed-model", "")
+	fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+	owner, err := NewSessionOwner(PreparedRuntimes{}, threadConfigForTest(fixture.repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := fixture.input()
+	input.SessionOwner = &owner
+	input.SessionBase = threadConfigForTest(fixture.repository)
+	var calls []string
+	input.Runner = CheckRunnerFunc(func(_ context.Context, command checkexec.Command) (checkexec.Result, error) {
+		calls = append(calls, command.Program)
+		return checkexec.Result{ExitCode: 1, Stderr: []byte("unit failed")}, nil
+	})
+
+	result, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := calls, []string{"unit"}; !slices.Equal(got, want) {
+		t.Fatalf("failed resume ran unexpected commands: %#v, want %#v", got, want)
+	}
+	if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "unit failed") || result.ResumeChecks.Results[0].Status != CheckFailed {
+		t.Fatalf("failed resume check did not persist diagnostic pause: result=%#v run=%#v", result, fixture.run)
+	}
+	if owner == nil || result.SessionsRecreated {
+		t.Fatalf("resume check failure created or replaced sessions before the gate passed: result=%#v", result)
+	}
+	operation := fixture.run.RunOperations[len(fixture.run.RunOperations)-1]
+	if !operation.UncountedResumeCheck || len(operation.Attempts) != 0 {
+		t.Fatalf("failed resume check consumed attempts: %#v", operation)
 	}
 }
 
@@ -235,6 +354,31 @@ func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T
 	}
 }
 
+func TestResumeCheckGeneratedChangeInvalidatesAcceptedState(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	preparePendingCommitReflection(t, fixture)
+	fixture.workspace.diff = func(before, after gitsnapshot.Snapshot) gitsnapshot.Difference {
+		if before.TreeOID != after.TreeOID || before.StatusHash != after.StatusHash {
+			return gitsnapshot.Difference{Paths: []string{"generated.go"}}
+		}
+		return gitsnapshot.Difference{}
+	}
+	input := fixture.input()
+	input.Runner = CheckRunnerFunc(func(_ context.Context, _ checkexec.Command) (checkexec.Result, error) {
+		fixture.workspace.actual.TreeOID = "generated-by-resume-check"
+		fixture.workspace.actual.StatusHash = "generated-by-resume-check-status"
+		return checkexec.Result{}, nil
+	})
+
+	if _, err := Resume(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	assignment := fixture.run.Assignments[0]
+	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentActive || assignment.Acceptance != nil || fixture.run.CurrentState == fixture.baseline {
+		t.Fatalf("resume check-generated mutation did not invalidate acceptance: %#v", fixture.run)
+	}
+}
+
 type resumeFixture struct {
 	repository    string
 	run           *implementationstate.Run
@@ -319,7 +463,11 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 }
 
 func (fixture *resumeFixture) input() ResumeInput {
-	return ResumeInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace, ConfigurationLoader: fixture.load, ClassifySpecificationChange: fixture.classify}
+	return ResumeInput{
+		Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace,
+		Runner:              CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		ConfigurationLoader: fixture.load, ClassifySpecificationChange: fixture.classify,
+	}
 }
 
 func preparePendingCommitReflection(t *testing.T, fixture *resumeFixture) {
@@ -426,6 +574,16 @@ func resumeTestConfiguration(t *testing.T, model, rulesFile string) implementati
 	return configuration
 }
 
+func resumeChecksConfiguration(t *testing.T, checks, required string) implementationconfig.Configuration {
+	t.Helper()
+	profiles := `{"low":{"provider":"test","model":"initial-model"},"medium":{"provider":"test","model":"initial-model"},"high":{"provider":"test","model":"initial-model"},"ultra":{"provider":"test","model":"initial-model"}}`
+	configuration, err := implementationconfig.Merge(implementationconfig.Sources{Project: json.RawMessage(`{"profiles":` + profiles + `,"checks":` + checks + `,"required_checks":` + required + `}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return configuration
+}
+
 func resumeSnapshot(tree, status string) gitsnapshot.Snapshot {
 	return gitsnapshot.Snapshot{HeadOID: "head", HeadRef: "refs/heads/feature", TreeOID: tree, IndexHash: "index", StatusHash: status, SubmodulesHash: "submodules"}
 }
@@ -448,6 +606,7 @@ type resumeWorkspace struct {
 	actual   gitsnapshot.Snapshot
 	paths    []string
 	compare  func(before, after gitsnapshot.Snapshot) []string
+	diff     func(before, after gitsnapshot.Snapshot) gitsnapshot.Difference
 	restores int
 }
 
@@ -471,7 +630,10 @@ func (workspace *resumeWorkspace) Compare(_ context.Context, _ string, before, a
 	}
 	return append([]string(nil), workspace.paths...), nil
 }
-func (workspace *resumeWorkspace) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+func (workspace *resumeWorkspace) Diff(_ context.Context, _ string, before, after gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+	if workspace.diff != nil {
+		return workspace.diff(before, after), nil
+	}
 	return gitsnapshot.Difference{}, nil
 }
 func (workspace *resumeWorkspace) RestorePaths(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot, []string) (gitsnapshot.Snapshot, error) {

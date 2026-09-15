@@ -30,14 +30,20 @@ var (
 )
 
 // ResumeInput supplies the controller-owned resources for one explicit
-// /resume. It deliberately has no check runner: required checks are the
-// separate task-11.4 gate and must run only after this reconciliation succeeds.
+// /resume. The required-check runner is deliberately controller-owned: after
+// reconciliation every resume must establish fresh mandatory evidence before
+// any session can be created or other work can continue.
 type ResumeInput struct {
 	Run        *implementationstate.Run
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
 	Workspace  WorkspaceControl
+	Runner     CheckRunner
+	// UserControl makes the resume check set subject to the same pause/stop
+	// boundary as every other configured command.
+	UserControl    *UserRunControl
+	ProtectedPaths []string
 
 	// Factories are preflighted against the newly loaded profiles. Supplying no
 	// factories is useful to callers that reconcile inputs before their runtime
@@ -69,13 +75,16 @@ type SpecificationChange struct {
 // ResumeResult describes the reconciled inputs. Manual changes are observed
 // and retained; no resume path resets, checks out, or overwrites the worktree.
 type ResumeResult struct {
-	Configuration        implementationconfig.Configuration
-	Checks               implementationconfig.CheckSelection
-	Rules                implementationconfig.RulesFileValidation
-	Prepared             PreparedRuntimes
-	WorkspaceChanged     bool
-	ConfigurationChanged bool
-	SessionsRecreated    bool
+	Configuration         implementationconfig.Configuration
+	Checks                implementationconfig.CheckSelection
+	Rules                 implementationconfig.RulesFileValidation
+	Prepared              PreparedRuntimes
+	WorkspaceChanged      bool
+	ConfigurationChanged  bool
+	SessionsRecreated     bool
+	ResumeChecks          CheckSet
+	ResumeCheckDiagnostic string
+	ResumeCheckEvidence   implementationstate.EvidenceRef
 }
 
 // Resume reconciles an already-paused run with its working copy, complete
@@ -85,8 +94,9 @@ type ResumeResult struct {
 // unverifiable saved workspace fingerprint the run remains paused with a
 // durable execution-block diagnostic. A controller-classified scope change
 // closes the run; a compatible specification refreshes durable inputs.
-// Successful reconciliation makes the run active; callers then apply the
-// required-check gate before dispatching any further work.
+// Successful reconciliation runs the complete required-check gate before any
+// session is recreated or other work may continue. A failed gate leaves the
+// run paused with durable diagnostics and never dispatches an implementer.
 func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if err := validateResumeInput(input); err != nil {
 		return ResumeResult{}, err
@@ -229,6 +239,16 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	}
 
 	result := ResumeResult{Configuration: configuration, Checks: checks, Rules: rules, Prepared: prepared, WorkspaceChanged: workspaceChanged, ConfigurationChanged: configurationChanged}
+	resumeChecks, err := runResumeRequiredChecks(ctx, input, checks)
+	result.ResumeChecks = resumeChecks.Set
+	result.ResumeCheckDiagnostic = resumeChecks.Diagnostic
+	result.ResumeCheckEvidence = resumeChecks.Evidence
+	if err != nil {
+		return result, err
+	}
+	if input.Run.Status != implementationstate.RunActive {
+		return result, nil
+	}
 	if configurationChanged && input.SessionOwner != nil {
 		owner, recreateErr := NewSessionOwner(prepared, input.SessionBase)
 		if recreateErr != nil {
@@ -247,8 +267,8 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 }
 
 func validateResumeInput(input ResumeInput) error {
-	if input.Run == nil || input.StateStore == nil || input.Journal == nil || strings.TrimSpace(input.Repository) == "" {
-		return errors.New("implementation resume requires run, state store, journal, and repository")
+	if input.Run == nil || input.StateStore == nil || input.Journal == nil || input.Runner == nil || strings.TrimSpace(input.Repository) == "" {
+		return errors.New("implementation resume requires run, state store, journal, repository, and check runner")
 	}
 	if input.Run.Status != implementationstate.RunPaused {
 		return fmt.Errorf("%w: only a paused run can resume", implementationstate.ErrInvalidTransition)
