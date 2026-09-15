@@ -2,6 +2,7 @@ package impl_loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // DefaultExplorerResponseCharacters is a Unicode-character limit, not a byte
@@ -97,6 +99,24 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 			if err := validateRecoveredExplorerResponse(call.Expectation, response, limit); err != nil {
 				return ExplorerRouteResult{}, err
 			}
+		} else if route.PersistExplorerResponse != nil {
+			// An artifact may have reached durable storage immediately before the
+			// process stopped, while its owning result event did not. Recover and
+			// link that exact immutable response before deciding whether Explorer
+			// must be called again.
+			published, found, publishedErr := recoverPublishedExplorerResponse(call.Journal, route.ExplorerResultID)
+			if publishedErr != nil {
+				return ExplorerRouteResult{}, publishedErr
+			}
+			if found {
+				if err := validateRecoveredExplorerResponse(call.Expectation, published, limit); err != nil {
+					return ExplorerRouteResult{}, err
+				}
+				if err := route.PersistExplorerResponse(context.WithoutCancel(ctx), ControlledAgentCallResult{Response: published, Attempts: recovery.Attempts}); err != nil {
+					return ExplorerRouteResult{Response: published, Attempts: recovery.Attempts}, err
+				}
+				response, attempts = published, recovery.Attempts
+			}
 		}
 	}
 	if response.Kind == "" {
@@ -147,6 +167,25 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 		SourceContinuationResponse: sourceResult.Response, SourceContinuationAttempts: sourceResult.Attempts,
 		SourceContinuationSnapshot: sourceResult.Snapshot,
 	}, nil
+}
+
+func recoverPublishedExplorerResponse(journal *runstore.Run, resultID implementationstate.ResultID) (AgentResponse, bool, error) {
+	reference, err := journal.PublishedReference(implementationstate.EvidenceID(string(resultID) + "-response"))
+	if errors.Is(err, runstore.ErrReferenceUnavailable) {
+		return AgentResponse{}, false, nil
+	}
+	if err != nil {
+		return AgentResponse{}, false, err
+	}
+	data, err := journal.Read(reference)
+	if err != nil {
+		return AgentResponse{}, false, err
+	}
+	var response AgentResponse
+	if err := json.Unmarshal(data, &response); err != nil {
+		return AgentResponse{}, false, fmt.Errorf("decode published Explorer response: %w", err)
+	}
+	return response, true, nil
 }
 
 func validateRecoveredExplorerResponse(expectation ResponseExpectation, response AgentResponse, limit int) error {

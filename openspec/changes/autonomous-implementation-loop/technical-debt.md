@@ -632,3 +632,13 @@
 - Expected impact: future cancellation or durability fixes can drift across mandatory-check paths.
 - Classification: technical debt because the current required behavior is correct outside the separate critical finding and no typical runtime failure follows from duplication alone.
 - Possible follow-up: extract a shared mandatory-gate skeleton with explicit accounting, convergence, state-selection, and pause-policy parameters.
+
+## TASK-11.5-D001 — production restart dispatcher coverage is incomplete
+
+- Origin: task 11.5 initial review; affected locations: `internal/flows/impl_loop/resume.go`, `session_owner.go`, `resume_test.go`.
+- Status: `open`.
+- Potential problem: `Resume` creates an empty owner while `SessionOwner.Restore` is not invoked by production wiring and requires caller-built role contexts; focused tests fabricate contexts and cover only orchestrator and implementer.
+- Evidence: durable enumeration and full-context reconstruction for briefer, task reviewer, final reviewer, and pending source/Explorer continuations are not exercised end-to-end.
+- Expected impact: future production wiring can omit a required fresh role session or construct an incomplete context without focused recovery coverage detecting it.
+- Classification: technical debt because the provider-neutral restoration primitives exist and no ordinary current production caller demonstrating a broken dispatch path is established.
+- Possible follow-up: add a durable recovery dispatcher deriving active scopes/contexts from run and journal data, with all-role and pending-continuation tests.

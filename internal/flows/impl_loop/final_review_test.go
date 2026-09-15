@@ -11,6 +11,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestFinalAcceptanceRequiresCurrentChecksAndPositiveIndependentReview(t *testing.T) {
@@ -137,6 +138,122 @@ func TestFinalReviewRoutesExplorerAndContinuesTheSameReviewerSession(t *testing.
 	operation := finalRunOperation(fixture.run, "final-explorer")
 	if operation == nil || operation.Counter != implementationstate.CycleCounterExplorer || operation.Episode != "final-reviewer" {
 		t.Fatalf("final Explorer operation = %#v", operation)
+	}
+}
+
+func TestRecoverFinalExplorerReadsResponsePublishedByFinalPersistence(t *testing.T) {
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Episode = "final-recovery"
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	call.Expectation = explorerExpectationFrom(t, source, "final-recovery-explorer-call")
+	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, call.OperationID, call.Limits); err != nil {
+		t.Fatal(err)
+	}
+	response, err := BindAgentResponse(call.Expectation, explorationResponse(t, "real final persistence response"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := &FinalReviewExplorer{ExplorerOperationID: call.OperationID, ExplorerResultID: "final-recovery-explorer-result"}
+	input := FinalReviewInput{Run: call.Run, StateStore: call.StateStore, Journal: call.Journal}
+	if err := persistFinalExplorerOutcome(context.Background(), input, value, response); err != nil {
+		t.Fatal(err)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := RecoverAgentOperation(call.Journal, recovered, "", call.OperationID, value.ExplorerResultID)
+	if err != nil || result.State != AgentOperationCompleted || result.Response.Message == nil || *result.Response.Message != "real final persistence response" {
+		t.Fatalf("final Explorer recovery = %#v, %v", result, err)
+	}
+	evidence := finalRunResult(recovered, value.ExplorerResultID).Evidence[0]
+	data, err := call.Journal.Read(evidence)
+	if err != nil || strings.Contains(string(data), `"response"`) {
+		t.Fatalf("final Explorer evidence is not canonical response-only JSON: %q, %v", data, err)
+	}
+}
+
+func TestRouteExplorerRecoversFinalArtifactPublishedBeforeResultEvent(t *testing.T) {
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Episode = "final-crash-boundary"
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	call.Expectation = explorerExpectationFrom(t, source, "final-crash-explorer-call")
+	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	continuation := sourceContinuationCall(t, call, source)
+	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, call.OperationID, call.Limits); err != nil {
+		t.Fatal(err)
+	}
+	response, err := BindAgentResponse(call.Expectation, explorationResponse(t, "published before state event"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := &FinalReviewExplorer{ExplorerOperationID: call.OperationID, ExplorerResultID: "final-crash-explorer-result"}
+	input := FinalReviewInput{Run: call.Run, StateStore: call.StateStore, Journal: call.Journal}
+	original := recordFinalExplorerState
+	t.Cleanup(func() { recordFinalExplorerState = original })
+	recordFinalExplorerState = func(context.Context, *runstore.StateStore, *implementationstate.Run) (implementationstate.Event, error) {
+		return implementationstate.Event{}, errors.New("simulated crash after final Explorer publication")
+	}
+	if err := persistFinalExplorerOutcome(context.Background(), input, value, response); err == nil {
+		t.Fatal("persistFinalExplorerOutcome() error = nil, want crash boundary")
+	}
+	recordFinalExplorerState = original
+	if finalRunResult(call.Run, value.ExplorerResultID) != nil {
+		t.Fatal("failed projection mutated live state")
+	}
+	if _, err := call.Journal.PublishedReference(implementationstate.EvidenceID(string(value.ExplorerResultID) + "-response")); err != nil {
+		t.Fatalf("published final Explorer response is absent: %v", err)
+	}
+	different, err := BindAgentResponse(call.Expectation, explorationResponse(t, "different response cannot replace published evidence"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := persistFinalExplorerOutcome(context.Background(), input, value, different); !errors.Is(err, runstore.ErrConflictingPublication) {
+		t.Fatalf("different response replaced crash-boundary evidence: %v", err)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Run, call.StateStore = recovered, reopened
+	continuation.Run, continuation.StateStore = recovered, reopened
+	input.Run, input.StateStore = recovered, reopened
+
+	factory := &explorerRoutingFactory{runtime: &explorerRoutingRuntime{}}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+	sourceRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
+	result, err := RouteExplorer(context.Background(), ExplorerRoute{
+		Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "fresh-final-reviewer"},
+		SourceExpectation: source, Request: explorationRequest(t), ExplorerCall: call, ExplorerResultID: value.ExplorerResultID, SourceContinuation: continuation,
+		PersistExplorerResponse: func(ctx context.Context, recovered ControlledAgentCallResult) error {
+			return persistFinalExplorerOutcome(ctx, input, value, recovered.Response)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factory.created != 0 || result.Response.Message == nil || *result.Response.Message != "published before state event" || len(sourceRuntime.messages) != 1 || finalRunResult(recovered, value.ExplorerResultID) == nil {
+		t.Fatalf("crash-boundary recovery repeated Explorer or omitted final result: result=%#v created=%d source=%#v run=%#v", result, factory.created, sourceRuntime.messages, recovered.RunResults)
 	}
 }
 

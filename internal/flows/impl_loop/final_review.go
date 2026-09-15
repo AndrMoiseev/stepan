@@ -1,6 +1,7 @@
 package impl_loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,13 @@ import (
 )
 
 var ErrFinalAcceptanceRoute = errors.New("invalid final acceptance route")
+
+// recordFinalExplorerState is a narrow recovery seam. The response artifact
+// is deliberately published before this call, so a crash at this boundary can
+// be recovered without asking Explorer to repeat completed research.
+var recordFinalExplorerState = func(ctx context.Context, state *runstore.StateStore, run *implementationstate.Run) (implementationstate.Event, error) {
+	return state.Record(ctx, run)
+}
 
 // FinalRequiredChecks is the controller-owned final command gate. It is
 // deliberately run-scoped: it cannot be requested, narrowed, or bypassed by
@@ -394,7 +402,11 @@ func persistFinalExplorerOutcome(ctx context.Context, input FinalReviewInput, va
 	if finalRunResult(input.Run, value.ExplorerResultID) != nil {
 		return nil
 	}
-	evidence, err := publishFinalReviewEvidence(input.Journal, value.ExplorerResultID, response)
+	evidence, err := publishFinalExplorerResponse(input.Journal, value.ExplorerResultID, response)
+	if err != nil {
+		return err
+	}
+	candidate, err := cloneFinalExplorerRun(input.Run)
 	if err != nil {
 		return err
 	}
@@ -402,14 +414,26 @@ func persistFinalExplorerOutcome(ctx context.Context, input FinalReviewInput, va
 	if response.Kind == ResponseExecutionBlocked {
 		status = implementationstate.ResultFailed
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: input.Run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	if err := candidate.AddRunResult(implementationstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: candidate.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
 		return err
 	}
-	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
+	written, err := recordFinalExplorerState(context.WithoutCancel(ctx), input.StateStore, candidate)
+	if written.Sequence != 0 {
+		*input.Run = *candidate
+	}
+	if err != nil {
 		return fmt.Errorf("%w: persist final Explorer result: %v", ErrFinalAcceptanceRoute, err)
 	}
 	return nil
+}
+
+func cloneFinalExplorerRun(run *implementationstate.Run) (*implementationstate.Run, error) {
+	event, err := implementationstate.NewRunStateEvent(1, run)
+	if err != nil {
+		return nil, fmt.Errorf("%w: clone final Explorer state: %v", ErrFinalAcceptanceRoute, err)
+	}
+	return event.State, nil
 }
 
 func finalReviewExplorerAt(value *FinalReviewExplorer, episode int) *FinalReviewExplorer {
@@ -622,4 +646,30 @@ func publishFinalReviewEvidence(journal *runstore.Run, resultID implementationst
 		return implementationstate.EvidenceRef{}, err
 	}
 	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-discussion"), data)
+}
+
+// publishFinalExplorerResponse uses the same response-only representation as
+// the other Explorer routes. Its stable ID is also the crash-recovery marker:
+// a later state event links this immutable artifact to the operation.
+func publishFinalExplorerResponse(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+	data, err := json.Marshal(response)
+	if err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	id := implementationstate.EvidenceID(string(resultID) + "-response")
+	existing, err := journal.PublishedReference(id)
+	if err == nil {
+		stored, readErr := journal.Read(existing)
+		if readErr != nil {
+			return implementationstate.EvidenceRef{}, readErr
+		}
+		if !bytes.Equal(stored, data) {
+			return implementationstate.EvidenceRef{}, fmt.Errorf("%w: final Explorer response differs from immutable published response", runstore.ErrConflictingPublication)
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, runstore.ErrReferenceUnavailable) {
+		return implementationstate.EvidenceRef{}, err
+	}
+	return journal.Publish(id, data)
 }
