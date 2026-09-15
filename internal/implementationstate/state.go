@@ -1785,6 +1785,24 @@ func (r *Run) PauseExecutionBlocked(block ExecutionBlock) error {
 	return nil
 }
 
+// UpdatePausedExecutionBlock records a new user-remediable diagnostic while a
+// run is already paused. Resume reconciliation uses this when an input that
+// must be repaired (for example configuration or a rules document) is still
+// invalid. It deliberately does not reset any counters or otherwise make the
+// run active between the observation and its durable record.
+func (r *Run) UpdatePausedExecutionBlock(block ExecutionBlock) error {
+	if r.Status != RunPaused || !block.valid() {
+		return fmt.Errorf("%w: paused run cannot record execution block", ErrInvalidTransition)
+	}
+	r.PauseReason = "execution_blocked: " + block.BlockedAction
+	r.ExecutionBlock = &ExecutionBlock{
+		BlockedAction: block.BlockedAction, Diagnostic: block.Diagnostic,
+		Attempts: slices.Clone(block.Attempts), RequiredUserAction: block.RequiredUserAction,
+	}
+	r.LimitPause = nil
+	return nil
+}
+
 func (r *Run) Resume() error {
 	if r.Status != RunPaused {
 		return fmt.Errorf("%w: only a paused run can resume", ErrInvalidTransition)

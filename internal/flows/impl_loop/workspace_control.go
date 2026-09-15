@@ -43,6 +43,14 @@ func (GitWorkspaceControl) Diff(ctx context.Context, repository string, before, 
 	return gitsnapshot.Diff(ctx, repository, before, after)
 }
 
+// Compare is an optional narrow capability used by resume to distinguish a
+// rules-only edit from a code change. It is intentionally not part of
+// WorkspaceControl: ordinary callers need no path comparison and lightweight
+// test controls remain small.
+func (GitWorkspaceControl) Compare(ctx context.Context, repository string, before, after gitsnapshot.Snapshot) ([]string, error) {
+	return gitsnapshot.Compare(ctx, repository, before, after)
+}
+
 func (GitWorkspaceControl) RestorePaths(ctx context.Context, repository string, before, current gitsnapshot.Snapshot, paths []string) (gitsnapshot.Snapshot, error) {
 	return gitsnapshot.RestorePaths(ctx, repository, before, current, paths)
 }

@@ -1,0 +1,386 @@
+package impl_loop
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/openspec"
+	"github.com/AndrMoiseev/stepan/internal/runstore"
+)
+
+var (
+	// ErrResumeReconciliation means /resume left the run paused because a
+	// remediable input could not be reconciled. The wrapped error is safe to
+	// show as the diagnostic retained in the execution block.
+	ErrResumeReconciliation = errors.New("implementation resume reconciliation failed")
+	// ErrResumeScopeChanged means current full OpenSpec requirements no longer
+	// match the saved run. This is terminal: the user must define a new scope.
+	ErrResumeScopeChanged = errors.New("implementation resume scope changed")
+)
+
+// ResumeInput supplies the controller-owned resources for one explicit
+// /resume. It deliberately has no check runner: required checks are the
+// separate task-11.4 gate and must run only after this reconciliation succeeds.
+type ResumeInput struct {
+	Run        *implementationstate.Run
+	StateStore *runstore.StateStore
+	Journal    *runstore.Run
+	Repository string
+	Workspace  WorkspaceControl
+
+	// Factories are preflighted against the newly loaded profiles. Supplying no
+	// factories is useful to callers that reconcile inputs before their runtime
+	// wiring exists; a production controller supplies its configured factories.
+	Factories map[string]RuntimeFactory
+	// ConfigurationLoader is an optional deterministic seam for callers that
+	// own settings discovery. The default reloads both standard settings files.
+	ConfigurationLoader func(string) (implementationconfig.Configuration, error)
+
+	// SessionOwner is optional. When supplied with SessionBase, a changed
+	// effective configuration closes the old owner and installs a fresh one so
+	// no provider conversation keeps an old profile in its bootstrap context.
+	SessionOwner **SessionOwner
+	SessionBase  agentruntime.ThreadConfig
+}
+
+// ResumeResult describes the reconciled inputs. Manual changes are observed
+// and retained; no resume path resets, checks out, or overwrites the worktree.
+type ResumeResult struct {
+	Configuration        implementationconfig.Configuration
+	Checks               implementationconfig.CheckSelection
+	Rules                implementationconfig.RulesFileValidation
+	Prepared             PreparedRuntimes
+	WorkspaceChanged     bool
+	ConfigurationChanged bool
+	SessionsRecreated    bool
+}
+
+// Resume reconciles an already-paused run with its working copy, complete
+// specification and effective configuration. Rules are always freshly
+// validated but deliberately excluded from version comparisons: their content
+// alone cannot invalidate acceptance. On a malformed configuration, rules, or
+// unverifiable saved workspace fingerprint the run remains paused with a
+// durable execution-block diagnostic. A changed complete specification closes
+// the run. Successful reconciliation makes the run active; callers then apply
+// the required-check gate before dispatching any further work.
+func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
+	if err := validateResumeInput(input); err != nil {
+		return ResumeResult{}, err
+	}
+	candidate, err := resumeCandidate(input.Run)
+	if err != nil {
+		return ResumeResult{}, err
+	}
+
+	pkg, err := openspec.Load(input.Repository, input.Run.Identity.Change)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "reload the complete OpenSpec specification", err)
+	}
+	specification, err := resumeSpecification(pkg)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode the complete OpenSpec specification", err)
+	}
+	if changed, err := referencePayloadChanged(input.Journal, input.Run.Identity.Specification, specification); err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify saved OpenSpec specification", err)
+	} else if changed {
+		if err := candidate.Close("complete OpenSpec specification changed; define a new implementation scope before starting another run"); err != nil {
+			return ResumeResult{}, err
+		}
+		if err := persistResumeCandidate(ctx, input, candidate); err != nil {
+			return ResumeResult{}, err
+		}
+		return ResumeResult{}, ErrResumeScopeChanged
+	}
+
+	configuration, checks, rules, prepared, err := loadResumeConfiguration(input)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "reload implementation configuration and rules", err)
+	}
+	configurationBytes, err := canonicalResumeConfiguration(configuration)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode effective implementation configuration", err)
+	}
+	configurationChanged, err := referencePayloadChanged(input.Journal, input.Run.Identity.Configuration, configurationBytes)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify saved implementation configuration", err)
+	}
+
+	expected, err := savedWorkspaceSnapshot(input.Journal, input.Run.CurrentState)
+	if err != nil {
+		return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "read saved working-copy fingerprint", err)
+	}
+	workspace := effectiveWorkspaceControl(input.Workspace)
+	workspaceErr := workspace.EnsureUnchanged(ctx, input.Repository, expected)
+	workspaceChanged := workspaceErr != nil
+	var observed implementationstate.EvidenceRef
+	if workspaceChanged {
+		if !errors.Is(workspaceErr, gitsnapshot.ErrRepositoryDiverged) {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify working-copy fingerprint", workspaceErr)
+		}
+		actual, captureErr := workspace.Capture(ctx, input.Repository)
+		if captureErr != nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "capture manually changed working copy", captureErr)
+		}
+		stateData, marshalErr := json.Marshal(actual)
+		if marshalErr != nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode manually changed working-copy fingerprint", marshalErr)
+		}
+		if rulesOnlyWorkspaceChange(ctx, workspace, input.Repository, expected, actual, rules) {
+			// Rules are read afresh but never versioned. Their content is not a
+			// code-state input and therefore cannot reopen an accepted assignment.
+			workspaceChanged = false
+		} else {
+			observed, err = publishResumeEvidence(input.Journal, "resume-workspace", stateData)
+			if err != nil {
+				return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "preserve manually changed working-copy fingerprint", err)
+			}
+		}
+	}
+
+	if err := candidate.Resume(); err != nil {
+		return ResumeResult{}, err
+	}
+	if workspaceChanged {
+		if err := candidate.ObserveCodeState(observed); err != nil {
+			return ResumeResult{}, err
+		}
+	}
+	if configurationChanged {
+		configurationRef, publishErr := publishResumeEvidence(input.Journal, "resume-configuration", configurationBytes)
+		if publishErr != nil {
+			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "preserve effective implementation configuration", publishErr)
+		}
+		if err := candidate.RefreshAcceptanceInputs(candidate.Identity.Specification, configurationRef); err != nil {
+			return ResumeResult{}, err
+		}
+	}
+	if err := persistResumeCandidate(ctx, input, candidate); err != nil {
+		return ResumeResult{}, err
+	}
+
+	result := ResumeResult{Configuration: configuration, Checks: checks, Rules: rules, Prepared: prepared, WorkspaceChanged: workspaceChanged, ConfigurationChanged: configurationChanged}
+	if configurationChanged && input.SessionOwner != nil {
+		owner, recreateErr := NewSessionOwner(prepared, input.SessionBase)
+		if recreateErr != nil {
+			return ResumeResult{}, recreateSessionsFailure(ctx, input, owner, recreateErr)
+		}
+		if *input.SessionOwner != nil {
+			if closeErr := (*input.SessionOwner).Close(); closeErr != nil {
+				_ = owner.Close()
+				return ResumeResult{}, recreateSessionsFailure(ctx, input, nil, closeErr)
+			}
+		}
+		*input.SessionOwner = owner
+		result.SessionsRecreated = true
+	}
+	return result, nil
+}
+
+func validateResumeInput(input ResumeInput) error {
+	if input.Run == nil || input.StateStore == nil || input.Journal == nil || strings.TrimSpace(input.Repository) == "" {
+		return errors.New("implementation resume requires run, state store, journal, and repository")
+	}
+	if input.Run.Status != implementationstate.RunPaused {
+		return fmt.Errorf("%w: only a paused run can resume", implementationstate.ErrInvalidTransition)
+	}
+	if input.SessionOwner != nil && !filepath.IsAbs(input.SessionBase.Workspace) {
+		return errors.New("implementation resume session base requires an absolute workspace")
+	}
+	return nil
+}
+
+func resumeCandidate(run *implementationstate.Run) (*implementationstate.Run, error) {
+	event, err := implementationstate.NewRunStateEvent(1, run)
+	if err != nil {
+		return nil, err
+	}
+	return event.State, nil
+}
+
+func loadResumeConfiguration(input ResumeInput) (implementationconfig.Configuration, implementationconfig.CheckSelection, implementationconfig.RulesFileValidation, PreparedRuntimes, error) {
+	var configuration implementationconfig.Configuration
+	var err error
+	if input.ConfigurationLoader != nil {
+		configuration, err = input.ConfigurationLoader(input.Repository)
+	} else {
+		sources, loadErr := implementationconfig.Load(input.Repository)
+		if loadErr == nil {
+			configuration, loadErr = implementationconfig.Merge(sources)
+		}
+		err = loadErr
+	}
+	if err != nil {
+		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+	}
+	if err := configuration.ValidateLoopRoles(); err != nil {
+		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+	}
+	for _, role := range []string{
+		implementationconfig.RoleOrchestrator,
+		implementationconfig.RoleBriefer,
+		implementationconfig.RoleImplementer,
+		implementationconfig.RoleTaskReviewer,
+		implementationconfig.RoleExplorer,
+		implementationconfig.RoleFinalReviewer,
+	} {
+		if _, err := configuration.ResolveRoleProfile(role); err != nil {
+			return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		}
+	}
+	checks, err := configuration.SelectHostChecks()
+	if err != nil {
+		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+	}
+	rules, err := configuration.ValidateRulesFile(input.Repository)
+	if err != nil {
+		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+	}
+	prepared := PreparedRuntimes{}
+	if input.Factories != nil {
+		prepared, err = PrepareRuntimes(configuration, input.Factories)
+		if err != nil {
+			return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		}
+	}
+	return configuration, checks, rules, prepared, nil
+}
+
+type resumeWorkspaceComparer interface {
+	Compare(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) ([]string, error)
+}
+
+func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after gitsnapshot.Snapshot, rules implementationconfig.RulesFileValidation) bool {
+	if rules.Root == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.IndexHash != after.IndexHash || before.SubmodulesHash != after.SubmodulesHash {
+		return false
+	}
+	comparer, ok := workspace.(resumeWorkspaceComparer)
+	if !ok {
+		return false
+	}
+	paths, err := comparer.Compare(ctx, repository, before, after)
+	if err != nil || len(paths) == 0 {
+		return false
+	}
+	relativeRoot, err := filepath.Rel(repository, rules.Root)
+	if err != nil || filepath.IsAbs(relativeRoot) {
+		return false
+	}
+	root := filepath.ToSlash(filepath.Clean(relativeRoot))
+	for _, path := range paths {
+		path = filepath.ToSlash(filepath.Clean(path))
+		if path != root && !strings.HasPrefix(path, root+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+func resumeSpecification(pkg openspec.Package) ([]byte, error) {
+	type document struct{ Path, Version, Content string }
+	documents := make([]document, 0, 2+len(pkg.ChangeSpecs)+len(pkg.MainSpecs))
+	for _, item := range append(append([]openspec.Document{pkg.Proposal, pkg.Design}, pkg.ChangeSpecs...), pkg.MainSpecs...) {
+		documents = append(documents, document{Path: item.Path, Version: item.Version, Content: item.Content})
+	}
+	return json.Marshal(documents)
+}
+
+func canonicalResumeConfiguration(configuration implementationconfig.Configuration) ([]byte, error) {
+	raw, err := json.Marshal(configuration)
+	if err != nil {
+		return nil, err
+	}
+	var canonical bytes.Buffer
+	if err := json.Compact(&canonical, raw); err != nil {
+		return nil, err
+	}
+	return canonical.Bytes(), nil
+}
+
+func referencePayloadChanged(journal *runstore.Run, reference implementationstate.EvidenceRef, current []byte) (bool, error) {
+	previous, err := journal.Read(reference)
+	if err != nil {
+		return false, err
+	}
+	return !bytes.Equal(previous, current), nil
+}
+
+func savedWorkspaceSnapshot(journal *runstore.Run, reference implementationstate.EvidenceRef) (gitsnapshot.Snapshot, error) {
+	data, err := journal.Read(reference)
+	if err != nil {
+		return gitsnapshot.Snapshot{}, err
+	}
+	var snapshot gitsnapshot.Snapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return gitsnapshot.Snapshot{}, fmt.Errorf("decode workspace fingerprint: %w", err)
+	}
+	if snapshot.HeadOID == "" || snapshot.TreeOID == "" || snapshot.IndexHash == "" || snapshot.StatusHash == "" || snapshot.SubmodulesHash == "" {
+		return gitsnapshot.Snapshot{}, errors.New("saved workspace fingerprint is incomplete")
+	}
+	return snapshot, nil
+}
+
+func publishResumeEvidence(journal *runstore.Run, prefix string, data []byte) (implementationstate.EvidenceRef, error) {
+	return journal.Publish(implementationstate.EvidenceID(prefix+"-"+digestBytes(data)), data)
+}
+
+func digestBytes(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+
+func persistResumeCandidate(ctx context.Context, input ResumeInput, candidate *implementationstate.Run) error {
+	event, err := input.StateStore.Record(context.WithoutCancel(ctx), candidate)
+	if event.Sequence != 0 {
+		*input.Run = *candidate
+	}
+	if err != nil {
+		return fmt.Errorf("persist resume reconciliation: %w", err)
+	}
+	return nil
+}
+
+func persistResumeBlock(ctx context.Context, input ResumeInput, candidate *implementationstate.Run, action string, cause error) error {
+	block, err := ExecutionBlockForUserRemediation(action, cause.Error(), []string{"reloaded current resume inputs without changing the working copy"}, "repair the reported input, then explicitly resume or close the run")
+	if err != nil {
+		return errors.Join(ErrResumeReconciliation, cause, err)
+	}
+	if err := candidate.UpdatePausedExecutionBlock(block); err != nil {
+		return errors.Join(ErrResumeReconciliation, cause, err)
+	}
+	if err := persistResumeCandidate(ctx, input, candidate); err != nil {
+		return errors.Join(ErrResumeReconciliation, cause, err)
+	}
+	return errors.Join(ErrResumeReconciliation, cause)
+}
+
+func recreateSessionsFailure(ctx context.Context, input ResumeInput, owner *SessionOwner, cause error) error {
+	if owner != nil {
+		_ = owner.Close()
+	}
+	// Session recreation happens after a successful durable reconciliation. A
+	// failed replacement therefore returns the run to a durable paused state;
+	// it never leaves a silently active run with stale conversations.
+	candidate, err := resumeCandidate(input.Run)
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	block, err := ExecutionBlockForUserRemediation("create sessions for updated profiles", cause.Error(), []string{"closed stale sessions after configuration reload"}, "repair the profile or provider setup, then explicitly resume or close the run")
+	if err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := candidate.PauseExecutionBlocked(block); err != nil {
+		return errors.Join(cause, err)
+	}
+	if err := persistResumeCandidate(ctx, input, candidate); err != nil {
+		return errors.Join(cause, err)
+	}
+	return errors.Join(ErrResumeReconciliation, cause)
+}
