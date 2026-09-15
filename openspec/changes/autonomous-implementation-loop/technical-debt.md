@@ -895,3 +895,64 @@
 - Potential problem: `startExplorer` dereferences a nil runtime returned without an error.
 - Expected impact: a faulty runtime factory can panic bootstrap mode.
 - Possible follow-up: mirror the bootstrapper nil-runtime check and add a regression.
+
+## TASK-13.3-001 — bootstrap proposal validation does not prove runtime usability
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: validation accepts missing role profiles/checks, unsupported providers, invalid or escaping `rules_file`, and invalid main branches.
+- Expected impact: a saved proposal may still be unable to start the implementation loop.
+- Classification: normally blocking acceptance gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: reuse the complete production configuration validator for both proposed documents before confirmation.
+
+## TASK-13.3-002 — two-file configuration save is not transactional
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: failure replacing the second file leaves the first proposal applied.
+- Expected impact: user/project configuration can become partially updated.
+- Classification: normally blocking persistence gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: stage both writes with rollback/recovery metadata and commit them as one recoverable transaction.
+
+## TASK-13.3-003 — confirmation window can overwrite concurrent edits
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: files are not revalidated against their displayed pre-confirmation versions before replacement.
+- Expected impact: authorization or unrelated settings edited during confirmation can be lost.
+- Classification: normally blocking data-loss risk; accepted as debt under the user's standing waiver.
+- Possible follow-up: compare-and-swap on content identity, then redisplay/reconfirm after a concurrent change.
+
+## TASK-13.3-004 — redaction and change detection are incorrectly coupled
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: secret-only changes can disappear because redacted values are compared, while unrecognized secret forms such as PAT, COOKIE, URLs or arguments can remain visible.
+- Expected impact: intended changes may not save and some secrets may leak into displayed diffs.
+- Classification: normally blocking correctness/confidentiality gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: detect changes on canonical unredacted structures and render through a comprehensive independent redactor.
+
+## TASK-13.3-005 — configuration writes do not defend parent containment or preserve metadata
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: parent-directory symlinks/junctions can redirect writes, and replacement may lose ACLs, ownership, extended attributes, or symlink semantics.
+- Expected impact: writes can escape the intended repository or alter file security/metadata.
+- Classification: normally blocking safe-write gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: canonical containment checks plus metadata-preserving, platform-aware atomic replacement.
+
+## TASK-13.3-D006 — unused bootstrap configuration abstractions
+
+- Origin: task 13.3 initial review; affected bootstrap configuration interfaces/DTOs.
+- Status: `open`.
+- Potential problem: `BootstrapConfigurationPresenter` and proposal `paths` are unused speculative seams.
+- Expected impact: unnecessary API surface and maintenance ambiguity.
+- Possible follow-up: remove them until a real consumer exists or wire them as the single production boundary.
+
+## TASK-13.3-D007 — duplicated proposed-check validation branches
+
+- Origin: task 13.3 initial review; affected location: `bootstrap_configuration.go`.
+- Status: `open`.
+- Potential problem: equivalent checks validation is maintained in multiple branches.
+- Expected impact: future validation changes can drift.
+- Possible follow-up: consolidate into one typed helper shared by both configuration levels.
