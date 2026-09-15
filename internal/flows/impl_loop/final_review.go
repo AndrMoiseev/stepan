@@ -342,7 +342,7 @@ func continueFinalReviewExplorer(ctx context.Context, input FinalReviewInput, se
 	explorerCall := ControlledAgentCall{Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleExplorer, CallID: value.ExplorerCallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, OperationID: value.ExplorerOperationID, Limits: input.Limits, Expectation: explorerExpectation}
 	continuation := finalReviewerCall(input, session, value.ContinuationOperationID, continuationExpectation, "")
 	routed, err := RouteExplorer(ctx, ExplorerRoute{
-		Owner: input.Owner, SourceSession: session, SourceExpectation: sourceExpectation, Request: request, ExplorerCall: explorerCall, SourceContinuation: continuation,
+		Owner: input.Owner, SourceSession: session, SourceExpectation: sourceExpectation, Request: request, ExplorerCall: explorerCall, ExplorerResultID: value.ExplorerResultID, SourceContinuation: continuation,
 		ExplorerCharacters: value.ExplorerCharacters,
 		PersistExplorerResponse: func(persistContext context.Context, result ControlledAgentCallResult) error {
 			return persistFinalExplorerOutcome(persistContext, input, value, result.Response)

@@ -182,6 +182,29 @@ func TestResumeReloadsChangedConfigurationAndRecreatesSessionOwner(t *testing.T)
 	}
 }
 
+func TestResumeAfterProcessRestartCreatesFreshOwnerWithoutConfigurationChange(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	var owner *SessionOwner // a new process has no live provider threads
+	input := fixture.input()
+	input.Factories = map[string]RuntimeFactory{"test": &resumeProfileRuntimeFactory{}}
+	input.SessionOwner = &owner
+	input.SessionBase = threadConfigForTest(fixture.repository)
+
+	result, err := Resume(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ConfigurationChanged || !result.SessionsRecreated || owner == nil {
+		t.Fatalf("restart did not install a fresh owner from durable state: %#v owner=%p", result, owner)
+	}
+	if _, err := owner.Restore(context.Background(), SessionRestore{Role: ResponseRoleOrchestrator, Start: sessionStartContext(t, ResponseRoleOrchestrator)}); err != nil {
+		t.Fatalf("fresh owner could not restore orchestrator from its durable bootstrap: %v", err)
+	}
+	if _, err := owner.Restore(context.Background(), SessionRestore{Role: ResponseRoleImplementer, AssignmentID: "active-assignment", Start: sessionStartContext(t, ResponseRoleImplementer)}); err != nil {
+		t.Fatalf("fresh owner could not restore active assignment session from its durable bootstrap: %v", err)
+	}
+}
+
 func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	factory := &resumeProfileRuntimeFactory{}

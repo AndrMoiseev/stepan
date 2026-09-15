@@ -138,6 +138,116 @@ func TestRouteExplorerExecutionBlockedDurablyPausesWithoutSourceContinuation(t *
 	}
 }
 
+func TestRouteExplorerAfterRestartUsesDurableAuxiliaryResultAndFreshSourceSession(t *testing.T) {
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Episode = "restart"
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	call.Expectation = explorerExpectationFrom(t, source, "restart-explorer-call")
+	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	continuation := sourceContinuationCall(t, call, source)
+	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, call.OperationID, call.Limits); err != nil {
+		t.Fatal(err)
+	}
+	response, err := BindAgentResponse(call.Expectation, explorationResponse(t, "saved before restart"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := call.Journal.Publish("restart-explorer-result-response", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := call.Run.AddRunResult(implementationstate.OperationResult{ID: "restart-explorer-result", OperationID: call.OperationID, Status: implementationstate.ResultSucceeded, State: call.Run.CurrentState, Basis: call.Run.RunOperations[0].Basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call.StateStore.Record(context.Background(), call.Run); err != nil {
+		t.Fatal(err)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Run, call.StateStore = recovered, reopened
+	continuation.Run, continuation.StateStore = recovered, reopened
+
+	factory := &explorerRoutingFactory{runtime: &explorerRoutingRuntime{}}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+	sourceRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
+	result, err := RouteExplorer(context.Background(), ExplorerRoute{
+		Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "fresh-source"},
+		SourceExpectation: source, Request: explorationRequest(t), ExplorerCall: call, ExplorerResultID: "restart-explorer-result", SourceContinuation: continuation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if factory.created != 0 || result.Response.Message == nil || *result.Response.Message != "saved before restart" || len(sourceRuntime.messages) != 1 || !strings.Contains(sourceRuntime.messages[0], "saved before restart") {
+		t.Fatalf("restart route repeated completed Explorer work: result=%#v created=%d source=%#v", result, factory.created, sourceRuntime.messages)
+	}
+	if operation := recovered.RunOperations[0]; len(operation.Attempts) != 1 || recovered.RunExplorerCounters["restart"] != 1 {
+		t.Fatalf("restart route changed Explorer accounting: %#v counters=%#v", operation, recovered.RunExplorerCounters)
+	}
+}
+
+func TestRouteExplorerAfterRestartRestartsInterruptedAuxiliaryWithinExistingCounter(t *testing.T) {
+	call := controlledCallFixture(t, &controlledCallRuntime{})
+	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Episode = "restart-interrupted"
+	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
+	call.Expectation = explorerExpectationFrom(t, source, "restart-interrupted-explorer-call")
+	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
+	continuation := sourceContinuationCall(t, call, source)
+	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, call.OperationID, call.Limits); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call.StateStore.Record(context.Background(), call.Run); err != nil {
+		t.Fatal(err)
+	}
+	if err := call.StateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := runstore.OpenState(call.Journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recovered, _, err := reopened.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call.Run, call.StateStore = recovered, reopened
+	continuation.Run, continuation.StateStore = recovered, reopened
+
+	explorerRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: explorationResponse(t, "rerun after interruption")}}}
+	factory := &explorerRoutingFactory{runtime: explorerRuntime}
+	owner := newSessionOwnerForTest(t, factory)
+	t.Cleanup(func() { _ = owner.Close() })
+	sourceRuntime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
+	result, err := RouteExplorer(context.Background(), ExplorerRoute{
+		Owner: owner, SourceSession: &AgentSession{Role: ResponseRoleFinalReviewer, runtime: sourceRuntime, thread: "fresh-source"},
+		SourceExpectation: source, Request: explorationRequest(t), ExplorerCall: call, ExplorerResultID: "interrupted-explorer-result", SourceContinuation: continuation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := recovered.RunOperations[0]
+	if factory.created != 1 || result.Attempts != 2 || len(operation.Attempts) != 2 || operation.Attempts[0].SemanticRound != operation.Attempts[1].SemanticRound || recovered.RunExplorerCounters["restart-interrupted"] != 1 {
+		t.Fatalf("interrupted Explorer did not restart under its original counter: result=%#v operation=%#v counters=%#v created=%d", result, operation, recovered.RunExplorerCounters, factory.created)
+	}
+}
+
 type explorerRoutingFactory struct {
 	runtime *explorerRoutingRuntime
 	created int

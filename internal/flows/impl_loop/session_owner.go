@@ -53,6 +53,24 @@ type sessionKey struct {
 	id    string
 }
 
+// SessionRestore describes one conversation that must be recreated after a
+// controller process has restarted. Start is deliberately a complete
+// controller-built bootstrap message, reconstructed from the journal, briefs,
+// results, and current run state. It contains no provider thread or
+// conversation identifier.
+//
+// Explorer is intentionally absent: an Explorer session is one request only.
+// A durable outstanding Explorer request is resumed through its controller
+// route, which opens a new Explorer session for that request.
+type SessionRestore struct {
+	Role ResponseRole
+	// AssignmentID is required for briefer, implementer, and task-reviewer
+	// sessions. FinalReviewRound is required for a final-review session.
+	AssignmentID     implementationstate.AssignmentID
+	FinalReviewRound string
+	Start            RoleStartContext
+}
+
 // AgentSession is one controller-owned provider thread. Its only interaction
 // surface is a sequential turn; security policy and output schema were fixed
 // when the session was opened.
@@ -187,6 +205,45 @@ func (owner *SessionOwner) FinalReviewer(ctx context.Context, roundID string, st
 		return nil, errors.New("implementation final-review session requires a round ID")
 	}
 	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeFinalReview, role: ResponseRoleFinalReviewer, id: roundID}, start)
+}
+
+// Restore creates a fresh provider session for a durable conversation scope.
+// It never attempts provider-specific thread resume. Calling Restore more
+// than once for the same scope in one process returns the session already
+// opened by this owner, just like the ordinary role accessors.
+func (owner *SessionOwner) Restore(ctx context.Context, restore SessionRestore) (*AgentSession, error) {
+	if owner == nil {
+		return nil, ErrSessionOwnerClosed
+	}
+	if restore.Start.Role != restore.Role {
+		return nil, fmt.Errorf("implementation restored session role %q does not match start context role %q", restore.Role, restore.Start.Role)
+	}
+	switch restore.Role {
+	case ResponseRoleOrchestrator:
+		if restore.AssignmentID != "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, errors.New("implementation restored orchestrator session cannot have an assignment or final-review round")
+		}
+		return owner.Orchestrator(ctx, restore.Start)
+	case ResponseRoleBriefer:
+		if restore.AssignmentID == "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, errors.New("implementation restored briefer session requires only an assignment ID")
+		}
+		return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(restore.AssignmentID)}, restore.Start)
+	case ResponseRoleImplementer, ResponseRoleTaskReviewer:
+		if restore.AssignmentID == "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, fmt.Errorf("implementation restored %s session requires only an assignment ID", restore.Role)
+		}
+		return owner.Assignment(ctx, restore.AssignmentID, restore.Role, restore.Start)
+	case ResponseRoleFinalReviewer:
+		if restore.AssignmentID != "" || strings.TrimSpace(restore.FinalReviewRound) == "" {
+			return nil, errors.New("implementation restored final-review session requires only a round ID")
+		}
+		return owner.FinalReviewer(ctx, restore.FinalReviewRound, restore.Start)
+	case ResponseRoleExplorer:
+		return nil, errors.New("implementation Explorer sessions are restored by rerouting their durable request")
+	default:
+		return nil, fmt.Errorf("implementation cannot restore unsupported role %q", restore.Role)
+	}
 }
 
 func (owner *SessionOwner) persistentSession(ctx context.Context, key sessionKey, start RoleStartContext) (*AgentSession, error) {

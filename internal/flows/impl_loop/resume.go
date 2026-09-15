@@ -62,6 +62,8 @@ type ResumeInput struct {
 	// SessionOwner is optional. When supplied with SessionBase, a changed
 	// effective configuration closes the old owner and installs a fresh one so
 	// no provider conversation keeps an old profile in its bootstrap context.
+	// A non-nil pointer to a nil owner denotes a restarted process and likewise
+	// receives a fresh owner after the required resume checks pass.
 	SessionOwner **SessionOwner
 	SessionBase  agentruntime.ThreadConfig
 }
@@ -249,7 +251,12 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if input.Run.Status != implementationstate.RunActive {
 		return result, nil
 	}
-	recreateSessions := configurationChanged
+	// A nil owner slot means this is a new controller process. Even when the
+	// effective configuration is byte-for-byte unchanged, provider sessions
+	// cannot be resumed from their old threads or histories. Install a fresh
+	// owner only after the uncounted resume gate succeeds; role dispatch then
+	// reconstructs each needed bootstrap from durable data.
+	recreateSessions := configurationChanged || (input.SessionOwner != nil && *input.SessionOwner == nil)
 	if input.SessionOwner != nil && *input.SessionOwner != nil && !(*input.SessionOwner).MatchesPrepared(prepared) {
 		// A prior resume may have made configuration B durable but stopped at
 		// the mandatory-check gate before replacing sessions created for A.

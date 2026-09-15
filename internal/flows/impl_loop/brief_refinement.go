@@ -424,7 +424,7 @@ func continueBriefRefinementExplorer(ctx context.Context, input BriefRefinementI
 	}
 	explorerCall := ControlledAgentCall{Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleExplorer, CallID: value.ExplorerCallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: value.ExplorerOperationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleExplorer, State: ResponseStateExploring, Scope: ResponseScopeAssignment, ExplorerSource: ExplorerSourceBriefRefinement, Binding: briefRefinementBinding(input, brief.ID, value.ExplorerCallID)}}
 	continuation := briefRefinementCall(input, sourceSession, value.ContinuationOperationID, sourceExpectation.Binding, "")
-	route := ExplorerRoute{Owner: input.Owner, SourceSession: sourceSession, SourceExpectation: sourceExpectation, Request: request, ExplorerCall: explorerCall, SourceContinuation: continuation, ExplorerCharacters: value.ExplorerCharacters,
+	route := ExplorerRoute{Owner: input.Owner, SourceSession: sourceSession, SourceExpectation: sourceExpectation, Request: request, ExplorerCall: explorerCall, ExplorerResultID: value.ExplorerResultID, SourceContinuation: continuation, ExplorerCharacters: value.ExplorerCharacters,
 		PersistExplorerResponse: func(persistCtx context.Context, call ControlledAgentCallResult) error {
 			return persistBriefExplorerOutcome(persistCtx, input, brief.ID, value, call.Response)
 		}}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -28,6 +29,11 @@ type ExplorerRoute struct {
 	SourceExpectation ResponseExpectation
 	Request           AgentResponse
 	ExplorerCall      ControlledAgentCall
+	// ExplorerResultID makes a completed auxiliary result recoverable. When it
+	// is supplied, RouteExplorer reads the durable response instead of
+	// dispatching Explorer again after a process restart. Empty preserves the
+	// lower-level route seam for callers that retain recovery themselves.
+	ExplorerResultID implementationstate.ResultID
 	// SourceContinuation is the controller-owned next turn in the exact
 	// source session. It has its own operation and response expectation;
 	// Explorer's result never chooses either.
@@ -74,57 +80,89 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 	if err != nil {
 		return ExplorerRouteResult{}, err
 	}
-	session, err := route.Owner.Explorer(ctx, start)
-	if err != nil {
-		return ExplorerRouteResult{}, fmt.Errorf("start Explorer session: %w", err)
-	}
-	defer func() { _ = session.Close() }()
-
 	limit, err := effectiveExplorerCharacterLimit(route.ExplorerCharacters)
 	if err != nil {
 		return ExplorerRouteResult{}, err
 	}
 	call := route.ExplorerCall
-	call.Session = session
-	call.AssignmentID = explorerAssignmentID(route.SourceExpectation)
-	call.ValidateResponse = func(response AgentResponse) error { return validateExplorerResponseSize(response, limit) }
-	call.ContinueOnResponseRejection = true
-	result, err := InvokeControlledAgentCall(ctx, call)
-	if err != nil {
-		return ExplorerRouteResult{Attempts: result.Attempts}, err
-	}
-	if route.PersistExplorerResponse != nil {
-		if err := route.PersistExplorerResponse(context.WithoutCancel(ctx), result); err != nil {
-			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
+	var response AgentResponse
+	var attempts uint64
+	if route.ExplorerResultID != "" {
+		recovery, recoveryErr := RecoverAgentOperation(call.Journal, call.Run, explorerAssignmentID(route.SourceExpectation), call.OperationID, route.ExplorerResultID)
+		if recoveryErr != nil {
+			return ExplorerRouteResult{}, recoveryErr
+		}
+		if recovery.State == AgentOperationCompleted {
+			response, attempts = recovery.Response, recovery.Attempts
+			if err := validateRecoveredExplorerResponse(call.Expectation, response, limit); err != nil {
+				return ExplorerRouteResult{}, err
+			}
 		}
 	}
-	if result.Response.Kind == ResponseExecutionBlocked {
+	if response.Kind == "" {
+		session, startErr := route.Owner.Explorer(ctx, start)
+		if startErr != nil {
+			return ExplorerRouteResult{}, fmt.Errorf("start Explorer session: %w", startErr)
+		}
+		defer func() { _ = session.Close() }()
+		call.Session = session
+		call.AssignmentID = explorerAssignmentID(route.SourceExpectation)
+		call.ValidateResponse = func(value AgentResponse) error { return validateExplorerResponseSize(value, limit) }
+		call.ContinueOnResponseRejection = true
+		result, invokeErr := InvokeControlledAgentCall(ctx, call)
+		if invokeErr != nil {
+			return ExplorerRouteResult{Attempts: result.Attempts}, invokeErr
+		}
+		response, attempts = result.Response, result.Attempts
+		if route.PersistExplorerResponse != nil {
+			if persistErr := route.PersistExplorerResponse(context.WithoutCancel(ctx), result); persistErr != nil {
+				return ExplorerRouteResult{Response: response, Attempts: attempts}, persistErr
+			}
+		}
+	}
+	if response.Kind == ResponseExecutionBlocked {
 		if call.Run.Status == implementationstate.RunPaused {
-			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts, Paused: true, PauseReason: call.Run.PauseReason}, nil
+			return ExplorerRouteResult{Response: response, Attempts: attempts, Paused: true, PauseReason: call.Run.PauseReason}, nil
 		}
-		reason, err := persistExplorerExecutionBlocked(ctx, call, result.Response)
+		reason, err := persistExplorerExecutionBlocked(ctx, call, response)
 		if err != nil {
-			return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
+			return ExplorerRouteResult{Response: response, Attempts: attempts}, err
 		}
-		return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts, Paused: true, PauseReason: reason}, nil
+		return ExplorerRouteResult{Response: response, Attempts: attempts, Paused: true, PauseReason: reason}, nil
 	}
 	if err := validateSourceContinuation(route); err != nil {
-		return ExplorerRouteResult{Response: result.Response, Attempts: result.Attempts}, err
+		return ExplorerRouteResult{Response: response, Attempts: attempts}, err
 	}
-	continuation := explorerContinuation(result.Response)
+	continuation := explorerContinuation(response)
 	sourceCall := route.SourceContinuation
 	sourceCall.Session = route.SourceSession
 	sourceCall.Message = continuation
 	sourceResult, err := InvokeControlledAgentCall(ctx, sourceCall)
 	if err != nil {
-		return ExplorerRouteResult{Response: result.Response, ContinuationMessage: continuation, Attempts: result.Attempts, SourceContinuationAttempts: sourceResult.Attempts}, err
+		return ExplorerRouteResult{Response: response, ContinuationMessage: continuation, Attempts: attempts, SourceContinuationAttempts: sourceResult.Attempts}, err
 	}
 	return ExplorerRouteResult{
-		Response: result.Response, Attempts: result.Attempts,
-		ContinuationMessage:        explorerContinuation(result.Response),
+		Response: response, Attempts: attempts,
+		ContinuationMessage:        explorerContinuation(response),
 		SourceContinuationResponse: sourceResult.Response, SourceContinuationAttempts: sourceResult.Attempts,
 		SourceContinuationSnapshot: sourceResult.Snapshot,
 	}, nil
+}
+
+func validateRecoveredExplorerResponse(expectation ResponseExpectation, response AgentResponse, limit int) error {
+	if err := validateExpectation(expectation); err != nil {
+		return fmt.Errorf("validate recovered Explorer expectation: %w", err)
+	}
+	if response.Binding != expectation.Binding || !slices.Contains(responseKindsByRole[expectation.Role], response.Kind) || !responseAllowedInState(response.Kind, expectation) {
+		return fmt.Errorf("recovered Explorer response is not bound to its durable request")
+	}
+	if err := validateResponseSemantics(response); err != nil {
+		return fmt.Errorf("validate recovered Explorer response semantics: %w", err)
+	}
+	if err := validateExplorerResponseSize(response, limit); err != nil {
+		return fmt.Errorf("validate recovered Explorer response: %w", err)
+	}
+	return nil
 }
 
 func validateExplorerRoute(route ExplorerRoute) error {
