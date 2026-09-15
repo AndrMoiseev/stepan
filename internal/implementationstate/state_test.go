@@ -69,6 +69,46 @@ func TestAttemptCountersSeparateSemanticRoundsFromTechnicalRetries(t *testing.T)
 	}
 }
 
+func TestSupersedeRunOperationPreservesAuditAndRejectsAtomically(t *testing.T) {
+	run := newSingleTaskRun(t)
+	oldBasis := run.currentBasis()
+	if err := run.AddRunOperation(Operation{ID: "select-old", Kind: OperationAgent, Basis: oldBasis, Description: "select next assignment", Counter: CycleCounterNone}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt("select-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordRunAttemptOutcome("select-old", AttemptInterrupted, "process stopped"); err != nil {
+		t.Fatal(err)
+	}
+	run.Identity.Configuration = EvidenceRef{ID: "config-new", Digest: "config-new-digest"}
+	want, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := Operation{ID: "select-new", Kind: OperationAgent, Basis: run.currentBasis(), Description: "different action", Counter: CycleCounterNone, Supersedes: "select-old"}
+	if err := run.SupersedeRunOperation("select-old", invalid); err == nil {
+		t.Fatal("invalid supersession was accepted")
+	}
+	got, err := json.Marshal(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("rejected supersession mutated state\n got: %s\nwant: %s", got, want)
+	}
+	replacement := Operation{ID: "select-new", Kind: OperationAgent, Basis: run.currentBasis(), Description: "select next assignment", Counter: CycleCounterNone, Supersedes: "select-old"}
+	if err := run.SupersedeRunOperation("select-old", replacement); err != nil {
+		t.Fatal(err)
+	}
+	if len(run.RunOperations) < 2 || run.RunOperations[len(run.RunOperations)-1].Supersedes != "select-old" || len(run.RunOperations[len(run.RunOperations)-2].Attempts) != 1 {
+		t.Fatalf("supersession did not retain linked audit history: %#v", run.RunOperations)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("superseded run is invalid: %v", err)
+	}
+}
+
 func TestFinalReviewTechnicalRetryDoesNotConsumeAnotherRound(t *testing.T) {
 	run := newSingleTaskRun(t)
 	for _, operation := range []Operation{

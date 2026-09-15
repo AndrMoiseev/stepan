@@ -192,6 +192,7 @@ type sessionRuntimeFactory struct {
 	mu             sync.Mutex
 	runtimes       []*sessionRuntime
 	closeThreadErr error
+	responses      map[ResponseRole]map[string]any
 }
 
 func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error {
@@ -199,7 +200,7 @@ func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProf
 }
 
 func (factory *sessionRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
-	runtime := &sessionRuntime{closeThreadErr: factory.closeThreadErr}
+	runtime := &sessionRuntime{closeThreadErr: factory.closeThreadErr, responses: factory.responses}
 	factory.mu.Lock()
 	factory.runtimes = append(factory.runtimes, runtime)
 	factory.mu.Unlock()
@@ -231,6 +232,7 @@ type sessionRuntime struct {
 	configurations []agentruntime.ThreadConfig
 	turnCount      int
 	closeThreadErr error
+	responses      map[ResponseRole]map[string]any
 }
 
 func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
@@ -241,10 +243,12 @@ func (runtime *sessionRuntime) StartThread(config agentruntime.ThreadConfig) (ag
 func (runtime *sessionRuntime) RunTurn(thread agentruntime.Thread, _ string) (json.RawMessage, error) {
 	runtime.turnCount++
 	kind := ResponseImplementationReady
+	role := ResponseRoleImplementer
 	var bootstrap string
 	if number, ok := thread.(int); ok && number > 0 && number <= len(runtime.configurations) {
 		bootstrap = runtime.configurations[number-1].BootstrapInstructions
-		switch roleFromBootstrap(bootstrap) {
+		role = roleFromBootstrap(bootstrap)
+		switch role {
 		case ResponseRoleOrchestrator:
 			kind = ResponseProgressReflected
 		case ResponseRoleBriefer:
@@ -254,6 +258,10 @@ func (runtime *sessionRuntime) RunTurn(thread agentruntime.Thread, _ string) (js
 		}
 	}
 	response := responsePayloadMap(kind)
+	if configured := runtime.responses[role]; configured != nil {
+		response = configured
+		kind = ResponseKind(configured["kind"].(string))
+	}
 	if kind == ResponseBriefReady {
 		for _, line := range strings.Split(bootstrap, "\n") {
 			for _, field := range strings.Fields(line) {

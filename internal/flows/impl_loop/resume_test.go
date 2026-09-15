@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
@@ -188,11 +189,11 @@ func TestRestartAssignmentActionUsesLatestDurableOperationAndResult(t *testing.T
 		{name: "failed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultFailed)}, want: restartAssignmentImplement},
 		{name: "passed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultSucceeded)}, want: restartAssignmentAwaitingAcceptance},
 		{name: "interrupted implementer", operations: []implementationstate.Operation{operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)}, want: restartAssignmentImplement, interrupted: true},
-		{name: "completed implementer awaiting route", operations: []implementationstate.Operation{func() implementationstate.Operation {
+		{name: "completed implementer awaiting receipt replay", operations: []implementationstate.Operation{func() implementationstate.Operation {
 			value := operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)
 			value.Attempts = []implementationstate.OperationAttempt{{Number: 1, Outcome: implementationstate.AttemptSucceeded}}
 			return value
-		}()}, wantError: true},
+		}()}, want: restartAssignmentImplement, interrupted: true},
 		{name: "interrupted check", operations: []implementationstate.Operation{operation("checks", implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks)}, want: restartAssignmentChecks, interrupted: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -469,6 +470,85 @@ func TestDispatchRestartContinuationRecoversControlledCallCrashBoundary(t *testi
 	}
 }
 
+func TestDispatchRestartContinuationRoutesSucceededReceiptKindsWithoutRepeatingTurn(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response map[string]any
+		assert   func(*testing.T, *resumeFixture)
+	}{
+		{
+			name:     "checks requested",
+			response: responsePayloadMap(ResponseChecksRequested),
+			assert: func(t *testing.T, fixture *resumeFixture) {
+				t.Helper()
+				assignment := assignmentByID(fixture.run, "assignment")
+				if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || assignment == nil || len(assignment.Results) != 1 || assignment.Results[0].Status != implementationstate.ResultFailed {
+					t.Fatalf("replayed checks_requested did not use normal check transition: assignment=%#v run=%#v", assignment, fixture.run)
+				}
+			},
+		},
+		{
+			name:     "execution blocked",
+			response: responsePayloadMap(ResponseExecutionBlocked),
+			assert: func(t *testing.T, fixture *resumeFixture) {
+				t.Helper()
+				if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" {
+					t.Fatalf("replayed execution_blocked lost exact durable effect: %#v", fixture.run)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newResumeFixture(t, "")
+			prepareRestartActiveAssignment(t, fixture)
+			factory := &sessionRuntimeFactory{responses: map[ResponseRole]map[string]any{ResponseRoleImplementer: test.response}}
+			configuration := resumeTestConfiguration(t, "initial-model", "")
+			prepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": factory})
+			if err != nil {
+				t.Fatal(err)
+			}
+			owner, err := NewSessionOwner(prepared, threadConfigForTest(fixture.repository))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = owner.Close() })
+			checks, err := configuration.SelectHostChecks()
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+				return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureInfrastructure}, errors.New("injected check infrastructure failure")
+			})
+			crash := errors.New("injected process loss after durable attempt success")
+			err = DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+				Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+				Workspace: fixture.workspace, Runner: runner, Configuration: configuration, Checks: checks,
+				AfterAgentAttemptSucceeded: func() error { return crash },
+			})
+			if !errors.Is(err, crash) || fixture.run.Status != implementationstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
+				t.Fatalf("post-success crash = err=%v turns=%d run=%#v", err, countRoleTurns(factory, ResponseRoleImplementer), fixture.run)
+			}
+			operation := fixture.run.Assignments[0].Operations[len(fixture.run.Assignments[0].Operations)-1]
+			if len(operation.Attempts) != 1 || operation.Attempts[0].Outcome != implementationstate.AttemptSucceeded || assignmentResultForOperation(fixture.run, "assignment", operation.ID) != nil {
+				t.Fatalf("crash boundary did not retain succeeded receipt-only operation: %#v", operation)
+			}
+			if _, err := Resume(context.Background(), fixture.input()); err != nil {
+				t.Fatal(err)
+			}
+			if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+				Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+				Workspace: fixture.workspace, Runner: runner, Configuration: configuration, Checks: checks,
+			}); err != nil {
+				t.Fatalf("receipt replay: %v; run=%#v", err, fixture.run)
+			}
+			if countRoleTurns(factory, ResponseRoleImplementer) != 1 {
+				t.Fatalf("completed implementer turn repeated: %d", countRoleTurns(factory, ResponseRoleImplementer))
+			}
+			test.assert(t, fixture)
+		})
+	}
+}
+
 func TestDispatchRestartContinuationPausesSucceededImplementationWithoutReceipt(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	prepareRestartActiveAssignment(t, fixture)
@@ -651,6 +731,107 @@ func TestResumeSkipsBaselineWhileInterruptedTaskExtractionRemainsPending(t *test
 	operation := finalRunOperation(fixture.run, "extract")
 	if fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !slices.Equal(fixture.run.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
 		t.Fatalf("restart did not reach and finish interrupted extraction: operation=%#v run=%#v", operation, fixture.run)
+	}
+}
+
+func TestRestartSupersedesInterruptedTaskExtractionAfterCompatibleRefresh(t *testing.T) {
+	fixture := newPendingExtractionResumeFixture(t)
+	oldBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	oldResponse := AgentResponse{Kind: ResponseTasksExtracted, TaskIDs: []implementationstate.TaskID{"OLD"}, TaskPayloads: []string{`{"id":"OLD","title":"stale"}`}, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "extract")), RunID: fixture.run.Identity.ID, Specification: oldBasis.Specification, Configuration: oldBasis.Configuration, TaskList: fixture.run.Identity.TaskList}}
+	if _, _, err := publishControlledAgentSuccessReceipt(fixture.journal, "extract", oldResponse, fixture.workspace.actual); err != nil {
+		t.Fatal(err)
+	}
+	configureAcceptanceRefresh(t, fixture, "compatible specification")
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	payload := responsePayloadMap(ResponseTasksExtracted)
+	payload["task_ids"] = []string{"A", "A1"}
+	payload["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: raw}}}
+	session := &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator", restart: func(context.Context) (*AgentSession, error) {
+		return &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"}, nil
+	}}
+	if err := runRestartTaskExtraction(context.Background(), RestartContinuationInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace}, session, openspec.Package{}, controlledCallLimits()); err != nil {
+		t.Fatal(err)
+	}
+	old := finalRunOperation(fixture.run, "extract")
+	replacement := &fixture.run.RunOperations[len(fixture.run.RunOperations)-1]
+	currentBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if old == nil || replacement == nil || replacement.ID == old.ID || replacement.Supersedes != old.ID || old.Basis != oldBasis || replacement.Basis != currentBasis || len(old.Attempts) != 1 || len(replacement.Attempts) != 1 || replacement.Attempts[0].Outcome != implementationstate.AttemptSucceeded || len(runtime.messages) != 1 || !slices.Equal(fixture.run.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) {
+		t.Fatalf("stale extraction was not superseded exactly once: old=%#v replacement=%#v turns=%d", old, replacement, len(runtime.messages))
+	}
+}
+
+func TestRestartSupersedesInterruptedBriefSelectionAfterCompatibleRefresh(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.run.StartRunAttempt("baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := PrepareBriefSelection(context.Background(), fixture.state, fixture.run, "select-old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fixture.state.RecordRunAttemptStart(context.Background(), fixture.run, "select-old"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.RecordRunAttemptOutcome(context.Background(), fixture.run, "select-old", implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+		t.Fatal(err)
+	}
+	staleBrief := "STALE BRIEF MUST NOT BE USED"
+	oldSelection := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implementationstate.TaskID{"task"}, Brief: &staleBrief, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "select-old")), RunID: fixture.run.Identity.ID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
+	if _, _, err := publishControlledAgentSuccessReceipt(fixture.journal, "select-old", oldSelection, fixture.workspace.actual); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.Pause("process stopped during selection"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	configureAcceptanceRefresh(t, fixture, "compatible specification")
+	resumed, err := Resume(context.Background(), fixture.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory := &sessionRuntimeFactory{}
+	prepared, err := PrepareRuntimes(resumed.Configuration, map[string]RuntimeFactory{"test": factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSessionOwner(prepared, agentruntime.ThreadConfig{Workspace: fixture.repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = owner.Close() }()
+	if err := runRestartBriefSelection(context.Background(), RestartContinuationInput{Owner: owner, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace}, controlledCallLimits(), time.Second); err != nil {
+		t.Fatal(err)
+	}
+	old := finalRunOperation(fixture.run, "select-old")
+	replacement := latestRunOperation(fixture.run, "select next assignment")
+	currentBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if old == nil || replacement == nil || replacement.ID == old.ID || replacement.Supersedes != old.ID || old.Basis != basis || replacement.Basis != currentBasis || len(old.Attempts) != 1 || len(replacement.Attempts) != 1 || countRoleTurns(factory, ResponseRoleBriefer) != 1 || len(fixture.run.Assignments) != 1 {
+		t.Fatalf("stale selection was not superseded exactly once: old=%#v replacement=%#v assignments=%#v", old, replacement, fixture.run.Assignments)
+	}
+	brief, briefErr := currentAssignmentBrief(fixture.journal, fixture.run, fixture.run.Assignments[0].ID)
+	if briefErr != nil || brief.Text == staleBrief {
+		t.Fatalf("old-basis selection receipt was applied: brief=%#v err=%v", brief, briefErr)
 	}
 }
 

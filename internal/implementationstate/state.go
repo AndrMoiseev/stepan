@@ -333,6 +333,11 @@ type Operation struct {
 	Basis       AcceptanceBasis
 	Description string
 	Counter     CycleCounter
+	// Supersedes links a replacement run-scoped operation to the unfinished
+	// operation from an older acceptance basis. The prior operation and all of
+	// its attempts remain immutable audit evidence; receipts are consequently
+	// bound to the replacement operation ID and cannot cross bases.
+	Supersedes OperationID `json:"supersedes,omitempty"`
 	// Episode is required for Explorer operations and is otherwise empty. It
 	// makes an Explorer episode's counter independent from other episodes.
 	Episode  string
@@ -352,7 +357,7 @@ type Operation struct {
 }
 
 func (o Operation) valid() bool {
-	if o.ID == "" || !o.Kind.valid() || !o.Basis.valid() || !o.Counter.valid() || !o.Counter.matchesOperationKind(o.Kind) || (o.Counter == CycleCounterExplorer && strings.TrimSpace(o.Episode) == "") || (o.Counter != CycleCounterExplorer && o.Episode != "") || (o.UncountedResumeCheck && (o.Kind != OperationCheck || o.Counter != CycleCounterNone || len(o.Attempts) != 0)) {
+	if o.ID == "" || o.Supersedes == o.ID || !o.Kind.valid() || !o.Basis.valid() || !o.Counter.valid() || !o.Counter.matchesOperationKind(o.Kind) || (o.Counter == CycleCounterExplorer && strings.TrimSpace(o.Episode) == "") || (o.Counter != CycleCounterExplorer && o.Episode != "") || (o.UncountedResumeCheck && (o.Kind != OperationCheck || o.Counter != CycleCounterNone || len(o.Attempts) != 0)) {
 		return false
 	}
 	for index, attempt := range o.Attempts {
@@ -878,11 +883,21 @@ func (r *Run) Validate() error {
 			return fmt.Errorf("%w: unassigned task %q is not pending", ErrInvalidState, taskID)
 		}
 	}
+	runOperations := make(map[OperationID]Operation, len(r.RunOperations))
+	superseded := make(map[OperationID]bool)
 	for _, operation := range r.RunOperations {
 		if !operation.valid() || operation.BriefID != "" || !validRunCounter(operation.Counter) || operations[operation.ID] {
 			return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
 		}
+		if operation.Supersedes != "" {
+			prior, exists := runOperations[operation.Supersedes]
+			if !exists || superseded[prior.ID] || r.hasRunResultForOperation(prior.ID) || prior.Basis == operation.Basis || prior.Kind != operation.Kind || prior.Description != operation.Description || prior.Counter != operation.Counter || prior.Episode != operation.Episode {
+				return fmt.Errorf("%w: invalid run operation supersession", ErrInvalidState)
+			}
+			superseded[prior.ID] = true
+		}
 		operations[operation.ID] = true
+		runOperations[operation.ID] = operation
 	}
 	for _, result := range r.RunResults {
 		operation := r.runOperation(result.OperationID)
@@ -1181,7 +1196,7 @@ func (r *Run) AddOperation(assignmentID AssignmentID, operation Operation) error
 	if err != nil {
 		return err
 	}
-	if !operation.valid() || operation.BriefID == "" || operation.UncountedResumeCheck || !validAssignmentCounter(operation.Counter) || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
+	if !operation.valid() || operation.Supersedes != "" || operation.BriefID == "" || operation.UncountedResumeCheck || !validAssignmentCounter(operation.Counter) || r.operationExists(operation.ID) || !assignment.hasBrief(operation.BriefID) {
 		return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 	}
 	assignment.Operations = append(assignment.Operations, operation)
@@ -1474,10 +1489,33 @@ func (r *Run) AddRunOperation(operation Operation) error {
 	if err := r.requireActive(); err != nil {
 		return err
 	}
-	if !operation.valid() || operation.BriefID != "" || !validRunCounter(operation.Counter) || r.operationExists(operation.ID) {
+	if !operation.valid() || operation.Supersedes != "" || operation.BriefID != "" || !validRunCounter(operation.Counter) || r.operationExists(operation.ID) {
 		return fmt.Errorf("%w: invalid run operation", ErrInvalidState)
 	}
 	r.RunOperations = append(r.RunOperations, operation)
+	return nil
+}
+
+// SupersedeRunOperation appends a current-basis replacement for unfinished
+// run-scoped work. It validates the complete transition before mutating the
+// run so a rejected replacement leaves the caller's state untouched.
+func (r *Run) SupersedeRunOperation(priorID OperationID, replacement Operation) error {
+	if err := r.requireActive(); err != nil {
+		return err
+	}
+	prior := r.runOperation(priorID)
+	if prior == nil || r.hasRunResultForOperation(priorID) || prior.Basis == r.currentBasis() {
+		return fmt.Errorf("%w: only unfinished stale-basis run work can be superseded", ErrInvalidState)
+	}
+	if !replacement.valid() || replacement.BriefID != "" || !validRunCounter(replacement.Counter) || r.operationExists(replacement.ID) || replacement.Supersedes != priorID || replacement.Basis != r.currentBasis() || replacement.Kind != prior.Kind || replacement.Description != prior.Description || replacement.Counter != prior.Counter || replacement.Episode != prior.Episode || len(replacement.Attempts) != 0 || replacement.SemanticCycle != 0 || replacement.TechnicalAttemptStart != 0 || replacement.UncountedResumeCheck != prior.UncountedResumeCheck {
+		return fmt.Errorf("%w: invalid run operation supersession", ErrInvalidState)
+	}
+	for _, operation := range r.RunOperations {
+		if operation.Supersedes == priorID {
+			return fmt.Errorf("%w: run operation is already superseded", ErrInvalidState)
+		}
+	}
+	r.RunOperations = append(r.RunOperations, replacement)
 	return nil
 }
 
@@ -1973,7 +2011,7 @@ func (r *Run) validateAssignment(assignment Assignment) error {
 		}
 	}
 	for _, operation := range assignment.Operations {
-		if !operation.valid() || operation.BriefID == "" || operation.UncountedResumeCheck || !assignment.hasBrief(operation.BriefID) {
+		if !operation.valid() || operation.Supersedes != "" || operation.BriefID == "" || operation.UncountedResumeCheck || !assignment.hasBrief(operation.BriefID) {
 			return fmt.Errorf("%w: invalid operation", ErrInvalidState)
 		}
 	}

@@ -42,6 +42,9 @@ type RestartContinuationInput struct {
 	// AfterAgentSuccessReceipt is a crash-injection seam passed to the shared
 	// controlled-call boundary. Production callers leave it nil.
 	AfterAgentSuccessReceipt func() error
+	// AfterAgentAttemptSucceeded injects a crash after the shared controlled
+	// call has durably marked success but before response-kind routing.
+	AfterAgentAttemptSucceeded func() error
 }
 
 // DispatchRestartContinuation restores the orchestrator and drives durable
@@ -152,9 +155,14 @@ func runRestartTaskExtraction(ctx context.Context, input RestartContinuationInpu
 	if operation == nil {
 		return pauseRestartContinuation(ctx, input, "continue task extraction", errors.New("pending task extraction has no durable unfinished orchestrator operation"))
 	}
+	var err error
+	operation, err = supersedeStaleRunOperation(ctx, input, operation, "extract-tasks")
+	if err != nil {
+		return pauseRestartContinuation(ctx, input, "refresh interrupted task extraction basis", err)
+	}
 	callID := restartOperationCallID(operation)
 	binding := ResponseBinding{CallID: callID, RunID: input.Run.Identity.ID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
-	_, err := ExecuteInitialTaskExtraction(ctx, ControlledAgentCall{
+	_, err = ExecuteInitialTaskExtraction(ctx, ControlledAgentCall{
 		Session: session, UserControl: input.UserControl, Repository: input.Repository, Workspace: input.Workspace,
 		Policy: AgentCallPolicy{Role: AgentRoleOrchestrator, CallID: callID}, Run: input.Run, Journal: input.Journal,
 		StateStore: input.StateStore, OperationID: operation.ID, Limits: limits,
@@ -168,6 +176,11 @@ func runRestartBriefSelection(ctx context.Context, input RestartContinuationInpu
 	operation, _ := nextRestartIDs(input.Run, "select-assignment")
 	var interrupted *implementationstate.Operation
 	if interrupted = latestIncompleteRunOperation(input.Run, "select next assignment"); interrupted != nil {
+		var err error
+		interrupted, err = supersedeStaleRunOperation(ctx, input, interrupted, "select-assignment")
+		if err != nil {
+			return pauseRestartContinuation(ctx, input, "refresh interrupted assignment selection basis", err)
+		}
 		operation = interrupted.ID
 	}
 	assignmentID := nextRestartAssignmentID(input.Run)
@@ -363,12 +376,12 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 	}
 
 	if operation := latestSucceededImplementationWithoutResult(input.Run, assignmentID); operation != nil {
-		recovered, recoverErr := recoverPublishedImplementationReady(ctx, input, assignmentID, operation.ID)
-		if recoverErr != nil {
-			return pauseRestartContinuation(ctx, input, "recover completed implementation_ready response", recoverErr)
+		_, _, _, _, found, receiptErr := readControlledAgentSuccessReceipt(input.Journal, operation.ID)
+		if receiptErr != nil {
+			return pauseRestartContinuation(ctx, input, "recover completed implementer response", receiptErr)
 		}
-		if !recovered {
-			return pauseRestartContinuation(ctx, input, "recover completed implementation_ready response", fmt.Errorf("implementation operation %s succeeded without a durable response result", operation.ID))
+		if !found {
+			return pauseRestartContinuation(ctx, input, "recover completed implementer response", fmt.Errorf("implementation operation %s succeeded without a durable accepted-turn receipt", operation.ID))
 		}
 	}
 	action, interruptedOperation, err := classifyRestartAssignmentAction(input.Run, assignmentID)
@@ -502,11 +515,16 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 			}
 			return ValidateImplementerTransitionResponse(input.Checks, input.Run, assignmentID, briefID, response)
 		},
-		AfterSuccessReceipt: input.AfterAgentSuccessReceipt,
+		AfterSuccessReceipt:   input.AfterAgentSuccessReceipt,
+		AfterAttemptSucceeded: input.AfterAgentAttemptSucceeded,
 	})
 	if err != nil {
 		return restartRouteError(ctx, input, "continue active assignment implementation", err)
 	}
+	return routeRestartImplementerResponse(ctx, input, assignmentID, briefID, operation, turn, limits)
+}
+
+func routeRestartImplementerResponse(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, operation implementationstate.OperationID, turn ControlledAgentCallResult, limits implementationstate.CycleLimits) error {
 	if turn.Response.Kind == ResponseExecutionBlocked {
 		block, err := ExecutionBlockFromResponse(turn.Response)
 		if err == nil {
@@ -520,7 +538,7 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 		}
 	}
 	checkOperation, checkResult := nextRestartIDs(input.Run, "implementer-checks")
-	_, err = ApplyImplementerTransition(ctx, ImplementerTransitionInput{
+	_, err := ApplyImplementerTransition(ctx, ImplementerTransitionInput{
 		Run: input.Run, Workspace: input.Workspace, StateStore: input.StateStore, Journal: input.Journal, Repository: input.Repository,
 		AssignmentID: assignmentID, BriefID: briefID, Selection: input.Checks, Runner: input.Runner, UserControl: input.UserControl,
 		Limits: limits, ProtectedPaths: input.ProtectedPaths, OperationID: checkOperation, ResultID: checkResult,
@@ -569,7 +587,7 @@ func classifyRestartAssignmentAction(run *implementationstate.Run, assignmentID 
 				return restartAssignmentRefineBrief, operation, nil
 			case operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterNone && operation.BriefID != "" && operation.Episode == "":
 				if len(operation.Attempts) != 0 && operation.Attempts[len(operation.Attempts)-1].Outcome == implementationstate.AttemptSucceeded {
-					return 0, nil, fmt.Errorf("implementation operation %s succeeded without a durable response result", operation.ID)
+					return restartAssignmentImplement, operation, nil
 				}
 				if operation.Basis != basis {
 					continue
@@ -813,6 +831,42 @@ func latestIncompleteRunOperationAfter(run *implementationstate.Run, description
 		return nil
 	}
 	return nil
+}
+
+func supersedeStaleRunOperation(ctx context.Context, input RestartContinuationInput, prior *implementationstate.Operation, stem string) (*implementationstate.Operation, error) {
+	if prior == nil || input.Run == nil || input.StateStore == nil {
+		return nil, errors.New("run operation supersession requires state, store, and prior operation")
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	if prior.Basis == basis {
+		return prior, nil
+	}
+	encoded, err := json.Marshal(input.Run)
+	if err != nil {
+		return nil, fmt.Errorf("clone run before operation supersession: %w", err)
+	}
+	var candidate implementationstate.Run
+	if err := json.Unmarshal(encoded, &candidate); err != nil {
+		return nil, fmt.Errorf("clone run before operation supersession: %w", err)
+	}
+	replacementID, _ := nextRestartIDs(&candidate, stem)
+	replacement := implementationstate.Operation{
+		ID: replacementID, Kind: prior.Kind, Basis: basis, Description: prior.Description,
+		Counter: prior.Counter, Episode: prior.Episode, Supersedes: prior.ID,
+		UncountedResumeCheck: prior.UncountedResumeCheck,
+	}
+	if err := candidate.SupersedeRunOperation(prior.ID, replacement); err != nil {
+		return nil, err
+	}
+	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), &candidate); err != nil {
+		return nil, fmt.Errorf("persist run operation supersession: %w", err)
+	}
+	*input.Run = candidate
+	operation := finalRunOperation(input.Run, replacementID)
+	if operation == nil {
+		return nil, errors.New("persisted run operation supersession is missing")
+	}
+	return operation, nil
 }
 
 func restartCallID(operation implementationstate.OperationID, existing *implementationstate.Operation) string {

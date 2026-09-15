@@ -58,6 +58,10 @@ type ControlledAgentCall struct {
 	// validated response and post-turn workspace are durably published but
 	// before the attempt is marked succeeded. Production callers leave it nil.
 	AfterSuccessReceipt func() error
+	// AfterAttemptSucceeded is a crash-injection seam after the durable success
+	// outcome but before the caller applies the accepted response transition.
+	// Receipt recovery does not invoke it a second time.
+	AfterAttemptSucceeded func() error
 }
 
 // ControlledAgentCallResult is returned only for a response that passed both
@@ -205,6 +209,11 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		}
 		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
+		}
+		if call.AfterAttemptSucceeded != nil {
+			if err := call.AfterAttemptSucceeded(); err != nil {
+				return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
 		}
 		return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, nil
 	}
