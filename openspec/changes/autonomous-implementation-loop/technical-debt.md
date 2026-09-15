@@ -956,3 +956,46 @@
 - Potential problem: equivalent checks validation is maintained in multiple branches.
 - Expected impact: future validation changes can drift.
 - Possible follow-up: consolidate into one typed helper shared by both configuration levels.
+
+## TASK-14.1-001 — end-to-end test bypasses real Git workspace control
+
+- Origin: task 14.1 initial review; affected location: `end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: the scenario uses `unchangedWorkspaceControl`, bypassing real snapshot comparison, protected-path enforcement, reviewer immutability and final checked-state verification.
+- Expected impact: the test can pass while the production Git-backed controller path is broken.
+- Classification: normally blocking E2E coverage gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: use `GitWorkspaceControl` while keeping agents and checks fake.
+
+## TASK-14.1-002 — end-to-end fixture bypasses the clean-start boundary
+
+- Origin: task 14.1 initial review; affected location: `end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: untracked OpenSpec fixture files are created after the initial commit, then captured as a dirty baseline without production start validation.
+- Expected impact: the first implementation commit absorbs setup files and the clean-start contract is untested.
+- Classification: normally blocking scenario-validity gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: commit fixture specifications before baseline capture and exercise the production start boundary.
+
+## TASK-14.1-003 — forbidden external Git actions are not directly observed
+
+- Origin: task 14.1 initial review; affected location: `end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: asserting that no remote is configured does not detect attempted direct-URL pushes, PR/deployment commands, or other forbidden external actions.
+- Expected impact: the scenario does not fully prove the negative external-action requirement.
+- Classification: acceptance gap accepted as debt under the user's standing waiver.
+- Possible follow-up: add an audited Git-command boundary or equivalent explicit allow-list assertion.
+
+## TASK-14.1-D004 — E2E assertions do not prove exact checks and durable links
+
+- Origin: task 14.1 initial review; affected location: `end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: assertions use minimum operation/result counts and do not verify the exact fake-check sequence.
+- Expected impact: stages or required checks can be skipped while the broad scenario still passes.
+- Possible follow-up: assert requested `test_auth`, mandatory sets, and exact durable operation/result linkages.
+
+## TASK-14.1-D005 — Git integration fixture inherits global hooks/configuration
+
+- Origin: task 14.1 initial review; affected shared Git test helper.
+- Status: `open`.
+- Potential problem: global/system Git configuration such as `core.hooksPath` is inherited.
+- Expected impact: environment-specific hooks can make the test flaky or cause unintended local side effects.
+- Possible follow-up: isolate Git configuration and use controlled local hook fixtures where needed.
