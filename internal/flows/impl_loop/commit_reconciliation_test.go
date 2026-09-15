@@ -34,6 +34,34 @@ func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
 	}
 }
 
+func TestReconcilePendingCommitDoesNotReturnRetryWhileRunIsInactive(t *testing.T) {
+	for _, status := range []implementationstate.RunStatus{implementationstate.RunPaused, implementationstate.RunClosed} {
+		t.Run(string(status), func(t *testing.T) {
+			repository := newFilesystemWorkspace(t)
+			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+			defer stateStore.Close()
+			intent := persistPendingCommit(t, run, stateStore)
+			if status == implementationstate.RunPaused {
+				if err := run.Pause("waiting for user"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := run.Close("user stopped run"); err != nil {
+				t.Fatal(err)
+			}
+			observer := &commitObserverFake{observation: CommitObservation{
+				CommitID: intent.ParentCommit, Worktree: gitsnapshot.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
+			}}
+
+			result, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+				Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+			})
+			if !errors.Is(err, ErrPendingCommitInactive) || result.Retry || observer.calls != 0 {
+				t.Fatalf("inactive reconciliation result=%#v error=%v observations=%d", result, err, observer.calls)
+			}
+		})
+	}
+}
+
 func TestReconcilePendingCommitAdoptsMatchingCommitOnlyOnce(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
 	run, stateStore, _ := acceptanceReflectionFixture(t, repository)

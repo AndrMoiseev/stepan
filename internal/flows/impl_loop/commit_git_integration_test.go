@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -56,6 +57,110 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	}
 	if result.Commit.CommitID != strings.TrimSpace(git(t, repository, "rev-parse", "HEAD")) {
 		t.Fatalf("committed state did not retain actual HEAD: %#v", result.Commit)
+	}
+}
+
+func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(t *testing.T) {
+	repository := newGitWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	acceptCommitFixture(t, stateStore, run)
+
+	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation, err := CommitPreparationFromSnapshot(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := "Implement the accepted task"
+	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{
+		CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief",
+		Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList,
+	}}
+	commitMessage, err := messageForImplementationCommit(run, "assignment", "commit-1", response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.SetPendingCommitIntent("assignment", implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Pause("waiting for user"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	control := &commitControlFake{observation: &CommitObservation{
+		CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage,
+		Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
+	}}
+
+	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
+		Response: response, Preparation: preparation, Control: control,
+	})
+	if err != nil || control.commitCalls != 1 || result.Commit.CommitID != "commit" || run.Assignments[0].Status != implementationstate.AssignmentCommitted {
+		t.Fatalf("resumed pending commit result=%#v error=%v calls=%d run=%#v", result, err, control.commitCalls, run)
+	}
+}
+
+func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitlyResumed(t *testing.T) {
+	for _, status := range []implementationstate.RunStatus{implementationstate.RunPaused, implementationstate.RunClosed} {
+		t.Run(string(status), func(t *testing.T) {
+			repository := newGitWorkspace(t)
+			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+			defer stateStore.Close()
+			acceptCommitFixture(t, stateStore, run)
+			snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+			if err != nil {
+				t.Fatal(err)
+			}
+			preparation, err := CommitPreparationFromSnapshot(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			intent := implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1"}
+			if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stateStore.Record(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			if status == implementationstate.RunPaused {
+				err = run.Pause("waiting for user")
+			} else {
+				err = run.Close("user stopped run")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stateStore.Record(context.Background(), run); err != nil {
+				t.Fatal(err)
+			}
+			control := &commitControlFake{observation: &CommitObservation{
+				CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: intent.Message,
+				Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
+			}}
+
+			_, err = CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
+				Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
+				Preparation: preparation, Control: control,
+			})
+			if !errors.Is(err, ErrPendingCommitInactive) || control.commitCalls != 0 {
+				t.Fatalf("inactive pending commit error=%v calls=%d", err, control.commitCalls)
+			}
+		})
 	}
 }
 

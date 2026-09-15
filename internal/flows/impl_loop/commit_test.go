@@ -119,6 +119,7 @@ type commitControlFake struct {
 	commitErr   error
 	commitCalls int
 	onCommit    func(string)
+	observation *CommitObservation
 }
 
 func (fake *commitControlFake) Commit(_ context.Context, _ string, message string) (CommitObservation, error) {
@@ -128,6 +129,9 @@ func (fake *commitControlFake) Commit(_ context.Context, _ string, message strin
 	}
 	if fake.commitErr != nil {
 		return CommitObservation{}, fake.commitErr
+	}
+	if fake.observation != nil {
+		return *fake.observation, nil
 	}
 	return CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message, Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: "code-and-progress-tree"}}, nil
 }

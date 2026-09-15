@@ -582,3 +582,23 @@
 - Expected impact: a future controller integration, notably task 12.1, could select or combine the wrong path.
 - Classification: technical debt because no current production caller uses the obsolete path and the correct route-level API is present and tested.
 - Possible follow-up: remove/deprecate `ControlledCheckRunner` or explicitly unwrap/reject it when route-level control is supplied, documenting one canonical integration path.
+
+## TD-11.2-001 — projection-only failure can strand same-process reconciliation
+
+- Origin: task 11.2 initial review; affected locations: `internal/flows/impl_loop/commit.go`, `internal/runstore/state.go`.
+- Status: `open`.
+- Potential problem: when the pending-intent JSONL append succeeds but SQLite projection fails, the live retry can reach Git before applying that pending projection; recording completion then conflicts with `ErrPendingEvent` until the store is reopened.
+- Evidence: a nonzero durable event leaves the in-memory pending intent in place while the projection remains pending.
+- Expected impact: a transient projection-only failure can strand same-process reconciliation, although restart recovery retains and identifies the commit safely.
+- Classification: technical debt because it requires an injected or uncommon SQLite projection failure and ordinary execution is unaffected.
+- Possible follow-up: resolve/project the durable pending intent before permitting Git retry, with a deterministic JSONL-success/SQLite-failure fixture.
+
+## TD-11.2-002 — hook-changed retry can disconnect operation evidence from its trailer
+
+- Origin: task 11.2 initial review; affected location: `internal/flows/impl_loop/commit.go` (`reconcileChangedCommit`).
+- Status: `open`.
+- Potential problem: a pending retry commits `intent.Message` but hook-change evidence can store a newer caller `OperationID`, so retained evidence and the actual `Stepan-Operation` trailer disagree.
+- Evidence: the changed-commit route uses `input.OperationID` rather than the persisted intent operation after a pending retry.
+- Expected impact: misleading recovery evidence on the uncommon combination of hook-modified content and a caller operation ID different from the durable intent.
+- Classification: technical debt because no ordinary controller path demonstrating that combined trigger is established.
+- Possible follow-up: consistently use `intent.OperationID` for reconciled evidence and artifact IDs once a pending intent exists.

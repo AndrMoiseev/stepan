@@ -93,6 +93,9 @@ func ReconcilePendingCommit(ctx context.Context, input ReconcilePendingCommitInp
 	if !pending {
 		return PendingCommitReconciliation{}, nil
 	}
+	if err := requireActiveCommitRun(input.Run); err != nil {
+		return PendingCommitReconciliation{Intent: intent}, err
+	}
 	observer := input.Observer
 	if observer == nil {
 		observer = GitCommitObserver{}

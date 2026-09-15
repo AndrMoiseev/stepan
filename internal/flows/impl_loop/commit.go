@@ -18,6 +18,11 @@ import (
 // ErrAssignmentCommit identifies an invalid controller-owned commit step.
 var ErrAssignmentCommit = errors.New("invalid assignment commit")
 
+// ErrPendingCommitInactive prevents a durable intent from bypassing the
+// explicit active-run boundary. A paused run must be resumed by the user and
+// a closed run is terminal before either can cause another Git mutation.
+var ErrPendingCommitInactive = errors.New("pending Git commit requires an active run")
+
 // ErrCommitReacceptanceRequired reports a commit made by Git whose resulting
 // content is no longer the content that passed acceptance. The commit is
 // deliberately retained; the assignment is reopened so the changed working
@@ -178,6 +183,9 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	control := input.Control
 	if control == nil {
 		control = GitCommitControl{}
+	}
+	if err := requireActiveCommitRun(input.Run); err != nil {
+		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: %w", ErrAssignmentCommit, err)
 	}
 	observed, err := control.Commit(ctx, input.Repository, intent.Message)
 	if err != nil {
@@ -399,6 +407,20 @@ func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmen
 func validateCommitAcceptedAssignmentInput(input CommitAcceptedAssignmentInput) error {
 	if input.Run == nil || input.StateStore == nil || strings.TrimSpace(input.Repository) == "" || input.AssignmentID == "" || input.OperationID == "" || strings.TrimSpace(input.Preparation.ParentCommit) == "" || strings.TrimSpace(input.Preparation.Tree) == "" {
 		return fmt.Errorf("%w: run, state store, repository, assignment, operation, and prepared Git facts are required", ErrAssignmentCommit)
+	}
+	if err := requireActiveCommitRun(input.Run); err != nil {
+		return fmt.Errorf("%w: %w", ErrAssignmentCommit, err)
+	}
+	return nil
+}
+
+func requireActiveCommitRun(run *implementationstate.Run) error {
+	if run == nil || run.Status != implementationstate.RunActive {
+		status := implementationstate.RunStatus("")
+		if run != nil {
+			status = run.Status
+		}
+		return fmt.Errorf("%w: run status is %q", ErrPendingCommitInactive, status)
 	}
 	return nil
 }
