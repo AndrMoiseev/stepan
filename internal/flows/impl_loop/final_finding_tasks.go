@@ -92,6 +92,9 @@ func AddFinalFindingTasks(ctx context.Context, input FinalFindingTasksInput) (Fi
 		}
 		return FinalFindingTasksResult{Call: result}, PersistExecutionBlock(context.WithoutCancel(ctx), input.StateStore, input.Run, block)
 	}
+	if result.Response.Kind == ResponseClarificationNeeded {
+		return FinalFindingTasksResult{Call: result}, persistFinalFindingTasksClarification(context.WithoutCancel(ctx), input, result.Response)
+	}
 	afterMarkdown, err := readFinalFindingTasksMarkdown(input.Repository, input.TasksPath)
 	if err != nil {
 		return FinalFindingTasksResult{Call: result}, fmt.Errorf("%w: read tasks.md after task addition: %v", ErrFinalFindingTasks, err)
@@ -194,14 +197,57 @@ func durableFailedFinalReview(run *implementationstate.Run, journal *runstore.Ru
 }
 
 func validateFinalFindingTasksResponse(run *implementationstate.Run, reviewResultID implementationstate.ResultID, finalReview AgentResponse, response AgentResponse) error {
-	if run == nil || response.Kind != ResponseTasksAdded || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
+	if run == nil || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: task additions are not bound to the final-review run", ErrFinalFindingTasks)
+	}
+	switch response.Kind {
+	case ResponseExecutionBlocked:
+		_, err := ExecutionBlockFromResponse(response)
+		return err
+	case ResponseClarificationNeeded:
+		if response.Question == nil || response.Context == nil || response.Boundaries == nil || len(response.References) == 0 {
+			return fmt.Errorf("%w: clarification does not describe the unresolved full-specification issue", ErrFinalFindingTasks)
+		}
+		return nil
+	case ResponseTasksAdded:
+	default:
+		return fmt.Errorf("%w: unsupported final-finding route response %q", ErrFinalFindingTasks, response.Kind)
 	}
 	tasks, err := decodeFinalFindingTasks(reviewResultID, response.TaskIDs, response.TaskPayloads)
 	if err != nil {
 		return err
 	}
 	return validateFinalFindingCoverage(finalReview, tasks)
+}
+
+// persistFinalFindingTasksClarification records the accepted orchestrator
+// question and closes the run as one state transition. A full-specification
+// question cannot be resumed as though it were an environment pause.
+func persistFinalFindingTasksClarification(ctx context.Context, input FinalFindingTasksInput, response AgentResponse) error {
+	evidence, err := publishFinalFindingTaskResponse(input.Journal, input.ResultID, response, "-clarification")
+	if err != nil {
+		return fmt.Errorf("%w: publish final-finding clarification: %v", ErrFinalFindingTasks, err)
+	}
+	event, err := implementationstate.NewRunStateEvent(1, input.Run)
+	if err != nil {
+		return fmt.Errorf("%w: clone run for final-finding clarification: %v", ErrFinalFindingTasks, err)
+	}
+	candidate := event.State
+	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	if err := candidate.AddRunResult(implementationstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: implementationstate.ResultSucceeded, State: candidate.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+		return fmt.Errorf("%w: record final-finding clarification: %v", ErrFinalFindingTasks, err)
+	}
+	if err := candidate.Close(briefClarificationCloseReason(response)); err != nil {
+		return fmt.Errorf("%w: close for final-finding clarification: %v", ErrFinalFindingTasks, err)
+	}
+	written, err := input.StateStore.Record(ctx, candidate)
+	if written.Sequence != 0 {
+		*input.Run = *candidate
+	}
+	if err != nil {
+		return fmt.Errorf("%w: persist final-finding clarification: %v", ErrFinalFindingTasks, err)
+	}
+	return nil
 }
 
 func validateFinalFindingTasksMarkdownAppend(before, after []byte) error {
@@ -290,8 +336,12 @@ func renderFinalFindingTaskRequest(review AgentResponse, tasksPath string) strin
 }
 
 func publishFinalFindingTaskEvidence(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+	return publishFinalFindingTaskResponse(journal, resultID, response, "-tasks")
+}
+
+func publishFinalFindingTaskResponse(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse, suffix string) (implementationstate.EvidenceRef, error) {
 	if journal == nil {
-		return implementationstate.EvidenceRef{}, errors.New("task additions require a run journal")
+		return implementationstate.EvidenceRef{}, errors.New("final-finding route requires a run journal")
 	}
 	data, err := json.Marshal(struct {
 		Response AgentResponse `json:"response"`
@@ -299,5 +349,5 @@ func publishFinalFindingTaskEvidence(journal *runstore.Run, resultID implementat
 	if err != nil {
 		return implementationstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-tasks"), data)
+	return journal.Publish(implementationstate.EvidenceID(string(resultID)+suffix), data)
 }

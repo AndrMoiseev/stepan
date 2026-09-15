@@ -120,6 +120,91 @@ func TestFinalFindingTasksMarkdownMustBeAppendOnly(t *testing.T) {
 	}
 }
 
+func TestFinalFindingTasksExecutionBlockedPausesAndReloadsAfterOneCall(t *testing.T) {
+	fixture, review, tasksPath := newFailedFinalFindingTasksFixture(t)
+	defer fixture.state.Close()
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseExecutionBlocked)}}}
+	result, err := AddFinalFindingTasks(context.Background(), FinalFindingTasksInput{
+		Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{},
+		Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"}, Review: review, TasksPath: tasksPath,
+		OperationID: "blocked-final-tasks", ResultID: "blocked-final-tasks-result", CallID: "blocked-final-tasks-call", Limits: controlledCallLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Call.Response.Kind != ResponseExecutionBlocked || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || len(fixture.run.Tasks) != 1 {
+		t.Fatalf("execution_blocked did not durably pause final-task routing: result=%#v run=%#v", result, fixture.run)
+	}
+	restarted, _, err := fixture.state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil || restarted.ExecutionBlock.Diagnostic != "tool is not installed" || len(restarted.Tasks) != 1 {
+		t.Fatalf("execution-blocked final-task route did not reload: %#v", restarted)
+	}
+}
+
+func TestFinalFindingTasksClarificationClosesAndReloadsAfterOneCall(t *testing.T) {
+	fixture, review, tasksPath := newFailedFinalFindingTasksFixture(t)
+	defer fixture.state.Close()
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseClarificationNeeded)}}}
+	result, err := AddFinalFindingTasks(context.Background(), FinalFindingTasksInput{
+		Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{},
+		Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"}, Review: review, TasksPath: tasksPath,
+		OperationID: "clarify-final-tasks", ResultID: "clarify-final-tasks-result", CallID: "clarify-final-tasks-call", Limits: controlledCallLimits(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Call.Response.Kind != ResponseClarificationNeeded || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunClosed || !strings.Contains(fixture.run.CloseReason, "which behavior is required?") {
+		t.Fatalf("clarification did not close final-task routing: result=%#v run=%#v", result, fixture.run)
+	}
+	restarted, _, err := fixture.state.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable := finalRunResult(restarted, "clarify-final-tasks-result")
+	if restarted.Status != implementationstate.RunClosed || !strings.Contains(restarted.CloseReason, "boundaries:") || durable == nil || durable.Status != implementationstate.ResultSucceeded || len(durable.Evidence) != 1 {
+		t.Fatalf("clarification final-task route did not durably close: run=%#v result=%#v", restarted, durable)
+	}
+	receipt, err := fixture.journal.Read(durable.Evidence[0])
+	if err != nil || !strings.Contains(string(receipt), "which behavior is required?") {
+		t.Fatalf("clarification question was not durable: %q, %v", receipt, err)
+	}
+}
+
+func newFailedFinalFindingTasksFixture(t *testing.T) (implementerTransitionFixture, FinalReviewResult, string) {
+	t.Helper()
+	fixture := newCompletedFinalFixture(t)
+	if _, err := RunFinalRequiredChecks(context.Background(), FinalRequiredChecks{
+		Run: fixture.run, Workspace: &unchangedWorkspaceControl{}, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
+		Selection: fixture.selection, Runner: fixture.runner, MaxCycles: 3, Operation: "final-checks", Result: "final-checks-result",
+	}); err != nil {
+		fixture.state.Close()
+		t.Fatal(err)
+	}
+	reviewRuntime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseChangesRequested)}}}
+	review, err := runFinalReviewerTurn(context.Background(), FinalReviewInput{
+		Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
+		CheckResult: "final-checks-result", OperationID: "final-review", ResultID: "final-review-result", CallID: "final-review-call", RoundID: "round-1", Limits: controlledCallLimits(),
+	}, &AgentSession{Role: ResponseRoleFinalReviewer, runtime: reviewRuntime, thread: "final-reviewer"}, "base")
+	if err != nil {
+		fixture.state.Close()
+		t.Fatal(err)
+	}
+	tasksPath := filepath.Join("openspec", "changes", "change", "tasks.md")
+	absoluteTasksPath := filepath.Join(fixture.repository, tasksPath)
+	if err := os.MkdirAll(filepath.Dir(absoluteTasksPath), 0o700); err != nil {
+		fixture.state.Close()
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absoluteTasksPath, []byte("- [x] source task\n"), 0o600); err != nil {
+		fixture.state.Close()
+		t.Fatal(err)
+	}
+	return fixture, review, filepath.ToSlash(tasksPath)
+}
+
 func completeFinalFindingAssignment(t *testing.T, run *implementationstate.Run, journal interface {
 	Publish(implementationstate.EvidenceID, []byte) (implementationstate.EvidenceRef, error)
 }) {

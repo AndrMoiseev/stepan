@@ -542,3 +542,23 @@
 - Expected impact: incorrect final evidence under a future erroneous caller.
 - Classification: technical debt because current controller wiring supplies the selected repository and no typical mismatched caller is demonstrated.
 - Possible follow-up: bind canonical repository identity to durable run identity.
+
+## TD-10.5-001 — informational tasks.md edits are not atomic across rejected turns
+
+- Origin: task 10.5 initial review; affected location: `internal/flows/impl_loop/final_finding_tasks.go` agent-call and post-call validation path.
+- Status: `open`.
+- Potential problem: an allowed `tasks.md` edit survives a rejected structured response, so a retry may append again; non-append edits can also remain after the route returns an error.
+- Evidence: response validation and append-only comparison occur after the orchestrator may edit the permitted path, without per-attempt restoration.
+- Expected impact: duplicate or damaged informational Markdown entries can diverge from authoritative machine tasks after an erroneous agent turn.
+- Classification: technical debt because machine state remains authoritative and the trigger requires an invalid/rejected orchestrator turn.
+- Possible follow-up: make the append and response a per-attempt atomic transition or restore only `tasks.md` before retry/error; cover invalid-first/valid-second behavior.
+
+## TD-10.5-002 — final-finding provenance is omitted from briefer context
+
+- Origin: task 10.5 initial review; affected locations: `internal/implementationstate/state.go`, `internal/flows/impl_loop/role_context.go`.
+- Status: `open`.
+- Potential problem: corrective tasks persist final-review/finding identifiers, but briefer context exposes only ordinary task fields and not the finding problem, location, basis, or expected result.
+- Evidence: `BuildBrieferStartContext` does not serialize `Task.FinalFindings` or the final-review receipt.
+- Expected impact: correction quality depends on the orchestrator producing a sufficiently self-contained task title.
+- Classification: technical debt because no explicit requirement mandates provenance in briefer context and a self-contained title may suffice.
+- Possible follow-up: enrich briefer context with finding provenance/details or require a self-contained corrective-task description.
