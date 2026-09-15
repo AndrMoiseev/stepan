@@ -270,11 +270,14 @@ func TestRunImplementationInteractiveAcceptsStatusAndPauseWhileContinueRuns(t *t
 	if run.Status != implementationstate.RunPaused {
 		t.Fatalf("run status after pause during continue = %s", run.Status)
 	}
-	if len(ui.menus) < 3 || ui.menus[1].Lifecycle != LifecycleActive || ui.menus[2].Lifecycle != LifecycleActive {
-		t.Fatalf("menus did not remain live during active continuation: %#v", ui.menus)
+	if len(ui.menus) < 4 || ui.menus[1].Lifecycle != LifecycleActive || ui.menus[2].Lifecycle != LifecycleActive || ui.menus[3].Lifecycle != LifecyclePaused {
+		t.Fatalf("menus did not remain live during active continuation then return paused: %#v", ui.menus)
 	}
 	if !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandPause, CommandStop, CommandStatus}) {
 		t.Fatalf("active continuation menu = %#v", ui.menus[1])
+	}
+	if !slices.Equal(commandsFromHints(ui.menus[3].Commands), []InteractiveCommand{CommandResume, CommandStop, CommandStatus}) {
+		t.Fatalf("paused continuation menu = %#v", ui.menus[3])
 	}
 	if !slices.Contains(ui.messages, "implementation run initial-baseline is active") || !slices.Contains(ui.messages, "implementation run paused") {
 		t.Fatalf("messages while continuation was active = %#v", ui.messages)

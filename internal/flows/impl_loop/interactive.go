@@ -490,6 +490,15 @@ func (driver *implementationInteractiveDriver) handle(ctx context.Context, input
 			driver.stopWork()
 		}
 		_, message, err := driver.controller.Dispatch(ctx, input)
+		if parsed.Command == CommandPause && err == nil && driver.workActive() {
+			// UserRunControl has durably paused the run and waited for any
+			// registered operation to stop. Cancel the controller-owned context as
+			// well, then drain its result before deriving another menu: otherwise a
+			// stale active worker would hide the newly usable /resume command.
+			driver.workCancel()
+			result := <-driver.workDone
+			driver.reportWork(result)
+		}
 		return message, err
 	}
 }

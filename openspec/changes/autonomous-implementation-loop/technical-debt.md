@@ -672,3 +672,13 @@
 - Expected impact: users see an alarming failure message after an intentional successful pause/stop.
 - Classification: technical debt because durable lifecycle behavior is correct and this is error presentation rather than state loss.
 - Possible follow-up: classify expected user interruption as normal lifecycle completion.
+
+## TASK-12.1-D004 — active stop cancels context before controlled close
+
+- Origin: task 12.1 correction-cycle-2 rereview; affected location: `internal/flows/impl_loop/interactive.go`.
+- Status: `open`.
+- Potential problem: `/stop` sends ordinary context cancellation to active controlled agent/check work before `UserRunControl.Close` can inject the intended interruption cause.
+- Evidence: cancel-first is currently shared between resuming preflight and active controlled work.
+- Expected impact: a route may record ordinary cancellation/failure bookkeeping before terminal closure, although final lifecycle state remains closed.
+- Classification: technical debt because terminal stop is durable and the concern is uncommon diagnostic/history pollution rather than failure to stop.
+- Possible follow-up: use cancel-first only for resume preflight; for active work close through `UserRunControl` first, then join.
