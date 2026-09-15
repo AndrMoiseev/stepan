@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
+	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
@@ -15,6 +17,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
 	"github.com/AndrMoiseev/stepan/internal/flows/spec"
+	"github.com/AndrMoiseev/stepan/internal/implementationruntime"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/usersettings"
@@ -53,7 +56,8 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if startup != nil {
-		if err := runImplementationStartupInteractive(ctx, root, store, startup, newImplementationConsoleUI()); err != nil && !errors.Is(err, context.Canceled) {
+		composition := implementationStartupCompositionForConfig(config, root, usersettings.NessyAuthToken)
+		if err := runImplementationStartupInteractive(ctx, root, store, startup, newImplementationConsoleUI(), composition); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
@@ -108,13 +112,53 @@ func openImplementationStartup(ctx context.Context, workCopy string, userHome fu
 	return found, store, nil
 }
 
-func runImplementationStartupInteractive(ctx context.Context, workCopy string, store *runstore.Store, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI) error {
+type implementationStartupComposition struct {
+	Factories                   map[string]impl_loop.RuntimeFactory
+	SessionBase                 agentruntime.ThreadConfig
+	ClassifySpecificationChange func(previous, current []byte) (impl_loop.SpecificationChange, error)
+	// Continue is the application-owned durable continuation dispatcher. It
+	// receives only a fresh SessionOwner created by Resume; it must rebuild
+	// role contexts from the journal and never recover provider history.
+	Continue func(context.Context, *impl_loop.InteractiveRun, *impl_loop.SessionOwner) error
+}
+
+func implementationStartupCompositionForConfig(config agentConfig, root string, nessyAuth func() (string, error)) implementationStartupComposition {
+	options := implementationruntime.FactoryOptions{
+		Workspace: root, NessyAuthToken: nessyAuth, NessyJSONContract: nessyapp.JSONContract,
+	}
+	if config.kind == agentCodex {
+		options.CodexExecutable = config.executable
+	}
+	if config.kind == agentClaude {
+		options.ClaudeExecutable = config.executable
+	}
+	return implementationStartupComposition{
+		Factories:   implementationruntime.NewFactories(options),
+		SessionBase: agentruntime.ThreadConfig{Workspace: root},
+		ClassifySpecificationChange: func([]byte, []byte) (impl_loop.SpecificationChange, error) {
+			// A changed complete specification is a new scope unless a future
+			// application decision supplies a narrower explicit classifier.
+			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
+		},
+		Continue: func(context.Context, *impl_loop.InteractiveRun, *impl_loop.SessionOwner) error {
+			// The durable loop dispatcher is deliberately injected at this
+			// boundary. There is no provider-history continuation to replay.
+			return nil
+		},
+	}
+}
+
+func runImplementationStartupInteractive(ctx context.Context, workCopy string, store *runstore.Store, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, composition implementationStartupComposition) error {
 	if startup == nil || startup.Run == nil || store == nil {
 		return errors.New("implementation startup requires discovered run and store")
 	}
 	var owned *impl_loop.ResumedRun
 	var ownedInteractive *impl_loop.InteractiveRun
+	var owner *impl_loop.SessionOwner
 	defer func() {
+		if owner != nil {
+			_ = owner.Close()
+		}
 		if owned != nil {
 			_ = owned.Close()
 		}
@@ -131,11 +175,18 @@ func runImplementationStartupInteractive(ctx context.Context, workCopy string, s
 		ownedInteractive = &impl_loop.InteractiveRun{Run: resumed.Run, Control: control, ResumeInput: impl_loop.ResumeInput{
 			Run: resumed.Run, StateStore: resumed.StateStore, Journal: resumed.Journal, Repository: workCopy,
 			Workspace: impl_loop.GitWorkspaceControl{}, Runner: impl_loop.DirectCheckRunner{},
-			ClassifySpecificationChange: func([]byte, []byte) (impl_loop.SpecificationChange, error) {
-				return impl_loop.SpecificationChange{}, errors.New("changed complete OpenSpec specification requires explicit scope classification")
-			},
+			Factories: composition.Factories, SessionOwner: &owner, SessionBase: composition.SessionBase,
+			ClassifySpecificationChange: composition.ClassifySpecificationChange,
 		}}
 		return ownedInteractive, nil
+	}, func(continueCtx context.Context, run *impl_loop.InteractiveRun) error {
+		if composition.Continue == nil {
+			return nil
+		}
+		if owner == nil {
+			return errors.New("implementation resume did not create a fresh session owner")
+		}
+		return composition.Continue(continueCtx, run, owner)
 	})
 }
 
@@ -143,13 +194,16 @@ func runImplementationStartupInteractive(ctx context.Context, workCopy string, s
 // does not recover a run itself: the supplied callback is invoked only after
 // a lifecycle command, which makes the no-auto-work property testable without
 // real providers, checks, or Git processes.
-func runDiscoveredImplementationInteractive(ctx context.Context, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, recover func(context.Context) (*impl_loop.InteractiveRun, error)) error {
+func runDiscoveredImplementationInteractive(ctx context.Context, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, recover func(context.Context) (*impl_loop.InteractiveRun, error), continueRun func(context.Context, *impl_loop.InteractiveRun) error) error {
 	if startup == nil || startup.Run == nil {
 		return errors.New("implementation startup requires discovered run")
 	}
 	current := &impl_loop.InteractiveRun{Run: startup.Run, RecoveryRequired: startup.RecoveryRequired, Recover: recover}
 	ui.Report(impl_loop.FormatStartupSummary(startup.Summary))
-	controller := impl_loop.ImplementationInteractiveController{Current: func(context.Context) (*impl_loop.InteractiveRun, error) { return current, nil }}
+	controller := impl_loop.ImplementationInteractiveController{
+		Current:  func(context.Context) (*impl_loop.InteractiveRun, error) { return current, nil },
+		Continue: continueRun,
+	}
 	if recover != nil {
 		current.Recover = func(callCtx context.Context) (*impl_loop.InteractiveRun, error) {
 			next, err := recover(callCtx)
@@ -162,29 +216,66 @@ func runDiscoveredImplementationInteractive(ctx context.Context, startup *impl_l
 	return impl_loop.RunImplementationInteractive(ctx, controller, ui)
 }
 
-type implementationConsoleUI struct{ input *bufio.Reader }
+type consoleLine struct {
+	value string
+	err   error
+}
+
+// implementationConsoleUI owns exactly one blocking stdin reader. Prompt
+// callers may come and go as the interactive driver redraws after a canceled
+// operation, but the pump never overlaps ReadString calls on the console.
+// This lets Ctrl+C cancel a prompt immediately without trying to cancel an OS
+// console read, which is not portable across Windows and macOS.
+type implementationConsoleUI struct {
+	input  *bufio.Reader
+	output io.Writer
+	errors io.Writer
+	once   sync.Once
+	lines  chan consoleLine
+}
 
 func newImplementationConsoleUI() *implementationConsoleUI {
-	return &implementationConsoleUI{input: bufio.NewReader(os.Stdin)}
+	return newImplementationConsoleUIWithIO(os.Stdin, os.Stdout, os.Stderr)
 }
-func (u *implementationConsoleUI) Prompt(_ context.Context, menu impl_loop.CommandMenu) (string, error) {
+func newImplementationConsoleUIWithIO(input io.Reader, output, errorOutput io.Writer) *implementationConsoleUI {
+	return &implementationConsoleUI{input: bufio.NewReader(input), output: output, errors: errorOutput, lines: make(chan consoleLine, 1)}
+}
+func (u *implementationConsoleUI) startPump() {
+	u.once.Do(func() {
+		go func() {
+			for {
+				value, err := u.input.ReadString('\n')
+				u.lines <- consoleLine{value: value, err: err}
+				if err != nil {
+					return
+				}
+			}
+		}()
+	})
+}
+func (u *implementationConsoleUI) Prompt(ctx context.Context, menu impl_loop.CommandMenu) (string, error) {
 	for _, command := range menu.Commands {
-		fmt.Fprintf(os.Stdout, "%s — %s\n", command.Command, command.Description)
+		fmt.Fprintf(u.output, "%s — %s\n", command.Command, command.Description)
 	}
-	fmt.Fprint(os.Stdout, "You > ")
-	value, err := u.input.ReadString('\n')
-	if err != nil {
+	fmt.Fprint(u.output, "You > ")
+	u.startPump()
+	select {
+	case <-ctx.Done():
 		return "", impl_loop.ErrInteractiveInputCanceled
+	case line := <-u.lines:
+		if line.err != nil {
+			return "", impl_loop.ErrInteractiveInputCanceled
+		}
+		return line.value, nil
 	}
-	return value, nil
 }
-func (*implementationConsoleUI) Report(message string) {
+func (u *implementationConsoleUI) Report(message string) {
 	if message != "" {
-		fmt.Fprintln(os.Stdout, message)
+		fmt.Fprintln(u.output, message)
 	}
 }
-func (*implementationConsoleUI) ReportError(err error) {
-	fmt.Fprintln(os.Stderr, "implementation:", err)
+func (u *implementationConsoleUI) ReportError(err error) {
+	fmt.Fprintln(u.errors, "implementation:", err)
 }
 
 func configuredRuntimeFactory(config agentConfig, root string, load func() (string, error), starters runtimeStarters) (func(context.Context) (agentruntime.Runtime, error), error) {

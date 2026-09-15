@@ -160,6 +160,9 @@ type InteractiveRun struct {
 	Run         *implementationstate.Run
 	Control     *UserRunControl
 	ResumeInput ResumeInput
+	// Resume is an optional composition seam for the application boundary.
+	// Production leaves it nil and uses the durable Resume primitive below.
+	Resume func(context.Context, ResumeInput) (ResumeResult, error)
 	// Recover is installed for a run discovered after process startup. It takes
 	// the controller lock only for an explicit lifecycle command, so rendering
 	// discovery cannot revive an orphaned active run or disturb a live owner.
@@ -261,7 +264,11 @@ func (controller ImplementationInteractiveController) resume(ctx context.Context
 	input := run.ResumeInput
 	input.Run = run.Run
 	input.UserControl = run.Control
-	if _, err := Resume(ctx, input); err != nil {
+	resume := Resume
+	if run.Resume != nil {
+		resume = run.Resume
+	}
+	if _, err := resume(ctx, input); err != nil {
 		return controller.menuForRun(run), "", err
 	}
 	if err := controller.continueRun(ctx, run); err != nil {

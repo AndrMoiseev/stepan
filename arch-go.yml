@@ -16,6 +16,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
+        - '^github\.com/AndrMoiseev/stepan/internal/implementationruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
         - '^github\.com/AndrMoiseev/stepan/internal/runstore$'

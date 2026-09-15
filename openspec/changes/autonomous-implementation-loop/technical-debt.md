@@ -712,3 +712,13 @@
 - Expected impact: damaged retained history can prevent otherwise unchanged planning startup; discovery cost also grows with retained runs.
 - Classification: technical debt because it requires unrelated stored corruption and does not break the normal healthy-store path.
 - Possible follow-up: maintain trustworthy work-copy-addressable metadata/indexing and isolate unrelated history errors.
+
+## TASK-12.2-D003 — startup materializes the full state journal
+
+- Origin: task 12.2 correction-cycle-1 rereview; affected locations: `internal/runstore/state.go`, `internal/flows/impl_loop/startup.go`.
+- Status: `open`.
+- Potential problem: startup loads every full-state journal event although presentation needs only chronological transition information and a small window.
+- Evidence: `JournalStates` builds an in-memory slice of all snapshots.
+- Expected impact: retained recovery history can make startup memory proportional to the full journal and potentially quadratic in accumulated snapshot data.
+- Classification: technical debt because ordinary current journals remain modest and no typical startup failure is demonstrated; performance/load validation was not requested.
+- Possible follow-up: validate the stream while retaining only the necessary event/result window or explicit action metadata.

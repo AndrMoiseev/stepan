@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -29,15 +32,25 @@ func TestDiscoveredImplementationStartupOnlyRecoversAfterResume(t *testing.T) {
 	}
 	ui := &startupUIFake{inputs: []string{"/status", "/resume"}}
 	recoveries := 0
+	continued := 0
 	err := runDiscoveredImplementationInteractive(context.Background(), startup, ui, func(context.Context) (*impl_loop.InteractiveRun, error) {
 		recoveries++
-		return &impl_loop.InteractiveRun{Run: &implementationstate.Run{Status: implementationstate.RunPaused}}, nil
+		run := &implementationstate.Run{Status: implementationstate.RunPaused}
+		return &impl_loop.InteractiveRun{Run: run, Resume: func(context.Context, impl_loop.ResumeInput) (impl_loop.ResumeResult, error) {
+			return impl_loop.ResumeResult{}, run.Resume()
+		}}, nil
+	}, func(context.Context, *impl_loop.InteractiveRun) error {
+		continued++
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if recoveries != 1 {
 		t.Fatalf("startup recovery calls = %d, want 1 after /resume", recoveries)
+	}
+	if continued != 1 {
+		t.Fatalf("durable continuation calls = %d, want 1 after a successful /resume", continued)
 	}
 	if len(ui.reports) == 0 {
 		t.Fatal("startup did not render discovered run before prompting")
@@ -59,3 +72,41 @@ func (u *startupUIFake) Prompt(context.Context, impl_loop.CommandMenu) (string, 
 }
 func (u *startupUIFake) Report(message string) { u.reports = append(u.reports, message) }
 func (*startupUIFake) ReportError(error)       {}
+
+func TestImplementationConsoleUIPromptCancelsAndRedrawsWithOneInputPump(t *testing.T) {
+	input, writer := io.Pipe()
+	defer writer.Close()
+	var output, errorOutput bytes.Buffer
+	ui := newImplementationConsoleUIWithIO(input, &output, &errorOutput)
+	ctx, cancel := context.WithCancel(context.Background())
+	first := make(chan error, 1)
+	go func() {
+		_, err := ui.Prompt(ctx, impl_loop.CommandMenu{Commands: []impl_loop.CommandHint{{Command: impl_loop.CommandStatus}}})
+		first <- err
+	}()
+	cancel()
+	if err := <-first; !errors.Is(err, impl_loop.ErrInteractiveInputCanceled) {
+		t.Fatalf("canceled prompt = %v", err)
+	}
+	second := make(chan struct {
+		value string
+		err   error
+	}, 1)
+	go func() {
+		value, err := ui.Prompt(context.Background(), impl_loop.CommandMenu{Commands: []impl_loop.CommandHint{{Command: impl_loop.CommandResume}}})
+		second <- struct {
+			value string
+			err   error
+		}{value, err}
+	}()
+	if _, err := io.WriteString(writer, "/resume\n"); err != nil {
+		t.Fatal(err)
+	}
+	result := <-second
+	if result.err != nil || result.value != "/resume\n" {
+		t.Fatalf("redrawn prompt = %#v", result)
+	}
+	if got := output.String(); got == "" || errorOutput.Len() != 0 {
+		t.Fatalf("console output = %q, errors = %q", got, errorOutput.String())
+	}
+}

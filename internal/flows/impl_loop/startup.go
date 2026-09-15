@@ -48,12 +48,7 @@ func DiscoverStartupRun(ctx context.Context, store *runstore.Store, workCopy str
 	if err != nil {
 		return nil, err
 	}
-	summary := SummarizeStartupRun(run)
-	if len(events) > 1 {
-		previous, current := events[len(events)-2].State, events[len(events)-1].State
-		summary.LastAction = journalLastAction(previous, current, summary.LastAction)
-		summary.Stage = journalStage(current, previous, summary.Stage)
-	}
+	summary := summarizeStartupJournal(run, events)
 	recoveryRequired := false
 	if run.Status == implementationstate.RunActive {
 		owned, err := ControllerOwned(ctx, store, workCopy)
@@ -67,6 +62,61 @@ func DiscoverStartupRun(ctx context.Context, store *runstore.Store, workCopy str
 		}
 	}
 	return &StartupRun{Run: run, Summary: summary, RecoveryRequired: recoveryRequired}, nil
+}
+
+func summarizeStartupJournal(run *implementationstate.Run, events []implementationstate.Event) StartupSummary {
+	summary := SummarizeStartupRun(run)
+	if action, resumeCheck := latestJournalAction(events); action != "" {
+		summary.LastAction = action
+		if resumeCheck {
+			summary.Stage = "resume required checks"
+		}
+	}
+	return summary
+}
+
+// latestJournalAction walks durable snapshots backwards, rather than relying
+// on the projection's structural order. A failed resume writes a result and
+// then a separate pause event, so the pause is attributed to the immediately
+// preceding uncounted check result instead of hiding it as merely "pause run".
+func latestJournalAction(events []implementationstate.Event) (string, bool) {
+	for index := len(events) - 1; index > 0; index-- {
+		previous, current := events[index-1].State, events[index].State
+		if current == nil || previous == nil {
+			continue
+		}
+		if current.Status != previous.Status && current.Status == implementationstate.RunPaused {
+			if action, ok := resumeResultAction(events, index-1); ok {
+				return action + " (failed)", true
+			}
+			return "pause run", false
+		}
+		if result := latestChangedRunResult(previous, current); result != nil {
+			if operation := runOperation(current, result.OperationID); operation != nil {
+				if operation.UncountedResumeCheck {
+					return operationAction(operation), true
+				}
+				return operationAction(operation), false
+			}
+		}
+		if action := journalLastAction(previous, current, ""); action != "" {
+			return action, false
+		}
+	}
+	return "", false
+}
+
+func resumeResultAction(events []implementationstate.Event, index int) (string, bool) {
+	if index <= 0 || index >= len(events) {
+		return "", false
+	}
+	previous, current := events[index-1].State, events[index].State
+	if result := latestChangedRunResult(previous, current); result != nil {
+		if operation := runOperation(current, result.OperationID); operation != nil && operation.UncountedResumeCheck {
+			return operationAction(operation), true
+		}
+	}
+	return "", false
 }
 
 func journalLastAction(previous, current *implementationstate.Run, fallback string) string {
@@ -122,6 +172,27 @@ func latestChangedOperation(previous, current *implementationstate.Run) *impleme
 			if operation >= len(previous.Assignments[i].Operations) || !reflect.DeepEqual(current.Assignments[i].Operations[operation], previous.Assignments[i].Operations[operation]) {
 				return &current.Assignments[i].Operations[operation]
 			}
+		}
+	}
+	return nil
+}
+
+func latestChangedRunResult(previous, current *implementationstate.Run) *implementationstate.OperationResult {
+	for index := len(current.RunResults) - 1; index >= 0; index-- {
+		if index >= len(previous.RunResults) || !reflect.DeepEqual(current.RunResults[index], previous.RunResults[index]) {
+			return &current.RunResults[index]
+		}
+	}
+	return nil
+}
+
+func runOperation(run *implementationstate.Run, id implementationstate.OperationID) *implementationstate.Operation {
+	if run == nil {
+		return nil
+	}
+	for index := range run.RunOperations {
+		if run.RunOperations[index].ID == id {
+			return &run.RunOperations[index]
 		}
 	}
 	return nil

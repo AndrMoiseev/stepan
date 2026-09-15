@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -198,5 +199,41 @@ func TestDiscoverStartupRunMarksOrphanedActiveRunRecoverableWithoutMutation(t *t
 	current, _, err := runstore.ReadJournalCurrent(journal)
 	if err != nil || current.Status != implementationstate.RunActive {
 		t.Fatalf("discovery mutated active run = %#v, %v", current, err)
+	}
+}
+
+func TestStartupSummaryUsesDurableResumeResultTransitions(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		runner     CheckRunner
+		wantAction string
+	}{
+		{
+			name: "successful resume result", runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+				return checkexec.Result{}, nil
+			}), wantAction: "resume required check: resume required checks",
+		},
+		{
+			name: "failed result then pause", runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
+				return checkexec.Result{ExitCode: 1, Stderr: []byte("required check failed")}, errors.New("required check failed")
+			}), wantAction: "resume required check: resume required checks (failed)",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newResumeFixture(t, "")
+			input := fixture.input()
+			input.Runner = test.runner
+			if _, err := Resume(context.Background(), input); err != nil {
+				t.Fatal(err)
+			}
+			events, err := runstore.JournalStates(fixture.journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summary := summarizeStartupJournal(fixture.run, events)
+			if summary.Stage != "resume required checks" || summary.LastAction != test.wantAction {
+				t.Fatalf("resume journal summary = %#v, want stage resume required checks and action %q", summary, test.wantAction)
+			}
+		})
 	}
 }
