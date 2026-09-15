@@ -38,11 +38,12 @@ type BootstrapperProfileSelection struct {
 // standalone mode. Keeping settings loading in the flow prevents the CLI
 // boundary from depending directly on implementation configuration details.
 type BootstrapperModeInput struct {
-	Repository    string
-	Factories     map[string]RuntimeFactory
-	Base          agentruntime.ThreadConfig
-	SelectProfile func(context.Context) (BootstrapperProfileSelection, error)
-	ReportReady   func(BootstrapperProfileSelection)
+	Repository           string
+	Factories            map[string]RuntimeFactory
+	Base                 agentruntime.ThreadConfig
+	SelectProfile        func(context.Context) (BootstrapperProfileSelection, error)
+	ReportReady          func(BootstrapperProfileSelection)
+	ConfirmConfiguration func(context.Context, []BootstrapConfigurationDiff) (bool, error)
 }
 
 // RunBootstrapperMode starts exactly one independent bootstrapper session and
@@ -54,6 +55,16 @@ func RunBootstrapperMode(ctx context.Context, input BootstrapperModeInput) error
 	if err != nil {
 		return err
 	}
+	paths, err := defaultBootstrapConfigurationPaths(input.Repository)
+	if err != nil {
+		return err
+	}
+	return runBootstrapperMode(ctx, input, sources, paths)
+}
+
+// runBootstrapperMode keeps process-specific settings discovery at the outer
+// boundary and makes the proposal lifecycle independently testable.
+func runBootstrapperMode(ctx context.Context, input BootstrapperModeInput, sources implementationconfig.Sources, paths BootstrapConfigurationPaths) error {
 	project, err := BuildBootstrapperProjectContext(input.Repository, sources)
 	if err != nil {
 		return err
@@ -83,7 +94,18 @@ func RunBootstrapperMode(ctx context.Context, input BootstrapperModeInput) error
 	if input.ReportReady != nil {
 		input.ReportReady(BootstrapperProfileSelection{Provider: session.Profile.Provider, Model: session.Profile.Model, Reasoning: session.Profile.Reasoning})
 	}
-	_, err = NewBootstrapperController(session, configuration, project).Run(ctx)
+	response, err := NewBootstrapperController(session, configuration, project).Run(ctx)
+	if err != nil {
+		return err
+	}
+	if response.Kind != ResponseConfigurationProposed {
+		return nil
+	}
+	proposal, err := PrepareBootstrapConfigurationProposal(paths, response)
+	if err != nil {
+		return err
+	}
+	_, err = ConfirmAndSaveBootstrapConfiguration(ctx, proposal, input.ConfirmConfiguration)
 	return err
 }
 

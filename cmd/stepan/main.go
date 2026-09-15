@@ -106,6 +106,7 @@ func run(ctx context.Context, args []string) int {
 type bootstrapPrompter interface {
 	SelectBootstrapProfile(context.Context) (impl_loop.BootstrapperProfileSelection, error)
 	ReportBootstrapReady(impl_loop.BootstrapperProfileSelection)
+	ConfirmBootstrapConfiguration(context.Context, []impl_loop.BootstrapConfigurationDiff) (bool, error)
 }
 
 type bootstrapConsole struct {
@@ -148,6 +149,26 @@ func (console *bootstrapConsole) ReportBootstrapReady(profile impl_loop.Bootstra
 	fmt.Fprintf(console.output, "Bootstrap profile prepared (provider=%s, model=%s).\n", profile.Provider, profile.Model)
 }
 
+func (console *bootstrapConsole) ConfirmBootstrapConfiguration(ctx context.Context, diffs []impl_loop.BootstrapConfigurationDiff) (bool, error) {
+	for _, diff := range diffs {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		fmt.Fprintf(console.output, "Configuration proposal for %s:\n%s", diff.Path, diff.Diff)
+	}
+	fmt.Fprint(console.output, "Save these configuration changes? [y/N]: ")
+	line, err := console.input.ReadString('\n')
+	if err != nil {
+		return false, err
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
 func runBootstrapMode(ctx context.Context, root string, config agentConfig, prompt bootstrapPrompter) error {
 	options := implementationruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: usersettings.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
 	if config.kind == agentCodex {
@@ -159,7 +180,7 @@ func runBootstrapMode(ctx context.Context, root string, config agentConfig, prom
 	if prompt == nil {
 		return errors.New("bootstrap profile prompt is required")
 	}
-	return impl_loop.RunBootstrapperMode(ctx, impl_loop.BootstrapperModeInput{Repository: root, Factories: implementationruntime.NewFactories(options), Base: agentruntime.ThreadConfig{Workspace: root}, SelectProfile: prompt.SelectBootstrapProfile, ReportReady: prompt.ReportBootstrapReady})
+	return impl_loop.RunBootstrapperMode(ctx, impl_loop.BootstrapperModeInput{Repository: root, Factories: implementationruntime.NewFactories(options), Base: agentruntime.ThreadConfig{Workspace: root}, SelectProfile: prompt.SelectBootstrapProfile, ReportReady: prompt.ReportBootstrapReady, ConfirmConfiguration: prompt.ConfirmBootstrapConfiguration})
 }
 
 // discoverImplementationStartup is intentionally before runtime/session

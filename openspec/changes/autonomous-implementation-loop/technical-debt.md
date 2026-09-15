@@ -826,3 +826,72 @@
 - Expected impact: Ctrl+C during provider/model/reasoning input can wait until newline or EOF before shutdown.
 - Classification: noncritical interaction/shutdown debt; completed input and task acceptance paths work.
 - Possible follow-up: reuse a single context-aware stdin pump and select between input and `ctx.Done()`.
+
+## TASK-13.2-001 — inline authorization can bypass bootstrap redaction
+
+- Origin: task 13.2 initial review; affected locations: `bootstrap_context.go`, `role_context.go`.
+- Status: `open`.
+- Potential problem: line-prefix assignment redaction misses inline maps and command headers such as `Authorization: Bearer ...`.
+- Expected impact: existing authorization can enter an agent prompt.
+- Classification: normally blocking for the explicit no-authorization requirement; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: structurally parse supported CI formats or conservatively redact every sensitive assignment/header occurrence with regressions.
+
+## TASK-13.2-002 — allowed bootstrap files can escape the repository through symlinks
+
+- Origin: task 13.2 initial review; affected location: `bootstrap_context.go`.
+- Status: `open`.
+- Potential problem: `os.Stat` follows an allowed-file symlink and lexical relative-path checks do not validate the canonical target.
+- Expected impact: a repository-controlled symlink can expose a file outside the repository to bootstrap agents.
+- Classification: normally blocking containment issue; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: reject symlinks or verify canonical targets remain beneath the canonical repository root with race-aware reads.
+
+## TASK-13.2-003 — bootstrap Explorer response limits are not enforced
+
+- Origin: task 13.2 initial review; affected location: `bootstrap.go`.
+- Status: `open`.
+- Potential problem: Explorer results bypass the configured Unicode character limit and same-session shortening attempts.
+- Expected impact: arbitrarily large exploration output can be forwarded to bootstrapper.
+- Classification: normally blocking contract gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: apply `ExplorerCharacters` and technical shortening attempts in the same Explorer session.
+
+## TASK-13.2-004 — Explorer problem outcomes are not surfaced to bootstrapper or user
+
+- Origin: task 13.2 initial review; affected location: `bootstrap.go`.
+- Status: `open`.
+- Potential problem: `clarification_needed` and `execution_blocked` return from the controller, but bootstrap mode discards the response and exits successfully.
+- Expected impact: exploration can stop without an explanation or a chance for the source role to react.
+- Classification: normally blocking workflow gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: resume the original bootstrapper with the Explorer outcome or emit an explicit terminal diagnostic.
+
+## TASK-13.2-005 — Explorer lacks a first-run profile fallback
+
+- Origin: task 13.2 initial review; affected location: `bootstrap.go`.
+- Status: `open`.
+- Potential problem: a process-local bootstrapper profile works with no configured profiles, but Explorer still resolves only the configured default `low` profile.
+- Expected impact: valid exploration fails during the documented first-run/no-profiles flow.
+- Classification: normally blocking acceptance gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: select or derive an explicit bootstrap-time Explorer profile and test empty profiles plus exploration.
+
+## TASK-13.2-D006 — bootstrap agent calls lack controlled timeout and technical retries
+
+- Origin: task 13.2 initial review; affected location: `bootstrap.go`.
+- Status: `open`.
+- Potential problem: bootstrapper/Explorer `RunTurn` calls have no context-aware timeout/interrupt loop, and malformed responses do not consume technical retries.
+- Expected impact: Ctrl+C or configured timeout may not stop an active turn; one malformed response terminates the mode.
+- Possible follow-up: introduce a bootstrap-specific controlled-call loop with cancellation and technical-attempt accounting.
+
+## TASK-13.2-D007 — bootstrap context has no aggregate bound or binary filtering
+
+- Origin: task 13.2 initial review; affected location: `bootstrap_context.go`.
+- Status: `open`.
+- Potential problem: each file is capped, but file count and aggregate bytes are unbounded and binary regular files are accepted.
+- Expected impact: large script/workflow trees can create an unbounded prompt.
+- Possible follow-up: deterministic document-count/aggregate-byte limits, text filtering, and truncation metadata.
+
+## TASK-13.2-D008 — Explorer runtime nil invariant is unchecked
+
+- Origin: task 13.2 initial review; affected location: `bootstrap.go`.
+- Status: `open`.
+- Potential problem: `startExplorer` dereferences a nil runtime returned without an error.
+- Expected impact: a faulty runtime factory can panic bootstrap mode.
+- Possible follow-up: mirror the bootstrapper nil-runtime check and add a regression.

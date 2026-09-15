@@ -211,6 +211,143 @@ func TestBootstrapperControllerRejectsChecksRequestedBeforeAnyCommandCanRun(t *t
 	}
 }
 
+func TestBootstrapConfigurationProposalValidatesDiffsAndPreservesUnrelatedSettings(t *testing.T) {
+	directory := t.TempDir()
+	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(directory, "project.json")}
+	writeBootstrapFile(t, directory, "user.json", `{"nessy":{"auth_token":"user-secret"},"unrelated":{"keep":true},"implementation":{"profiles":{"old":{"provider":"test","model":"old"}}}}`)
+	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret","other":{"keep":"yes"},"implementation":{"limits":{"exploration_limit":1}}}`)
+	response := bootstrapConfigurationResponse(t, `{"profiles":{"high":{"provider":"test","model":"high"}},"roles":{"bootstrapper":"high"}}`, validBootstrapProjectImplementation())
+
+	proposal, err := PrepareBootstrapConfigurationProposal(paths, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(proposal.Diffs) != 2 || proposal.Diffs[0].Path != paths.User || proposal.Diffs[1].Path != paths.Project {
+		t.Fatalf("proposal diffs = %#v", proposal.Diffs)
+	}
+	for _, diff := range proposal.Diffs {
+		if strings.Contains(diff.Diff, "user-secret") || strings.Contains(diff.Diff, "project-secret") || strings.Contains(diff.Diff, "authorization") {
+			t.Fatalf("unsafe bootstrap diff: %s", diff.Diff)
+		}
+	}
+	if err := SaveBootstrapConfigurationProposal(proposal); err != nil {
+		t.Fatal(err)
+	}
+	assertBootstrapSettings(t, paths.User, `{"nessy":{"auth_token":"user-secret"},"unrelated":{"keep":true},"implementation":{"profiles":{"high":{"provider":"test","model":"high"}},"roles":{"bootstrapper":"high"}}}`)
+	assertBootstrapSettings(t, paths.Project, `{"authorization":"project-secret","other":{"keep":"yes"},"implementation":{"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}}`)
+}
+
+func TestBootstrapConfigurationProposalRejectsWithoutWriting(t *testing.T) {
+	directory := t.TempDir()
+	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(directory, "project.json")}
+	writeBootstrapFile(t, directory, "user.json", `{"auth_token":"user-secret","implementation":{"profiles":{"high":{"provider":"test","model":"old"}}}}`)
+	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret","implementation":{}}`)
+	response := bootstrapConfigurationResponse(t, `{"profiles":{"high":{"provider":"test","model":"new"}}}`, `{}`)
+	proposal, err := PrepareBootstrapConfigurationProposal(paths, response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmed, err := ConfirmAndSaveBootstrapConfiguration(context.Background(), proposal, func(context.Context, []BootstrapConfigurationDiff) (bool, error) { return false, nil })
+	if err != nil || confirmed {
+		t.Fatalf("rejected proposal = confirmed=%t err=%v", confirmed, err)
+	}
+	data, err := os.ReadFile(paths.User)
+	if err != nil || strings.Contains(string(data), `"model":"new"`) || !strings.Contains(string(data), "user-secret") {
+		t.Fatalf("rejection changed user settings: %q, %v", data, err)
+	}
+}
+
+func TestBootstrapConfigurationProposalRejectsInvalidTypedInputWithoutSecrets(t *testing.T) {
+	directory := t.TempDir()
+	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(directory, "project.json")}
+	for _, test := range []struct {
+		name    string
+		user    string
+		project string
+	}{
+		{name: "invalid json", user: `{`, project: `{}`},
+		{name: "project field at user level", user: `{"checks":{}}`, project: `{}`},
+		{name: "malformed profile", user: `{"profiles":{"high":{"provider":"test"}}}`, project: `{}`},
+		{name: "unknown field", user: `{"auth_token":"proposal-secret"}`, project: `{}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := bootstrapConfigurationResponse(t, test.user, test.project)
+			_, err := PrepareBootstrapConfigurationProposal(paths, response)
+			if err == nil || strings.Contains(err.Error(), "proposal-secret") {
+				t.Fatalf("proposal error = %v", err)
+			}
+		})
+	}
+}
+
+func TestBootstrapModeSavesOnlyAfterConfirmationAndExitsWithoutImplementation(t *testing.T) {
+	repository := t.TempDir()
+	directory := t.TempDir()
+	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(repository, ".stepan", "settings.json")}
+	writeBootstrapFile(t, directory, "user.json", `{"auth_token":"user-secret","implementation":{"profiles":{"high":{"provider":"bootstrap","model":"high"}}}}`)
+	writeBootstrapFile(t, repository, ".stepan/settings.json", `{"authorization":"project-secret","implementation":{}}`)
+	runtime := &bootstrapRuntime{turns: []json.RawMessage{bootstrapConfigurationPayload(t, `{"profiles":{"high":{"provider":"bootstrap","model":"new-high"}}}`, validBootstrapProjectImplementation())}}
+	presented := 0
+	err := runBootstrapperMode(context.Background(), BootstrapperModeInput{
+		Repository: repository, Factories: map[string]RuntimeFactory{"bootstrap": &bootstrapFactory{runtime: runtime}}, Base: agentruntime.ThreadConfig{Workspace: repository},
+		ConfirmConfiguration: func(_ context.Context, diffs []BootstrapConfigurationDiff) (bool, error) {
+			presented += len(diffs)
+			return true, nil
+		},
+	}, implementationconfig.Sources{User: json.RawMessage(`{"profiles":{"high":{"provider":"bootstrap","model":"high"}}}`), Project: json.RawMessage(`{}`)}, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if presented != 2 || len(runtime.messages) != 1 {
+		t.Fatalf("diffs shown=%d turns=%d; bootstrap must finish after its proposal", presented, len(runtime.messages))
+	}
+	data, err := os.ReadFile(paths.User)
+	if err != nil || !strings.Contains(string(data), `"model": "new-high"`) || !strings.Contains(string(data), "user-secret") {
+		t.Fatalf("accepted proposal did not safely persist: %q, %v", data, err)
+	}
+}
+
+func bootstrapConfigurationResponse(t *testing.T, user, project string) AgentResponse {
+	t.Helper()
+	userCopy, projectCopy, explanation := user, project, "bootstrap configuration"
+	return AgentResponse{Kind: ResponseConfigurationProposed, UserImplementation: &userCopy, ProjectImplementation: &projectCopy, Explanation: &explanation}
+}
+
+func bootstrapConfigurationPayload(t *testing.T, user, project string) json.RawMessage {
+	t.Helper()
+	payload := responsePayloadMap(ResponseConfigurationProposed)
+	payload["user_implementation"], payload["project_implementation"] = user, project
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func validBootstrapProjectImplementation() string {
+	return `{"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}`
+}
+
+func assertBootstrapSettings(t *testing.T, path, want string) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, _ := json.Marshal(gotValue)
+	wantJSON, _ := json.Marshal(wantValue)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("settings mismatch: got %s want %s", gotJSON, wantJSON)
+	}
+}
+
 func bootstrapResponse(t *testing.T, kind ResponseKind) json.RawMessage {
 	t.Helper()
 	encoded, err := json.Marshal(responsePayloadMap(kind))
