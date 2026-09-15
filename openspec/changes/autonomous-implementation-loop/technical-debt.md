@@ -562,3 +562,13 @@
 - Expected impact: correction quality depends on the orchestrator producing a sufficiently self-contained task title.
 - Classification: technical debt because no explicit requirement mandates provenance in briefer context and a self-contained title may suffice.
 - Possible follow-up: enrich briefer context with finding provenance/details or require a self-contained corrective-task description.
+
+## TD-11.1-001 — user-control mutex does not serialize all shared Run mutations
+
+- Origin: task 11.1 initial review; affected locations: `internal/flows/impl_loop/controlled_agent_call.go`, `internal/flows/impl_loop/user_control.go`, and state-replacement paths in `internal/runstore/state.go`.
+- Status: `open`.
+- Potential problem: agent registration and operation completion can read or replace the shared `Run` without participating in the `UserRunControl` mutex.
+- Evidence: registration precedes durable attempt reservation, while state-store recording may replace the run concurrently with pause/close reading it under a different synchronization boundary.
+- Expected impact: a narrow Go data race or stale transition candidate around operation start/completion.
+- Classification: technical debt because the required interleaving is narrow and no high-likelihood failure in typical supported use is established.
+- Possible follow-up: establish one serialized owner for all `Run` transitions or a shared synchronization boundary, with focused start/completion interleaving tests.

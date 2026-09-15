@@ -35,6 +35,7 @@ type ImplementerTransitionInput struct {
 	BriefID        implementationstate.BriefID
 	Selection      implementationconfig.CheckSelection
 	Runner         CheckRunner
+	UserControl    *UserRunControl
 	Limits         implementationstate.CycleLimits
 	ProtectedPaths []string
 	OperationID    implementationstate.OperationID
@@ -135,12 +136,17 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: observe check workspace: %v", ErrImplementerTransition, err)
 	}
 	reporter := &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}
+	checkContext, finishCheck, err := beginUserControlledCheck(ctx, input.UserControl)
+	if err != nil {
+		return ImplementerTransitionResult{}, err
+	}
+	defer finishCheck()
 	var set CheckSet
 	var workspaceChanged bool
 	if kind == CheckSetRequested {
-		set, err = RunRequestedChecksWithReporter(ctx, input.Selection, response.CheckNames, input.Runner, reporter)
+		set, err = RunRequestedChecksWithReporter(checkContext, input.Selection, response.CheckNames, input.Runner, reporter)
 	} else {
-		cycle, cycleErr := RunOneRequiredCheckCycle(ctx, input.Selection, input.Runner, reporter, 1)
+		cycle, cycleErr := RunOneRequiredCheckCycle(checkContext, input.Selection, input.Runner, reporter, 1)
 		set, err, workspaceChanged = cycle.Set, cycleErr, cycle.Changed
 	}
 	diagnostic := checkSetDiagnostic(set, err)
@@ -162,11 +168,11 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 	status, outcome := implementationstate.ResultSucceeded, implementationstate.AttemptSucceeded
 	if err != nil || !set.Succeeded() || (kind == CheckSetRequired && workspaceChanged) {
 		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
 			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
 		}
 	}
-	persistContext := context.WithoutCancel(ctx)
+	persistContext := context.WithoutCancel(checkContext)
 	if _, recordErr := input.StateStore.RecordAssignmentAttemptOutcome(persistContext, input.Run, input.AssignmentID, input.OperationID, outcome, diagnostic); recordErr != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check outcome: %v", ErrImplementerTransition, recordErr)
 	}
@@ -186,6 +192,9 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check result: %v", ErrImplementerTransition, recordErr)
 	}
 	transition := ImplementerTransitionResult{Set: set, Diagnostic: diagnostic, Evidence: evidence, RequiredAcceptance: kind == CheckSetRequired, WorkspaceChanged: workspaceChanged}
+	if UserOperationInterrupted(checkContext) {
+		return transition, ErrUserOperationInterrupted
+	}
 	if failed, blocked := set.executionBlockedResult(); blocked {
 		blockedAction := "run requested check " + failed.Name
 		attempts := []string{"ran the configured requested check " + failed.Name}

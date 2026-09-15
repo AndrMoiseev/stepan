@@ -28,6 +28,9 @@ type InitialRequiredChecks struct {
 	Repository string
 	Selection  implementationconfig.CheckSelection
 	Runner     CheckRunner
+	// UserControl owns the complete external-command boundary, including
+	// workspace observation, evidence publication, and durable result writes.
+	UserControl *UserRunControl
 	// MaxCycles is the configured bound for required-check convergence. A
 	// command that generates ordinary code restarts the complete set from its
 	// first configured check; this limit keeps that recovery finite.
@@ -81,10 +84,15 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	if err != nil {
 		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline workspace observer: %w", err))
 	}
-	convergence, runErr := RunRequiredChecksUntilStable(ctx, input.Selection, input.Runner, &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}, input.MaxCycles)
+	checkContext, finishCheck, err := beginUserControlledCheck(ctx, input.UserControl)
+	if err != nil {
+		return InitialRequiredChecksResult{}, err
+	}
+	defer finishCheck()
+	convergence, runErr := RunRequiredChecksUntilStable(checkContext, input.Selection, input.Runner, &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}, input.MaxCycles)
 	set := initialCheckSet(convergence)
 	diagnostic := initialCheckDiagnostic(set, runErr)
-	persistenceContext, cancelPersistence := context.WithTimeout(context.WithoutCancel(ctx), checkResultPersistenceTimeout)
+	persistenceContext, cancelPersistence := context.WithTimeout(context.WithoutCancel(checkContext), checkResultPersistenceTimeout)
 	defer cancelPersistence()
 	evidence, publishErr := publishInitialCheckEvidence(input.Journal, input.Result, convergence, runErr)
 	result := InitialRequiredChecksResult{Set: set, Convergence: convergence, Diagnostic: diagnostic, Evidence: evidence}
@@ -96,7 +104,7 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	outcome := implementationstate.AttemptSucceeded
 	if runErr != nil || !set.Succeeded() {
 		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
 			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
 		}
 	}
@@ -124,9 +132,19 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline check result: %v", ErrInitialRequiredChecks, err)
 	}
 	if status != implementationstate.ResultSucceeded {
+		if UserOperationInterrupted(checkContext) {
+			return result, ErrUserOperationInterrupted
+		}
 		return pauseInitialChecks(persistenceContext, input, result, nil)
 	}
 	return result, nil
+}
+
+func beginUserControlledCheck(ctx context.Context, control *UserRunControl) (context.Context, func(), error) {
+	if control == nil {
+		return ctx, func() {}, nil
+	}
+	return control.BeginOperation(ctx)
 }
 
 func validateInitialRequiredChecks(input InitialRequiredChecks) error {

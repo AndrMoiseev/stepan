@@ -27,6 +27,7 @@ type FinalRequiredChecks struct {
 	Repository     string
 	Selection      implementationconfig.CheckSelection
 	Runner         CheckRunner
+	UserControl    *UserRunControl
 	MaxCycles      int
 	ProtectedPaths []string
 	Operation      implementationstate.OperationID
@@ -65,10 +66,15 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 	if err != nil {
 		return pauseFinalChecks(ctx, input, FinalRequiredChecksResult{}, fmt.Errorf("create final workspace observer: %w", err))
 	}
-	convergence, runErr := RunRequiredChecksUntilStable(ctx, input.Selection, input.Runner, &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}, input.MaxCycles)
+	checkContext, finishCheck, err := beginUserControlledCheck(ctx, input.UserControl)
+	if err != nil {
+		return FinalRequiredChecksResult{}, err
+	}
+	defer finishCheck()
+	convergence, runErr := RunRequiredChecksUntilStable(checkContext, input.Selection, input.Runner, &WorkspaceCheckReporter{Observer: observer, Publisher: publisher}, input.MaxCycles)
 	set := initialCheckSet(convergence)
 	diagnostic := initialCheckDiagnostic(set, runErr)
-	persistContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), checkResultPersistenceTimeout)
+	persistContext, cancel := context.WithTimeout(context.WithoutCancel(checkContext), checkResultPersistenceTimeout)
 	defer cancel()
 	evidence, publishErr := publishFinalCheckEvidence(input.Journal, input.Result, convergence, runErr)
 	result := FinalRequiredChecksResult{Set: set, Convergence: convergence, Diagnostic: diagnostic, Evidence: evidence}
@@ -78,7 +84,7 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 	status, outcome := implementationstate.ResultSucceeded, implementationstate.AttemptSucceeded
 	if runErr != nil || !set.Succeeded() {
 		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
-		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
 			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
 		}
 	}
@@ -98,6 +104,9 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check result: %v", ErrFinalAcceptanceRoute, err)
 	}
 	if status != implementationstate.ResultSucceeded {
+		if UserOperationInterrupted(checkContext) {
+			return result, ErrUserOperationInterrupted
+		}
 		return pauseFinalChecks(persistContext, input, result, nil)
 	}
 	return result, nil

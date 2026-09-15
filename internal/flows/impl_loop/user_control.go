@@ -20,6 +20,11 @@ var (
 	// active operation's cancellation cleanup. Starting new work in that gap is
 	// forbidden.
 	ErrUserControlTransitioning = errors.New("implementation user control is transitioning run state")
+	// ErrUserOperationInterrupted identifies cancellation initiated by /pause
+	// or /stop. Routes use it to retain their interrupted result without
+	// applying ordinary check-failure handling before the user transition is
+	// durably recorded.
+	ErrUserOperationInterrupted = errors.New("implementation operation interrupted by user control")
 )
 
 // UserRunControl is the controller-owned user pause/close boundary. It gives
@@ -40,7 +45,7 @@ type UserRunControl struct {
 }
 
 type userControlledOperation struct {
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	done   chan struct{}
 	once   sync.Once
 }
@@ -77,7 +82,7 @@ func (control *UserRunControl) BeginOperation(parent context.Context) (context.C
 	if control.active != nil {
 		return nil, nil, ErrUserControlBusy
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	active := &userControlledOperation{cancel: cancel, done: make(chan struct{})}
 	control.active = active
 	finish := func() {
@@ -127,7 +132,7 @@ func (control *UserRunControl) transition(ctx context.Context, reason string, cl
 	control.transitioning = true
 	active := control.active
 	if active != nil {
-		active.cancel()
+		active.cancel(ErrUserOperationInterrupted)
 	}
 	control.mu.Unlock()
 
@@ -167,6 +172,12 @@ func (control *UserRunControl) transition(ctx context.Context, reason string, cl
 		return fmt.Errorf("persist user-%s: %w", userTransitionName(closeRun), err)
 	}
 	return nil
+}
+
+// UserOperationInterrupted reports whether ctx was cancelled by this control
+// boundary rather than by a command timeout or an unrelated caller.
+func UserOperationInterrupted(ctx context.Context) bool {
+	return ctx != nil && errors.Is(context.Cause(ctx), ErrUserOperationInterrupted)
 }
 
 func mayUserTransition(status implementationstate.RunStatus, closeRun bool) bool {

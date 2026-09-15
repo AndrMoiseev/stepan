@@ -6,7 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -99,6 +101,72 @@ func TestImplementerChecksRequestedRejectsCommandLikeNameBeforeDispatch(t *testi
 	_, err := ApplyImplementerTransition(context.Background(), fixture.input("requested", "requested-result"), fixture.response(ResponseChecksRequested, []string{"test_all -run private"}))
 	if !errors.Is(err, ErrUnknownCheck) || len(fixture.runner.commands) != 0 || len(fixture.run.Assignments[0].Operations) != 0 {
 		t.Fatalf("command-like request = %v, calls=%#v, operations=%#v", err, fixture.runner.commands, fixture.run.Assignments[0].Operations)
+	}
+}
+
+func TestUserControlWaitsForFullImplementerCheckBookkeepingBeforePauseOrClose(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		transition func(*UserRunControl) error
+		wantStatus implementationstate.RunStatus
+	}{
+		{"pause", func(control *UserRunControl) error { return control.Pause(context.Background(), "user paused command") }, implementationstate.RunPaused},
+		{"close", func(control *UserRunControl) error { return control.Close(context.Background(), "user closed command") }, implementationstate.RunClosed},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newImplementerTransitionFixture(t)
+			defer fixture.state.Close()
+			control, err := NewUserRunControl(fixture.run, fixture.state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace := &unchangedWorkspaceControl{}
+			started := make(chan struct{})
+			runner := CheckRunnerFunc(func(ctx context.Context, _ checkexec.Command) (checkexec.Result, error) {
+				close(started)
+				<-ctx.Done()
+				return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureCanceled, Stderr: []byte("user interrupted command")}, ctx.Err()
+			})
+			input := fixture.input("user-check", "user-check-result")
+			input.UserControl, input.Workspace, input.Runner = control, workspace, runner
+			done := make(chan error, 1)
+			go func() {
+				_, err := ApplyImplementerTransition(context.Background(), input, fixture.response(ResponseChecksRequested, []string{"test_auth"}))
+				done <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(time.Second):
+				t.Fatal("configured command did not start")
+			}
+			if err := test.transition(control); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-done; !errors.Is(err, ErrUserOperationInterrupted) {
+				t.Fatalf("route error = %v", err)
+			}
+			persisted, sequence, err := runstore.ReadJournalCurrent(fixture.journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assignment := persisted.Assignments[0]
+			if persisted.Status != test.wantStatus || len(assignment.Operations) != 1 || len(assignment.Operations[0].Attempts) != 1 || assignment.Operations[0].Attempts[0].Outcome != implementationstate.AttemptInterrupted || len(assignment.Results) != 1 || assignment.Results[0].Status != implementationstate.ResultInterrupted {
+				t.Fatalf("durable user interruption = %#v", persisted)
+			}
+			captures, differences := workspace.captures, workspace.diffs
+			time.Sleep(20 * time.Millisecond)
+			later, laterSequence, err := runstore.ReadJournalCurrent(fixture.journal)
+			if err != nil || laterSequence != sequence || workspace.captures != captures || workspace.diffs != differences || len(later.Assignments[0].Results) != 1 {
+				t.Fatalf("route wrote after user command returned: sequence %d -> %d, workspace %d/%d -> %d/%d, state=%#v, error=%v", sequence, laterSequence, captures, differences, workspace.captures, workspace.diffs, later, err)
+			}
+			if test.wantStatus == implementationstate.RunPaused {
+				if err := persisted.Resume(); err != nil {
+					t.Fatalf("paused run did not remain resumable: %v", err)
+				}
+			} else if err := persisted.Resume(); !errors.Is(err, implementationstate.ErrInvalidTransition) {
+				t.Fatalf("closed run resumed: %v", err)
+			}
+		})
 	}
 }
 
