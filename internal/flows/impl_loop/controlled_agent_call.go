@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
@@ -53,6 +54,10 @@ type ControlledAgentCall struct {
 	// crashes, timeouts, malformed transport, and file-policy violations still
 	// recreate the session before retrying.
 	ContinueOnResponseRejection bool
+	// AfterSuccessReceipt is a narrow crash-injection seam. It runs after the
+	// validated response and post-turn workspace are durably published but
+	// before the attempt is marked succeeded. Production callers leave it nil.
+	AfterSuccessReceipt func() error
 }
 
 // ControlledAgentCallResult is returned only for a response that passed both
@@ -79,6 +84,9 @@ type ControlledAgentCallResult struct {
 func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (ControlledAgentCallResult, error) {
 	if err := validateControlledAgentCall(call); err != nil {
 		return ControlledAgentCallResult{}, err
+	}
+	if recovered, ok, err := recoverControlledAgentSuccess(ctx, call); err != nil || ok {
+		return recovered, err
 	}
 	if call.UserControl != nil {
 		operationContext, finish, err := call.UserControl.BeginOperation(ctx)
@@ -187,11 +195,126 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 				continue
 			}
 		}
+		if _, _, err := publishControlledAgentSuccessReceipt(call.Journal, call.OperationID, response, outcome.Snapshot); err != nil {
+			return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, fmt.Errorf("publish validated agent response receipt: %w", err)
+		}
+		if call.AfterSuccessReceipt != nil {
+			if err := call.AfterSuccessReceipt(); err != nil {
+				return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, err
+			}
+		}
 		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 		}
 		return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, nil
 	}
+}
+
+type controlledAgentSuccessReceipt struct {
+	Response  AgentResponse                   `json:"response"`
+	Workspace implementationstate.EvidenceRef `json:"workspace"`
+}
+
+func controlledAgentSuccessReceiptIDs(operationID implementationstate.OperationID) (implementationstate.EvidenceID, implementationstate.EvidenceID) {
+	stem := string(operationID) + "-accepted-turn"
+	return implementationstate.EvidenceID(stem + "-receipt"), implementationstate.EvidenceID(stem + "-workspace")
+}
+
+func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID, response AgentResponse, snapshot gitsnapshot.Snapshot) (implementationstate.EvidenceRef, implementationstate.EvidenceRef, error) {
+	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
+	workspaceData, err := json.Marshal(snapshot)
+	if err != nil {
+		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+	}
+	workspaceRef, err := journal.Publish(workspaceID, workspaceData)
+	if err != nil {
+		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+	}
+	receiptData, err := json.Marshal(controlledAgentSuccessReceipt{Response: response, Workspace: workspaceRef})
+	if err != nil {
+		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+	}
+	receiptRef, err := journal.Publish(receiptID, receiptData)
+	if err != nil {
+		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+	}
+	return receiptRef, workspaceRef, nil
+}
+
+func readControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID) (AgentResponse, gitsnapshot.Snapshot, implementationstate.EvidenceRef, implementationstate.EvidenceRef, bool, error) {
+	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
+	receiptRef, receiptErr := journal.PublishedReference(receiptID)
+	workspaceRef, workspaceErr := journal.PublishedReference(workspaceID)
+	if errors.Is(receiptErr, runstore.ErrReferenceUnavailable) && errors.Is(workspaceErr, runstore.ErrReferenceUnavailable) {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, false, nil
+	}
+	if receiptErr != nil || workspaceErr != nil {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("accepted agent turn receipt is incomplete: receipt=%v workspace=%v", receiptErr, workspaceErr)
+	}
+	data, err := journal.Read(receiptRef)
+	if err != nil {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+	}
+	var receipt controlledAgentSuccessReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn receipt: %w", err)
+	}
+	if receipt.Workspace != workspaceRef {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, errors.New("accepted agent turn receipt references another workspace")
+	}
+	workspaceData, err := journal.Read(workspaceRef)
+	if err != nil {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+	}
+	var snapshot gitsnapshot.Snapshot
+	if err := json.Unmarshal(workspaceData, &snapshot); err != nil {
+		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn workspace: %w", err)
+	}
+	return receipt.Response, snapshot, receiptRef, workspaceRef, true, nil
+}
+
+func recoverControlledAgentSuccess(ctx context.Context, call ControlledAgentCall) (ControlledAgentCallResult, bool, error) {
+	response, snapshot, _, _, found, err := readControlledAgentSuccessReceipt(call.Journal, call.OperationID)
+	if err != nil || !found {
+		return ControlledAgentCallResult{}, found, err
+	}
+	if !reflect.DeepEqual(response.Binding, call.Expectation.Binding) || !responseAllowedInState(response.Kind, call.Expectation) {
+		return ControlledAgentCallResult{}, true, errors.New("accepted agent turn receipt does not match the requested call")
+	}
+	if err := validateResponseSemantics(response); err != nil {
+		return ControlledAgentCallResult{}, true, fmt.Errorf("validate accepted agent turn receipt: %w", err)
+	}
+	if call.ValidateResponse != nil {
+		if err := call.ValidateResponse(response); err != nil {
+			return ControlledAgentCallResult{}, true, fmt.Errorf("revalidate accepted agent turn receipt: %w", err)
+		}
+	}
+	attempts, outcome := controlledAgentAttemptState(call)
+	if attempts == 0 {
+		return ControlledAgentCallResult{}, true, errors.New("accepted agent turn receipt has no reserved attempt")
+	}
+	if outcome == "" {
+		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
+			return ControlledAgentCallResult{}, true, err
+		}
+	} else if outcome != implementationstate.AttemptSucceeded {
+		return ControlledAgentCallResult{}, true, fmt.Errorf("accepted agent turn receipt conflicts with attempt outcome %q", outcome)
+	}
+	return ControlledAgentCallResult{Response: response, Session: call.Session, Snapshot: snapshot, Attempts: attempts}, true, nil
+}
+
+func controlledAgentAttemptState(call ControlledAgentCall) (uint64, implementationstate.AttemptOutcome) {
+	var operation *implementationstate.Operation
+	if call.AssignmentID != "" {
+		operation = assignmentOperation(call.Run, call.AssignmentID, call.OperationID)
+	} else {
+		operation = finalRunOperation(call.Run, call.OperationID)
+	}
+	if operation == nil || len(operation.Attempts) == 0 {
+		return 0, ""
+	}
+	attempt := operation.Attempts[len(operation.Attempts)-1]
+	return attempt.Number, attempt.Outcome
 }
 
 func validateControlledAgentCall(call ControlledAgentCall) error {

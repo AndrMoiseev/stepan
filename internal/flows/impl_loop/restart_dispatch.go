@@ -39,6 +39,9 @@ type RestartContinuationInput struct {
 	ProtectedPaths []string
 	CommitControl  CommitControl
 	CommitObserver CommitObserver
+	// AfterAgentSuccessReceipt is a crash-injection seam passed to the shared
+	// controlled-call boundary. Production callers leave it nil.
+	AfterAgentSuccessReceipt func() error
 }
 
 // DispatchRestartContinuation restores the orchestrator and drives durable
@@ -499,6 +502,7 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 			}
 			return ValidateImplementerTransitionResponse(input.Checks, input.Run, assignmentID, briefID, response)
 		},
+		AfterSuccessReceipt: input.AfterAgentSuccessReceipt,
 	})
 	if err != nil {
 		return restartRouteError(ctx, input, "continue active assignment implementation", err)
@@ -881,7 +885,14 @@ func restartOperationCallID(operation *implementationstate.Operation) string {
 	if operation == nil {
 		return "restart-call-invalid"
 	}
-	return fmt.Sprintf("%s-call-%d", operation.ID, len(operation.Attempts)+1)
+	number := len(operation.Attempts) + 1
+	if len(operation.Attempts) != 0 {
+		outcome := operation.Attempts[len(operation.Attempts)-1].Outcome
+		if outcome == "" || outcome == implementationstate.AttemptSucceeded {
+			number = len(operation.Attempts)
+		}
+	}
+	return fmt.Sprintf("%s-call-%d", operation.ID, number)
 }
 
 func nextRestartAssignmentID(run *implementationstate.Run) implementationstate.AssignmentID {

@@ -35,6 +35,36 @@ func TestInvokeControlledAgentCallUsesWorkspaceControlSeam(t *testing.T) {
 	}
 }
 
+func TestInvokeControlledAgentCallPublishesReceiptBeforeSucceededAndRecoversIdempotently(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: controlledResponse(t, "exact accepted commit message")}}}
+	call := controlledCallFixture(t, runtime)
+	crash := errors.New("injected crash after receipt publication")
+	call.AfterSuccessReceipt = func() error { return crash }
+
+	first, err := InvokeControlledAgentCall(context.Background(), call)
+	if !errors.Is(err, crash) || first.Response.Message == nil || *first.Response.Message != "exact accepted commit message" {
+		t.Fatalf("crash-boundary result=%#v err=%v", first, err)
+	}
+	operation := finalRunOperation(call.Run, call.OperationID)
+	if operation == nil || len(operation.Attempts) != 1 || operation.Attempts[0].Outcome != "" {
+		t.Fatalf("attempt was marked succeeded before the receipt boundary: %#v", operation)
+	}
+	receiptResponse, receiptSnapshot, _, _, found, err := readControlledAgentSuccessReceipt(call.Journal, call.OperationID)
+	if err != nil || !found || receiptResponse.Message == nil || *receiptResponse.Message != "exact accepted commit message" || receiptSnapshot.TreeOID != "unchanged" {
+		t.Fatalf("durable accepted-turn receipt = response %#v snapshot %#v found=%t err=%v", receiptResponse, receiptSnapshot, found, err)
+	}
+
+	call.AfterSuccessReceipt = nil
+	second, err := InvokeControlledAgentCall(context.Background(), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation = finalRunOperation(call.Run, call.OperationID)
+	if second.Response.Message == nil || *second.Response.Message != "exact accepted commit message" || len(runtime.messages) != 1 || operation == nil || operation.Attempts[0].Outcome != implementationstate.AttemptSucceeded {
+		t.Fatalf("receipt recovery repeated or changed the completed turn: result=%#v messages=%#v operation=%#v", second, runtime.messages, operation)
+	}
+}
+
 type unchangedWorkspaceControl struct {
 	captures        int
 	diffs           int

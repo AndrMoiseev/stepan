@@ -1091,6 +1091,16 @@ func (r *Run) RefreshInitialBaselinePass(operationID OperationID, resultID Resul
 	return r.refreshInitialBaselinePass(operationID, resultID)
 }
 
+// NeedsInitialBaselineRefresh reports whether a successful resume gate should
+// become the current initial acceptance baseline. Task extraction owns the
+// earlier restart stage, so it must complete before any baseline is recorded.
+func (r *Run) NeedsInitialBaselineRefresh() bool {
+	if r == nil || r.TaskExtractionPending {
+		return false
+	}
+	return r.InitialBaseline == nil || r.InitialBaseline.Basis != r.currentBasis() || r.InitialBaseline.State != r.CurrentState
+}
+
 func (r *Run) refreshInitialBaselinePass(operationID OperationID, resultID ResultID) error {
 	operation := r.runOperation(operationID)
 	result := r.runResult(resultID)

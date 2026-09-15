@@ -382,19 +382,7 @@ func TestDispatchRestartContinuationRecoversPublishedImplementationReadyWithoutR
 	}
 	message := "Keep the exact crash-boundary commit subject"
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: "completed-implementation-call-1", RunID: fixture.run.Identity.ID, AssignmentID: "assignment", BriefID: operation.BriefID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
-	responseData, err := json.Marshal(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, responseID, workspaceID := implementationReadyReceiptIDs(operation.ID)
-	if _, err := fixture.journal.Publish(responseID, responseData); err != nil {
-		t.Fatal(err)
-	}
-	workspaceData, err := json.Marshal(fixture.workspace.actual)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := fixture.journal.Publish(workspaceID, workspaceData); err != nil {
+	if _, _, err := publishControlledAgentSuccessReceipt(fixture.journal, operation.ID, response, fixture.workspace.actual); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -427,6 +415,57 @@ func TestDispatchRestartContinuationRecoversPublishedImplementationReadyWithoutR
 	result := assignmentResultForOperation(fixture.run, "assignment", operation.ID)
 	if fixture.run.Status != implementationstate.RunSucceeded || result == nil || countRoleTurns(factory, ResponseRoleImplementer) != 0 || !strings.HasPrefix(committedMessage, message+"\n\n") {
 		t.Fatalf("published response was not recovered exactly: result=%#v turns=%d message=%q run=%#v", result, countRoleTurns(factory, ResponseRoleImplementer), committedMessage, fixture.run)
+	}
+}
+
+func TestDispatchRestartContinuationRecoversControlledCallCrashBoundary(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	prepareRestartActiveAssignment(t, fixture)
+	factory := &sessionRuntimeFactory{}
+	configuration := resumeTestConfiguration(t, "initial-model", "")
+	prepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSessionOwner(prepared, threadConfigForTest(fixture.repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = owner.Close() })
+	checks, err := configuration.SelectHostChecks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	crash := errors.New("injected process loss after accepted-turn receipt")
+	err = DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		Configuration: configuration, Checks: checks, AfterAgentSuccessReceipt: func() error { return crash },
+	})
+	if !errors.Is(err, crash) || fixture.run.Status != implementationstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
+		t.Fatalf("injected accepted-turn crash = err=%v turns=%d run=%#v", err, countRoleTurns(factory, ResponseRoleImplementer), fixture.run)
+	}
+	operation := fixture.run.Assignments[0].Operations[len(fixture.run.Assignments[0].Operations)-1]
+	if len(operation.Attempts) != 1 || operation.Attempts[0].Outcome != "" {
+		t.Fatalf("crashed controlled call was marked succeeded: %#v", operation)
+	}
+	response, _, _, _, found, err := readControlledAgentSuccessReceipt(fixture.journal, operation.ID)
+	if err != nil || !found || response.Message == nil || *response.Message != "implement feature" {
+		t.Fatalf("crash receipt = response %#v found=%t err=%v", response, found, err)
+	}
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	var committedMessage string
+	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
+		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
+		Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
+		Configuration: configuration, Checks: checks, CommitControl: restartCommitControl{parent: "head", tree: "expected-tree", message: &committedMessage},
+	}); err != nil {
+		t.Fatalf("restart after controlled-call crash: %v; run=%#v", err, fixture.run)
+	}
+	if fixture.run.Status != implementationstate.RunSucceeded || countRoleTurns(factory, ResponseRoleImplementer) != 1 || !strings.HasPrefix(committedMessage, "implement feature\n\n") {
+		t.Fatalf("controlled-call receipt was not resumed idempotently: turns=%d message=%q run=%#v", countRoleTurns(factory, ResponseRoleImplementer), committedMessage, fixture.run)
 	}
 }
 
@@ -583,6 +622,69 @@ func TestResumeRunsEntireRequiredSetWithoutConsumingAttempts(t *testing.T) {
 	}
 	if len(fixture.run.RunResults) != 1 || fixture.run.RunResults[0].Status != implementationstate.ResultSucceeded {
 		t.Fatalf("resume checks did not retain successful result: %#v", fixture.run.RunResults)
+	}
+}
+
+func TestResumeSkipsBaselineWhileInterruptedTaskExtractionRemainsPending(t *testing.T) {
+	fixture := newPendingExtractionResumeFixture(t)
+	result, err := Resume(context.Background(), fixture.input())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixture.run.Status != implementationstate.RunActive || !fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !result.ResumeChecks.Succeeded() {
+		t.Fatalf("resume consumed the task-extraction stage with a baseline: result=%#v run=%#v", result, fixture.run)
+	}
+	payload := responsePayloadMap(ResponseTasksExtracted)
+	payload["task_ids"] = []string{"A", "A1"}
+	payload["task_payloads"] = []string{`{"id":"A","parent_id":"","title":"A"}`, `{"id":"A1","parent_id":"A","title":"A1"}`}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: raw}}}
+	session := &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator", restart: func(context.Context) (*AgentSession, error) {
+		return &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"}, nil
+	}}
+	if err := runRestartTaskExtraction(context.Background(), RestartContinuationInput{Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace}, session, openspec.Package{}, controlledCallLimits()); err != nil {
+		t.Fatal(err)
+	}
+	operation := finalRunOperation(fixture.run, "extract")
+	if fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !slices.Equal(fixture.run.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
+		t.Fatalf("restart did not reach and finish interrupted extraction: operation=%#v run=%#v", operation, fixture.run)
+	}
+}
+
+func TestResumeRefreshesInitialBaselineAfterSameBasisManualStateEdit(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "original-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.run.StartRunAttempt("original-baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "original-baseline-result", OperationID: "original-baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.RecordInitialBaselinePass("original-baseline", "original-baseline-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.Pause("manual edit before first assignment"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+	fixture.workspace.actual = resumeSnapshot("manual-tree", "manual-status")
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	assertCurrentResumeBaseline(t, fixture.run)
+	if fixture.run.InitialBaseline.OperationID == "original-baseline" || fixture.run.InitialBaseline.State != fixture.run.CurrentState || fixture.run.Identity.Specification != basis.Specification || fixture.run.Identity.Configuration != basis.Configuration {
+		t.Fatalf("same-basis manual state did not refresh baseline: %#v", fixture.run)
 	}
 }
 
@@ -1279,6 +1381,54 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 	return &resumeFixture{repository: repository, run: run, journal: journal, state: state, baseline: baseline, specification: specRef, workspace: &resumeWorkspace{actual: expected}, load: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}
 }
 
+func newPendingExtractionResumeFixture(t *testing.T) *resumeFixture {
+	t.Helper()
+	base := newResumeFixture(t, "")
+	store, err := runstore.New(filepath.Join(t.TempDir(), "stepan-pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := store.Create("pending-extraction-resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyReference := func(reference implementationstate.EvidenceRef) implementationstate.EvidenceRef {
+		data, err := base.journal.Read(reference)
+		if err != nil {
+			t.Fatal(err)
+		}
+		copied, err := journal.Publish(reference.ID, data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return copied
+	}
+	identity := base.run.Identity
+	identity.ID = journal.ID()
+	identity.BaselineState = copyReference(identity.BaselineState)
+	identity.Specification = copyReference(identity.Specification)
+	identity.TaskList = copyReference(identity.TaskList)
+	identity.Configuration = copyReference(identity.Configuration)
+	run, state, err := PrepareInitialTaskExtraction(context.Background(), journal, identity, "extract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = state.Close() })
+	if _, _, err := state.RecordRunAttemptStart(context.Background(), run, "extract"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.RecordRunAttemptOutcome(context.Background(), run, "extract", implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Pause("process stopped during task extraction"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	return &resumeFixture{repository: base.repository, run: run, journal: journal, state: state, baseline: identity.BaselineState, specification: identity.Specification, workspace: base.workspace, load: base.load}
+}
+
 func (fixture *resumeFixture) input() ResumeInput {
 	return ResumeInput{
 		Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, Workspace: fixture.workspace,
@@ -1397,20 +1547,8 @@ func seedImplementationReadyReceipt(t *testing.T, fixture *resumeFixture, operat
 		t.Fatal(err)
 	}
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: string(operationID) + "-call", RunID: fixture.run.Identity.ID, AssignmentID: "assignment", BriefID: briefID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
-	responseData, err := json.Marshal(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resultID, responseID, workspaceID := implementationReadyReceiptIDs(operationID)
-	responseRef, err := fixture.journal.Publish(responseID, responseData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspaceData, err := json.Marshal(resumeSnapshot("implementation-tree", "implementation-status"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspaceRef, err := fixture.journal.Publish(workspaceID, workspaceData)
+	resultID, _, _ := implementationReadyReceiptIDs(operationID)
+	responseRef, workspaceRef, err := publishControlledAgentSuccessReceipt(fixture.journal, operationID, response, resumeSnapshot("implementation-tree", "implementation-status"))
 	if err != nil {
 		t.Fatal(err)
 	}

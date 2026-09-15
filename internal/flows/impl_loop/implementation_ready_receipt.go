@@ -2,9 +2,9 @@ package impl_loop
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
@@ -13,34 +13,22 @@ import (
 )
 
 func implementationReadyReceiptIDs(operationID implementationstate.OperationID) (implementationstate.ResultID, implementationstate.EvidenceID, implementationstate.EvidenceID) {
-	stem := string(operationID) + "-implementation-ready"
-	return implementationstate.ResultID(stem + "-result"), implementationstate.EvidenceID(stem + "-response"), implementationstate.EvidenceID(stem + "-workspace")
+	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
+	return implementationstate.ResultID(string(operationID) + "-implementation-ready-result"), receiptID, workspaceID
 }
 
-// persistImplementationReadyReceipt makes the validated provider answer and
-// its post-turn workspace durable before mandatory checks begin. Publication
-// deliberately precedes the state event, allowing recovery to finish this
-// exact transition without repeating a completed provider turn.
+// persistImplementationReadyReceipt links the shared controlled-call receipt
+// into the implementation state before mandatory checks begin.
 func persistImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, response AgentResponse, snapshot gitsnapshot.Snapshot) error {
 	if response.Kind != ResponseImplementationReady || response.Message == nil || strings.TrimSpace(*response.Message) == "" {
 		return errors.New("validated implementation_ready response with a commit message is required")
 	}
-	_, responseID, workspaceID := implementationReadyReceiptIDs(operationID)
-	responseData, err := json.Marshal(response)
-	if err != nil {
-		return fmt.Errorf("encode implementation_ready response: %w", err)
+	durable, durableSnapshot, responseRef, workspaceRef, found, err := readControlledAgentSuccessReceipt(input.Journal, operationID)
+	if err != nil || !found {
+		return errors.Join(errors.New("shared controlled-call receipt is missing"), err)
 	}
-	responseRef, err := input.Journal.Publish(responseID, responseData)
-	if err != nil {
-		return fmt.Errorf("publish implementation_ready response: %w", err)
-	}
-	workspaceData, err := json.Marshal(snapshot)
-	if err != nil {
-		return fmt.Errorf("encode implementation_ready workspace: %w", err)
-	}
-	workspaceRef, err := input.Journal.Publish(workspaceID, workspaceData)
-	if err != nil {
-		return fmt.Errorf("publish implementation_ready workspace: %w", err)
+	if !reflect.DeepEqual(durable, response) || !reflect.DeepEqual(durableSnapshot, snapshot) {
+		return errors.New("shared controlled-call receipt differs from the returned implementation_ready turn")
 	}
 	return recordImplementationReadyReceipt(ctx, input, assignmentID, operationID, responseRef, workspaceRef)
 }
@@ -49,7 +37,7 @@ func persistImplementationReadyReceipt(ctx context.Context, input RestartContinu
 // boundary. A partial publication is ambiguous and must be paused by the
 // caller; it is never permission to issue a second semantic request.
 func recoverPublishedImplementationReady(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (bool, error) {
-	resultID, responseID, workspaceID := implementationReadyReceiptIDs(operationID)
+	resultID, _, _ := implementationReadyReceiptIDs(operationID)
 	if result := assignmentResultForOperation(input.Run, assignmentID, operationID); result != nil {
 		if result.ID != resultID {
 			return true, fmt.Errorf("implementation operation %s has an unexpected result %s", operationID, result.ID)
@@ -57,13 +45,12 @@ func recoverPublishedImplementationReady(ctx context.Context, input RestartConti
 		_, err := implementationReadyResponse(input.Journal, input.Run, assignmentID, *result)
 		return true, err
 	}
-	responseRef, responseErr := input.Journal.PublishedReference(responseID)
-	workspaceRef, workspaceErr := input.Journal.PublishedReference(workspaceID)
-	if errors.Is(responseErr, runstore.ErrReferenceUnavailable) && errors.Is(workspaceErr, runstore.ErrReferenceUnavailable) {
-		return false, nil
+	_, _, responseRef, workspaceRef, found, err := readControlledAgentSuccessReceipt(input.Journal, operationID)
+	if err != nil {
+		return true, err
 	}
-	if responseErr != nil || workspaceErr != nil {
-		return true, fmt.Errorf("implementation_ready receipt is incomplete: response=%v workspace=%v", responseErr, workspaceErr)
+	if !found {
+		return false, nil
 	}
 	if err := recordImplementationReadyReceipt(ctx, input, assignmentID, operationID, responseRef, workspaceRef); err != nil {
 		return true, err
@@ -76,13 +63,12 @@ func recordImplementationReadyReceipt(ctx context.Context, input RestartContinua
 	if operation == nil || operation.Kind != implementationstate.OperationAgent || operation.Counter != implementationstate.CycleCounterNone || operation.BriefID == "" {
 		return fmt.Errorf("implementation_ready receipt lacks its implementation operation %s", operationID)
 	}
-	responseData, err := input.Journal.Read(responseRef)
-	if err != nil {
-		return err
+	response, _, durableResponseRef, durableWorkspaceRef, found, err := readControlledAgentSuccessReceipt(input.Journal, operationID)
+	if err != nil || !found {
+		return errors.Join(errors.New("read shared controlled-call receipt"), err)
 	}
-	var response AgentResponse
-	if err := json.Unmarshal(responseData, &response); err != nil {
-		return fmt.Errorf("decode implementation_ready response: %w", err)
+	if durableResponseRef != responseRef || durableWorkspaceRef != workspaceRef {
+		return errors.New("implementation_ready evidence differs from the shared controlled-call receipt")
 	}
 	if err := validateImplementationReadyReceiptBinding(input.Run, assignmentID, *operation, response); err != nil {
 		return err
@@ -126,13 +112,12 @@ func implementationReadyResponse(journal *runstore.Run, run *implementationstate
 	if operation == nil || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) < 2 {
 		return AgentResponse{}, errors.New("durable implementation_ready result is incomplete")
 	}
-	data, err := journal.Read(result.Evidence[0])
-	if err != nil {
-		return AgentResponse{}, err
+	response, _, responseRef, workspaceRef, found, err := readControlledAgentSuccessReceipt(journal, result.OperationID)
+	if err != nil || !found {
+		return AgentResponse{}, errors.Join(errors.New("read durable implementation_ready response"), err)
 	}
-	var response AgentResponse
-	if err := json.Unmarshal(data, &response); err != nil {
-		return AgentResponse{}, fmt.Errorf("decode durable implementation_ready response: %w", err)
+	if result.Evidence[0] != responseRef || result.Evidence[1] != workspaceRef {
+		return AgentResponse{}, errors.New("durable implementation_ready result does not link the accepted controlled call")
 	}
 	if err := validateImplementationReadyReceiptBinding(run, assignmentID, *operation, response); err != nil {
 		return AgentResponse{}, err

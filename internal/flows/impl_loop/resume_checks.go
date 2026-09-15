@@ -94,7 +94,7 @@ func runResumeRequiredChecks(ctx context.Context, input ResumeInput, selection i
 			return ResumeRequiredChecksResult{}, fmt.Errorf("%w: record resume checked state: %v", ErrResumeRequiredChecks, err)
 		}
 	}
-	if status == implementationstate.ResultSucceeded && (input.Run.InitialBaseline == nil || input.Run.InitialBaseline.Basis != basis) {
+	if status == implementationstate.ResultSucceeded && input.Run.NeedsInitialBaselineRefresh() {
 		if err := input.Run.RefreshInitialBaselinePass(operationID, resultID); err != nil {
 			return ResumeRequiredChecksResult{}, fmt.Errorf("%w: refresh initial acceptance baseline: %v", ErrResumeRequiredChecks, err)
 		}
