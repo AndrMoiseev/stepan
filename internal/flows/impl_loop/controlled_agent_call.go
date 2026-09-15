@@ -25,8 +25,12 @@ var (
 // operation. Attempts are reserved against OperationID before each dispatch;
 // a retry therefore stays in the same semantic round.
 type ControlledAgentCall struct {
-	Session    *AgentSession
-	Repository string
+	Session *AgentSession
+	// UserControl registers this external turn as the active user-interruptible
+	// operation. It is optional for lower-level callers; the interactive
+	// controller supplies it for every agent turn.
+	UserControl *UserRunControl
+	Repository  string
 	// Workspace defaults to GitWorkspaceControl. Tests of orchestration may
 	// supply an in-memory adapter without weakening production observation.
 	Workspace    WorkspaceControl
@@ -75,6 +79,14 @@ type ControlledAgentCallResult struct {
 func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (ControlledAgentCallResult, error) {
 	if err := validateControlledAgentCall(call); err != nil {
 		return ControlledAgentCallResult{}, err
+	}
+	if call.UserControl != nil {
+		operationContext, finish, err := call.UserControl.BeginOperation(ctx)
+		if err != nil {
+			return ControlledAgentCallResult{}, err
+		}
+		defer finish()
+		ctx = operationContext
 	}
 	timeout := call.Timeout
 	if timeout == 0 {
