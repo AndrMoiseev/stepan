@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -108,5 +109,28 @@ func TestImplementationConsoleUIPromptCancelsAndRedrawsWithOneInputPump(t *testi
 	}
 	if got := output.String(); got == "" || errorOutput.Len() != 0 {
 		t.Fatalf("console output = %q, errors = %q", got, errorOutput.String())
+	}
+}
+
+func TestImplementationStartupCompositionProvidesEnvelopeAndScopeDecisionForEveryProvider(t *testing.T) {
+	for _, kind := range []agentKind{agentCodex, agentClaude, agentNessy} {
+		t.Run(string(kind), func(t *testing.T) {
+			composition := implementationStartupCompositionForConfig(agentConfig{kind: kind, executable: string(kind)}, t.TempDir(), func() (string, error) { return "test-token", nil })
+			if len(composition.EnvelopeSchema) == 0 || composition.Factories["codex"] == nil || composition.Factories["claude"] == nil || composition.Factories["nessy"] == nil {
+				t.Fatalf("incomplete production composition: %#v", composition)
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(composition.EnvelopeSchema, &envelope); err != nil || envelope["type"] != "object" {
+				t.Fatalf("implementation envelope = %s, %v", composition.EnvelopeSchema, err)
+			}
+			compatible, err := composition.ClassifySpecificationChange([]byte("# Change\n\nRequirement A\n"), []byte("# Change  Requirement A"))
+			if err != nil || compatible.RequiresNewScope {
+				t.Fatalf("whitespace-only specification change = %#v, %v", compatible, err)
+			}
+			scope, err := composition.ClassifySpecificationChange([]byte("Requirement A"), []byte("Requirement B"))
+			if err != nil || !scope.RequiresNewScope {
+				t.Fatalf("semantic specification change = %#v, %v", scope, err)
+			}
+		})
 	}
 }

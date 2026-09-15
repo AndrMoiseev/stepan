@@ -40,6 +40,27 @@ func TestResumeReconcilesPausedRunAndPreservesManualWorkingCopyChanges(t *testin
 	}
 }
 
+func TestDispatchRestartContinuationRestoresFreshOrchestratorFromDurableRun(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	factory := &sessionRuntimeFactory{}
+	configuration := resumeTestConfiguration(t, "initial-model", "")
+	prepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": factory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := NewSessionOwner(prepared, agentruntime.ThreadConfig{Workspace: fixture.repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.Close()
+	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{Owner: owner, Journal: fixture.journal, Run: fixture.run, Repository: fixture.repository}); err != nil {
+		t.Fatal(err)
+	}
+	if len(factory.configurations()) != 1 {
+		t.Fatalf("recovered role sessions = %d, want fresh orchestrator", len(factory.configurations()))
+	}
+}
+
 func TestResumeRunsEntireRequiredSetWithoutConsumingAttempts(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	fixture.load = func(string) (implementationconfig.Configuration, error) {

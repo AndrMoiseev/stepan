@@ -182,14 +182,34 @@ func ResponseSchema(role ResponseRole) (json.RawMessage, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrResponseRole, role)
 	}
-	enum := make([]string, len(kinds))
-	for index, kind := range kinds {
-		enum[index] = string(kind)
+	return responseTransportSchema(kinds)
+}
+
+// ImplementationEnvelopeSchema is the provider-level transport envelope for
+// all implementation roles. Individual threads receive ResponseSchema for
+// their exact role; this broader envelope is required when an adapter creates
+// a process before a role-specific thread exists.
+func ImplementationEnvelopeSchema() json.RawMessage {
+	schema, err := responseTransportSchema(nil)
+	if err != nil {
+		panic(err)
+	}
+	return schema
+}
+
+func responseTransportSchema(kinds []ResponseKind) (json.RawMessage, error) {
+	kindSchema := map[string]any{"type": "string"}
+	if len(kinds) != 0 {
+		enum := make([]string, len(kinds))
+		for index, kind := range kinds {
+			enum[index] = string(kind)
+		}
+		kindSchema["enum"] = enum
 	}
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":                   map[string]any{"type": "string", "enum": enum},
+			"kind":                   kindSchema,
 			"message":                map[string]any{"type": "string"},
 			"task_ids":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"task_payloads":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},

@@ -86,8 +86,8 @@ func latestJournalAction(events []implementationstate.Event) (string, bool) {
 			continue
 		}
 		if current.Status != previous.Status && current.Status == implementationstate.RunPaused {
-			if action, ok := resumeResultAction(events, index-1); ok {
-				return action + " (failed)", true
+			if action, resumeCheck, ok := resultActionAt(events, index-1); ok {
+				return action + " (failed)", resumeCheck
 			}
 			return "pause run", false
 		}
@@ -99,6 +99,11 @@ func latestJournalAction(events []implementationstate.Event) (string, bool) {
 				return operationAction(operation), false
 			}
 		}
+		if result := latestChangedAssignmentResult(previous, current); result != nil {
+			if operation := startupAssignmentOperation(current, result.assignment, result.result.OperationID); operation != nil {
+				return operationAction(operation), false
+			}
+		}
 		if action := journalLastAction(previous, current, ""); action != "" {
 			return action, false
 		}
@@ -106,17 +111,22 @@ func latestJournalAction(events []implementationstate.Event) (string, bool) {
 	return "", false
 }
 
-func resumeResultAction(events []implementationstate.Event, index int) (string, bool) {
+func resultActionAt(events []implementationstate.Event, index int) (string, bool, bool) {
 	if index <= 0 || index >= len(events) {
-		return "", false
+		return "", false, false
 	}
 	previous, current := events[index-1].State, events[index].State
 	if result := latestChangedRunResult(previous, current); result != nil {
-		if operation := runOperation(current, result.OperationID); operation != nil && operation.UncountedResumeCheck {
-			return operationAction(operation), true
+		if operation := runOperation(current, result.OperationID); operation != nil {
+			return operationAction(operation), operation.UncountedResumeCheck, true
 		}
 	}
-	return "", false
+	if result := latestChangedAssignmentResult(previous, current); result != nil {
+		if operation := startupAssignmentOperation(current, result.assignment, result.result.OperationID); operation != nil {
+			return operationAction(operation), false, true
+		}
+	}
+	return "", false, false
 }
 
 func journalLastAction(previous, current *implementationstate.Run, fallback string) string {
@@ -186,6 +196,27 @@ func latestChangedRunResult(previous, current *implementationstate.Run) *impleme
 	return nil
 }
 
+type assignmentResultChange struct {
+	assignment implementationstate.AssignmentID
+	result     *implementationstate.OperationResult
+}
+
+func latestChangedAssignmentResult(previous, current *implementationstate.Run) *assignmentResultChange {
+	for assignment := len(current.Assignments) - 1; assignment >= 0; assignment-- {
+		if assignment >= len(previous.Assignments) {
+			continue
+		}
+		currentResults := current.Assignments[assignment].Results
+		previousResults := previous.Assignments[assignment].Results
+		for result := len(currentResults) - 1; result >= 0; result-- {
+			if result >= len(previousResults) || !reflect.DeepEqual(currentResults[result], previousResults[result]) {
+				return &assignmentResultChange{assignment: current.Assignments[assignment].ID, result: &currentResults[result]}
+			}
+		}
+	}
+	return nil
+}
+
 func runOperation(run *implementationstate.Run, id implementationstate.OperationID) *implementationstate.Operation {
 	if run == nil {
 		return nil
@@ -193,6 +224,24 @@ func runOperation(run *implementationstate.Run, id implementationstate.Operation
 	for index := range run.RunOperations {
 		if run.RunOperations[index].ID == id {
 			return &run.RunOperations[index]
+		}
+	}
+	return nil
+}
+
+func startupAssignmentOperation(run *implementationstate.Run, assignment implementationstate.AssignmentID, id implementationstate.OperationID) *implementationstate.Operation {
+	if run == nil {
+		return nil
+	}
+	for assignmentIndex := range run.Assignments {
+		current := &run.Assignments[assignmentIndex]
+		if current.ID != assignment {
+			continue
+		}
+		for operationIndex := range current.Operations {
+			if current.Operations[operationIndex].ID == id {
+				return &current.Operations[operationIndex]
+			}
 		}
 	}
 	return nil

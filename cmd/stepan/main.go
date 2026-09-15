@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
@@ -115,6 +116,7 @@ func openImplementationStartup(ctx context.Context, workCopy string, userHome fu
 type implementationStartupComposition struct {
 	Factories                   map[string]impl_loop.RuntimeFactory
 	SessionBase                 agentruntime.ThreadConfig
+	EnvelopeSchema              []byte
 	ClassifySpecificationChange func(previous, current []byte) (impl_loop.SpecificationChange, error)
 	// Continue is the application-owned durable continuation dispatcher. It
 	// receives only a fresh SessionOwner created by Resume; it must rebuild
@@ -123,8 +125,9 @@ type implementationStartupComposition struct {
 }
 
 func implementationStartupCompositionForConfig(config agentConfig, root string, nessyAuth func() (string, error)) implementationStartupComposition {
+	envelope := impl_loop.ImplementationEnvelopeSchema()
 	options := implementationruntime.FactoryOptions{
-		Workspace: root, NessyAuthToken: nessyAuth, NessyJSONContract: nessyapp.JSONContract,
+		Workspace: root, EnvelopeSchema: envelope, NessyAuthToken: nessyAuth, NessyJSONContract: nessyapp.JSONContract,
 	}
 	if config.kind == agentCodex {
 		options.CodexExecutable = config.executable
@@ -133,19 +136,30 @@ func implementationStartupCompositionForConfig(config agentConfig, root string, 
 		options.ClaudeExecutable = config.executable
 	}
 	return implementationStartupComposition{
-		Factories:   implementationruntime.NewFactories(options),
-		SessionBase: agentruntime.ThreadConfig{Workspace: root},
-		ClassifySpecificationChange: func([]byte, []byte) (impl_loop.SpecificationChange, error) {
-			// A changed complete specification is a new scope unless a future
-			// application decision supplies a narrower explicit classifier.
-			return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
-		},
-		Continue: func(context.Context, *impl_loop.InteractiveRun, *impl_loop.SessionOwner) error {
-			// The durable loop dispatcher is deliberately injected at this
-			// boundary. There is no provider-history continuation to replay.
-			return nil
+		Factories:                   implementationruntime.NewFactories(options),
+		EnvelopeSchema:              append([]byte(nil), envelope...),
+		SessionBase:                 agentruntime.ThreadConfig{Workspace: root},
+		ClassifySpecificationChange: classifyImplementationSpecification,
+		Continue: func(ctx context.Context, run *impl_loop.InteractiveRun, owner *impl_loop.SessionOwner) error {
+			if run == nil {
+				return errors.New("restart continuation has no implementation run")
+			}
+			return impl_loop.DispatchRestartContinuation(ctx, impl_loop.RestartContinuationInput{
+				Owner: owner, Journal: run.ResumeInput.Journal, Run: run.Run, Repository: run.ResumeInput.Repository,
+			})
 		},
 	}
+}
+
+// classifyImplementationSpecification makes the only safe automatic
+// distinction available at this boundary: whitespace-only rendering changes
+// are compatible; any changed non-whitespace token is a new scope. This never
+// treats an unknown semantic edit as compatible.
+func classifyImplementationSpecification(previous, current []byte) (impl_loop.SpecificationChange, error) {
+	if strings.Join(strings.Fields(string(previous)), " ") == strings.Join(strings.Fields(string(current)), " ") {
+		return impl_loop.SpecificationChange{}, nil
+	}
+	return impl_loop.SpecificationChange{RequiresNewScope: true}, nil
 }
 
 func runImplementationStartupInteractive(ctx context.Context, workCopy string, store *runstore.Store, startup *impl_loop.StartupRun, ui impl_loop.ImplementationInteractiveUI, composition implementationStartupComposition) error {
