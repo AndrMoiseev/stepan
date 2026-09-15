@@ -132,10 +132,21 @@ func validateAcceptanceReflectionInput(input AcceptanceReflectionInput) error {
 		return fmt.Errorf("%w: progress reflection requires an orchestrator session", ErrAcceptanceReflection)
 	}
 	path, err := validateCallPath(input.TasksPath)
-	if err != nil || filepath.Base(filepath.FromSlash(path)) != "tasks.md" || !strings.HasPrefix(path, "openspec/changes/") {
+	expected, expectedErr := selectedChangeTasksPath(input.Run.Identity.Change)
+	if err != nil || expectedErr != nil || path != expected {
 		return fmt.Errorf("%w: tasks path must name the selected OpenSpec tasks.md", ErrAcceptanceReflection)
 	}
 	return nil
+}
+
+// selectedChangeTasksPath derives the sole file the orchestrator may edit.
+// Change is persisted input, so it is validated again here before it becomes a
+// workspace path rather than trusting a previously parsed OpenSpec name.
+func selectedChangeTasksPath(change string) (string, error) {
+	if change == "" || change != strings.TrimSpace(change) || change == "." || change == ".." || strings.ContainsAny(change, "/\\") || filepath.IsAbs(change) || filepath.VolumeName(change) != "" || strings.ContainsRune(change, 0) {
+		return "", errors.New("change must be one safe path component")
+	}
+	return "openspec/changes/" + change + "/tasks.md", nil
 }
 
 func validateProgressReflectionResponse(run *implementationstate.Run, response AgentResponse) error {

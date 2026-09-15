@@ -447,3 +447,12 @@
 - Expected impact: recovery could dispatch more work despite the already recorded environment failure.
 - Classification: technical debt because it requires a narrow crash interleaving between two durable records.
 - Possible follow-up: persist result and pause in one cloned-state event or reclassify the latest failed result during recovery before dispatch.
+## TD-10.1-001 — acceptance reflection mutates live state before durable records
+
+- Origin: task 10.1 initial review; affected location: `internal/flows/impl_loop/acceptance_reflection.go`.
+- Status: `open`.
+- Potential problem: acceptance, operation, and result transitions mutate the caller run before `StateStore.Record`, and existing reflection phases are not idempotently resumable.
+- Evidence: a pre-durability failure leaves memory ahead of JSONL; after a projection-only failure, retry is rejected because the operation already exists. The post-call result boundary behaves similarly.
+- Expected impact: transient persistence failures can strand the live controller or expose in-memory/durable divergence.
+- Classification: technical debt because ordinary successful execution is correct and full restart reconciliation is partly assigned to later recovery tasks.
+- Possible follow-up: mutate cloned candidates, adopt only after journal durability, and resume existing reflection phases idempotently.

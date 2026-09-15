@@ -78,6 +78,39 @@ func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformational
 	}
 }
 
+func TestValidateAcceptanceReflectionInputAllowsOnlySelectedChangeTasksPath(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	input := AcceptanceReflectionInput{
+		Run: run, StateStore: stateStore, Journal: journal, Repository: repository,
+		Session:               &AgentSession{Role: ResponseRoleOrchestrator},
+		AssignmentID:          "assignment",
+		ReflectionOperationID: "reflect-progress", ReflectionResultID: "reflect-progress-result", ReflectionCallID: "reflect-progress",
+		Limits: controlledCallLimits(),
+	}
+	input.TasksPath = "openspec/changes/change/tasks.md"
+	if err := validateAcceptanceReflectionInput(input); err != nil {
+		t.Fatalf("selected change tasks path rejected: %v", err)
+	}
+	for _, path := range []string{
+		"openspec/changes/other-change/tasks.md",
+		"openspec/changes/change/specs/tasks.md",
+	} {
+		input.TasksPath = path
+		if err := validateAcceptanceReflectionInput(input); err == nil {
+			t.Fatalf("foreign or nested tasks path %q was accepted", path)
+		}
+	}
+	for _, change := range []string{".", "..", "nested/change", "nested\\change"} {
+		input.Run.Identity.Change = change
+		input.TasksPath = "openspec/changes/change/tasks.md"
+		if err := validateAcceptanceReflectionInput(input); err == nil {
+			t.Fatalf("unsafe change component %q was accepted", change)
+		}
+	}
+}
+
 func acceptanceReflectionFixture(t *testing.T, repository string) (*implementationstate.Run, *runstore.StateStore, *runstore.Run) {
 	t.Helper()
 	store := mustControllerStore(t, t.TempDir())
