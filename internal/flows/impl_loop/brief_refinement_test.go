@@ -243,6 +243,63 @@ func TestRefineBriefRoutesExplorerThenContinuesSameBrieferSession(t *testing.T) 
 	}
 }
 
+func TestRefineBriefRestartBootstrapsFullRefinementContextBeforeDurableExplorerContinuation(t *testing.T) {
+	runtime := &controlledCallRuntime{turns: []controlledTurn{
+		{raw: briefExplorationRequest(t)},
+		{raw: responsePayload(t, ResponseExplorationResult)},
+		{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, "brief after recovered research")},
+	}}
+	run, store, journal, repository, owner, _ := briefRefinementFixture(t, runtime)
+	defer store.Close()
+	defer owner.Close()
+	input := refinementInput(run, store, journal, repository, owner, "refine-restart-context", "restart-context-call")
+	input.Explorer = &BriefRefinementExplorer{ExplorerOperationID: "restart-context-explorer", ExplorerResultID: "restart-context-explorer-result", ExplorerCallID: "restart-context-explorer-call", ContinuationOperationID: "restart-context-continuation", ContinuationResultID: "restart-context-continuation-result"}
+
+	original, calls := recordBriefRefinementState, 0
+	t.Cleanup(func() { recordBriefRefinementState = original })
+	recordBriefRefinementState = func(ctx context.Context, stateStore *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+		calls++
+		if calls == 4 { // Explorer response is durable; its projection fails before continuation.
+			event, err := original(ctx, stateStore, state)
+			if err != nil {
+				return event, err
+			}
+			return event, errors.New("simulated restart after durable Explorer result")
+		}
+		return original(ctx, stateStore, state)
+	}
+	if _, err := RefineBrief(context.Background(), input); err == nil {
+		t.Fatal("initial refinement error = nil, want simulated restart")
+	}
+	recordBriefRefinementState = original
+	if err := owner.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restartedOwner := newSessionOwnerForTest(t, &briefRefinementRuntimeFactory{runtime: runtime})
+	defer restartedOwner.Close()
+	input.Owner = restartedOwner
+	result, err := RefineBrief(context.Background(), input)
+	if err != nil || result.Brief == nil || result.Brief.Number != 2 {
+		t.Fatalf("restart continuation = %#v, %v", result, err)
+	}
+	if len(runtime.configs) != 3 {
+		t.Fatalf("started sessions = %d, want original briefer, Explorer, and replacement briefer", len(runtime.configs))
+	}
+	bootstrap := runtime.configs[2].BootstrapInstructions
+	for _, marker := range []string{
+		"# Active brief refinement recovery", "initial self-contained brief", "Which explicitly specified validation behavior applies?",
+		"# Current assignment code diff", "# Durable Explorer history", "validation is centralized", "parser validates input",
+	} {
+		if !strings.Contains(bootstrap, marker) {
+			t.Fatalf("replacement briefer bootstrap lacks %q:\n%s", marker, bootstrap)
+		}
+	}
+	if len(runtime.messages) != 3 || !strings.Contains(runtime.messages[2], "Explorer result") {
+		t.Fatalf("durable Explorer result was not continued after bootstrap: %#v", runtime.messages)
+	}
+}
+
 func TestRefineBriefRecoversExplorerAfterPersistenceFailures(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
 	for _, test := range []struct {

@@ -307,7 +307,7 @@ func recoverBriefRefinementExplorer(input BriefRefinementInput, request AgentRes
 	if err != nil {
 		return BriefRefinementResult{}, true, err
 	}
-	session, err := recoveryBrieferSession(context.Background(), input)
+	session, err := recoveryBrieferSession(context.Background(), input, brief, input.Request, request)
 	if err != nil {
 		return BriefRefinementResult{}, true, err
 	}
@@ -550,16 +550,82 @@ func briefRefinementExplorerAt(value *BriefRefinementExplorer, index int) *Brief
 	return &value.Additional[index-1]
 }
 
-func recoveryBrieferSession(ctx context.Context, input BriefRefinementInput) (*AgentSession, error) {
+func recoveryBrieferSession(ctx context.Context, input BriefRefinementInput, brief assignmentBrief, reportedGap, explorerRequest AgentResponse) (*AgentSession, error) {
 	session, err := input.Owner.ExistingBriefer(input.AssignmentID)
 	if !errors.Is(err, ErrSessionMissing) {
 		return session, err
 	}
-	start, startErr := BuildBrieferStartContext(input.Journal, input.Run, input.AssignmentID)
+	start, startErr := buildBriefRefinementRecoveryStartContext(ctx, input, brief, reportedGap, explorerRequest)
 	if startErr != nil {
 		return nil, fmt.Errorf("%w: rebuild briefer context: %v", ErrBriefRefinement, startErr)
 	}
 	return input.Owner.Briefer(ctx, input.AssignmentID, start)
+}
+
+// buildBriefRefinementRecoveryStartContext gives a replacement briefer the
+// active refinement packet before a durable Explorer result is continued.
+// Provider conversation history is not recoverable, so the controller must
+// put every decision-relevant durable input in this first message.
+func buildBriefRefinementRecoveryStartContext(ctx context.Context, input BriefRefinementInput, brief assignmentBrief, reportedGap, explorerRequest AgentResponse) (BrieferStartContext, error) {
+	start, err := BuildBrieferStartContext(input.Journal, input.Run, input.AssignmentID)
+	if err != nil {
+		return BrieferStartContext{}, err
+	}
+	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
+	if err != nil {
+		return BrieferStartContext{}, err
+	}
+	history, err := durableBriefRefinementExplorerHistory(input)
+	if err != nil {
+		return BrieferStartContext{}, err
+	}
+
+	data := strings.Builder{}
+	data.WriteString("# Active brief refinement recovery\n\n")
+	data.WriteString(refinementMessage(brief.Text, diff, reportedGap))
+	if explorerRequest.Kind == ResponseExplorationRequested {
+		data.WriteString("\n\n## Durable Explorer request\n\n")
+		data.WriteString(explorerRequestMessage(explorerRequest))
+	}
+	data.WriteString("\n\n## Durable Explorer history\n\n")
+	if len(history) == 0 {
+		data.WriteString("No Explorer result has been durably recorded for this refinement.\n")
+	} else {
+		for index, response := range history {
+			encoded, marshalErr := json.MarshalIndent(response, "", "  ")
+			if marshalErr != nil {
+				return BrieferStartContext{}, fmt.Errorf("%w: encode durable Explorer history: %v", ErrBriefRefinement, marshalErr)
+			}
+			fmt.Fprintf(&data, "### Explorer result %d\n\n```json\n%s\n```\n\n", index+1, encoded)
+		}
+	}
+	start.start.StartMessage += "\n\n" + data.String()
+	return start, nil
+}
+
+func explorerRequestMessage(request AgentResponse) string {
+	return fmt.Sprintf("Question: %s\n\nContext: %s\n\nBoundaries: %s\n\nKnown facts:\n%s", *request.Question, *request.Context, *request.Boundaries, markdownList(request.KnownFacts))
+}
+
+func durableBriefRefinementExplorerHistory(input BriefRefinementInput) ([]AgentResponse, error) {
+	var history []AgentResponse
+	for episode := 0; ; episode++ {
+		value := briefRefinementExplorerAt(input.Explorer, episode)
+		if value == nil {
+			return history, nil
+		}
+		result := assignmentResult(input.Run, input.AssignmentID, value.ExplorerResultID)
+		if result == nil {
+			continue
+		}
+		response, err := durableBriefRefinementResponse(input, *result)
+		if err != nil {
+			return nil, err
+		}
+		if response.Kind == ResponseExplorationResult {
+			history = append(history, response)
+		}
+	}
 }
 
 func briefRefinementBinding(input BriefRefinementInput, briefID implementationstate.BriefID, callID string) ResponseBinding {

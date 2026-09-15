@@ -301,12 +301,16 @@ type controlledCallRuntime struct {
 	turns      []controlledTurn
 	messages   []string
 	threads    []agentruntime.Thread
+	configs    []agentruntime.ThreadConfig
 	interrupts int
 	started    chan struct{}
 	interrupt  chan struct{}
 }
 
-func (runtime *controlledCallRuntime) StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+func (runtime *controlledCallRuntime) StartThread(config agentruntime.ThreadConfig) (agentruntime.Thread, error) {
+	runtime.mu.Lock()
+	runtime.configs = append(runtime.configs, config)
+	runtime.mu.Unlock()
 	return "thread", nil
 }
 
