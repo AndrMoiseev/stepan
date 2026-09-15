@@ -772,3 +772,48 @@
 - Expected impact: the combined crash-plus-compatible-refresh path durably pauses instead of continuing with fresh validation.
 - Classification: originally critical because accepted compatible changes are required to resume. The user explicitly directed after cycle 8 to record all subsequent findings as technical debt, accept task 12.2, and continue; this entry preserves that waiver rather than claiming reviewer acceptance.
 - Possible follow-up: retain stale receipts for audit, supersede the stale assignment operation with a current-basis operation, and add the combined refresh/replay regression.
+
+## TASK-12.3-001 — progress is not refreshed during a multi-stage continuation
+
+- Origin: task 12.3 initial review; affected location: `internal/flows/impl_loop/interactive.go`.
+- Status: `open`.
+- Potential problem: the progress formatter runs before the prompt and after the background continuation completes, not after intermediate agent/check transitions.
+- Expected impact: a long autonomous continuation appears frozen and does not show stage-by-stage progress.
+- Classification: originally critical because task 12.3 explicitly requires progress updates. Per the user's standing direction, all findings after the current 12.2 corrections are recorded as accepted technical debt and execution continues.
+- Possible follow-up: publish immutable progress events or snapshots at durable controller transition boundaries.
+
+## TASK-12.3-002 — displayed counters do not model semantic retry scopes
+
+- Origin: task 12.3 initial review; affected location: `internal/flows/impl_loop/progress_presentation.go`.
+- Status: `open`.
+- Potential problem: UI totals technical attempts across history instead of presenting current resettable semantic counters.
+- Expected impact: a technical retry can be displayed as a new review or implementation round.
+- Classification: originally critical for misleading required counter presentation; explicitly accepted as debt by user direction.
+- Possible follow-up: derive named counters from the durable semantic counter state and its reset scopes.
+
+## TASK-12.3-003 — production UI cannot identify cross-build targets
+
+- Origin: task 12.3 initial review; affected locations: `internal/flows/impl_loop/interactive.go`, `progress_presentation.go`.
+- Status: `open`.
+- Potential problem: the compile-only warning exists in a helper, but production does not provide recent check runs and persisted command presentation omits `GOOS`/`GOARCH` environment overrides.
+- Expected impact: real Windows-to-Darwin cross-build progress cannot show the target or the required warning that compilation is not target runtime acceptance.
+- Classification: originally critical for the explicit platform-reporting requirement; explicitly accepted as debt by user direction.
+- Possible follow-up: persist structured target-platform metadata with check results and pass it into production progress snapshots.
+
+## TASK-12.3-004 — progress formatting races the mutable run
+
+- Origin: task 12.3 initial review; affected location: `internal/flows/impl_loop/interactive.go`.
+- Status: `open`.
+- Potential problem: foreground UI formatting reads the mutable `Run` while the background continuation may update the same object.
+- Expected impact: ordinary progress rendering can race, show inconsistent data, or panic.
+- Classification: originally critical for runtime correctness; explicitly accepted as debt by user direction.
+- Possible follow-up: format immutable deep-copied snapshots published by the controller or synchronize all run access.
+
+## TASK-12.3-D005 — progress presentation has boundedness and attribution gaps
+
+- Origin: task 12.3 initial review; affected location: `internal/flows/impl_loop/progress_presentation.go`.
+- Status: `open`.
+- Potential problem: formatting rereads entire evidence files, latest assignment results can mask later run-level final results, role detection uses free-text matching, reader DTOs duplicate writer formats, initial orchestrator can appear as implementer, duration covers the whole worker, and ordinary pause/close reasons plus terminal summaries are generic.
+- Expected impact: large logs increase UI cost and several uncommon stages can be attributed or summarized imprecisely.
+- Classification: consolidated technical debt from the review's noncritical performance, maintainability, and presentation findings.
+- Possible follow-up: use typed bounded progress events with structured role/platform/result metadata and operation-scoped timing/reasons.

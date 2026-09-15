@@ -31,6 +31,9 @@ func TestCommandsForLifecycleShowsOnlyValidCommands(t *testing.T) {
 			got := make([]InteractiveCommand, 0, len(hints))
 			for _, hint := range hints {
 				got = append(got, hint.Command)
+				if hint.Command == InteractiveCommand("/bootstrap") {
+					t.Fatalf("bootstrap is a separate CLI mode and must not appear in an implementation-loop menu: %#v", hints)
+				}
 			}
 			if !slices.Equal(got, test.want) {
 				t.Fatalf("menu commands = %v, want %v", got, test.want)

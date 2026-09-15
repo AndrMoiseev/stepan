@@ -57,6 +57,13 @@ func run(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	if config.bootstrap {
+		if err := runBootstrapMode(ctx, root, config, newBootstrapConsole(os.Stdin, os.Stdout)); err != nil && !errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "bootstrap:", err)
+			return 2
+		}
+		return 0
+	}
 	startup, store, err := openImplementationStartup(ctx, root, os.UserHomeDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "inspect implementation run:", err)
@@ -94,6 +101,65 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	return 0
+}
+
+type bootstrapPrompter interface {
+	SelectBootstrapProfile(context.Context) (impl_loop.BootstrapperProfileSelection, error)
+	ReportBootstrapReady(impl_loop.BootstrapperProfileSelection)
+}
+
+type bootstrapConsole struct {
+	input  *bufio.Reader
+	output io.Writer
+}
+
+func newBootstrapConsole(input io.Reader, output io.Writer) *bootstrapConsole {
+	return &bootstrapConsole{input: bufio.NewReader(input), output: output}
+}
+
+func (console *bootstrapConsole) SelectBootstrapProfile(ctx context.Context) (impl_loop.BootstrapperProfileSelection, error) {
+	read := func(label string) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		fmt.Fprint(console.output, label)
+		value, err := console.input.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(value), nil
+	}
+	provider, err := read("Bootstrap provider (codex, claude, nessy): ")
+	if err != nil {
+		return impl_loop.BootstrapperProfileSelection{}, err
+	}
+	model, err := read("Bootstrap model: ")
+	if err != nil {
+		return impl_loop.BootstrapperProfileSelection{}, err
+	}
+	reasoning, err := read("Bootstrap reasoning (leave blank if unused): ")
+	if err != nil {
+		return impl_loop.BootstrapperProfileSelection{}, err
+	}
+	return impl_loop.BootstrapperProfileSelection{Provider: provider, Model: model, Reasoning: reasoning}, nil
+}
+
+func (console *bootstrapConsole) ReportBootstrapReady(profile impl_loop.BootstrapperProfileSelection) {
+	fmt.Fprintf(console.output, "Bootstrap profile prepared (provider=%s, model=%s).\n", profile.Provider, profile.Model)
+}
+
+func runBootstrapMode(ctx context.Context, root string, config agentConfig, prompt bootstrapPrompter) error {
+	options := implementationruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: usersettings.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
+	if config.kind == agentCodex {
+		options.CodexExecutable = config.executable
+	}
+	if config.kind == agentClaude {
+		options.ClaudeExecutable = config.executable
+	}
+	if prompt == nil {
+		return errors.New("bootstrap profile prompt is required")
+	}
+	return impl_loop.RunBootstrapperMode(ctx, impl_loop.BootstrapperModeInput{Repository: root, Factories: implementationruntime.NewFactories(options), Base: agentruntime.ThreadConfig{Workspace: root}, SelectProfile: prompt.SelectBootstrapProfile, ReportReady: prompt.ReportBootstrapReady})
 }
 
 // discoverImplementationStartup is intentionally before runtime/session

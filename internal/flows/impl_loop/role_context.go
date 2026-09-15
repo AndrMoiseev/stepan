@@ -165,6 +165,22 @@ type ExplorerStartInput struct {
 	KnownFacts []string
 }
 
+// BootstrapperStartInput is deliberately small for the initial bootstrap
+// setup task. Task 13.2 extends the controller-built request with the project,
+// CI, scripts, and non-secret settings needed to make a proposal.
+type BootstrapperStartInput struct {
+	Repository string
+}
+
+// BuildBootstrapperStartContext binds a bootstrapper session to the current
+// repository without leaking any implementation-run identity or credentials.
+func BuildBootstrapperStartContext(input BootstrapperStartInput) (RoleStartContext, error) {
+	if !filepath.IsAbs(input.Repository) {
+		return RoleStartContext{}, fmt.Errorf("%w: bootstrapper requires an absolute repository", ErrInvalidRoleContext)
+	}
+	return newRoleStartContext(ResponseRoleBootstrapper, "# Bootstrap repository\n\n"+filepath.Clean(input.Repository))
+}
+
 // RoleStartContext is the complete immutable bootstrap payload for one role.
 // StartMessage is passed at thread creation, not reconstructed from provider
 // conversation history after a restart.

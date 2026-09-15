@@ -19,9 +19,15 @@ const (
 type agentConfig struct {
 	kind       agentKind
 	executable string
+	bootstrap  bool
 }
 
 func parseAgentConfig(args []string) (agentConfig, error) {
+	bootstrap := false
+	if len(args) > 0 && args[0] == "bootstrap" {
+		bootstrap = true
+		args = args[1:]
+	}
 	flags := flag.NewFlagSet("stepan", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	agent := flags.String("agent", string(agentCodex), "agent provider: codex, claude, or nessy")
@@ -38,7 +44,7 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 			cliSupplied = true
 		}
 	})
-	config := agentConfig{kind: agentKind(*agent), executable: *cli}
+	config := agentConfig{kind: agentKind(*agent), executable: *cli, bootstrap: bootstrap}
 	if *agent == "qwen" {
 		return agentConfig{}, fmt.Errorf("agent qwen was removed; use --agent nessy")
 	}
@@ -68,6 +74,7 @@ func parseAgentConfig(args []string) (agentConfig, error) {
 }
 
 const usageText = `Usage: stepan [--agent codex|claude|nessy] [--agent-cli-name <name>]
+       stepan bootstrap [--agent codex|claude|nessy] [--agent-cli-name <name>]
 
 Codex and Claude allow a simple agent CLI name resolved through PATH.
 Nessy always uses nessy from PATH; --agent-cli-name is not supported for Nessy.
