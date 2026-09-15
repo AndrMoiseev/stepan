@@ -4,6 +4,7 @@ package impl_loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,9 +12,151 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
+
+func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing.T) {
+	repository := newGitWorkspace(t)
+	switchToBranch(t, repository, "implementation")
+	writeResumeGitSpecification(t, repository)
+	configuration := resumeTestConfiguration(t, "test-model", "")
+	store := mustControllerStore(t, t.TempDir())
+	journal, err := store.Create("resume-hook-refusal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace := GitWorkspaceControl{}
+	baseline, err := workspace.Capture(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineData, err := json.Marshal(baseline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineRef, err := journal.Publish("baseline", baselineData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := openspec.Load(repository, "change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	specification, err := resumeSpecification(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specRef, err := journal.Publish("specification", specification)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configData, err := canonicalResumeConfiguration(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRef, err := journal.Publish("configuration", configData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasksRef, err := journal.Publish("tasks", []byte("source tasks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := implementationstate.NewRun(implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "implementation", BaselineCommit: baseline.HeadOID, BaselineState: baselineRef, Specification: specRef, TaskList: tasksRef, Configuration: configRef}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateStore, err := runstore.OpenState(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stateStore.Close()
+	prepareResumeCommitAcceptance(t, run, stateStore, journal)
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [x] task\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	preparation := captureCommitPreparation(t, repository)
+	message := "Commit accepted task"
+	response := commitResponse(run, "commit-1", message)
+	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nexit 1\n")
+	if _, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}}); !errors.Is(err, ErrAssignmentCommit) {
+		t.Fatalf("hook refusal = %v", err)
+	}
+	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+		t.Fatalf("hook refusal lost pending acceptance: %#v", run)
+	}
+	if err := os.Remove(filepath.Join(repository, ".git", "hooks", "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resume(context.Background(), ResumeInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, Workspace: workspace, ConfigurationLoader: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+		t.Fatalf("resume invalidated accepted pending commit: %#v", run)
+	}
+	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
+	if err != nil || result.Commit.CommitID == "" {
+		t.Fatalf("retry commit result=%#v err=%v", result, err)
+	}
+	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+		t.Fatalf("commit count=%s, want exactly one retry commit", count)
+	}
+}
+
+func writeResumeGitSpecification(t *testing.T, repository string) {
+	t.Helper()
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "proposal.md"), "proposal\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "design.md"), "design\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [ ] task\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "specs", "feature", "spec.md"), "requirement\n")
+	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "specs", "base", "spec.md"), "base\n")
+}
+
+func prepareResumeCommitAcceptance(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run) {
+	t.Helper()
+	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run.StartRunAttempt("baseline"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		t.Fatal(err)
+	}
+	brief, err := journal.Publish("brief", []byte("brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []implementationstate.Operation{{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}} {
+		if err := run.AddOperation("assignment", operation); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-result"}, ReviewResultID: "review-result"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	repository := newGitWorkspace(t)

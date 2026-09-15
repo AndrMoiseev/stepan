@@ -198,6 +198,7 @@ func TestResumePreservesAcceptedPendingCommitAfterInformationalReflection(t *tes
 	preparePendingCommitReflection(t, fixture)
 	fixture.workspace.actual.TreeOID = "informational-reflection-tree"
 	fixture.workspace.actual.StatusHash = "informational-reflection-status"
+	fixture.workspace.actual.IndexHash = "staged-by-refused-hook"
 	fixture.workspace.paths = []string{"openspec/changes/change/tasks.md"}
 
 	if _, err := Resume(context.Background(), fixture.input()); err != nil {
@@ -206,6 +207,22 @@ func TestResumePreservesAcceptedPendingCommitAfterInformationalReflection(t *tes
 	assignment := fixture.run.Assignments[0]
 	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.Tree != "informational-reflection-tree" {
 		t.Fatalf("resume invalidated accepted pending commit after informational reflection: %#v", fixture.run)
+	}
+}
+
+func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T) {
+	fixture := newResumeFixture(t, "")
+	prepareAcceptedReflectionEvidence(t, fixture)
+	fixture.workspace.actual.TreeOID = "reflected-tasks-tree"
+	fixture.workspace.actual.StatusHash = "reflected-tasks-status"
+	fixture.workspace.paths = []string{"openspec/changes/change/tasks.md"}
+
+	if _, err := Resume(context.Background(), fixture.input()); err != nil {
+		t.Fatal(err)
+	}
+	assignment := fixture.run.Assignments[0]
+	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.OperationID != "" {
+		t.Fatalf("durable reflection evidence did not preserve pending acceptance: %#v", fixture.run)
 	}
 }
 
@@ -340,6 +357,44 @@ func preparePendingCommitReflection(t *testing.T, fixture *resumeFixture) {
 		t.Fatal(err)
 	}
 	if err := fixture.run.Pause("commit hook failed"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func prepareAcceptedReflectionEvidence(t *testing.T, fixture *resumeFixture) {
+	t.Helper()
+	preparePendingCommitReflection(t, fixture)
+	// Model the narrower crash window after a successful reflection was made
+	// durable but before CommitAcceptedAssignment saved its intent.
+	if err := fixture.run.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	fixture.run.Assignments[0].Acceptance.PendingCommit = implementationstate.CommitIntent{}
+	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "reflect-progress", Kind: implementationstate.OperationAgent, Basis: implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Description: "reflect accepted task progress in tasks.md"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.run.StartRunAttempt("reflect-progress"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.RecordRunAttemptOutcome("reflect-progress", implementationstate.AttemptSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	state := resumeSnapshot("reflected-tasks-tree", "reflected-tasks-status")
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := fixture.journal.Publish("reflect-progress-result-workspace", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.run.Pause("before pending commit intent"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {

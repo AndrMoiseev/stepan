@@ -165,13 +165,14 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "encode manually changed working-copy fingerprint", marshalErr)
 		}
 		pendingCommit := pendingCommitWorkspace(input.Run, expected, actual)
+		reflectedTasks := reflectedTasksWorkspace(ctx, workspace, input.Repository, input.Run, input.Journal, expected, actual)
 		rulesOnly := rulesOnlyWorkspaceChange(ctx, workspace, input.Repository, expected, actual, rules)
-		if !pendingCommit && !rulesOnly {
+		if !pendingCommit && !reflectedTasks && !rulesOnly {
 			if err := verifyResumeGitControl(expected, actual); err != nil {
 				return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify branch, HEAD, and index before accepting manual changes", err)
 			}
 		}
-		if pendingCommit || rulesOnly {
+		if pendingCommit || reflectedTasks || rulesOnly {
 			// Rules are read afresh but never versioned. Their content is not a
 			// code-state input and therefore cannot reopen an accepted assignment.
 			workspaceChanged = false
@@ -357,7 +358,10 @@ func verifyResumeGitControl(expected, actual gitsnapshot.Snapshot) error {
 }
 
 func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsnapshot.Snapshot) bool {
-	if run == nil || actual.HeadRef != expected.HeadRef || actual.HeadOID != expected.HeadOID || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
+	// git add --all happens before a hook can reject the commit. The index may
+	// therefore differ from the pre-staging snapshot, but the synthetic tree is
+	// still the exact durable intent and a retry stages that same tree again.
+	if run == nil || actual.HeadRef != expected.HeadRef || actual.HeadOID != expected.HeadOID || actual.SubmodulesHash != expected.SubmodulesHash {
 		return false
 	}
 	for _, assignment := range run.Assignments {
@@ -370,6 +374,47 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsn
 		}
 	}
 	return false
+}
+
+func reflectedTasksWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual gitsnapshot.Snapshot) bool {
+	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
+		return false
+	}
+	tasksPath, err := selectedChangeTasksPath(run.Identity.Change)
+	if err != nil {
+		return false
+	}
+	comparer, ok := workspace.(resumeWorkspaceComparer)
+	if !ok {
+		return false
+	}
+	paths, err := comparer.Compare(ctx, repository, expected, actual)
+	if err != nil || len(paths) != 1 || filepath.ToSlash(filepath.Clean(paths[0])) != tasksPath {
+		return false
+	}
+	for _, operation := range run.RunOperations {
+		if operation.Kind != implementationstate.OperationAgent || operation.Description != "reflect accepted task progress in tasks.md" {
+			continue
+		}
+		for _, result := range run.RunResults {
+			if result.OperationID != operation.ID || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) != 1 {
+				continue
+			}
+			data, err := journal.Read(result.Evidence[0])
+			if err != nil {
+				continue
+			}
+			var reflected gitsnapshot.Snapshot
+			if json.Unmarshal(data, &reflected) == nil && sameResumeGitSnapshot(reflected, actual) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameResumeGitSnapshot(left, right gitsnapshot.Snapshot) bool {
+	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
 func resumeSpecification(pkg openspec.Package) ([]byte, error) {

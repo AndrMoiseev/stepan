@@ -2,12 +2,14 @@ package impl_loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -110,11 +112,16 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		}
 		return AcceptanceReflectionResult{Call: result}, PersistExecutionBlock(context.WithoutCancel(ctx), input.StateStore, input.Run, block)
 	}
+	reflectionState, err := publishReflectionWorkspace(input.Journal, input.ReflectionResultID, result.Snapshot)
+	if err != nil {
+		return AcceptanceReflectionResult{Call: result}, fmt.Errorf("%w: preserve reflected tasks workspace: %v", ErrAcceptanceReflection, err)
+	}
 	// Do not call ObserveCodeState here. The permitted tasks.md edit is not a
 	// code-state change and must not stale acceptance or require another review.
 	if err := input.Run.AddRunResult(implementationstate.OperationResult{
 		ID: input.ReflectionResultID, OperationID: input.ReflectionOperationID,
 		Status: implementationstate.ResultSucceeded, State: input.Run.CurrentState, Basis: basis,
+		Evidence: []implementationstate.EvidenceRef{reflectionState},
 	}); err != nil {
 		return AcceptanceReflectionResult{Call: result}, fmt.Errorf("%w: record reflection result: %v", ErrAcceptanceReflection, err)
 	}
@@ -122,6 +129,14 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		return AcceptanceReflectionResult{Call: result}, fmt.Errorf("%w: persist reflection result: %v", ErrAcceptanceReflection, err)
 	}
 	return AcceptanceReflectionResult{Call: result}, nil
+}
+
+func publishReflectionWorkspace(journal *runstore.Run, resultID implementationstate.ResultID, snapshot gitsnapshot.Snapshot) (implementationstate.EvidenceRef, error) {
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return implementationstate.EvidenceRef{}, err
+	}
+	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-workspace"), data)
 }
 
 func validateAcceptanceReflectionInput(input AcceptanceReflectionInput) error {
