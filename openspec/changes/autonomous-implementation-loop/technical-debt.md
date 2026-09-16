@@ -1125,3 +1125,12 @@
 - Expected impact: the architecture reference presents a hybrid and internally inconsistent system description.
 - Classification: documentation clarity debt below the critical threshold.
 - Possible follow-up: separate document-flow baseline from current implementation-flow architecture and add runstore/SQLite/Nessy explicitly.
+
+## TASK-14.5-D001 — top-level progress summary was stale
+
+- Origin: task 14.5 evidence review; affected location: `autopilot-progress.md` top-level outcome.
+- Status: `resolved`.
+- Potential problem: the summary still reported 41/65 tasks and next task 9.4 after final automatic validation.
+- Expected impact: a reader or simple parser could resume from the wrong point even though detailed task evidence was correct.
+- Classification: low planning-record coherence debt, not an automatic-gate defect.
+- Resolution: summary updated to 64/65, task 14.6 manual `not_run`, and final review `skipped_by_user`.

@@ -1,8 +1,9 @@
 # Stepan: ручное тестирование совместимости с macOS
 
-Статус: выполнять после реализации `MAC-01`–`MAC-05`
+Статус: `not_run`; выполнять после реализации `MAC-01`–`MAC-05`
 
-Основной стенд: физический Apple Silicon Mac, macOS/arm64
+Основной стенд: физический Apple Silicon Mac, macOS/arm64. Нативные результаты
+заносятся человеком и не заменяются результатами кросс-компиляции.
 
 Связанный документ: [план реализации](implementation-plan.md)
 
@@ -19,7 +20,7 @@
 - `BLOCKED` — сценарий нельзя выполнить, с указанием причины.
 
 При `FAIL` сохраните команду, полный текст ошибки и снимок списка процессов.
-Не продолжайте выпуск при `FAIL` в обязательном сценарии. Сценарии `MAC-M01`–
+Не продолжайте выпуск при `FAIL` в обязательном сценарии. Сценарии `MAC-M00`–
 `MAC-M10` и `WIN-M01` обязательны.
 
 ## 2. Подготовка стенда
@@ -60,7 +61,12 @@ export STEPAN_REPO="$STEPAN_TEST_ROOT/workspace"
 touch "$STEPAN_TEST_ROOT/.stepan-manual-test-root"
 
 cd "$STEPAN_SOURCE"
-go build -o "$STEPAN_BIN" ./cmd/stepan
+test ! -e stepan || { printf '%s\n' 'refusing to overwrite existing ./stepan'; exit 2; }
+go build -o stepan ./cmd/stepan
+build_exit=$?
+printf 'native-build-exit=%s\n' "$build_exit"
+if [ "$build_exit" -ne 0 ]; then exit "$build_exit"; fi
+mv stepan "$STEPAN_BIN"
 
 git init "$STEPAN_REPO"
 git -C "$STEPAN_REPO" config user.name "Stepan Manual Test"
@@ -85,7 +91,22 @@ checkout исходников Stepan.
 
 ## 3. Сценарии macOS
 
-### MAC-M01. Нативная сборка
+### MAC-M00. Нативный полный набор Go-тестов
+
+Из checkout исходников Stepan выполните отдельную нативную проверку:
+
+```sh
+cd "$STEPAN_SOURCE"
+go test ./...
+test_exit=$?
+printf 'native-test-exit=%s\n' "$test_exit"
+```
+
+Ожидается `native-test-exit=0`. Сохраните безопасный вывод команды и её
+длительность. При другом коде отметьте `FAIL` и не продолжайте обязательные
+сценарии; это результат физического Apple Silicon Mac, а не Darwin cross-build.
+
+### MAC-M01. Формат нативного бинарника
 
 В любом терминале:
 
@@ -374,17 +395,18 @@ Set-Location $StepanRepo
 
 | ID | Статус | Evidence / замечание |
 |---|---|---|
-| MAC-M01 |  |  |
-| MAC-M02 |  |  |
-| MAC-M03 |  |  |
-| MAC-M04 |  |  |
-| MAC-M05 |  |  |
-| MAC-M06 |  |  |
-| MAC-M07 |  |  |
-| MAC-M08 |  |  |
-| MAC-M09 |  |  |
-| MAC-M10 |  |  |
-| WIN-M01 |  |  |
+| MAC-M00 | `not_run` |  |
+| MAC-M01 | `not_run` |  |
+| MAC-M02 | `not_run` |  |
+| MAC-M03 | `not_run` |  |
+| MAC-M04 | `not_run` |  |
+| MAC-M05 | `not_run` |  |
+| MAC-M06 | `not_run` |  |
+| MAC-M07 | `not_run` |  |
+| MAC-M08 | `not_run` |  |
+| MAC-M09 | `not_run` |  |
+| MAC-M10 | `not_run` |  |
+| WIN-M01 | `not_run` |  |
 
 Также зафиксируйте:
 

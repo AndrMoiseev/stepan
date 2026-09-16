@@ -4,7 +4,7 @@
 - Repository/planning root: `C:/Users/Andrew/repos/stepan`; branch: `improve`.
 - Fixed baseline: `412429f68c7e0715af46802027ab8ed386f00d94`.
 - Initial working tree and index: clean; no existing user edits or prior progress.
-- Outcome: `in_progress`; 41/65 tasks accepted; tasks 4.3, 4.4, 5.1, 5.2, 5.4, 5.5, 6.3, 6.4, 6.5, 7.4, 7.5, 8.1, 8.2, 8.3, 8.4, 8.5, 9.1, and 9.3 accepted with technical debt; tasks 9.2 accepted; next action task 9.4; final review `not_started`.
+- Outcome: `in_progress`; 64/65 tasks accepted; task 14.6 is pending human execution (`not_run`); whole-change final review is `skipped_by_user` and will not be launched.
 - Roles: implementer `gpt-5.6-terra`/`high`; task reviewer `gpt-5.6-sol`/`xhigh`; researcher `gpt-5.6-luna`/`medium`; final reviewer `gpt-6-astra`/`high`. No overrides.
 
 ## Checks
@@ -571,6 +571,15 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Base/candidate: `376e96ce3066281524adb4574dfeed5a5df693d6`; dependency 14.4 accepted under the standing technical-debt waiver. This task changes only its plan/progress evidence.
 - Implementer `/root/implement_14_5` (`gpt-5.6-terra`/`high`); reviewer `not_started`; review `awaiting_review`; completed correction cycles: 0.
 - Go `1.26.5 windows/amd64`. Required final checks from repository root all passed on the unchanged candidate: `go test -count=1 -timeout 10m ./...` exit 0 in 86.160s (slowest `internal/flows/impl_loop` 32.824s); `go build -o stepan.exe ./cmd/stepan` exit 0 in 13.732s; Darwin/arm64 CGO-disabled cross-build exit 0 in 13.166s with parent/child GOOS, GOARCH, CGO_ENABLED, GOCACHE and GOTMPDIR restored; pinned `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12` exit 0 in 12.268s because `.github/workflows/ci.yml` changed since the fixed baseline; `git diff --check` exit 0 in 0.189s. The initial test launcher failed only because it did not apply the workspace cache, and the initial actionlint download was sandbox-blocked; neither was counted and no candidate file changed. Nonfatal module stat-cache warnings did not affect build exits. The tracked Darwin output was restored from HEAD after verification; live providers and native macOS were not run.
+- Evidence/planning commit verified: `4543ecc3839a60ea2fecbf1a3d355cf073615ea5`; independent task review pending with `/root/review_14_5`. This post-commit checkpoint is an uncommitted planning record.
+- Task 14.5 review returned `PASS_WITH_DEBT` with no critical findings. `TASK-14.5-D001` identified the stale top-level progress summary; the summary was updated immediately and the finding recorded as resolved bookkeeping debt. Required gate evidence was confirmed complete and credible. Task 14.5 accepted with zero correction cycles; next task 14.6 is manual-only preparation/review and remains `not_run` until user evidence exists.
+
+### 14.6 — native Apple Silicon human execution
+
+- Base: `4543ecc3839a60ea2fecbf1a3d355cf073615ea5`; automatic implementation dependencies are accepted. Human execution status remains `not_run`; the authoritative task checkbox remains unchecked.
+- Acceptance preparation: provide prerequisites, exact native `go build -o stepan ./cmd/stepan` and `go test ./...`, applicable macOS runtime cases, observable expected results, safe evidence recording, cleanup and explicit separation from Windows cross-compilation.
+- Implementer `/root/implement_14_6` (`gpt-5.6-terra`/`high`); reviewer `not_started`; preparation review `awaiting_review`; completed correction cycles: 0.
+- Candidate adds `MAC-M00` native full-suite evidence, makes the existing native build command/exit explicit before moving the binary to the disposable stand, initializes `MAC-M00`-`MAC-M10` and `WIN-M01` to `not_run`, links task 14.6 to the macOS plan, and consolidates the physical-Mac prerequisites/order/status/cleanup into the change manual plan. Relative links and `git diff --check` pass. No macOS runtime or live provider action was performed. Next: preparation commit and independent review; task execution stays pending afterward.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

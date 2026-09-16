@@ -10,6 +10,20 @@
 безопасные выдержки из stdout/stderr. Не включайте токены, cookies, полный
 environment, settings.json или provider session IDs в evidence.
 
+## Нативная macOS-приёмка (task 14.6)
+
+Статус: `not_run`. Её выполняет человек отдельно от Darwin/arm64 cross-build.
+На физическом Apple Silicon Mac пройдите `MAC-M00`–`MAC-M10` по порядку из
+[плана совместимости macOS](../../../docs/changes/features/macos-compatibility/manual-test-plan.md).
+Он задаёт prerequisites Go `1.26.5`, Git, Terminal, Codex CLI и checkout;
+`MAC-M00` фиксирует `go test ./...`, а подготовка стенда фиксирует нативный
+`go build -o stepan ./cmd/stepan` до переноса binary в одноразовый test root.
+
+Вносите статусы и безопасное evidence для `MAC-M00`–`MAC-M10` в таблицу
+связанного плана. Отсутствующий prerequisite означает `BLOCKED`, а не замену
+кросс-сборкой или автоматическим тестом. Выполните marker-guarded cleanup из
+связанного плана и не добавляйте эту приёмку в implementation loop.
+
 ## Стенд
 
 Используйте новый одноразовый локальный Git-репозиторий, не worktree и не
