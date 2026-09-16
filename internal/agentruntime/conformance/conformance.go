@@ -156,6 +156,7 @@ func ProviderParity(t *testing.T, factory ScriptFactory) {
 	intentRoot := externalArtifactRoot(t, fixture.Workspace)
 	intentConfig := roleConfig(fixture, "effective intent-author prompt", intentRoot)
 	DocumentSessionWritePolicy(t, fixture, intentConfig)
+	WritePolicyConformance(t, fixture)
 	intentAuthor := startRole(t, fixture, intentConfig)
 	assertEnvelope(t, fixture, intentAuthor, "intent dialogue", "message", "intent question", 1)
 	writeArtifact(t, intentRoot, "intent.md", "# Intent\n")
@@ -306,6 +307,65 @@ func WorkspaceWriteSessionPolicy(t *testing.T, fixture Fixture, config agentrunt
 	}
 	if config.ArtifactRoot != "" && fixture.WriteAllowed(config, filepath.Join(filepath.Dir(config.ArtifactRoot), "escape.md")) {
 		t.Fatal("workspace-write session can write outside its artifact root")
+	}
+}
+
+// WritePolicyConformance applies the same complete filesystem boundary to
+// every adapter fixture. It is deliberately transport-free: each fixture
+// exposes the adapter's actual policy evaluator while its provider transport
+// remains deterministic. This is adapter conformance evidence, not evidence
+// of a live provider.
+func WritePolicyConformance(t *testing.T, fixture Fixture) {
+	t.Helper()
+	if fixture.WriteAllowed == nil {
+		t.Fatal("provider fixture does not expose its write policy")
+	}
+	if err := os.MkdirAll(filepath.Join(fixture.Workspace, "nested"), 0o700); err != nil {
+		t.Fatalf("create workspace fixture: %v", err)
+	}
+	artifactRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(artifactRoot, "new"), 0o700); err != nil {
+		t.Fatalf("create artifact fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(artifactRoot, "existing.md"), []byte("existing\n"), 0o600); err != nil {
+		t.Fatalf("write artifact fixture: %v", err)
+	}
+	externalRoot := t.TempDir()
+	linkRoot := filepath.Join(artifactRoot, "link-escape")
+	linkAvailable := os.Symlink(externalRoot, linkRoot) == nil
+	if linkAvailable {
+		t.Cleanup(func() { _ = os.Remove(linkRoot) })
+	}
+
+	roots := PathRoots{
+		WorkspaceRoot: fixture.Workspace,
+		ArtifactRoot:  artifactRoot,
+		SiblingRoot:   t.TempDir(),
+		ExternalRoot:  externalRoot,
+		LinkRoot:      linkRoot,
+	}
+	base := agentruntime.ThreadConfig{
+		Workspace:    fixture.Workspace,
+		ArtifactRoot: artifactRoot,
+		OutputSchema: append(json.RawMessage(nil), fixture.OutputSchema...),
+	}
+	assertWritePathCases(t, fixture, base, WritePathCases(roots), linkAvailable)
+	workspaceWrite := base.Clone()
+	workspaceWrite.WorkspaceWriteAllowed = true
+	assertWritePathCases(t, fixture, workspaceWrite, WorkspaceWritePathCases(roots), linkAvailable)
+}
+
+func assertWritePathCases(t *testing.T, fixture Fixture, config agentruntime.ThreadConfig, cases []PathCase, linkAvailable bool) {
+	t.Helper()
+	for _, candidate := range cases {
+		if candidate.Name == "link escape" && !linkAvailable {
+			continue
+		}
+		t.Run(candidate.Name, func(t *testing.T) {
+			if got := fixture.WriteAllowed(config, candidate.Target); got != candidate.WantAllowed {
+				t.Fatalf("write %q allowed = %t, want %t", candidate.Target, got, candidate.WantAllowed)
+			}
+		})
 	}
 }
 

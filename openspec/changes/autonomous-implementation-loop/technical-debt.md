@@ -994,8 +994,44 @@
 
 ## TASK-14.1-D005 — Git integration fixture inherits global hooks/configuration
 
-- Origin: task 14.1 initial review; affected shared Git test helper.
+- Origin: task 14.1 initial review and task 14.2 initial review; affected shared Git test helper.
 - Status: `open`.
 - Potential problem: global/system Git configuration such as `core.hooksPath` is inherited.
 - Expected impact: environment-specific hooks can make the test flaky or cause unintended local side effects.
 - Possible follow-up: isolate Git configuration and use controlled local hook fixtures where needed.
+
+## TASK-14.2-001 — recovery coverage is not a single automatic restart E2E
+
+- Origin: task 14.2 initial review; affected location: `recovery_end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: three component scenarios directly invoke controlled call, resume and commit reconciliation rather than reopening one durable run through startup discovery and production continuation; the agent case reuses the original call/session object.
+- Expected impact: production restart routing, session reconstruction or stage advancement can break while the test passes.
+- Classification: normally critical explicit acceptance gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: restart the task-14.1 durable scenario through startup `/resume` and `DispatchRestartContinuation`.
+
+## TASK-14.2-002 — journal-success/projection-failure boundary is not injected
+
+- Origin: task 14.2 initial review; affected location: `recovery_end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: SQLite is deleted only after successful records; no failure is injected after JSONL fsync and before SQLite projection.
+- Expected impact: exactly-once recovery of a pending journal event remains unverified.
+- Classification: normally critical acceptance gap; accepted as debt under the user's standing waiver.
+- Possible follow-up: inject projection failure after journal fsync, reopen, and assert one projection, one attempt and no duplicate result.
+
+## TASK-14.2-003 — interrupted-check recovery is not tested across reopen
+
+- Origin: task 14.2 initial review; affected location: `recovery_end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: cancellation and the second resume reuse the same run/store process after the first resume has already persisted its pause.
+- Expected impact: crash recovery during or immediately after a check is not exercised.
+- Classification: normally explicit task-coverage failure; accepted as debt under the user's standing waiver.
+- Possible follow-up: close/reopen durable state at the check boundary before resume.
+
+## TASK-14.2-004 — stale acceptance is not driven through continuation and commit
+
+- Origin: task 14.2 initial review; affected location: `recovery_end_to_end_git_integration_test.go`.
+- Status: `open`.
+- Potential problem: the scenario checks only `CanStartTaskReview`; commit reconciliation is a separate fixture.
+- Expected impact: continuation could still route or commit using stale acceptance without failing this test.
+- Classification: acceptance gap accepted as debt under the user's standing waiver.
+- Possible follow-up: run production continuation after invalidation and prove fresh checks/review are required before commit.
