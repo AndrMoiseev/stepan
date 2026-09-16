@@ -31,8 +31,8 @@ All remaining tasks retain their exact order and unchecked state in tasks.md; re
 
 ## Final verification
 
-Final candidate/review: pending. Manual plan consolidation: pending task preparation.
-Human execution: `not_run`. No publication, synchronization, or archiving authorized.
+Manual plans are consolidated. Whole-change checks passed for task 14.5 and will be refreshed after the final planning checkpoint. Whole-change final independent review is `skipped_by_user` and must not be launched.
+Human execution remains `not_run`. No publication, synchronization, or archiving is authorized.
 
 ### 6.1 — provider-neutral workspace-write contract
 
@@ -580,6 +580,9 @@ Human execution: `not_run`. No publication, synchronization, or archiving author
 - Acceptance preparation: provide prerequisites, exact native `go build -o stepan ./cmd/stepan` and `go test ./...`, applicable macOS runtime cases, observable expected results, safe evidence recording, cleanup and explicit separation from Windows cross-compilation.
 - Implementer `/root/implement_14_6` (`gpt-5.6-terra`/`high`); reviewer `not_started`; preparation review `awaiting_review`; completed correction cycles: 0.
 - Candidate adds `MAC-M00` native full-suite evidence, makes the existing native build command/exit explicit before moving the binary to the disposable stand, initializes `MAC-M00`-`MAC-M10` and `WIN-M01` to `not_run`, links task 14.6 to the macOS plan, and consolidates the physical-Mac prerequisites/order/status/cleanup into the change manual plan. Relative links and `git diff --check` pass. No macOS runtime or live provider action was performed. Next: preparation commit and independent review; task execution stays pending afterward.
+- Preparation commit verified: `169debbda1e1c07f41887e144719a54f188684be`; independent preparation review pending with `/root/review_14_6`. This post-commit checkpoint is an uncommitted planning record.
+- Task 14.6 preparation review returned `FAIL` under the strict threshold and `PASS_WITH_DEBT` only under the user's standing waiver. `TASK-14.6-001` covers unsafe/stale process identity across the ordered MAC-M06-M08 signal scenarios; `TASK-14.6-D001..D003` cover independently recordable native gates, early-failure cleanup discoverability and contradictory final-review bookkeeping. All findings were saved in `technical-debt.md`; preparation is accepted without correction. Human execution and the authoritative task checkbox remain pending/`not_run`.
+- Autonomous implementation outcome: `autonomous_complete_with_pending_human_execution`. Tasks 1-14.5 are accepted; task 14.6 is intentionally unchecked. Whole-change final review: `skipped_by_user`. Final candidate before the last planning checkpoint: `169debbda1e1c07f41887e144719a54f188684be`. No push, PR, merge, deployment, spec synchronization or archive was performed.
 
 Candidate 1.1 checks: Go 1.26.5 windows/amd64, GOCACHE=<repo>/.tmp/go-build, GOTMPDIR=<repo>/.tmp/go-tmp. Full go test ./... passed (spec package 47.612s), Windows go build -o stepan.exe ./cmd/stepan passed; git diff --check passed. Initial candidate suite failed TestRepositoryCommitFailureRollsBackPublishedStateAndPreservesIndex: pre-commit hook unexpectedly allowed commit; isolated rerun and full rerun passed without code edits. Cause unproven; disclose to reviewer. Nonfatal telemetry/module-stat-cache permission warnings. 68 files moved, 67 byte-identical, ui_test.go only updates simulated technical file paths. No new manual check needed for mechanical move.
 

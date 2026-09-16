@@ -1134,3 +1134,39 @@
 - Expected impact: a reader or simple parser could resume from the wrong point even though detailed task evidence was correct.
 - Classification: low planning-record coherence debt, not an automatic-gate defect.
 - Resolution: summary updated to 64/65, task 14.6 manual `not_run`, and final review `skipped_by_user`.
+
+## TASK-14.6-001 — process identities are not safely refreshed across required macOS signal scenarios
+
+- Origin: task 14.6 preparation review; affected location: `docs/changes/features/macos-compatibility/manual-test-plan.md` MAC-M06 through MAC-M08.
+- Status: `open`.
+- Potential problem: the ordered instructions refer to PID reacquisition that MAC-M05 does not define, retain stale Stepan identity after termination, and can refresh an App Server PID without refreshing and validating the parent/process-group relationship.
+- Expected impact: the manual procedure can inspect or signal an unrelated process after PID reuse or in the presence of another Stepan instance.
+- Classification: normally critical manual-plan executability and process-safety gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: define one per-launch identity procedure bound to the test shell/TTY and binary, refresh all IDs after every restart, validate executable/PPID/PGID, and refuse ambiguity before any signal.
+
+## TASK-14.6-D001 — native build and test gates are not independently recordable
+
+- Origin: task 14.6 preparation review; affected location: macOS manual-plan prerequisites, setup and result table.
+- Status: `open`.
+- Potential problem: provider-version failure appears before provider-independent native gates, while the native build has no stable result row or explicit expected exit value.
+- Expected impact: core build/test evidence can be omitted because of an unrelated Codex prerequisite, and build failure is ambiguously recorded.
+- Classification: medium evidence-planning debt.
+- Possible follow-up: give native build a stable case ID/expected exit and run build/test before blocking only provider-dependent cases.
+
+## TASK-14.6-D002 — early setup failures leave cleanup root undisclosed
+
+- Origin: task 14.6 preparation review; affected location: macOS manual-plan setup and cleanup.
+- Status: `open`.
+- Potential problem: the temporary root and marker are created before guard/build failures that exit the shell, but the root path is printed only later.
+- Expected impact: a common early failure can leave a directory that the documented guarded cleanup cannot readily locate.
+- Classification: medium cleanup-usability debt.
+- Possible follow-up: print the root immediately and avoid exiting the interactive shell, or install a guarded evidence-aware cleanup trap.
+
+## TASK-14.6-D003 — final-review bookkeeping was contradictory
+
+- Origin: task 14.6 preparation review; affected location: `autopilot-progress.md` final verification section.
+- Status: `resolved`.
+- Potential problem: the summary said final review was skipped while an older section still described it and manual consolidation as pending.
+- Expected impact: resume logic or a reader could infer that forbidden review remained outstanding.
+- Classification: low planning-record coherence debt.
+- Resolution: final verification now records consolidated plans, `skipped_by_user`, and human execution `not_run`.
