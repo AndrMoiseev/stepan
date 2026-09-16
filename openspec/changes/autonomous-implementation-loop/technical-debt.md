@@ -1035,3 +1035,48 @@
 - Expected impact: continuation could still route or commit using stale acceptance without failing this test.
 - Classification: acceptance gap accepted as debt under the user's standing waiver.
 - Possible follow-up: run production continuation after invalidation and prove fresh checks/review are required before commit.
+
+## TASK-14.3-001 — common conformance does not exercise runtime write and interruption boundaries
+
+- Origin: task 14.3 initial review; affected location: `internal/agentruntime/conformance/conformance.go` and adapter conformance fixtures.
+- Status: `open`.
+- Potential problem: the shared write helper calls adapter policy evaluators directly and the shared parity flow never invokes runtime interruption, so it does not prove write permission propagation or one common interruption lifecycle through all three adapter runtimes.
+- Expected impact: session/runtime wiring can regress while policy-only conformance remains green.
+- Classification: normally critical direct task-acceptance gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: add one runtime-backed shared helper for read-only/write sessions, deterministic provider permission requests, active-turn readiness, interruption and lifecycle assertions.
+
+## TASK-14.3-002 — live manual plan cannot start a new implementation run
+
+- Origin: task 14.3 initial review; affected location: `openspec/changes/autonomous-implementation-loop/manual-test-plan.md` and production CLI composition.
+- Status: `open`.
+- Potential problem: a disposable repository without an existing implementation run enters the planning UI, where `/implement` is not accepted; the production implementation UI is composed only after startup discovers an existing run.
+- Expected impact: manual case M01 stops before the first provider call and M02-M05 remain unreachable.
+- Classification: normally critical because the required live plan is not executable; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: connect the production new-run route to implementation composition or mark live execution blocked until that supported entrypoint exists.
+
+## TASK-14.3-003 — Explorer manual scenario has no reproducible trigger
+
+- Origin: task 14.3 initial review; affected location: `openspec/changes/autonomous-implementation-loop/manual-test-plan.md` M03.
+- Status: `open`.
+- Potential problem: the plan asks an active role to request Explorer, but the implementation UI accepts only control commands and the simple README fixture does not require an exploration response.
+- Expected impact: users cannot deterministically execute or evidence the required Explorer round trip.
+- Classification: normally critical explicit manual-plan gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: provide an exact fixture/spec that deterministically elicits `exploration_requested` or add a documented live-smoke injection route.
+
+## TASK-14.3-D001 — link-escape conformance case can disappear silently
+
+- Origin: task 14.3 initial review; affected location: `internal/agentruntime/conformance/conformance.go`.
+- Status: `open`.
+- Potential problem: a failed `os.Symlink` setup causes the link-escape case to be omitted without a visible skipped subtest, commonly on restricted Windows environments.
+- Expected impact: a green suite can lack this containment evidence.
+- Classification: low test-evidence debt; other path boundaries remain covered.
+- Possible follow-up: use a Windows junction fixture and expose unavailable link coverage as an explicit skip or failure.
+
+## TASK-14.3-D002 — interruption manual case lacks a controlled timing window
+
+- Origin: task 14.3 initial review; affected location: `openspec/changes/autonomous-implementation-loop/manual-test-plan.md` M04.
+- Status: `open`.
+- Potential problem: the plan provides no bounded slow-turn fixture or readiness marker proving that `/pause` lands after active-turn registration and before completion.
+- Expected impact: the scenario can be flaky or finish before interruption.
+- Classification: low reproducibility debt rather than a separate production defect.
+- Possible follow-up: define a safe bounded slow-turn fixture and an observable readiness condition before issuing `/pause`.

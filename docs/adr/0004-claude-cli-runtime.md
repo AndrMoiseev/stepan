@@ -16,7 +16,7 @@ Claude Code с другим basename и branding. Прикладной `/feature
 `cmd/stepan` выбирает provider только явными flags:
 
 ```text
---agent codex|claude|qwen
+--agent codex|claude|nessy
 --agent-cli-name <name>
 ```
 
@@ -29,11 +29,11 @@ Claude Code с другим basename и branding. Прикладной `/feature
 Введён минимальный внутренний контракт `internal/agentruntime`:
 
 ```text
-cmd/stepan → specflow → agentruntime ← codexapp
-                                      ← claudeapp
+cmd/stepan → internal/flows/spec (package specflow) → agentruntime ← codexapp
+                                                               ← claudeapp
 ```
 
-`specflow` хранит только opaque thread handle и неизменную конфигурацию thread:
+Документный flow `internal/flows/spec` (package `specflow`) хранит только opaque thread handle и неизменную конфигурацию thread:
 bootstrap, schema, read-only workspace и один внешний writable artifact root. Codex
 сохраняет App Server protocol и process containment через Job Object/process
 group. Claude использует `github.com/severity1/claude-agent-sdk-go v0.6.22` и

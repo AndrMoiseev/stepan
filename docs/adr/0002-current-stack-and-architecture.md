@@ -44,11 +44,14 @@ CLI-программой, синхронной машиной состояний
 ```mermaid
 flowchart LR
     User[Пользователь] --> CLI[cmd/stepan]
-    CLI --> Flow[internal/specflow]
-    Flow --> Contract[internal/agentruntime]
+    CLI --> FeatureFlow[internal/flows/spec]
+    CLI --> ImplementationFlow[internal/flows/impl_loop]
+    FeatureFlow --> Contract[internal/agentruntime]
+    ImplementationFlow --> Contract
     Contract --> App[internal/agentruntime/codexapp]
     Contract --> Claude[internal/agentruntime/claudeapp]
-    Flow --> Git[internal/gitsnapshot]
+    FeatureFlow --> Git[internal/gitsnapshot]
+    ImplementationFlow --> Git
     App --> Job[internal/processjob]
     Probe[internal/codexprobe] --> App
     Probe --> Git
@@ -63,13 +66,17 @@ flowchart LR
 ```
 
 Основной production-путь соблюдает направление зависимостей
-`cmd/stepan → specflow → infrastructure`. Обратных импортов из инфраструктурных
-пакетов в `specflow` нет.
+`cmd/stepan → internal/flows/spec | internal/flows/impl_loop → infrastructure`.
+Flow не импортируют друг друга; обратных импортов из инфраструктурных пакетов в
+flow нет.
 
 - `cmd/stepan` — composition root, provider/CLI preflight, platform/terminal
   preflight и обработка завершения процесса.
-- `internal/specflow` — прикладное ядро `/feature`: intent dialogue, строгие
+- `internal/flows/spec` (package `specflow`) — прикладное ядро `/feature`: intent dialogue, строгие
   `message | draft` contracts, feature storage, append-only journal и review.
+- `internal/flows/impl_loop` — независимое прикладное ядро автономной
+  реализации OpenSpec change: задания, брифы, контролируемые проверки,
+  приёмка, локальные коммиты, пауза и восстановление.
 - `internal/agentruntime/codexapp` — version preflight и lifecycle App Server,
   JSON-RPC transport, thread/turn, correlation, structured output и общий
   fail-closed approval evaluator.
@@ -86,12 +93,12 @@ flowchart LR
 - `cmd/codex-appserver-probe` — диагностическая программа, не входящая в
   пользовательский workflow.
 
-Небольшие интерфейсы объявляются потребляющим пакетом `specflow` и служат швами
-для тестирования. Общего provider API, workflow engine, DSL или registry нет.
+Небольшие интерфейсы объявляются потребляющим flow и служат швами для
+тестирования. Общего provider API, workflow engine, DSL или registry нет.
 
 ### Управление состоянием и данными
 
-`specflow.Controller` единолично меняет состояние flow. Один интерактивный
+`specflow.Controller` единолично меняет состояние документного flow. Один интерактивный
 процесс лениво владеет одним App Server; каждая идея получает новый Codex
 thread, turns выполняются последовательно.
 
@@ -121,7 +128,7 @@ stateDiagram-v2
   используются.
 
 Durable approval manager существует в `codexprobe`, но текущий путь
-`cmd/stepan → specflow.Session → codexapp.Runtime` использует thread-scoped
+`cmd/stepan → internal/flows/spec.Session → codexapp.Runtime` использует thread-scoped
 in-memory policy и turn-local evidence для approval.
 
 ### Инварианты текущего пути
@@ -146,9 +153,8 @@ in-memory policy и turn-local evidence для approval.
 
 - Архитектура проста для локального последовательного MVP: один процесс, один
   исполняемый файл и явные package boundaries.
-- Доменный workflow пока связан с конкретным `specflow`; добавление новых flow
-  потребует нового решения, но преждевременная универсальная абстракция не
-  вводится.
+- Два прикладных flow остаются отдельными конкретными модулями; общая
+  универсальная абстракция workflow намеренно не вводится.
 - Надёжность строится на внешней проверке Git/OS и строгих контрактах, а не на
   доверии к тексту агента.
 - Текущий runtime нельзя считать восстанавливаемым или воспроизводимым:
@@ -159,7 +165,8 @@ in-memory policy и turn-local evidence для approval.
 
 ## Отложено до выбора целевой архитектуры
 
-- модель нескольких workflow и их общих состояний;
+- модель нескольких workflow и их общих состояний за пределами document и
+  implementation flow;
 - граница поддержки других agent CLI;
 - durable state, event log, resume и recovery;
 - изоляция Codex profile и source-blind roles;
@@ -181,7 +188,8 @@ baseline.
 
 - [`go.mod`](../../go.mod)
 - [`cmd/stepan`](../../cmd/stepan/)
-- [`internal/specflow`](../../internal/specflow/)
+- [`internal/flows/spec`](../../internal/flows/spec/)
+- [`internal/flows/impl_loop`](../../internal/flows/impl_loop/)
 - [`internal/agentruntime/codexapp`](../../internal/agentruntime/codexapp/)
 - [`internal/codexprobe`](../../internal/codexprobe/)
 - [`internal/gitsnapshot`](../../internal/gitsnapshot/)
