@@ -1080,3 +1080,48 @@
 - Expected impact: the scenario can be flaky or finish before interruption.
 - Classification: low reproducibility debt rather than a separate production defect.
 - Possible follow-up: define a safe bounded slow-turn fixture and an observable readiness condition before issuing `/pause`.
+
+## TASK-14.4-001 — documentation overstates accepted confidentiality and lifecycle guarantees
+
+- Origin: task 14.4 initial review; affected locations: `README.md`, `docs/implementation-loop.md` bootstrap and resume sections.
+- Status: `open`.
+- Potential problem: unconditional non-secret/safe-diff/no-mutation/fresh-session wording conflicts with known accepted findings for inline secret redaction, link containment, diff redaction, unavailable-command cancellation, and conditional session recreation.
+- Expected impact: users can rely on confidentiality or lifecycle behavior that the current implementation does not guarantee.
+- Classification: normally critical documentation-acceptance and confidentiality gap; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: add a current-limitations section and state exact bootstrap risks, unavailable-command behavior and session-recreation conditions.
+
+## TASK-14.4-002 — documentation example parser is CRLF-sensitive
+
+- Origin: task 14.4 initial review; affected location: `internal/implementationconfig/documentation_examples_test.go`.
+- Status: `open`.
+- Potential problem: fenced-block extraction requires exact LF delimiters while ordinary supported Windows checkouts may convert the Markdown file to CRLF.
+- Expected impact: `go test ./...` can fail on a fresh Windows checkout despite valid examples.
+- Classification: normally critical required-gate defect on a supported platform; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: normalize line endings before extraction or parse fenced blocks independent of EOL, with a CRLF regression.
+
+## TASK-14.4-003 — `--agent` is documented as selecting bootstrap provider
+
+- Origin: task 14.4 initial review; affected location: `docs/implementation-loop.md` bootstrap examples.
+- Status: `open`.
+- Potential problem: bootstrap provider actually comes from the configured bootstrapper/default-high profile or interactive answer; `--agent` only influences executable options.
+- Expected impact: users can expect one provider while another external CLI is invoked.
+- Classification: normally critical public-command documentation contradiction; accepted as technical debt under the user's standing waiver.
+- Possible follow-up: document profile/prompt provider selection and the narrower executable-override role of CLI flags.
+
+## TASK-14.4-D001 — documented defaults are not asserted against production tables
+
+- Origin: task 14.4 initial review; affected location: `internal/implementationconfig/documentation_examples_test.go`.
+- Status: `open`.
+- Potential problem: the test resolves limits and profiles but does not compare the prose table to `DefaultLoopLimits` or default role assignments.
+- Expected impact: defaults can drift while the documentation test stays green.
+- Classification: maintainability/test-coverage debt; current values match specs and code.
+- Possible follow-up: expose machine-readable markers and compare them directly with production defaults.
+
+## TASK-14.4-D002 — ADR 0002 mixes current implementation flow with stale baseline claims
+
+- Origin: task 14.4 initial review; affected location: `docs/adr/0002-current-stack-and-architecture.md`.
+- Status: `open`.
+- Potential problem: the ADR adds production `impl_loop` paths but retains claims that there is no database, durable journal or resume and omits Nessy from the runtime view.
+- Expected impact: the architecture reference presents a hybrid and internally inconsistent system description.
+- Classification: documentation clarity debt below the critical threshold.
+- Possible follow-up: separate document-flow baseline from current implementation-flow architecture and add runstore/SQLite/Nessy explicitly.
