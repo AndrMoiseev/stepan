@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -43,7 +43,7 @@ func TestFinalAcceptanceRequiresCurrentChecksAndPositiveIndependentReview(t *tes
 	if err := CompleteFinalAcceptance(context.Background(), fixture.run, fixture.state, fixture.journal, &unchangedWorkspaceControl{}, fixture.repository, "final-checks-result", review); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunSucceeded {
+	if fixture.run.Status != implstate.RunSucceeded {
 		t.Fatalf("run did not succeed: %#v", fixture.run)
 	}
 }
@@ -71,7 +71,7 @@ func TestFinalBlockingFindingCannotCloseTheRun(t *testing.T) {
 	if err := CompleteFinalAcceptance(context.Background(), fixture.run, fixture.state, fixture.journal, &unchangedWorkspaceControl{}, fixture.repository, "final-checks-result", review); !errors.Is(err, ErrFinalAcceptanceRoute) {
 		t.Fatalf("blocking review completed run: %v", err)
 	}
-	if fixture.run.Status == implementationstate.RunSucceeded || fixture.run.FinalAcceptance != nil {
+	if fixture.run.Status == implstate.RunSucceeded || fixture.run.FinalAcceptance != nil {
 		t.Fatalf("blocking review left successful evidence: %#v", fixture.run)
 	}
 	data, err := fixture.journal.Read(review.Evidence)
@@ -97,11 +97,11 @@ func TestFinalReviewerExecutionBlockedPausesWithoutFinalReviewResult(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response.Kind != ResponseExecutionBlocked || result.Attempts != 1 || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" || len(fixture.run.ExecutionBlock.Attempts) != 2 || fixture.run.ExecutionBlock.RequiredUserAction != "install the configured tool" || fixture.run.FinalAcceptance != nil || finalRunResult(fixture.run, "final-review-result") != nil {
+	if result.Response.Kind != ResponseExecutionBlocked || result.Attempts != 1 || len(runtime.messages) != 1 || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" || len(fixture.run.ExecutionBlock.Attempts) != 2 || fixture.run.ExecutionBlock.RequiredUserAction != "install the configured tool" || fixture.run.FinalAcceptance != nil || finalRunResult(fixture.run, "final-review-result") != nil {
 		t.Fatalf("final reviewer execution block advanced acceptance: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 	}
 	restarted, _, err := fixture.state.Current(context.Background())
-	if err != nil || restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil || restarted.FinalAcceptance != nil || finalRunResult(restarted, "final-review-result") != nil {
+	if err != nil || restarted.Status != implstate.RunPaused || restarted.ExecutionBlock == nil || restarted.FinalAcceptance != nil || finalRunResult(restarted, "final-review-result") != nil {
 		t.Fatalf("final reviewer execution block was not durable: run=%#v error=%v", restarted, err)
 	}
 }
@@ -130,20 +130,20 @@ func TestFinalReviewRoutesExplorerAndContinuesTheSameReviewerSession(t *testing.
 	if result.Response.Kind != ResponseReviewPassed || result.ResultID != "final-review-result" || len(reviewer.messages) != 2 || len(explorer.messages) != 1 {
 		t.Fatalf("routed final review = %#v, reviewer=%#v explorer=%#v", result, reviewer.messages, explorer.messages)
 	}
-	for _, id := range []implementationstate.ResultID{"final-review-request", "final-explorer-result", "final-review-result"} {
+	for _, id := range []implstate.ResultID{"final-review-request", "final-explorer-result", "final-review-result"} {
 		if finalRunResult(fixture.run, id) == nil {
 			t.Fatalf("durable result %q is absent: %#v", id, fixture.run.RunResults)
 		}
 	}
 	operation := finalRunOperation(fixture.run, "final-explorer")
-	if operation == nil || operation.Counter != implementationstate.CycleCounterExplorer || operation.Episode != "final-reviewer" {
+	if operation == nil || operation.Counter != implstate.CycleCounterExplorer || operation.Episode != "final-reviewer" {
 		t.Fatalf("final Explorer operation = %#v", operation)
 	}
 }
 
 func TestRecoverFinalExplorerReadsResponsePublishedByFinalPersistence(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "final-recovery"
 	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 	call.Expectation = explorerExpectationFrom(t, source, "final-recovery-explorer-call")
@@ -185,7 +185,7 @@ func TestRecoverFinalExplorerReadsResponsePublishedByFinalPersistence(t *testing
 
 func TestRouteExplorerRecoversFinalArtifactPublishedBeforeResultEvent(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "final-crash-boundary"
 	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 	call.Expectation = explorerExpectationFrom(t, source, "final-crash-explorer-call")
@@ -202,8 +202,8 @@ func TestRouteExplorerRecoversFinalArtifactPublishedBeforeResultEvent(t *testing
 	input := FinalReviewInput{Run: call.Run, StateStore: call.StateStore, Journal: call.Journal}
 	original := recordFinalExplorerState
 	t.Cleanup(func() { recordFinalExplorerState = original })
-	recordFinalExplorerState = func(context.Context, *runstore.StateStore, *implementationstate.Run) (implementationstate.Event, error) {
-		return implementationstate.Event{}, errors.New("simulated crash after final Explorer publication")
+	recordFinalExplorerState = func(context.Context, *runstore.StateStore, *implstate.Run) (implstate.Event, error) {
+		return implstate.Event{}, errors.New("simulated crash after final Explorer publication")
 	}
 	if err := persistFinalExplorerOutcome(context.Background(), input, value, response); err == nil {
 		t.Fatal("persistFinalExplorerOutcome() error = nil, want crash boundary")
@@ -212,7 +212,7 @@ func TestRouteExplorerRecoversFinalArtifactPublishedBeforeResultEvent(t *testing
 	if finalRunResult(call.Run, value.ExplorerResultID) != nil {
 		t.Fatal("failed projection mutated live state")
 	}
-	if _, err := call.Journal.PublishedReference(implementationstate.EvidenceID(string(value.ExplorerResultID) + "-response")); err != nil {
+	if _, err := call.Journal.PublishedReference(implstate.EvidenceID(string(value.ExplorerResultID) + "-response")); err != nil {
 		t.Fatalf("published final Explorer response is absent: %v", err)
 	}
 	different, err := BindAgentResponse(call.Expectation, explorationResponse(t, "different response cannot replace published evidence"))
@@ -272,10 +272,10 @@ func TestFinalReviewPausesBeforeAReviewerCanApproveAnInterveningEdit(t *testing.
 		Workspace: changed, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
 		CheckResult: "final-checks-result", OperationID: "final-review", ResultID: "final-review-result", CallID: "final-review-call", RoundID: "round-1", Limits: controlledCallLimits(),
 	}, &AgentSession{Role: ResponseRoleFinalReviewer, runtime: reviewer, thread: "final-reviewer"}, "base")
-	if !errors.Is(err, ErrFinalAcceptanceRoute) || fixture.run.Status != implementationstate.RunPaused || len(reviewer.messages) != 0 {
+	if !errors.Is(err, ErrFinalAcceptanceRoute) || fixture.run.Status != implstate.RunPaused || len(reviewer.messages) != 0 {
 		t.Fatalf("intervening edit was not blocked before approval: error=%v run=%#v reviewer=%#v", err, fixture.run, reviewer.messages)
 	}
-	if err := CompleteFinalAcceptance(context.Background(), fixture.run, fixture.state, fixture.journal, changed, fixture.repository, "final-checks-result", FinalReviewResult{Response: AgentResponse{Kind: ResponseReviewPassed}, ResultID: "final-review-result"}); !errors.Is(err, ErrFinalAcceptanceRoute) || fixture.run.Status == implementationstate.RunSucceeded {
+	if err := CompleteFinalAcceptance(context.Background(), fixture.run, fixture.state, fixture.journal, changed, fixture.repository, "final-checks-result", FinalReviewResult{Response: AgentResponse{Kind: ResponseReviewPassed}, ResultID: "final-review-result"}); !errors.Is(err, ErrFinalAcceptanceRoute) || fixture.run.Status == implstate.RunSucceeded {
 		t.Fatalf("intervening edit could still close the run: %v, %#v", err, fixture.run)
 	}
 }
@@ -311,27 +311,27 @@ func (*finalExplorerRuntime) Close() error                          { return nil
 func newCompletedFinalFixture(t *testing.T) implementerTransitionFixture {
 	t.Helper()
 	fixture := newImplementerTransitionFixture(t)
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 	for _, item := range []struct {
-		operation implementationstate.OperationID
-		result    implementationstate.ResultID
-		kind      implementationstate.OperationKind
-	}{{"accepted-check", "accepted-check-result", implementationstate.OperationCheck}, {"accepted-review", "accepted-review-result", implementationstate.OperationReview}} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: item.operation, Kind: item.kind, BriefID: "brief", Basis: basis}); err != nil {
+		operation implstate.OperationID
+		result    implstate.ResultID
+		kind      implstate.OperationKind
+	}{{"accepted-check", "accepted-check-result", implstate.OperationCheck}, {"accepted-review", "accepted-review-result", implstate.OperationReview}} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: item.operation, Kind: item.kind, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fixture.run.StartAssignmentAttempt("assignment", item.operation); err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.run.AddResult("assignment", implementationstate.OperationResult{ID: item.result, OperationID: item.operation, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		if err := fixture.run.AddResult("assignment", implstate.OperationResult{ID: item.result, OperationID: item.operation, Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	intent := implementationstate.CommitIntent{OperationID: "assignment-commit", ParentCommit: "base", Tree: "tree", Message: "complete task"}
-	if err := fixture.run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"accepted-check-result"}, ReviewResultID: "accepted-review-result", PendingCommit: intent}); err != nil {
+	intent := implstate.CommitIntent{OperationID: "assignment-commit", ParentCommit: "base", Tree: "tree", Message: "complete task"}
+	if err := fixture.run.AcceptAssignment("assignment", implstate.AcceptanceEvidence{BriefID: "brief", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"accepted-check-result"}, ReviewResultID: "accepted-review-result", PendingCommit: intent}); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.CommitAssignment("assignment", implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.CommitAssignment("assignment", implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
 func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
@@ -53,7 +53,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			run := &implementationstate.Run{Status: implementationstate.RunActive}
+			run := &implstate.Run{Status: implstate.RunActive}
 			if err := CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run); err != nil {
 				t.Fatalf("unchanged workspace rejected: %v", err)
 			}
@@ -61,7 +61,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 			if err := CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run); !errors.Is(err, git.ErrRepositoryDiverged) {
 				t.Fatalf("error = %v", err)
 			}
-			if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
+			if run.Status != implstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
 				t.Fatalf("run was not paused for divergence: %#v", run)
 			}
 		})
@@ -82,19 +82,19 @@ func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing
 	if err := os.WriteFile(indexPath, []byte("not a Git index\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	run := &implementationstate.Run{Status: implementationstate.RunActive}
+	run := &implstate.Run{Status: implstate.RunActive}
 	err = CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run)
 	if err == nil || errors.Is(err, git.ErrRepositoryDiverged) {
 		t.Fatalf("error = %v, want meaningful verification failure", err)
 	}
-	if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
+	if run.Status != implstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
 		t.Fatalf("run was not paused for unverifiable index: %#v", run)
 	}
 }
 
 func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
 	t.Parallel()
-	run := &implementationstate.Run{Status: implementationstate.RunActive}
+	run := &implstate.Run{Status: implstate.RunActive}
 	workspace := ensureErrorWorkspaceControl{
 		WorkspaceControl: &unchangedWorkspaceControl{},
 		err:              &git.SubmoduleCycleError{Root: "cycle"},
@@ -103,7 +103,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
 	if !errors.Is(err, git.ErrSubmoduleCycle) {
 		t.Fatalf("error = %v", err)
 	}
-	if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
+	if run.Status != implstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
 		t.Fatalf("run was not paused for submodule cycle: %#v", run)
 	}
 }

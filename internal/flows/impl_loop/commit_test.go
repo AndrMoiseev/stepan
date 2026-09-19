@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestCommitAcceptedAssignmentPersistsFullIntentBeforeFirstGitMutation(t *testing.T) {
@@ -34,7 +34,7 @@ func TestCommitAcceptedAssignmentPersistsFullIntentBeforeFirstGitMutation(t *tes
 			return
 		}
 		intent := current.Assignments[0].Acceptance.PendingCommit
-		if current.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || intent.ParentCommit != "parent" || intent.Tree != "code-and-progress-tree" || intent.Message != actualMessage {
+		if current.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || intent.ParentCommit != "parent" || intent.Tree != "code-and-progress-tree" || intent.Message != actualMessage {
 			control.commitErr = errors.New("commit intent was not durable before Git")
 		}
 	}
@@ -54,7 +54,7 @@ func TestCommitAcceptedAssignmentPersistsFullIntentBeforeFirstGitMutation(t *tes
 		}
 	}
 	parentStatus, _ := run.TaskStatus("parent")
-	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete || parentStatus != implementationstate.TaskComplete {
+	if run.Assignments[0].Status != implstate.AssignmentCommitted || run.LeafStatus["A"] != implstate.TaskComplete || parentStatus != implstate.TaskComplete {
 		t.Fatalf("only the actual commit may complete selected tasks and parent: %#v", run)
 	}
 }
@@ -70,7 +70,7 @@ func TestCommitAcceptedAssignmentLeavesAcceptedTasksPendingWhenGitFails(t *testi
 
 	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: CommitPreparation{ParentCommit: "parent", Tree: "tree"}, Control: control})
 	parentStatus, _ := run.TaskStatus("parent")
-	if !errors.Is(err, ErrAssignmentCommit) || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || parentStatus != implementationstate.TaskPending {
+	if !errors.Is(err, ErrAssignmentCommit) || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit || parentStatus != implstate.TaskPending {
 		t.Fatalf("failed Git commit changed task completion: error=%v run=%#v", err, run)
 	}
 }
@@ -95,7 +95,7 @@ func TestCommitAcceptedAssignmentRestoresCallerStateWhenIntentCannotBePersisted(
 	if !errors.Is(err, ErrAssignmentCommit) {
 		t.Fatalf("commit with closed store error = %v", err)
 	}
-	if control.commitCalls != 0 || run.Assignments[0].Acceptance.PendingCommit.OperationID != "" || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+	if control.commitCalls != 0 || run.Assignments[0].Acceptance.PendingCommit.OperationID != "" || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("undurable intent reached caller or Git: calls=%d run=%#v", control.commitCalls, run)
 	}
 }
@@ -138,13 +138,13 @@ func (fake *commitControlFake) Commit(_ context.Context, _ string, message strin
 
 func commitStringPointer(value string) *string { return &value }
 
-func acceptCommitFixture(t *testing.T, stateStore *runstore.StateStore, run *implementationstate.Run) {
+func acceptCommitFixture(t *testing.T, stateStore *runstore.StateStore, run *implstate.Run) {
 	t.Helper()
 	evidence := acceptanceReflectionEvidence(run)
 	// The final tree cannot be known until the informational task mark has
 	// been written. CommitAcceptedAssignment fills this durable intent later,
 	// immediately before it asks Git to stage and commit.
-	evidence.PendingCommit = implementationstate.CommitIntent{}
+	evidence.PendingCommit = implstate.CommitIntent{}
 	if err := run.AcceptAssignment("assignment", evidence); err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestTaskReviewKeepsReviewerOwnedFindingsAcrossDisputeRounds(t *testing.T) {
@@ -27,7 +27,7 @@ func TestTaskReviewKeepsReviewerOwnedFindingsAcrossDisputeRounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Response.Kind != ResponseChangesRequested || len(first.Record.Findings) != 1 || first.Record.Findings[0].Status != implementationstate.FindingOpen {
+	if first.Response.Kind != ResponseChangesRequested || len(first.Record.Findings) != 1 || first.Record.Findings[0].Status != implstate.FindingOpen {
 		t.Fatalf("first review = %#v", first)
 	}
 	dispute := AgentResponse{Kind: ResponseReviewDisputed, FindingIDs: []string{"F-1"}, Message: stringPointer("the code already validates this"), References: []string{"internal/example.go:12"}, Binding: fixture.binding()}
@@ -43,14 +43,14 @@ func TestTaskReviewKeepsReviewerOwnedFindingsAcrossDisputeRounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Session != reviewer || second.Response.Kind != ResponseReviewPassed || len(second.Record.Findings) != 1 || second.Record.Findings[0].Status != implementationstate.FindingResolved {
+	if second.Session != reviewer || second.Response.Kind != ResponseReviewPassed || len(second.Record.Findings) != 1 || second.Record.Findings[0].Status != implstate.FindingResolved {
 		t.Fatalf("reviewer did not retain ownership through dispute: %#v", second)
 	}
 	assignment := fixture.run.Assignments[0]
-	if len(assignment.TaskReviews) != 2 || assignment.Counters.AssignmentReview != 2 || assignment.Status != implementationstate.AssignmentActive {
+	if len(assignment.TaskReviews) != 2 || assignment.Counters.AssignmentReview != 2 || assignment.Status != implstate.AssignmentActive {
 		t.Fatalf("durable review discussion/counter = %#v", assignment)
 	}
-	if assignment.Results[len(assignment.Results)-1].Status != implementationstate.ResultSucceeded {
+	if assignment.Results[len(assignment.Results)-1].Status != implstate.ResultSucceeded {
 		t.Fatalf("passed review did not retain successful review evidence: %#v", assignment.Results)
 	}
 }
@@ -65,7 +65,7 @@ func TestTaskReviewerExecutionBlockedPausesWithoutReviewRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(fixture.run.Assignments[0].TaskReviews) != 0 || len(runtime.messages) != 1 {
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || len(fixture.run.Assignments[0].TaskReviews) != 0 || len(runtime.messages) != 1 {
 		t.Fatalf("reviewer execution block advanced review: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 	}
 }
@@ -73,8 +73,8 @@ func TestTaskReviewerExecutionBlockedPausesWithoutReviewRecord(t *testing.T) {
 func TestRouteTaskReviewChangesPausesForExecutorExecutionBlocked(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-review-changes", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: "executor-review-changes", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -90,11 +90,11 @@ func TestRouteTaskReviewChangesPausesForExecutorExecutionBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 {
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 {
 		t.Fatalf("executor block after review changes advanced work: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 	}
 	restarted, _, err := fixture.state.Current(context.Background())
-	if err != nil || restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil {
+	if err != nil || restarted.Status != implstate.RunPaused || restarted.ExecutionBlock == nil {
 		t.Fatalf("executor review block was not durable: run=%#v error=%v", restarted, err)
 	}
 }
@@ -144,7 +144,7 @@ func TestTaskReviewPersistsMixedReviewerDecisionsAndDisputeAcrossRestart(t *test
 	if _, err := runTaskReviewerTurn(context.Background(), input, reviewer, "brief", "initial", "base"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordTaskReviewDispute("assignment", implementationstate.TaskReviewDispute{FindingID: "F-1", Arguments: "the implementation already meets the brief", References: []string{"internal/one.go:1"}}); err != nil {
+	if err := fixture.run.RecordTaskReviewDispute("assignment", implstate.TaskReviewDispute{FindingID: "F-1", Arguments: "the implementation already meets the brief", References: []string{"internal/one.go:1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -155,7 +155,7 @@ func TestTaskReviewPersistsMixedReviewerDecisionsAndDisputeAcrossRestart(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Record.Disputes) != 1 || len(second.Record.Findings) != 2 || second.Record.Findings[0].Status != implementationstate.FindingResolved || second.Record.Findings[1].Status != implementationstate.FindingRetained || second.Record.Findings[1].Resolution != "dispute evidence does not repair this defect" {
+	if len(second.Record.Disputes) != 1 || len(second.Record.Findings) != 2 || second.Record.Findings[0].Status != implstate.FindingResolved || second.Record.Findings[1].Status != implstate.FindingRetained || second.Record.Findings[1].Resolution != "dispute evidence does not repair this defect" {
 		t.Fatalf("mixed review record = %#v", second.Record)
 	}
 	restarted, _, err := fixture.state.Current(context.Background())

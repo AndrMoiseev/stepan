@@ -13,10 +13,10 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -30,7 +30,7 @@ func TestResumeReconcilesPausedRunAndPreservesManualWorkingCopyChanges(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunActive || !result.WorkspaceChanged {
+	if fixture.run.Status != implstate.RunActive || !result.WorkspaceChanged {
 		t.Fatalf("resume did not retain classified manual change: run=%#v result=%#v", fixture.run, result)
 	}
 	if fixture.run.CurrentState == fixture.baseline {
@@ -66,7 +66,7 @@ func TestDispatchRestartContinuationRestoresFreshOrchestratorFromDurableRun(t *t
 	if len(factory.configurations()) < 5 {
 		t.Fatalf("recovered role sessions = %d, want full orchestrator/assignment/final continuation", len(factory.configurations()))
 	}
-	if fixture.run.InitialBaselineStatus != implementationstate.InitialBaselinePassed || len(fixture.run.RunOperations) <= before || fixture.run.Status != implementationstate.RunSucceeded || fixture.run.FinalAcceptance == nil {
+	if fixture.run.InitialBaselineStatus != implstate.InitialBaselinePassed || len(fixture.run.RunOperations) <= before || fixture.run.Status != implstate.RunSucceeded || fixture.run.FinalAcceptance == nil {
 		t.Fatalf("restart did not execute the durable pipeline through final acceptance: %#v", fixture.run)
 	}
 }
@@ -94,11 +94,11 @@ func TestDispatchRestartContinuationPausesDurablyWhenSessionRestoreFails(t *test
 		Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
 		Configuration: configuration, Checks: checks,
 	})
-	if !errors.Is(err, ErrRestartContinuation) || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "restore orchestrator session" {
+	if !errors.Is(err, ErrRestartContinuation) || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "restore orchestrator session" {
 		t.Fatalf("restore failure did not durably pause: run=%#v err=%v", fixture.run, err)
 	}
 	reopened, _, err := runstore.ReadJournalCurrent(fixture.journal)
-	if err != nil || reopened.Status != implementationstate.RunPaused || reopened.ExecutionBlock == nil {
+	if err != nil || reopened.Status != implstate.RunPaused || reopened.ExecutionBlock == nil {
 		t.Fatalf("durable restore pause = %#v, %v", reopened, err)
 	}
 }
@@ -108,23 +108,23 @@ func TestDispatchRestartContinuationRestoresAssignmentRolesAndRunsImplementerRou
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := fixture.run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PersistBriefVersion(context.Background(), fixture.journal, fixture.state, fixture.run, "assignment", []implementationstate.TaskID{"task"}, "Implement the durable task."); err != nil {
+	if _, err := PersistBriefVersion(context.Background(), fixture.journal, fixture.state, fixture.run, "assignment", []implstate.TaskID{"task"}, "Implement the durable task."); err != nil {
 		t.Fatal(err)
 	}
 	factory := &sessionRuntimeFactory{}
@@ -158,46 +158,46 @@ func TestDispatchRestartContinuationRestoresAssignmentRolesAndRunsImplementerRou
 		t.Fatalf("restored assignment roles = %#v", roles)
 	}
 	assignment := assignmentByID(fixture.run, "assignment")
-	if assignment == nil || assignment.Status != implementationstate.AssignmentCommitted || len(assignment.Operations) < 3 || len(assignment.Results) != 3 || fixture.run.Status != implementationstate.RunSucceeded {
+	if assignment == nil || assignment.Status != implstate.AssignmentCommitted || len(assignment.Operations) < 3 || len(assignment.Results) != 3 || fixture.run.Status != implstate.RunSucceeded {
 		t.Fatalf("restart did not execute/persist the complete assignment route: assignment=%#v run=%#v", assignment, fixture.run)
 	}
 	reopened, _, err := runstore.ReadJournalCurrent(fixture.journal)
-	if err != nil || reopened.Status != implementationstate.RunSucceeded || reopened.FinalAcceptance == nil || reopened.Assignments[0].Status != implementationstate.AssignmentCommitted {
+	if err != nil || reopened.Status != implstate.RunSucceeded || reopened.FinalAcceptance == nil || reopened.Assignments[0].Status != implstate.AssignmentCommitted {
 		t.Fatalf("durable assignment continuation = %#v, %v", reopened, err)
 	}
 }
 
 func TestRestartAssignmentActionUsesLatestDurableOperationAndResult(t *testing.T) {
-	state := implementationstate.EvidenceRef{ID: "state", Digest: "digest"}
-	basis := implementationstate.AcceptanceBasis{Specification: implementationstate.EvidenceRef{ID: "spec", Digest: "spec"}, Configuration: implementationstate.EvidenceRef{ID: "config", Digest: "config"}}
-	operation := func(id string, kind implementationstate.OperationKind, counter implementationstate.CycleCounter) implementationstate.Operation {
-		return implementationstate.Operation{ID: implementationstate.OperationID(id), Kind: kind, BriefID: "brief", Basis: basis, Counter: counter}
+	state := implstate.EvidenceRef{ID: "state", Digest: "digest"}
+	basis := implstate.AcceptanceBasis{Specification: implstate.EvidenceRef{ID: "spec", Digest: "spec"}, Configuration: implstate.EvidenceRef{ID: "config", Digest: "config"}}
+	operation := func(id string, kind implstate.OperationKind, counter implstate.CycleCounter) implstate.Operation {
+		return implstate.Operation{ID: implstate.OperationID(id), Kind: kind, BriefID: "brief", Basis: basis, Counter: counter}
 	}
-	result := func(operation string, status implementationstate.ResultStatus) implementationstate.OperationResult {
-		return implementationstate.OperationResult{ID: implementationstate.ResultID(operation + "-result"), OperationID: implementationstate.OperationID(operation), Status: status, State: state, Basis: basis}
+	result := func(operation string, status implstate.ResultStatus) implstate.OperationResult {
+		return implstate.OperationResult{ID: implstate.ResultID(operation + "-result"), OperationID: implstate.OperationID(operation), Status: status, State: state, Basis: basis}
 	}
 	for _, test := range []struct {
 		name        string
-		operations  []implementationstate.Operation
-		results     []implementationstate.OperationResult
+		operations  []implstate.Operation
+		results     []implstate.OperationResult
 		want        restartAssignmentAction
 		interrupted bool
 		wantError   bool
 	}{
 		{name: "fresh assignment", want: restartAssignmentImplement},
-		{name: "successful mandatory checks", operations: []implementationstate.Operation{operation("checks", implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks)}, results: []implementationstate.OperationResult{result("checks", implementationstate.ResultSucceeded)}, want: restartAssignmentReview},
-		{name: "failed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultFailed)}, want: restartAssignmentImplement},
-		{name: "passed review", operations: []implementationstate.Operation{operation("review", implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview)}, results: []implementationstate.OperationResult{result("review", implementationstate.ResultSucceeded)}, want: restartAssignmentAwaitingAcceptance},
-		{name: "interrupted implementer", operations: []implementationstate.Operation{operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)}, want: restartAssignmentImplement, interrupted: true},
-		{name: "completed implementer awaiting receipt replay", operations: []implementationstate.Operation{func() implementationstate.Operation {
-			value := operation("implement", implementationstate.OperationAgent, implementationstate.CycleCounterNone)
-			value.Attempts = []implementationstate.OperationAttempt{{Number: 1, Outcome: implementationstate.AttemptSucceeded}}
+		{name: "successful mandatory checks", operations: []implstate.Operation{operation("checks", implstate.OperationCheck, implstate.CycleCounterMandatoryChecks)}, results: []implstate.OperationResult{result("checks", implstate.ResultSucceeded)}, want: restartAssignmentReview},
+		{name: "failed review", operations: []implstate.Operation{operation("review", implstate.OperationReview, implstate.CycleCounterAssignmentReview)}, results: []implstate.OperationResult{result("review", implstate.ResultFailed)}, want: restartAssignmentImplement},
+		{name: "passed review", operations: []implstate.Operation{operation("review", implstate.OperationReview, implstate.CycleCounterAssignmentReview)}, results: []implstate.OperationResult{result("review", implstate.ResultSucceeded)}, want: restartAssignmentAwaitingAcceptance},
+		{name: "interrupted implementer", operations: []implstate.Operation{operation("implement", implstate.OperationAgent, implstate.CycleCounterNone)}, want: restartAssignmentImplement, interrupted: true},
+		{name: "completed implementer awaiting receipt replay", operations: []implstate.Operation{func() implstate.Operation {
+			value := operation("implement", implstate.OperationAgent, implstate.CycleCounterNone)
+			value.Attempts = []implstate.OperationAttempt{{Number: 1, Outcome: implstate.AttemptSucceeded}}
 			return value
 		}()}, want: restartAssignmentImplement, interrupted: true},
-		{name: "interrupted check", operations: []implementationstate.Operation{operation("checks", implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks)}, want: restartAssignmentChecks, interrupted: true},
+		{name: "interrupted check", operations: []implstate.Operation{operation("checks", implstate.OperationCheck, implstate.CycleCounterMandatoryChecks)}, want: restartAssignmentChecks, interrupted: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			run := &implementationstate.Run{Identity: implementationstate.RunIdentity{Specification: basis.Specification, Configuration: basis.Configuration}, CurrentState: state, Assignments: []implementationstate.Assignment{{ID: "assignment", Status: implementationstate.AssignmentActive, Briefs: []implementationstate.BriefVersion{{ID: "brief", Number: 1, Document: implementationstate.EvidenceRef{ID: "brief-document", Digest: "brief"}}}, Operations: test.operations, Results: test.results}}}
+			run := &implstate.Run{Identity: implstate.RunIdentity{Specification: basis.Specification, Configuration: basis.Configuration}, CurrentState: state, Assignments: []implstate.Assignment{{ID: "assignment", Status: implstate.AssignmentActive, Briefs: []implstate.BriefVersion{{ID: "brief", Number: 1, Document: implstate.EvidenceRef{ID: "brief-document", Digest: "brief"}}}, Operations: test.operations, Results: test.results}}}
 			action, interrupted, err := classifyRestartAssignmentAction(run, "assignment")
 			if (err != nil) != test.wantError || (!test.wantError && action != test.want) || (interrupted != nil) != test.interrupted {
 				t.Fatalf("action=%v interrupted=%#v err=%v", action, interrupted, err)
@@ -212,41 +212,41 @@ func TestDispatchRestartContinuationResumesInterruptedAssignmentStages(t *testin
 			fixture := newResumeFixture(t, "")
 			prepareRestartActiveAssignment(t, fixture)
 			seedImplementationReadyReceipt(t, fixture, "interrupted-stage-implementation", "Preserve this interrupted-stage message")
-			basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 			if stage == "review" {
 				evidence, err := fixture.journal.Publish("interrupted-review-check-evidence", []byte("required checks passed"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				operation := implementationstate.Operation{ID: "completed-checks", Kind: implementationstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implementationstate.CycleCounterMandatoryChecks}
+				operation := implstate.Operation{ID: "completed-checks", Kind: implstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implstate.CycleCounterMandatoryChecks}
 				if err := fixture.run.AddOperation("assignment", operation); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := fixture.run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 					t.Fatal(err)
 				}
-				if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+				if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 					t.Fatal(err)
 				}
-				if err := fixture.run.AddResult("assignment", implementationstate.OperationResult{ID: "completed-checks-result", OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+				if err := fixture.run.AddResult("assignment", implstate.OperationResult{ID: "completed-checks-result", OperationID: operation.ID, Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			kind, counter, description := implementationstate.OperationCheck, implementationstate.CycleCounterMandatoryChecks, "required acceptance checks"
+			kind, counter, description := implstate.OperationCheck, implstate.CycleCounterMandatoryChecks, "required acceptance checks"
 			if stage == "review" {
-				kind, counter, description = implementationstate.OperationReview, implementationstate.CycleCounterAssignmentReview, "task review"
+				kind, counter, description = implstate.OperationReview, implstate.CycleCounterAssignmentReview, "task review"
 			}
 			if stage == "refinement" {
-				kind, counter, description = implementationstate.OperationAgent, implementationstate.CycleCounterBriefRefinement, "refine assignment brief"
+				kind, counter, description = implstate.OperationAgent, implstate.CycleCounterBriefRefinement, "refine assignment brief"
 			}
-			interrupted := implementationstate.Operation{ID: implementationstate.OperationID("interrupted-" + stage), Kind: kind, BriefID: "brief-assignment-v1", Basis: basis, Description: description, Counter: counter}
+			interrupted := implstate.Operation{ID: implstate.OperationID("interrupted-" + stage), Kind: kind, BriefID: "brief-assignment-v1", Basis: basis, Description: description, Counter: counter}
 			if err := fixture.run.AddOperation("assignment", interrupted); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.run.StartAssignmentAttempt("assignment", interrupted.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", interrupted.ID, implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+			if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", interrupted.ID, implstate.AttemptInterrupted, "process stopped"); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -262,7 +262,7 @@ func TestDispatchRestartContinuationResumesInterruptedAssignmentStages(t *testin
 				t.Fatalf("dispatch interrupted %s: %v; run=%#v", stage, err, fixture.run)
 			}
 			operation := assignmentOperation(fixture.run, "assignment", interrupted.ID)
-			if fixture.run.Status != implementationstate.RunSucceeded || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
+			if fixture.run.Status != implstate.RunSucceeded || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implstate.AttemptSucceeded {
 				t.Fatalf("interrupted %s did not resume under its durable identity: operation=%#v run=%#v", stage, operation, fixture.run)
 			}
 		})
@@ -290,7 +290,7 @@ func TestDispatchRestartContinuationRetriesSafePendingCommit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("dispatch pending commit: %v; run=%#v", err, fixture.run)
 	}
-	if fixture.run.Status != implementationstate.RunSucceeded || fixture.run.Assignments[0].Commit == nil || observer.calls != 1 || control.commitCalls != 1 {
+	if fixture.run.Status != implstate.RunSucceeded || fixture.run.Assignments[0].Commit == nil || observer.calls != 1 || control.commitCalls != 1 {
 		t.Fatalf("safe pending commit was not reconciled and finished: observer=%d commits=%d run=%#v", observer.calls, control.commitCalls, fixture.run)
 	}
 }
@@ -299,17 +299,17 @@ func TestDispatchRestartContinuationAcceptsDurablePassedReviewWithoutRepeatingIm
 	fixture := newResumeFixture(t, "")
 	prepareRestartActiveAssignment(t, fixture)
 	seedImplementationReadyReceipt(t, fixture, "passed-implementation", "Preserve this exact passed-review message")
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 	checkEvidence, err := fixture.journal.Publish("passed-review-check-evidence", []byte("required checks passed"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []struct {
-		operation implementationstate.Operation
-		result    implementationstate.OperationResult
+		operation implstate.Operation
+		result    implstate.OperationResult
 	}{
-		{operation: implementationstate.Operation{ID: "passed-checks", Kind: implementationstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implementationstate.CycleCounterMandatoryChecks}, result: implementationstate.OperationResult{ID: "passed-checks-result", OperationID: "passed-checks", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{checkEvidence}}},
-		{operation: implementationstate.Operation{ID: "passed-review", Kind: implementationstate.OperationReview, BriefID: "brief-assignment-v1", Basis: basis, Description: "task review", Counter: implementationstate.CycleCounterAssignmentReview}, result: implementationstate.OperationResult{ID: "passed-review-result", OperationID: "passed-review", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}},
+		{operation: implstate.Operation{ID: "passed-checks", Kind: implstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implstate.CycleCounterMandatoryChecks}, result: implstate.OperationResult{ID: "passed-checks-result", OperationID: "passed-checks", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{checkEvidence}}},
+		{operation: implstate.Operation{ID: "passed-review", Kind: implstate.OperationReview, BriefID: "brief-assignment-v1", Basis: basis, Description: "task review", Counter: implstate.CycleCounterAssignmentReview}, result: implstate.OperationResult{ID: "passed-review-result", OperationID: "passed-review", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}},
 	} {
 		if err := fixture.run.AddOperation("assignment", item.operation); err != nil {
 			t.Fatal(err)
@@ -317,14 +317,14 @@ func TestDispatchRestartContinuationAcceptsDurablePassedReviewWithoutRepeatingIm
 		if _, err := fixture.run.StartAssignmentAttempt("assignment", item.operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", item.operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+		if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", item.operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := fixture.run.AddResult("assignment", item.result); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := fixture.run.RecordTaskReview("assignment", implementationstate.TaskReviewRecord{OperationID: "passed-review", ResultID: "passed-review-result", Round: 1, State: fixture.run.CurrentState, Discussion: "review passed before restart"}); err != nil {
+	if err := fixture.run.RecordTaskReview("assignment", implstate.TaskReviewRecord{OperationID: "passed-review", ResultID: "passed-review-result", Round: 1, State: fixture.run.CurrentState, Discussion: "review passed before restart"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -362,7 +362,7 @@ func TestDispatchRestartContinuationAcceptsDurablePassedReviewWithoutRepeatingIm
 			}
 		}
 	}
-	if fixture.run.Status != implementationstate.RunSucceeded || fixture.run.FinalAcceptance == nil || implementerTurns != 0 || !strings.HasPrefix(committedMessage, "Preserve this exact passed-review message\n\n") {
+	if fixture.run.Status != implstate.RunSucceeded || fixture.run.FinalAcceptance == nil || implementerTurns != 0 || !strings.HasPrefix(committedMessage, "Preserve this exact passed-review message\n\n") {
 		t.Fatalf("durable review was not accepted directly: implementer_turns=%d message=%q run=%#v", implementerTurns, committedMessage, fixture.run)
 	}
 }
@@ -370,15 +370,15 @@ func TestDispatchRestartContinuationAcceptsDurablePassedReviewWithoutRepeatingIm
 func TestDispatchRestartContinuationRecoversPublishedImplementationReadyWithoutRepeatingTurn(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	prepareRestartActiveAssignment(t, fixture)
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	operation := implementationstate.Operation{ID: "completed-implementation", Kind: implementationstate.OperationAgent, BriefID: "brief-assignment-v1", Basis: basis, Description: "continue implementation after restart"}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	operation := implstate.Operation{ID: "completed-implementation", Kind: implstate.OperationAgent, BriefID: "brief-assignment-v1", Basis: basis, Description: "continue implementation after restart"}
 	if err := fixture.run.AddOperation("assignment", operation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	message := "Keep the exact crash-boundary commit subject"
@@ -414,7 +414,7 @@ func TestDispatchRestartContinuationRecoversPublishedImplementationReadyWithoutR
 		t.Fatalf("recover published implementation_ready: %v; run=%#v", err, fixture.run)
 	}
 	result := assignmentResultForOperation(fixture.run, "assignment", operation.ID)
-	if fixture.run.Status != implementationstate.RunSucceeded || result == nil || countRoleTurns(factory, ResponseRoleImplementer) != 0 || !strings.HasPrefix(committedMessage, message+"\n\n") {
+	if fixture.run.Status != implstate.RunSucceeded || result == nil || countRoleTurns(factory, ResponseRoleImplementer) != 0 || !strings.HasPrefix(committedMessage, message+"\n\n") {
 		t.Fatalf("published response was not recovered exactly: result=%#v turns=%d message=%q run=%#v", result, countRoleTurns(factory, ResponseRoleImplementer), committedMessage, fixture.run)
 	}
 }
@@ -443,7 +443,7 @@ func TestDispatchRestartContinuationRecoversControlledCallCrashBoundary(t *testi
 		Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }),
 		Configuration: configuration, Checks: checks, AfterAgentSuccessReceipt: func() error { return crash },
 	})
-	if !errors.Is(err, crash) || fixture.run.Status != implementationstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
+	if !errors.Is(err, crash) || fixture.run.Status != implstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
 		t.Fatalf("injected accepted-turn crash = err=%v turns=%d run=%#v", err, countRoleTurns(factory, ResponseRoleImplementer), fixture.run)
 	}
 	operation := fixture.run.Assignments[0].Operations[len(fixture.run.Assignments[0].Operations)-1]
@@ -465,7 +465,7 @@ func TestDispatchRestartContinuationRecoversControlledCallCrashBoundary(t *testi
 	}); err != nil {
 		t.Fatalf("restart after controlled-call crash: %v; run=%#v", err, fixture.run)
 	}
-	if fixture.run.Status != implementationstate.RunSucceeded || countRoleTurns(factory, ResponseRoleImplementer) != 1 || !strings.HasPrefix(committedMessage, "implement feature\n\n") {
+	if fixture.run.Status != implstate.RunSucceeded || countRoleTurns(factory, ResponseRoleImplementer) != 1 || !strings.HasPrefix(committedMessage, "implement feature\n\n") {
 		t.Fatalf("controlled-call receipt was not resumed idempotently: turns=%d message=%q run=%#v", countRoleTurns(factory, ResponseRoleImplementer), committedMessage, fixture.run)
 	}
 }
@@ -482,7 +482,7 @@ func TestDispatchRestartContinuationRoutesSucceededReceiptKindsWithoutRepeatingT
 			assert: func(t *testing.T, fixture *resumeFixture) {
 				t.Helper()
 				assignment := assignmentByID(fixture.run, "assignment")
-				if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || assignment == nil || len(assignment.Results) != 1 || assignment.Results[0].Status != implementationstate.ResultFailed {
+				if fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || assignment == nil || len(assignment.Results) != 1 || assignment.Results[0].Status != implstate.ResultFailed {
 					t.Fatalf("replayed checks_requested did not use normal check transition: assignment=%#v run=%#v", assignment, fixture.run)
 				}
 			},
@@ -492,7 +492,7 @@ func TestDispatchRestartContinuationRoutesSucceededReceiptKindsWithoutRepeatingT
 			response: responsePayloadMap(ResponseExecutionBlocked),
 			assert: func(t *testing.T, fixture *resumeFixture) {
 				t.Helper()
-				if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" {
+				if fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || fixture.run.ExecutionBlock.Diagnostic != "tool is not installed" {
 					t.Fatalf("replayed execution_blocked lost exact durable effect: %#v", fixture.run)
 				}
 			},
@@ -525,11 +525,11 @@ func TestDispatchRestartContinuationRoutesSucceededReceiptKindsWithoutRepeatingT
 				Workspace: fixture.workspace, Runner: runner, Configuration: configuration, Checks: checks,
 				AfterAgentAttemptSucceeded: func() error { return crash },
 			})
-			if !errors.Is(err, crash) || fixture.run.Status != implementationstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
+			if !errors.Is(err, crash) || fixture.run.Status != implstate.RunPaused || countRoleTurns(factory, ResponseRoleImplementer) != 1 {
 				t.Fatalf("post-success crash = err=%v turns=%d run=%#v", err, countRoleTurns(factory, ResponseRoleImplementer), fixture.run)
 			}
 			operation := fixture.run.Assignments[0].Operations[len(fixture.run.Assignments[0].Operations)-1]
-			if len(operation.Attempts) != 1 || operation.Attempts[0].Outcome != implementationstate.AttemptSucceeded || assignmentResultForOperation(fixture.run, "assignment", operation.ID) != nil {
+			if len(operation.Attempts) != 1 || operation.Attempts[0].Outcome != implstate.AttemptSucceeded || assignmentResultForOperation(fixture.run, "assignment", operation.ID) != nil {
 				t.Fatalf("crash boundary did not retain succeeded receipt-only operation: %#v", operation)
 			}
 			if _, err := Resume(context.Background(), fixture.input()); err != nil {
@@ -552,15 +552,15 @@ func TestDispatchRestartContinuationRoutesSucceededReceiptKindsWithoutRepeatingT
 func TestDispatchRestartContinuationPausesSucceededImplementationWithoutReceipt(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	prepareRestartActiveAssignment(t, fixture)
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	operation := implementationstate.Operation{ID: "ambiguous-implementation", Kind: implementationstate.OperationAgent, BriefID: "brief-assignment-v1", Basis: basis, Description: "continue implementation after restart"}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	operation := implstate.Operation{ID: "ambiguous-implementation", Kind: implstate.OperationAgent, BriefID: "brief-assignment-v1", Basis: basis, Description: "continue implementation after restart"}
 	if err := fixture.run.AddOperation("assignment", operation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	factory := &sessionRuntimeFactory{}
@@ -579,7 +579,7 @@ func TestDispatchRestartContinuationPausesSucceededImplementationWithoutReceipt(
 		t.Fatal(err)
 	}
 	err = DispatchRestartContinuation(context.Background(), RestartContinuationInput{Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository, Workspace: fixture.workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }), Configuration: configuration, Checks: checks})
-	if !errors.Is(err, ErrRestartContinuation) || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || countRoleTurns(factory, ResponseRoleImplementer) != 0 {
+	if !errors.Is(err, ErrRestartContinuation) || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || countRoleTurns(factory, ResponseRoleImplementer) != 0 {
 		t.Fatalf("ambiguous completed turn was repeated or not paused: err=%v turns=%d run=%#v", err, countRoleTurns(factory, ResponseRoleImplementer), fixture.run)
 	}
 }
@@ -587,15 +587,15 @@ func TestDispatchRestartContinuationPausesSucceededImplementationWithoutReceipt(
 func TestDispatchRestartContinuationResumesInterruptedProgressReflection(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	prepareAcceptedRestartAssignment(t, fixture)
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	operation := implementationstate.Operation{ID: "interrupted-reflection", Kind: implementationstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	operation := implstate.Operation{ID: "interrupted-reflection", Kind: implstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}
 	if err := fixture.run.AddRunOperation(operation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt(operation.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordRunAttemptOutcome(operation.ID, implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+	if err := fixture.run.RecordRunAttemptOutcome(operation.ID, implstate.AttemptInterrupted, "process stopped"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -610,7 +610,7 @@ func TestDispatchRestartContinuationResumesInterruptedProgressReflection(t *test
 		t.Fatalf("dispatch interrupted reflection: %v; run=%#v", err, fixture.run)
 	}
 	recovered := finalRunOperation(fixture.run, operation.ID)
-	if fixture.run.Status != implementationstate.RunSucceeded || recovered == nil || len(recovered.Attempts) != 2 || recovered.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
+	if fixture.run.Status != implstate.RunSucceeded || recovered == nil || len(recovered.Attempts) != 2 || recovered.Attempts[1].Outcome != implstate.AttemptSucceeded {
 		t.Fatalf("reflection did not resume under durable identity: operation=%#v run=%#v", recovered, fixture.run)
 	}
 }
@@ -625,8 +625,8 @@ func TestDispatchRestartContinuationResumesInterruptedFinalStages(t *testing.T) 
 			}
 			assignment := &fixture.run.Assignments[0]
 			intent := assignment.Acceptance.PendingCommit
-			basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-			if err := fixture.run.CommitAssignment(assignment.ID, implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "committed", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+			basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			if err := fixture.run.CommitAssignment(assignment.ID, implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "committed", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 				t.Fatal(err)
 			}
 			configuration := resumeTestConfiguration(t, "initial-model", "")
@@ -639,18 +639,18 @@ func TestDispatchRestartContinuationResumesInterruptedFinalStages(t *testing.T) 
 					t.Fatal(err)
 				}
 			}
-			kind, counter, description := implementationstate.OperationCheck, implementationstate.CycleCounterNone, "final required checks"
+			kind, counter, description := implstate.OperationCheck, implstate.CycleCounterNone, "final required checks"
 			if stage == "review" {
-				kind, counter, description = implementationstate.OperationReview, implementationstate.CycleCounterFinalReview, "independent final review"
+				kind, counter, description = implstate.OperationReview, implstate.CycleCounterFinalReview, "independent final review"
 			}
-			interrupted := implementationstate.Operation{ID: implementationstate.OperationID("interrupted-final-" + stage), Kind: kind, Basis: basis, Description: description, Counter: counter}
+			interrupted := implstate.Operation{ID: implstate.OperationID("interrupted-final-" + stage), Kind: kind, Basis: basis, Description: description, Counter: counter}
 			if err := fixture.run.AddRunOperation(interrupted); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.run.StartRunAttempt(interrupted.ID); err != nil {
 				t.Fatal(err)
 			}
-			if err := fixture.run.RecordRunAttemptOutcome(interrupted.ID, implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+			if err := fixture.run.RecordRunAttemptOutcome(interrupted.ID, implstate.AttemptInterrupted, "process stopped"); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -664,7 +664,7 @@ func TestDispatchRestartContinuationResumesInterruptedFinalStages(t *testing.T) 
 				t.Fatalf("dispatch interrupted final %s: %v; run=%#v", stage, err, fixture.run)
 			}
 			recovered := finalRunOperation(fixture.run, interrupted.ID)
-			if fixture.run.Status != implementationstate.RunSucceeded || recovered == nil || len(recovered.Attempts) != 2 || recovered.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
+			if fixture.run.Status != implstate.RunSucceeded || recovered == nil || len(recovered.Attempts) != 2 || recovered.Attempts[1].Outcome != implstate.AttemptSucceeded {
 				t.Fatalf("final %s did not resume under durable identity: operation=%#v run=%#v", stage, recovered, fixture.run)
 			}
 		})
@@ -693,14 +693,14 @@ func TestResumeRunsEntireRequiredSetWithoutConsumingAttempts(t *testing.T) {
 	if got, want := calls, []string{"lint", "test_all", "build"}; !slices.Equal(got, want) {
 		t.Fatalf("resume required-check order = %#v, want %#v", got, want)
 	}
-	if fixture.run.Status != implementationstate.RunActive || !result.ResumeChecks.Succeeded() || result.ResumeCheckEvidence.ID == "" {
+	if fixture.run.Status != implstate.RunActive || !result.ResumeChecks.Succeeded() || result.ResumeCheckEvidence.ID == "" {
 		t.Fatalf("resume did not return active only after fresh required evidence: result=%#v run=%#v", result, fixture.run)
 	}
 	operation := fixture.run.RunOperations[len(fixture.run.RunOperations)-1]
-	if !operation.UncountedResumeCheck || operation.Counter != implementationstate.CycleCounterNone || len(operation.Attempts) != 0 {
+	if !operation.UncountedResumeCheck || operation.Counter != implstate.CycleCounterNone || len(operation.Attempts) != 0 {
 		t.Fatalf("resume checks consumed attempts: %#v", operation)
 	}
-	if len(fixture.run.RunResults) != 1 || fixture.run.RunResults[0].Status != implementationstate.ResultSucceeded {
+	if len(fixture.run.RunResults) != 1 || fixture.run.RunResults[0].Status != implstate.ResultSucceeded {
 		t.Fatalf("resume checks did not retain successful result: %#v", fixture.run.RunResults)
 	}
 }
@@ -711,7 +711,7 @@ func TestResumeSkipsBaselineWhileInterruptedTaskExtractionRemainsPending(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunActive || !fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !result.ResumeChecks.Succeeded() {
+	if fixture.run.Status != implstate.RunActive || !fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !result.ResumeChecks.Succeeded() {
 		t.Fatalf("resume consumed the task-extraction stage with a baseline: result=%#v run=%#v", result, fixture.run)
 	}
 	payload := responsePayloadMap(ResponseTasksExtracted)
@@ -729,15 +729,15 @@ func TestResumeSkipsBaselineWhileInterruptedTaskExtractionRemainsPending(t *test
 		t.Fatal(err)
 	}
 	operation := finalRunOperation(fixture.run, "extract")
-	if fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !slices.Equal(fixture.run.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implementationstate.AttemptSucceeded {
+	if fixture.run.TaskExtractionPending || fixture.run.InitialBaseline != nil || !slices.Equal(fixture.run.PendingLeafTasks(), []implstate.TaskID{"A1"}) || operation == nil || len(operation.Attempts) != 2 || operation.Attempts[1].Outcome != implstate.AttemptSucceeded {
 		t.Fatalf("restart did not reach and finish interrupted extraction: operation=%#v run=%#v", operation, fixture.run)
 	}
 }
 
 func TestRestartSupersedesInterruptedTaskExtractionAfterCompatibleRefresh(t *testing.T) {
 	fixture := newPendingExtractionResumeFixture(t)
-	oldBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	oldResponse := AgentResponse{Kind: ResponseTasksExtracted, TaskIDs: []implementationstate.TaskID{"OLD"}, TaskPayloads: []string{`{"id":"OLD","title":"stale"}`}, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "extract")), RunID: fixture.run.Identity.ID, Specification: oldBasis.Specification, Configuration: oldBasis.Configuration, TaskList: fixture.run.Identity.TaskList}}
+	oldBasis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	oldResponse := AgentResponse{Kind: ResponseTasksExtracted, TaskIDs: []implstate.TaskID{"OLD"}, TaskPayloads: []string{`{"id":"OLD","title":"stale"}`}, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "extract")), RunID: fixture.run.Identity.ID, Specification: oldBasis.Specification, Configuration: oldBasis.Configuration, TaskList: fixture.run.Identity.TaskList}}
 	if _, _, err := publishControlledAgentSuccessReceipt(fixture.journal, "extract", oldResponse, fixture.workspace.actual); err != nil {
 		t.Fatal(err)
 	}
@@ -761,8 +761,8 @@ func TestRestartSupersedesInterruptedTaskExtractionAfterCompatibleRefresh(t *tes
 	}
 	old := finalRunOperation(fixture.run, "extract")
 	replacement := &fixture.run.RunOperations[len(fixture.run.RunOperations)-1]
-	currentBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if old == nil || replacement == nil || replacement.ID == old.ID || replacement.Supersedes != old.ID || old.Basis != oldBasis || replacement.Basis != currentBasis || len(old.Attempts) != 1 || len(replacement.Attempts) != 1 || replacement.Attempts[0].Outcome != implementationstate.AttemptSucceeded || len(runtime.messages) != 1 || !slices.Equal(fixture.run.PendingLeafTasks(), []implementationstate.TaskID{"A1"}) {
+	currentBasis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if old == nil || replacement == nil || replacement.ID == old.ID || replacement.Supersedes != old.ID || old.Basis != oldBasis || replacement.Basis != currentBasis || len(old.Attempts) != 1 || len(replacement.Attempts) != 1 || replacement.Attempts[0].Outcome != implstate.AttemptSucceeded || len(runtime.messages) != 1 || !slices.Equal(fixture.run.PendingLeafTasks(), []implstate.TaskID{"A1"}) {
 		t.Fatalf("stale extraction was not superseded exactly once: old=%#v replacement=%#v turns=%d", old, replacement, len(runtime.messages))
 	}
 }
@@ -772,14 +772,14 @@ func TestRestartSupersedesInterruptedBriefSelectionAfterCompatibleRefresh(t *tes
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
@@ -791,11 +791,11 @@ func TestRestartSupersedesInterruptedBriefSelectionAfterCompatibleRefresh(t *tes
 	if _, _, err := fixture.state.RecordRunAttemptStart(context.Background(), fixture.run, "select-old"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.state.RecordRunAttemptOutcome(context.Background(), fixture.run, "select-old", implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+	if _, err := fixture.state.RecordRunAttemptOutcome(context.Background(), fixture.run, "select-old", implstate.AttemptInterrupted, "process stopped"); err != nil {
 		t.Fatal(err)
 	}
 	staleBrief := "STALE BRIEF MUST NOT BE USED"
-	oldSelection := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implementationstate.TaskID{"task"}, Brief: &staleBrief, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "select-old")), RunID: fixture.run.Identity.ID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
+	oldSelection := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implstate.TaskID{"task"}, Brief: &staleBrief, Binding: ResponseBinding{CallID: restartOperationCallID(finalRunOperation(fixture.run, "select-old")), RunID: fixture.run.Identity.ID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
 	if _, _, err := publishControlledAgentSuccessReceipt(fixture.journal, "select-old", oldSelection, fixture.workspace.actual); err != nil {
 		t.Fatal(err)
 	}
@@ -825,7 +825,7 @@ func TestRestartSupersedesInterruptedBriefSelectionAfterCompatibleRefresh(t *tes
 	}
 	old := finalRunOperation(fixture.run, "select-old")
 	replacement := latestRunOperation(fixture.run, "select next assignment")
-	currentBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	currentBasis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 	if old == nil || replacement == nil || replacement.ID == old.ID || replacement.Supersedes != old.ID || old.Basis != basis || replacement.Basis != currentBasis || len(old.Attempts) != 1 || len(replacement.Attempts) != 1 || countRoleTurns(factory, ResponseRoleBriefer) != 1 || len(fixture.run.Assignments) != 1 {
 		t.Fatalf("stale selection was not superseded exactly once: old=%#v replacement=%#v assignments=%#v", old, replacement, fixture.run.Assignments)
 	}
@@ -840,14 +840,14 @@ func TestResumeRefreshesInitialBaselineAfterSameBasisManualStateEdit(t *testing.
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "original-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "original-baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("original-baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "original-baseline-result", OperationID: "original-baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "original-baseline-result", OperationID: "original-baseline", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.RecordInitialBaselinePass("original-baseline", "original-baseline-result"); err != nil {
@@ -895,7 +895,7 @@ func TestResumeInterruptedRequiredCommandRestartsCompleteSetFromFirstCheck(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunPaused || first.ResumeChecks.Results[0].Status != CheckFailed || first.ResumeChecks.Results[1].Status != CheckNotRun || fixture.run.RunResults[0].Status != implementationstate.ResultInterrupted {
+	if fixture.run.Status != implstate.RunPaused || first.ResumeChecks.Results[0].Status != CheckFailed || first.ResumeChecks.Results[1].Status != CheckNotRun || fixture.run.RunResults[0].Status != implstate.ResultInterrupted {
 		t.Fatalf("interrupted resume check did not remain a diagnostic pause: result=%#v run=%#v", first, fixture.run)
 	}
 	second, err := Resume(context.Background(), input)
@@ -905,7 +905,7 @@ func TestResumeInterruptedRequiredCommandRestartsCompleteSetFromFirstCheck(t *te
 	if got, want := calls, []string{"lint", "lint", "test_all"}; !slices.Equal(got, want) {
 		t.Fatalf("resume continued an interrupted set instead of restarting it: %#v, want %#v", got, want)
 	}
-	if fixture.run.Status != implementationstate.RunActive || !second.ResumeChecks.Succeeded() {
+	if fixture.run.Status != implstate.RunActive || !second.ResumeChecks.Succeeded() {
 		t.Fatalf("second resume did not establish fresh full evidence: result=%#v run=%#v", second, fixture.run)
 	}
 	for _, operation := range fixture.run.RunOperations {
@@ -939,7 +939,7 @@ func TestResumeRequiredCheckFailurePersistsPauseAndDoesNotCreateSessions(t *test
 	if got, want := calls, []string{"unit"}; !slices.Equal(got, want) {
 		t.Fatalf("failed resume ran unexpected commands: %#v, want %#v", got, want)
 	}
-	if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "unit failed") || result.ResumeChecks.Results[0].Status != CheckFailed {
+	if fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "unit failed") || result.ResumeChecks.Results[0].Status != CheckFailed {
 		t.Fatalf("failed resume check did not persist diagnostic pause: result=%#v run=%#v", result, fixture.run)
 	}
 	if owner == nil || result.SessionsRecreated {
@@ -1031,7 +1031,7 @@ func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !first.ConfigurationChanged || first.SessionsRecreated || owner != old || fixture.run.Status != implementationstate.RunPaused {
+	if !first.ConfigurationChanged || first.SessionsRecreated || owner != old || fixture.run.Status != implstate.RunPaused {
 		t.Fatalf("failed gate unexpectedly replaced owner: result=%#v owner=%p old=%p run=%#v", first, owner, old, fixture.run)
 	}
 	input.Runner = CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil })
@@ -1040,7 +1040,7 @@ func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ConfigurationChanged || !second.SessionsRecreated || owner == old || fixture.run.Status != implementationstate.RunActive {
+	if second.ConfigurationChanged || !second.SessionsRecreated || owner == old || fixture.run.Status != implstate.RunActive {
 		t.Fatalf("successful second resume did not replace stale owner: result=%#v owner=%p old=%p run=%#v", second, owner, old, fixture.run)
 	}
 	if _, err := old.Orchestrator(context.Background(), sessionStartContext(t, ResponseRoleOrchestrator)); !errors.Is(err, ErrSessionOwnerClosed) {
@@ -1064,11 +1064,11 @@ func TestResumeInvalidConfigurationLeavesDurableDiagnosticPause(t *testing.T) {
 	if !errors.Is(err, ErrResumeReconciliation) {
 		t.Fatalf("resume error = %v", err)
 	}
-	if fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.Diagnostic == "" {
+	if fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.Diagnostic == "" {
 		t.Fatalf("invalid configuration did not remain a diagnostic pause: %#v", fixture.run)
 	}
 	persisted, _, readErr := fixture.state.Current(context.Background())
-	if readErr != nil || persisted.Status != implementationstate.RunPaused || persisted.ExecutionBlock == nil {
+	if readErr != nil || persisted.Status != implstate.RunPaused || persisted.ExecutionBlock == nil {
 		t.Fatalf("diagnostic pause was not durable: run=%#v err=%v", persisted, readErr)
 	}
 }
@@ -1084,7 +1084,7 @@ func TestResumeClosesWhenCompleteSpecificationChanges(t *testing.T) {
 	if !errors.Is(err, ErrResumeScopeChanged) {
 		t.Fatalf("resume error = %v", err)
 	}
-	if fixture.run.Status != implementationstate.RunClosed || fixture.run.CloseReason == "" {
+	if fixture.run.Status != implstate.RunClosed || fixture.run.CloseReason == "" {
 		t.Fatalf("scope change did not close run: %#v", fixture.run)
 	}
 }
@@ -1102,7 +1102,7 @@ func TestResumeRefreshesCompatibleSpecificationChange(t *testing.T) {
 	if _, err := Resume(context.Background(), fixture.input()); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunActive || fixture.run.Identity.Specification == fixture.specification {
+	if fixture.run.Status != implstate.RunActive || fixture.run.Identity.Specification == fixture.specification {
 		t.Fatalf("compatible specification was not refreshed: %#v", fixture.run)
 	}
 	assertCurrentResumeBaseline(t, fixture.run)
@@ -1154,7 +1154,7 @@ func TestRestartAfterAcceptanceInputRefreshRerunsAssignmentEvidenceWithoutRepeat
 			}); err != nil {
 				t.Fatalf("continue refreshed assignment: %v; run=%#v", err, fixture.run)
 			}
-			if fixture.run.Status != implementationstate.RunSucceeded || checkCalls != 3 || countRoleTurns(factory, ResponseRoleImplementer) != 0 || !strings.HasPrefix(committedMessage, "Use the implementer-authored commit message\n\n") {
+			if fixture.run.Status != implstate.RunSucceeded || checkCalls != 3 || countRoleTurns(factory, ResponseRoleImplementer) != 0 || !strings.HasPrefix(committedMessage, "Use the implementer-authored commit message\n\n") {
 				t.Fatalf("refreshed assignment reused stale evidence or response: checks=%d implementer_turns=%d message=%q run=%#v", checkCalls, countRoleTurns(factory, ResponseRoleImplementer), committedMessage, fixture.run)
 			}
 		})
@@ -1171,13 +1171,13 @@ func TestRestartAfterAcceptanceInputRefreshRerunsFinalEvidence(t *testing.T) {
 			}
 			assignment := &fixture.run.Assignments[0]
 			intent := assignment.Acceptance.PendingCommit
-			oldBasis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-			if err := fixture.run.CommitAssignment(assignment.ID, implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "old-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: oldBasis}); err != nil {
+			oldBasis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			if err := fixture.run.CommitAssignment(assignment.ID, implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "old-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: fixture.run.CurrentState, Basis: oldBasis}); err != nil {
 				t.Fatal(err)
 			}
-			for _, operation := range []implementationstate.Operation{
-				{ID: "stale-final-check", Kind: implementationstate.OperationCheck, Basis: oldBasis, Description: "final required checks"},
-				{ID: "stale-final-review", Kind: implementationstate.OperationReview, Basis: oldBasis, Description: "independent final review", Counter: implementationstate.CycleCounterFinalReview},
+			for _, operation := range []implstate.Operation{
+				{ID: "stale-final-check", Kind: implstate.OperationCheck, Basis: oldBasis, Description: "final required checks"},
+				{ID: "stale-final-review", Kind: implstate.OperationReview, Basis: oldBasis, Description: "independent final review", Counter: implstate.CycleCounterFinalReview},
 			} {
 				if err := fixture.run.AddRunOperation(operation); err != nil {
 					t.Fatal(err)
@@ -1185,10 +1185,10 @@ func TestRestartAfterAcceptanceInputRefreshRerunsFinalEvidence(t *testing.T) {
 				if _, err := fixture.run.StartRunAttempt(operation.ID); err != nil {
 					t.Fatal(err)
 				}
-				if err := fixture.run.RecordRunAttemptOutcome(operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+				if err := fixture.run.RecordRunAttemptOutcome(operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 					t.Fatal(err)
 				}
-				if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: oldBasis}); err != nil {
+				if err := fixture.run.AddRunResult(implstate.OperationResult{ID: implstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: oldBasis}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -1223,7 +1223,7 @@ func TestRestartAfterAcceptanceInputRefreshRerunsFinalEvidence(t *testing.T) {
 			if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository, Workspace: fixture.workspace, Runner: input.Runner, Configuration: resumed.Configuration, Checks: resumed.Checks}); err != nil {
 				t.Fatalf("continue refreshed final acceptance: %v; run=%#v", err, fixture.run)
 			}
-			if fixture.run.Status != implementationstate.RunSucceeded || checkCalls != 2 {
+			if fixture.run.Status != implstate.RunSucceeded || checkCalls != 2 {
 				t.Fatalf("refreshed final acceptance reused stale evidence: checks=%d run=%#v", checkCalls, fixture.run)
 			}
 		})
@@ -1238,10 +1238,10 @@ func TestResumePausesWhenSpecificationChangeIsIndeterminate(t *testing.T) {
 	writeResumeFile(t, filepath.Join(fixture.repository, "openspec", "changes", "change", "design.md"), "# Design\n\n## New structure\n")
 
 	_, err := Resume(context.Background(), fixture.input())
-	if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "indeterminate") {
+	if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || !strings.Contains(fixture.run.ExecutionBlock.Diagnostic, "indeterminate") {
 		t.Fatalf("indeterminate specification classification = run=%#v err=%v", fixture.run, err)
 	}
-	if fixture.run.Status == implementationstate.RunClosed {
+	if fixture.run.Status == implstate.RunClosed {
 		t.Fatal("indeterminate specification change closed the run")
 	}
 }
@@ -1257,7 +1257,7 @@ func TestResumeRulesContentOnlyDoesNotInvalidateCurrentAcceptanceState(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.WorkspaceChanged || fixture.run.CurrentState != fixture.baseline || fixture.run.Status != implementationstate.RunActive {
+	if result.WorkspaceChanged || fixture.run.CurrentState != fixture.baseline || fixture.run.Status != implstate.RunActive {
 		t.Fatalf("rules-only edit altered acceptance state: result=%#v run=%#v", result, fixture.run)
 	}
 }
@@ -1311,12 +1311,12 @@ func TestResumePausesForChangedGitControlButPreservesUnstagedEdits(t *testing.T)
 			fixture.workspace.paths = []string{"code.go"}
 			result, err := Resume(context.Background(), fixture.input())
 			if test.wantError {
-				if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implementationstate.RunPaused {
+				if !errors.Is(err, ErrResumeReconciliation) || fixture.run.Status != implstate.RunPaused {
 					t.Fatalf("unsafe Git control change was accepted: err=%v run=%#v", err, fixture.run)
 				}
 				return
 			}
-			if err != nil || !result.WorkspaceChanged || fixture.run.Status != implementationstate.RunActive {
+			if err != nil || !result.WorkspaceChanged || fixture.run.Status != implstate.RunActive {
 				t.Fatalf("unstaged edit was not retained: err=%v result=%#v run=%#v", err, result, fixture.run)
 			}
 		})
@@ -1335,7 +1335,7 @@ func TestResumePreservesAcceptedPendingCommitAfterInformationalReflection(t *tes
 		t.Fatal(err)
 	}
 	assignment := fixture.run.Assignments[0]
-	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.Tree != "informational-reflection-tree" {
+	if fixture.run.Status != implstate.RunActive || assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.Tree != "informational-reflection-tree" {
 		t.Fatalf("resume invalidated accepted pending commit after informational reflection: %#v", fixture.run)
 	}
 }
@@ -1360,7 +1360,7 @@ func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T
 		t.Fatal(err)
 	}
 	assignment := fixture.run.Assignments[0]
-	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.OperationID != "" {
+	if fixture.run.Status != implstate.RunActive || assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || assignment.Acceptance.PendingCommit.OperationID != "" {
 		t.Fatalf("durable reflection evidence did not preserve pending acceptance: %#v", fixture.run)
 	}
 }
@@ -1385,18 +1385,18 @@ func TestResumeCheckGeneratedChangeInvalidatesAcceptedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	assignment := fixture.run.Assignments[0]
-	if fixture.run.Status != implementationstate.RunActive || assignment.Status != implementationstate.AssignmentActive || assignment.Acceptance != nil || fixture.run.CurrentState == fixture.baseline {
+	if fixture.run.Status != implstate.RunActive || assignment.Status != implstate.AssignmentActive || assignment.Acceptance != nil || fixture.run.CurrentState == fixture.baseline {
 		t.Fatalf("resume check-generated mutation did not invalidate acceptance: %#v", fixture.run)
 	}
 }
 
 type resumeFixture struct {
 	repository    string
-	run           *implementationstate.Run
+	run           *implstate.Run
 	journal       *runstore.Run
 	state         *runstore.StateStore
-	baseline      implementationstate.EvidenceRef
-	specification implementationstate.EvidenceRef
+	baseline      implstate.EvidenceRef
+	specification implstate.EvidenceRef
 	workspace     *resumeWorkspace
 	load          func(string) (setting.Configuration, error)
 	classify      func([]byte, []byte) (SpecificationChange, error)
@@ -1407,23 +1407,23 @@ func prepareRestartActiveAssignment(t *testing.T, fixture *resumeFixture) {
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := fixture.run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := PersistBriefVersion(context.Background(), fixture.journal, fixture.state, fixture.run, "assignment", []implementationstate.TaskID{"task"}, "Implement the durable task."); err != nil {
+	if _, err := PersistBriefVersion(context.Background(), fixture.journal, fixture.state, fixture.run, "assignment", []implstate.TaskID{"task"}, "Implement the durable task."); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1431,18 +1431,18 @@ func prepareRestartActiveAssignment(t *testing.T, fixture *resumeFixture) {
 func prepareAcceptedRestartAssignment(t *testing.T, fixture *resumeFixture) {
 	t.Helper()
 	prepareRestartActiveAssignment(t, fixture)
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 	seedImplementationReadyReceipt(t, fixture, "accepted-implementation", "Use the implementer-authored commit message")
 	evidence, err := fixture.journal.Publish("accepted-restart-check-evidence", []byte("required checks passed"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []struct {
-		operation implementationstate.Operation
-		result    implementationstate.OperationResult
+		operation implstate.Operation
+		result    implstate.OperationResult
 	}{
-		{operation: implementationstate.Operation{ID: "accepted-checks", Kind: implementationstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implementationstate.CycleCounterMandatoryChecks}, result: implementationstate.OperationResult{ID: "accepted-checks-result", OperationID: "accepted-checks", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}},
-		{operation: implementationstate.Operation{ID: "accepted-review", Kind: implementationstate.OperationReview, BriefID: "brief-assignment-v1", Basis: basis, Description: "task review", Counter: implementationstate.CycleCounterAssignmentReview}, result: implementationstate.OperationResult{ID: "accepted-review-result", OperationID: "accepted-review", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}},
+		{operation: implstate.Operation{ID: "accepted-checks", Kind: implstate.OperationCheck, BriefID: "brief-assignment-v1", Basis: basis, Description: "required acceptance checks", Counter: implstate.CycleCounterMandatoryChecks}, result: implstate.OperationResult{ID: "accepted-checks-result", OperationID: "accepted-checks", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}},
+		{operation: implstate.Operation{ID: "accepted-review", Kind: implstate.OperationReview, BriefID: "brief-assignment-v1", Basis: basis, Description: "task review", Counter: implstate.CycleCounterAssignmentReview}, result: implstate.OperationResult{ID: "accepted-review-result", OperationID: "accepted-review", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}},
 	} {
 		if err := fixture.run.AddOperation("assignment", item.operation); err != nil {
 			t.Fatal(err)
@@ -1450,14 +1450,14 @@ func prepareAcceptedRestartAssignment(t *testing.T, fixture *resumeFixture) {
 		if _, err := fixture.run.StartAssignmentAttempt("assignment", item.operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", item.operation.ID, implementationstate.AttemptSucceeded, ""); err != nil {
+		if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", item.operation.ID, implstate.AttemptSucceeded, ""); err != nil {
 			t.Fatal(err)
 		}
 		if err := fixture.run.AddResult("assignment", item.result); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := fixture.run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief-assignment-v1", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"accepted-checks-result"}, ReviewResultID: "accepted-review-result"}); err != nil {
+	if err := fixture.run.AcceptAssignment("assignment", implstate.AcceptanceEvidence{BriefID: "brief-assignment-v1", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"accepted-checks-result"}, ReviewResultID: "accepted-review-result"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1544,7 +1544,7 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := implementationstate.NewRun(implementationstate.RunIdentity{ID: "resume-run", Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: baseline, Specification: specRef, TaskList: tasksRef, Configuration: configRef}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	run, err := implstate.NewRun(implstate.RunIdentity{ID: "resume-run", Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: baseline, Specification: specRef, TaskList: tasksRef, Configuration: configRef}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1573,7 +1573,7 @@ func newPendingExtractionResumeFixture(t *testing.T) *resumeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	copyReference := func(reference implementationstate.EvidenceRef) implementationstate.EvidenceRef {
+	copyReference := func(reference implstate.EvidenceRef) implstate.EvidenceRef {
 		data, err := base.journal.Read(reference)
 		if err != nil {
 			t.Fatal(err)
@@ -1598,7 +1598,7 @@ func newPendingExtractionResumeFixture(t *testing.T) *resumeFixture {
 	if _, _, err := state.RecordRunAttemptStart(context.Background(), run, "extract"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := state.RecordRunAttemptOutcome(context.Background(), run, "extract", implementationstate.AttemptInterrupted, "process stopped"); err != nil {
+	if _, err := state.RecordRunAttemptOutcome(context.Background(), run, "extract", implstate.AttemptInterrupted, "process stopped"); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.Pause("process stopped during task extraction"); err != nil {
@@ -1632,9 +1632,9 @@ func configureAcceptanceRefresh(t *testing.T, fixture *resumeFixture, refresh st
 	}
 }
 
-func assertCurrentResumeBaseline(t *testing.T, run *implementationstate.Run) {
+func assertCurrentResumeBaseline(t *testing.T, run *implstate.Run) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	if run.InitialBaseline == nil || run.InitialBaseline.Basis != basis {
 		t.Fatalf("initial baseline was not refreshed to current acceptance basis: %#v", run.InitialBaseline)
 	}
@@ -1662,42 +1662,42 @@ func preparePendingCommitReflection(t *testing.T, fixture *resumeFixture) {
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "baseline-check", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "baseline-check", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("baseline-check"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "baseline-check-result", OperationID: "baseline-check", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "baseline-check-result", OperationID: "baseline-check", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.RecordInitialBaselinePass("baseline-check", "baseline-check-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := fixture.run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief, err := fixture.journal.Publish("pending-brief", []byte("brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := fixture.run.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
 	seedImplementationReadyReceipt(t, fixture, "pending-implementation", "Commit the accepted pending work")
-	for _, operation := range []implementationstate.Operation{{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}} {
+	for _, operation := range []implstate.Operation{{ID: "check", Kind: implstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview}} {
 		if err := fixture.run.AddOperation("assignment", operation); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := fixture.run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := fixture.run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
+		if err := fixture.run.AddResult("assignment", implstate.OperationResult{ID: implstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	acceptance := implementationstate.AcceptanceEvidence{BriefID: "brief", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: implementationstate.CommitIntent{OperationID: "commit", ParentCommit: "head", Tree: "informational-reflection-tree", Message: "commit accepted work"}}
+	acceptance := implstate.AcceptanceEvidence{BriefID: "brief", State: fixture.run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"check-result"}, ReviewResultID: "review-result", PendingCommit: implstate.CommitIntent{OperationID: "commit", ParentCommit: "head", Tree: "informational-reflection-tree", Message: "commit accepted work"}}
 	if err := fixture.run.AcceptAssignment("assignment", acceptance); err != nil {
 		t.Fatal(err)
 	}
@@ -1709,22 +1709,22 @@ func preparePendingCommitReflection(t *testing.T, fixture *resumeFixture) {
 	}
 }
 
-func seedImplementationReadyReceipt(t *testing.T, fixture *resumeFixture, operationID implementationstate.OperationID, message string) {
+func seedImplementationReadyReceipt(t *testing.T, fixture *resumeFixture, operationID implstate.OperationID, message string) {
 	t.Helper()
 	assignment := assignmentByID(fixture.run, "assignment")
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		t.Fatal("active assignment with a brief is required")
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
-	operation := implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "implementation response"}
+	operation := implstate.Operation{ID: operationID, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "implementation response"}
 	if err := fixture.run.AddOperation("assignment", operation); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartAssignmentAttempt("assignment", operationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operationID, implementationstate.AttemptSucceeded, ""); err != nil {
+	if err := fixture.run.RecordAssignmentAttemptOutcome("assignment", operationID, implstate.AttemptSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: string(operationID) + "-call", RunID: fixture.run.Identity.ID, AssignmentID: "assignment", BriefID: briefID, Specification: basis.Specification, Configuration: basis.Configuration, TaskList: fixture.run.Identity.TaskList}}
@@ -1733,7 +1733,7 @@ func seedImplementationReadyReceipt(t *testing.T, fixture *resumeFixture, operat
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddResult("assignment", implementationstate.OperationResult{ID: resultID, OperationID: operationID, Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{responseRef, workspaceRef}}); err != nil {
+	if err := fixture.run.AddResult("assignment", implstate.OperationResult{ID: resultID, OperationID: operationID, Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{responseRef, workspaceRef}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1746,14 +1746,14 @@ func prepareAcceptedReflectionEvidence(t *testing.T, fixture *resumeFixture) {
 	if err := fixture.run.Resume(); err != nil {
 		t.Fatal(err)
 	}
-	fixture.run.Assignments[0].Acceptance.PendingCommit = implementationstate.CommitIntent{}
-	if err := fixture.run.AddRunOperation(implementationstate.Operation{ID: "reflect-progress", Kind: implementationstate.OperationAgent, Basis: implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Description: "reflect accepted task progress in tasks.md"}); err != nil {
+	fixture.run.Assignments[0].Acceptance.PendingCommit = implstate.CommitIntent{}
+	if err := fixture.run.AddRunOperation(implstate.Operation{ID: "reflect-progress", Kind: implstate.OperationAgent, Basis: implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Description: "reflect accepted task progress in tasks.md"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.run.StartRunAttempt("reflect-progress"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.RecordRunAttemptOutcome("reflect-progress", implementationstate.AttemptSucceeded, ""); err != nil {
+	if err := fixture.run.RecordRunAttemptOutcome("reflect-progress", implstate.AttemptSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	state := resumeSnapshot("reflected-tasks-tree", "reflected-tasks-status")
@@ -1765,7 +1765,7 @@ func prepareAcceptedReflectionEvidence(t *testing.T, fixture *resumeFixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := fixture.run.AddRunResult(implementationstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implementationstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := fixture.run.AddRunResult(implstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implstate.ResultSucceeded, State: fixture.run.CurrentState, Basis: implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fixture.run.Pause("before pending commit intent"); err != nil {

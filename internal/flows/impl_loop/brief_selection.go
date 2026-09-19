@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 // ErrBriefSelection identifies a response or controller boundary that cannot
@@ -20,26 +20,26 @@ var ErrBriefSelection = errors.New("invalid briefer assignment selection")
 // choose the next assignment. The operation is deliberately run-scoped: there
 // is no assignment to bind until the controller has accepted the response.
 // Its durable attempt is subsequently reserved by ExecuteBriefSelection.
-func PrepareBriefSelection(ctx context.Context, stateStore *runstore.StateStore, run *implementationstate.Run, operationID implementationstate.OperationID) error {
+func PrepareBriefSelection(ctx context.Context, stateStore *runstore.StateStore, run *implstate.Run, operationID implstate.OperationID) error {
 	if stateStore == nil || run == nil || strings.TrimSpace(string(operationID)) == "" {
 		return fmt.Errorf("%w: state, run, and operation are required", ErrBriefSelection)
 	}
-	if run.Status != implementationstate.RunActive || run.TaskExtractionPending || len(run.PendingLeafTasks()) == 0 || hasOpenBriefSelection(run) {
+	if run.Status != implstate.RunActive || run.TaskExtractionPending || len(run.PendingLeafTasks()) == 0 || hasOpenBriefSelection(run) {
 		return fmt.Errorf("%w: no next assignment can be selected", ErrBriefSelection)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	existing := finalRunOperation(run, operationID)
 	if existing == nil {
-		if err := run.AddRunOperation(implementationstate.Operation{
-			ID: operationID, Kind: implementationstate.OperationAgent, Basis: basis,
-			Description: "select next assignment", Counter: implementationstate.CycleCounterNone,
+		if err := run.AddRunOperation(implstate.Operation{
+			ID: operationID, Kind: implstate.OperationAgent, Basis: basis,
+			Description: "select next assignment", Counter: implstate.CycleCounterNone,
 		}); err != nil {
 			return fmt.Errorf("%w: create briefer operation: %v", ErrBriefSelection, err)
 		}
 		if _, err := stateStore.Record(ctx, run); err != nil {
 			return fmt.Errorf("%w: persist briefer operation: %v", ErrBriefSelection, err)
 		}
-	} else if existing.Kind != implementationstate.OperationAgent || existing.Basis != basis || existing.Description != "select next assignment" || existing.Counter != implementationstate.CycleCounterNone || finalRunResultForOperation(run, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationAgent || existing.Basis != basis || existing.Description != "select next assignment" || existing.Counter != implstate.CycleCounterNone || finalRunResultForOperation(run, existing.ID) != nil {
 		return fmt.Errorf("%w: briefer selection operation cannot be resumed", ErrBriefSelection)
 	}
 	return nil
@@ -51,15 +51,15 @@ func PrepareBriefSelection(ctx context.Context, stateStore *runstore.StateStore,
 // separate versioning boundary.
 type BriefSelectionResult struct {
 	Call         ControlledAgentCallResult
-	AssignmentID implementationstate.AssignmentID
-	TaskIDs      []implementationstate.TaskID
+	AssignmentID implstate.AssignmentID
+	TaskIDs      []implstate.TaskID
 }
 
 // BriefSelectionCall is an initial briefer invocation constructed by the
 // controller. Its controlled call is private so ordinary production callers
 // cannot run selection with a hand-built session or message.
 type BriefSelectionCall struct {
-	assignmentID implementationstate.AssignmentID
+	assignmentID implstate.AssignmentID
 	call         ControlledAgentCall
 }
 
@@ -70,15 +70,15 @@ type BriefSelectionCallInput struct {
 	// AssignmentID is allocated by the controller before the briefer session
 	// starts. It binds selection, the eventual durable assignment, and later
 	// assignment-scoped briefer refinements to one lifecycle.
-	AssignmentID     implementationstate.AssignmentID
+	AssignmentID     implstate.AssignmentID
 	Repository       string
 	Workspace        WorkspaceControl
 	Policy           AgentCallPolicy
-	Run              *implementationstate.Run
+	Run              *implstate.Run
 	Journal          *runstore.Run
 	StateStore       *runstore.StateStore
-	OperationID      implementationstate.OperationID
-	Limits           implementationstate.CycleLimits
+	OperationID      implstate.OperationID
+	Limits           implstate.CycleLimits
 	Expectation      ResponseExpectation
 	Timeout          time.Duration
 	ValidateResponse func(AgentResponse) error
@@ -170,7 +170,7 @@ func ExecuteBriefSelection(ctx context.Context, selection BriefSelectionCall) (B
 	return BriefSelectionResult{Call: result, AssignmentID: assignmentID, TaskIDs: slices.Clone(result.Response.TaskIDs)}, nil
 }
 
-func validateBriefSelectionCall(assignmentID implementationstate.AssignmentID, call ControlledAgentCall) error {
+func validateBriefSelectionCall(assignmentID implstate.AssignmentID, call ControlledAgentCall) error {
 	if strings.TrimSpace(string(assignmentID)) == "" || call.Run == nil || call.AssignmentID != "" || call.Expectation.Role != ResponseRoleBriefer || call.Expectation.State != ResponseStateInitialBriefing || call.Expectation.Scope != ResponseScopeRun || hasOpenBriefSelection(call.Run) {
 		return fmt.Errorf("%w: invalid initial briefer call", ErrBriefSelection)
 	}
@@ -185,7 +185,7 @@ func validateBriefSelectionCall(assignmentID implementationstate.AssignmentID, c
 	return nil
 }
 
-func validateBriefSelectionResponse(run *implementationstate.Run, expectation ResponseExpectation, response AgentResponse) error {
+func validateBriefSelectionResponse(run *implstate.Run, expectation ResponseExpectation, response AgentResponse) error {
 	if run == nil || response.Kind != ResponseBriefReady || response.Binding != expectation.Binding || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: response is not bound to the current run inputs", ErrBriefSelection)
 	}
@@ -199,12 +199,12 @@ func validateBriefSelectionResponse(run *implementationstate.Run, expectation Re
 	return nil
 }
 
-func hasOpenBriefSelection(run *implementationstate.Run) bool {
+func hasOpenBriefSelection(run *implstate.Run) bool {
 	if run == nil {
 		return true
 	}
 	for _, assignment := range run.Assignments {
-		if assignment.Status != implementationstate.AssignmentCommitted {
+		if assignment.Status != implstate.AssignmentCommitted {
 			return true
 		}
 	}

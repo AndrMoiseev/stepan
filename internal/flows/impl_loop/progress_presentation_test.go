@@ -7,27 +7,27 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestFormatImplementationProgressShowsActiveWorkResultsAndArtifactsWithoutTranscript(t *testing.T) {
-	run := &implementationstate.Run{
-		Identity: implementationstate.RunIdentity{ID: "run-progress"}, Status: implementationstate.RunActive,
-		Tasks: []implementationstate.Task{{ID: "12.3", Title: "show progress"}},
-		Assignments: []implementationstate.Assignment{{
-			ID: "assignment-12", TaskIDs: []implementationstate.TaskID{"12.3"}, Status: implementationstate.AssignmentActive,
-			Operations: []implementationstate.Operation{
-				{ID: "checked", Kind: implementationstate.OperationCheck, Description: "run required checks", Counter: implementationstate.CycleCounterMandatoryChecks, Attempts: []implementationstate.OperationAttempt{{Number: 1}}},
-				{ID: "implement", Kind: implementationstate.OperationAgent, Description: "implement assignment", Attempts: []implementationstate.OperationAttempt{{Number: 1}}},
+	run := &implstate.Run{
+		Identity: implstate.RunIdentity{ID: "run-progress"}, Status: implstate.RunActive,
+		Tasks: []implstate.Task{{ID: "12.3", Title: "show progress"}},
+		Assignments: []implstate.Assignment{{
+			ID: "assignment-12", TaskIDs: []implstate.TaskID{"12.3"}, Status: implstate.AssignmentActive,
+			Operations: []implstate.Operation{
+				{ID: "checked", Kind: implstate.OperationCheck, Description: "run required checks", Counter: implstate.CycleCounterMandatoryChecks, Attempts: []implstate.OperationAttempt{{Number: 1}}},
+				{ID: "implement", Kind: implstate.OperationAgent, Description: "implement assignment", Attempts: []implstate.OperationAttempt{{Number: 1}}},
 			},
-			Results: []implementationstate.OperationResult{{ID: "checked-result", OperationID: "checked", Status: implementationstate.ResultSucceeded, Evidence: []implementationstate.EvidenceRef{{ID: "stdout-log"}, {ID: "stderr-log"}}}},
+			Results: []implstate.OperationResult{{ID: "checked-result", OperationID: "checked", Status: implstate.ResultSucceeded, Evidence: []implstate.EvidenceRef{{ID: "stdout-log"}, {ID: "stderr-log"}}}},
 		}},
 	}
 	got := FormatImplementationProgress(ProgressPresentationInput{
 		Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"},
 		StartedAt: time.Unix(100, 0), Now: time.Unix(107, 0),
-		ArtifactPath: func(reference implementationstate.EvidenceRef) (string, error) {
+		ArtifactPath: func(reference implstate.EvidenceRef) (string, error) {
 			return `C:\runs\files\` + string(reference.ID), nil
 		},
 	})
@@ -55,8 +55,8 @@ func TestFormatImplementationProgressRendersPersistedCheckSummaryAndLogLinks(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	run := &implementationstate.Run{Identity: implementationstate.RunIdentity{ID: "run-check"}, Status: implementationstate.RunActive, RunOperations: []implementationstate.Operation{{ID: "checks", Kind: implementationstate.OperationCheck, Description: "required checks"}}, RunResults: []implementationstate.OperationResult{{ID: "checks-result", OperationID: "checks", Status: implementationstate.ResultSucceeded, Evidence: []implementationstate.EvidenceRef{{ID: "check-summary"}}}}}
-	got := FormatImplementationProgress(ProgressPresentationInput{Run: run, ReadArtifact: func(reference implementationstate.EvidenceRef) ([]byte, error) {
+	run := &implstate.Run{Identity: implstate.RunIdentity{ID: "run-check"}, Status: implstate.RunActive, RunOperations: []implstate.Operation{{ID: "checks", Kind: implstate.OperationCheck, Description: "required checks"}}, RunResults: []implstate.OperationResult{{ID: "checks-result", OperationID: "checks", Status: implstate.ResultSucceeded, Evidence: []implstate.EvidenceRef{{ID: "check-summary"}}}}}
+	got := FormatImplementationProgress(ProgressPresentationInput{Run: run, ReadArtifact: func(reference implstate.EvidenceRef) ([]byte, error) {
 		if reference.ID != "check-summary" {
 			t.Fatalf("unexpected artifact read: %#v", reference)
 		}
@@ -70,15 +70,15 @@ func TestFormatImplementationProgressRendersPersistedCheckSummaryAndLogLinks(t *
 }
 
 func TestFormatImplementationProgressShowsDiagnosticPauseAndTerminalSummary(t *testing.T) {
-	run := &implementationstate.Run{
-		Identity: implementationstate.RunIdentity{ID: "run-paused"}, Status: implementationstate.RunPaused,
-		ExecutionBlock: &implementationstate.ExecutionBlock{BlockedAction: "run required checks", Diagnostic: "go is unavailable", Attempts: []string{"checked PATH"}, RequiredUserAction: "install Go"},
+	run := &implstate.Run{
+		Identity: implstate.RunIdentity{ID: "run-paused"}, Status: implstate.RunPaused,
+		ExecutionBlock: &implstate.ExecutionBlock{BlockedAction: "run required checks", Diagnostic: "go is unavailable", Attempts: []string{"checked PATH"}, RequiredUserAction: "install Go"},
 	}
 	paused := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"}})
 	if !strings.Contains(paused, "diagnostic pause: run required checks — go is unavailable; required: install Go") {
 		t.Fatalf("diagnostic pause was not rendered: %s", paused)
 	}
-	run.Status = implementationstate.RunSucceeded
+	run.Status = implstate.RunSucceeded
 	terminal := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"}})
 	if !strings.Contains(terminal, "final summary: terminal run retained for audit") {
 		t.Fatalf("terminal summary was not rendered: %s", terminal)

@@ -12,10 +12,10 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -34,7 +34,7 @@ var (
 // reconciliation every resume must establish fresh mandatory evidence before
 // any session can be created or other work can continue.
 type ResumeInput struct {
-	Run        *implementationstate.Run
+	Run        *implstate.Run
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
@@ -86,7 +86,7 @@ type ResumeResult struct {
 	SessionsRecreated     bool
 	ResumeChecks          CheckSet
 	ResumeCheckDiagnostic string
-	ResumeCheckEvidence   implementationstate.EvidenceRef
+	ResumeCheckEvidence   implstate.EvidenceRef
 }
 
 // Resume reconciles an already-paused run with its working copy, complete
@@ -163,8 +163,8 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	workspace := effectiveWorkspaceControl(input.Workspace)
 	workspaceErr := workspace.EnsureUnchanged(ctx, input.Repository, expected)
 	workspaceChanged := workspaceErr != nil
-	var observed implementationstate.EvidenceRef
-	var refreshedPendingCommit implementationstate.AssignmentID
+	var observed implstate.EvidenceRef
+	var refreshedPendingCommit implstate.AssignmentID
 	var refreshedPendingTree string
 	if workspaceChanged {
 		if !errors.Is(workspaceErr, git.ErrRepositoryDiverged) {
@@ -254,7 +254,7 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	if err != nil {
 		return result, err
 	}
-	if input.Run.Status != implementationstate.RunActive {
+	if input.Run.Status != implstate.RunActive {
 		return result, nil
 	}
 	// A nil owner slot means this is a new controller process. Even when the
@@ -291,8 +291,8 @@ func validateResumeInput(input ResumeInput) error {
 	if input.Run == nil || input.StateStore == nil || input.Journal == nil || input.Runner == nil || strings.TrimSpace(input.Repository) == "" {
 		return errors.New("implementation resume requires run, state store, journal, repository, and check runner")
 	}
-	if input.Run.Status != implementationstate.RunPaused {
-		return fmt.Errorf("%w: only a paused run can resume", implementationstate.ErrInvalidTransition)
+	if input.Run.Status != implstate.RunPaused {
+		return fmt.Errorf("%w: only a paused run can resume", implstate.ErrInvalidTransition)
 	}
 	if input.SessionOwner != nil && !filepath.IsAbs(input.SessionBase.Workspace) {
 		return errors.New("implementation resume session base requires an absolute workspace")
@@ -300,8 +300,8 @@ func validateResumeInput(input ResumeInput) error {
 	return nil
 }
 
-func resumeCandidate(run *implementationstate.Run) (*implementationstate.Run, error) {
-	event, err := implementationstate.NewRunStateEvent(1, run)
+func resumeCandidate(run *implstate.Run) (*implstate.Run, error) {
+	event, err := implstate.NewRunStateEvent(1, run)
 	if err != nil {
 		return nil, err
 	}
@@ -409,7 +409,7 @@ func verifyResumeGitControl(expected, actual git.Snapshot) error {
 	return nil
 }
 
-func pendingCommitWorkspace(run *implementationstate.Run, expected, actual git.Snapshot) bool {
+func pendingCommitWorkspace(run *implstate.Run, expected, actual git.Snapshot) bool {
 	// git add --all happens before a hook can reject the commit. The index may
 	// therefore differ from the pre-staging snapshot, but the synthetic tree is
 	// still the exact durable intent and a retry stages that same tree again.
@@ -417,7 +417,7 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual git.S
 		return false
 	}
 	for _, assignment := range run.Assignments {
-		if assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		if assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
 			continue
 		}
 		intent := assignment.Acceptance.PendingCommit
@@ -428,7 +428,7 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual git.S
 	return false
 }
 
-func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules setting.RulesFileValidation) (bool, git.Snapshot) {
+func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules setting.RulesFileValidation) (bool, git.Snapshot) {
 	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
 		// A hook refusal may stage the pending tree. The second delta below is
 		// still constrained by its durable reflection snapshot.
@@ -445,11 +445,11 @@ func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceCo
 		return false, git.Snapshot{}
 	}
 	for _, operation := range run.RunOperations {
-		if operation.Kind != implementationstate.OperationAgent || operation.Description != "reflect accepted task progress in tasks.md" {
+		if operation.Kind != implstate.OperationAgent || operation.Description != "reflect accepted task progress in tasks.md" {
 			continue
 		}
 		for _, result := range run.RunResults {
-			if result.OperationID != operation.ID || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) != 1 {
+			if result.OperationID != operation.ID || result.Status != implstate.ResultSucceeded || len(result.Evidence) != 1 {
 				continue
 			}
 			data, err := journal.Read(result.Evidence[0])
@@ -472,12 +472,12 @@ func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceCo
 	return false, git.Snapshot{}
 }
 
-func pendingCommitForReflection(run *implementationstate.Run, reflection git.Snapshot) implementationstate.AssignmentID {
+func pendingCommitForReflection(run *implstate.Run, reflection git.Snapshot) implstate.AssignmentID {
 	if run == nil {
 		return ""
 	}
 	for _, assignment := range run.Assignments {
-		if assignment.Status == implementationstate.AssignmentAcceptedAwaitingCommit && assignment.Acceptance != nil {
+		if assignment.Status == implstate.AssignmentAcceptedAwaitingCommit && assignment.Acceptance != nil {
 			intent := assignment.Acceptance.PendingCommit
 			if intent.OperationID != "" && intent.ParentCommit == reflection.HeadOID && intent.Tree == reflection.TreeOID {
 				return assignment.ID
@@ -516,7 +516,7 @@ func canonicalResumeConfiguration(configuration setting.Configuration) ([]byte, 
 	return canonical.Bytes(), nil
 }
 
-func referencePayloadChanged(journal *runstore.Run, reference implementationstate.EvidenceRef, current []byte) (bool, error) {
+func referencePayloadChanged(journal *runstore.Run, reference implstate.EvidenceRef, current []byte) (bool, error) {
 	previous, err := journal.Read(reference)
 	if err != nil {
 		return false, err
@@ -524,7 +524,7 @@ func referencePayloadChanged(journal *runstore.Run, reference implementationstat
 	return !bytes.Equal(previous, current), nil
 }
 
-func savedWorkspaceSnapshot(journal *runstore.Run, reference implementationstate.EvidenceRef) (git.Snapshot, error) {
+func savedWorkspaceSnapshot(journal *runstore.Run, reference implstate.EvidenceRef) (git.Snapshot, error) {
 	data, err := journal.Read(reference)
 	if err != nil {
 		return git.Snapshot{}, err
@@ -539,13 +539,13 @@ func savedWorkspaceSnapshot(journal *runstore.Run, reference implementationstate
 	return snapshot, nil
 }
 
-func publishResumeEvidence(journal *runstore.Run, prefix string, data []byte) (implementationstate.EvidenceRef, error) {
-	return journal.Publish(implementationstate.EvidenceID(prefix+"-"+digestBytes(data)), data)
+func publishResumeEvidence(journal *runstore.Run, prefix string, data []byte) (implstate.EvidenceRef, error) {
+	return journal.Publish(implstate.EvidenceID(prefix+"-"+digestBytes(data)), data)
 }
 
 func digestBytes(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
 
-func persistResumeCandidate(ctx context.Context, input ResumeInput, candidate *implementationstate.Run) error {
+func persistResumeCandidate(ctx context.Context, input ResumeInput, candidate *implstate.Run) error {
 	event, err := input.StateStore.Record(context.WithoutCancel(ctx), candidate)
 	if event.Sequence != 0 {
 		*input.Run = *candidate
@@ -556,7 +556,7 @@ func persistResumeCandidate(ctx context.Context, input ResumeInput, candidate *i
 	return nil
 }
 
-func persistResumeBlock(ctx context.Context, input ResumeInput, candidate *implementationstate.Run, action string, cause error) error {
+func persistResumeBlock(ctx context.Context, input ResumeInput, candidate *implstate.Run, action string, cause error) error {
 	block, err := ExecutionBlockForUserRemediation(action, cause.Error(), []string{"reloaded current resume inputs without changing the working copy"}, "repair the reported input, then explicitly resume or close the run")
 	if err != nil {
 		return errors.Join(ErrResumeReconciliation, cause, err)

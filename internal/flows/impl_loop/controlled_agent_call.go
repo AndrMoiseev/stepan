@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"time"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // DefaultAgentCallTimeout bounds one agent turn, including provider tools.
@@ -36,12 +36,12 @@ type ControlledAgentCall struct {
 	// supply an in-memory adapter without weakening production observation.
 	Workspace    WorkspaceControl
 	Policy       AgentCallPolicy
-	Run          *implementationstate.Run
+	Run          *implstate.Run
 	Journal      *runstore.Run
 	StateStore   *runstore.StateStore
-	AssignmentID implementationstate.AssignmentID // empty for run-scoped work
-	OperationID  implementationstate.OperationID
-	Limits       implementationstate.CycleLimits
+	AssignmentID implstate.AssignmentID // empty for run-scoped work
+	OperationID  implstate.OperationID
+	Limits       implstate.CycleLimits
 	Expectation  ResponseExpectation
 	Message      string
 	Timeout      time.Duration // zero selects DefaultAgentCallTimeout
@@ -131,27 +131,27 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 			return turnErr
 		})
 		if err != nil {
-			if outcomeErr := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, err.Error()); outcomeErr != nil {
+			if outcomeErr := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptFailed, err.Error()); outcomeErr != nil {
 				return ControlledAgentCallResult{Attempts: attempts}, errors.Join(err, outcomeErr)
 			}
 			return ControlledAgentCallResult{Attempts: attempts}, err
 		}
 		if outcome.Disposition == CallExecutionBlocked {
-			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, outcome.Diagnostic); err != nil {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptFailed, outcome.Diagnostic); err != nil {
 				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, fmt.Errorf("%s", outcome.Diagnostic)
 		}
 
 		if errors.Is(outcome.InvocationError, ErrAgentCallCancelled) || errors.Is(outcome.InvocationError, context.Canceled) {
-			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptInterrupted, outcome.InvocationError.Error()); err != nil {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptInterrupted, outcome.InvocationError.Error()); err != nil {
 				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 			_ = session.Close()
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, outcome.InvocationError
 		}
 		if outcome.Disposition == CallRetry {
-			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, outcome.Diagnostic); err != nil {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptRejected, outcome.Diagnostic); err != nil {
 				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 			session, err = recreateAgentSession(ctx, session)
@@ -162,7 +162,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 			continue
 		}
 		if outcome.InvocationError != nil {
-			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptFailed, outcome.InvocationError.Error()); err != nil {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptFailed, outcome.InvocationError.Error()); err != nil {
 				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 			session, err = recreateAgentSession(ctx, session)
@@ -174,7 +174,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		}
 		response, bindErr := BindAgentResponse(call.Expectation, raw)
 		if bindErr != nil {
-			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, bindErr.Error()); err != nil {
+			if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptRejected, bindErr.Error()); err != nil {
 				return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 			session, err = recreateAgentSession(ctx, session)
@@ -186,7 +186,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 		}
 		if call.ValidateResponse != nil {
 			if validationErr := call.ValidateResponse(response); validationErr != nil {
-				if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptRejected, validationErr.Error()); err != nil {
+				if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptRejected, validationErr.Error()); err != nil {
 					return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 				}
 				message = retryPrompt(call.Message, validationErr.Error())
@@ -207,7 +207,7 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 				return ControlledAgentCallResult{Response: response, Session: session, Snapshot: outcome.Snapshot, Attempts: attempts}, err
 			}
 		}
-		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
+		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{Snapshot: outcome.Snapshot, Attempts: attempts}, err
 		}
 		if call.AfterAttemptSucceeded != nil {
@@ -220,64 +220,64 @@ func InvokeControlledAgentCall(ctx context.Context, call ControlledAgentCall) (C
 }
 
 type controlledAgentSuccessReceipt struct {
-	Response  AgentResponse                   `json:"response"`
-	Workspace implementationstate.EvidenceRef `json:"workspace"`
+	Response  AgentResponse         `json:"response"`
+	Workspace implstate.EvidenceRef `json:"workspace"`
 }
 
-func controlledAgentSuccessReceiptIDs(operationID implementationstate.OperationID) (implementationstate.EvidenceID, implementationstate.EvidenceID) {
+func controlledAgentSuccessReceiptIDs(operationID implstate.OperationID) (implstate.EvidenceID, implstate.EvidenceID) {
 	stem := string(operationID) + "-accepted-turn"
-	return implementationstate.EvidenceID(stem + "-receipt"), implementationstate.EvidenceID(stem + "-workspace")
+	return implstate.EvidenceID(stem + "-receipt"), implstate.EvidenceID(stem + "-workspace")
 }
 
-func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID, response AgentResponse, snapshot git.Snapshot) (implementationstate.EvidenceRef, implementationstate.EvidenceRef, error) {
+func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID implstate.OperationID, response AgentResponse, snapshot git.Snapshot) (implstate.EvidenceRef, implstate.EvidenceRef, error) {
 	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
 	workspaceData, err := json.Marshal(snapshot)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, implstate.EvidenceRef{}, err
 	}
 	workspaceRef, err := journal.Publish(workspaceID, workspaceData)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, implstate.EvidenceRef{}, err
 	}
 	receiptData, err := json.Marshal(controlledAgentSuccessReceipt{Response: response, Workspace: workspaceRef})
 	if err != nil {
-		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, implstate.EvidenceRef{}, err
 	}
 	receiptRef, err := journal.Publish(receiptID, receiptData)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, implstate.EvidenceRef{}, err
 	}
 	return receiptRef, workspaceRef, nil
 }
 
-func readControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID) (AgentResponse, git.Snapshot, implementationstate.EvidenceRef, implementationstate.EvidenceRef, bool, error) {
+func readControlledAgentSuccessReceipt(journal *runstore.Run, operationID implstate.OperationID) (AgentResponse, git.Snapshot, implstate.EvidenceRef, implstate.EvidenceRef, bool, error) {
 	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
 	receiptRef, receiptErr := journal.PublishedReference(receiptID)
 	workspaceRef, workspaceErr := journal.PublishedReference(workspaceID)
 	if errors.Is(receiptErr, runstore.ErrReferenceUnavailable) && errors.Is(workspaceErr, runstore.ErrReferenceUnavailable) {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, false, nil
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, false, nil
 	}
 	if receiptErr != nil || workspaceErr != nil {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("accepted agent turn receipt is incomplete: receipt=%v workspace=%v", receiptErr, workspaceErr)
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, fmt.Errorf("accepted agent turn receipt is incomplete: receipt=%v workspace=%v", receiptErr, workspaceErr)
 	}
 	data, err := journal.Read(receiptRef)
 	if err != nil {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, err
 	}
 	var receipt controlledAgentSuccessReceipt
 	if err := json.Unmarshal(data, &receipt); err != nil {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn receipt: %w", err)
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn receipt: %w", err)
 	}
 	if receipt.Workspace != workspaceRef {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, errors.New("accepted agent turn receipt references another workspace")
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, errors.New("accepted agent turn receipt references another workspace")
 	}
 	workspaceData, err := journal.Read(workspaceRef)
 	if err != nil {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, err
 	}
 	var snapshot git.Snapshot
 	if err := json.Unmarshal(workspaceData, &snapshot); err != nil {
-		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn workspace: %w", err)
+		return AgentResponse{}, git.Snapshot{}, implstate.EvidenceRef{}, implstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn workspace: %w", err)
 	}
 	return receipt.Response, snapshot, receiptRef, workspaceRef, true, nil
 }
@@ -303,17 +303,17 @@ func recoverControlledAgentSuccess(ctx context.Context, call ControlledAgentCall
 		return ControlledAgentCallResult{}, true, errors.New("accepted agent turn receipt has no reserved attempt")
 	}
 	if outcome == "" {
-		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implementationstate.AttemptSucceeded, ""); err != nil {
+		if err := recordAgentAttemptOutcome(context.WithoutCancel(ctx), call, implstate.AttemptSucceeded, ""); err != nil {
 			return ControlledAgentCallResult{}, true, err
 		}
-	} else if outcome != implementationstate.AttemptSucceeded {
+	} else if outcome != implstate.AttemptSucceeded {
 		return ControlledAgentCallResult{}, true, fmt.Errorf("accepted agent turn receipt conflicts with attempt outcome %q", outcome)
 	}
 	return ControlledAgentCallResult{Response: response, Session: call.Session, Snapshot: snapshot, Attempts: attempts}, true, nil
 }
 
-func controlledAgentAttemptState(call ControlledAgentCall) (uint64, implementationstate.AttemptOutcome) {
-	var operation *implementationstate.Operation
+func controlledAgentAttemptState(call ControlledAgentCall) (uint64, implstate.AttemptOutcome) {
+	var operation *implstate.Operation
 	if call.AssignmentID != "" {
 		operation = assignmentOperation(call.Run, call.AssignmentID, call.OperationID)
 	} else {
@@ -339,7 +339,7 @@ func validateControlledAgentCall(call ControlledAgentCall) error {
 	return nil
 }
 
-func reserveAgentAttempt(ctx context.Context, call ControlledAgentCall) (implementationstate.OperationAttempt, error) {
+func reserveAgentAttempt(ctx context.Context, call ControlledAgentCall) (implstate.OperationAttempt, error) {
 	if call.AssignmentID != "" {
 		attempt, _, err := call.StateStore.RecordAssignmentAttemptStartWithLimits(ctx, call.Run, call.AssignmentID, call.OperationID, call.Limits)
 		return attempt, err
@@ -348,7 +348,7 @@ func reserveAgentAttempt(ctx context.Context, call ControlledAgentCall) (impleme
 	return attempt, err
 }
 
-func recordAgentAttemptOutcome(ctx context.Context, call ControlledAgentCall, outcome implementationstate.AttemptOutcome, diagnostic string) error {
+func recordAgentAttemptOutcome(ctx context.Context, call ControlledAgentCall, outcome implstate.AttemptOutcome, diagnostic string) error {
 	if call.AssignmentID != "" {
 		_, err := call.StateStore.RecordAssignmentAttemptOutcome(ctx, call.Run, call.AssignmentID, call.OperationID, outcome, diagnostic)
 		return err

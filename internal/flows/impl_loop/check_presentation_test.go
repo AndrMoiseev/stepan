@@ -11,8 +11,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -201,7 +201,7 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 			if err != nil {
 				t.Fatal(err)
 			}
-			run, err := store.Create(implementationstate.RunID("run-" + test.name))
+			run, err := store.Create(implstate.RunID("run-" + test.name))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -258,7 +258,7 @@ func implementationCheck(repository, name string) setting.SelectedCheck {
 
 func assertCheckEvidenceCanBeRecordedWithoutOutput(t *testing.T, run *runstore.Run, report CheckPresentation, stdout, stderr []byte) {
 	t.Helper()
-	publish := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	publish := func(id implstate.EvidenceID) implstate.EvidenceRef {
 		reference, err := run.Publish(id, []byte(id))
 		if err != nil {
 			t.Fatal(err)
@@ -266,37 +266,37 @@ func assertCheckEvidenceCanBeRecordedWithoutOutput(t *testing.T, run *runstore.R
 		return reference
 	}
 	baseline, specification, tasks, configuration := publish("baseline"), publish("specification"), publish("tasks"), publish("configuration")
-	model, err := implementationstate.NewRun(implementationstate.RunIdentity{ID: run.ID(), Change: "change", Repository: "repository", WorkCopy: "repository", Branch: "feature", BaselineCommit: "base", BaselineState: baseline, Specification: specification, TaskList: tasks, Configuration: configuration}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	model, err := implstate.NewRun(implstate.RunIdentity{ID: run.ID(), Change: "change", Repository: "repository", WorkCopy: "repository", Branch: "feature", BaselineCommit: "base", BaselineState: baseline, Specification: specification, TaskList: tasks, Configuration: configuration}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
-	if err := model.AddRunOperation(implementationstate.Operation{ID: "initial-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
+	if err := model.AddRunOperation(implstate.Operation{ID: "initial-baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := model.StartRunAttempt("initial-baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddRunResult(implementationstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
+	if err := model.AddRunResult(implstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := model.RecordInitialBaselinePass("initial-baseline", "initial-baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := model.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief := publish("brief")
-	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := model.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
+	if err := model.AddOperation("assignment", implstate.Operation{ID: "check", Kind: implstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := model.StartAssignmentAttempt("assignment", "check"); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddResult("assignment", implementationstate.OperationResult{ID: "result", OperationID: "check", Status: implementationstate.ResultFailed, State: report.CheckedState.Reference, Basis: basis, Evidence: []implementationstate.EvidenceRef{report.Stdout.Reference, report.Stderr.Reference}}); err != nil {
+	if err := model.AddResult("assignment", implstate.OperationResult{ID: "result", OperationID: "check", Status: implstate.ResultFailed, State: report.CheckedState.Reference, Basis: basis, Evidence: []implstate.EvidenceRef{report.Stdout.Reference, report.Stderr.Reference}}); err != nil {
 		t.Fatal(err)
 	}
 	state, err := runstore.OpenState(run)

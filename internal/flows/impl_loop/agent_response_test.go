@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestResponseSchemasAreFlatAndBindEveryAllowedKind(t *testing.T) {
@@ -257,13 +257,13 @@ func expectationFor(role ResponseRole, kind ResponseKind) ResponseExpectation {
 	}
 	if role != ResponseRoleBootstrapper {
 		expectation.Binding.RunID = "run-1"
-		expectation.Binding.Specification = implementationstate.EvidenceRef{ID: "specification", Digest: "spec-v1"}
-		expectation.Binding.Configuration = implementationstate.EvidenceRef{ID: "configuration", Digest: "config-v1"}
-		expectation.Binding.TaskList = implementationstate.EvidenceRef{ID: "tasks", Digest: "tasks-v1"}
+		expectation.Binding.Specification = implstate.EvidenceRef{ID: "specification", Digest: "spec-v1"}
+		expectation.Binding.Configuration = implstate.EvidenceRef{ID: "configuration", Digest: "config-v1"}
+		expectation.Binding.TaskList = implstate.EvidenceRef{ID: "tasks", Digest: "tasks-v1"}
 	}
 	if role == ResponseRoleBootstrapper {
-		expectation.Binding.UserConfiguration = implementationstate.EvidenceRef{ID: "user-settings", Digest: "user-config-v1"}
-		expectation.Binding.ProjectConfiguration = implementationstate.EvidenceRef{ID: "project-settings", Digest: "project-config-v1"}
+		expectation.Binding.UserConfiguration = implstate.EvidenceRef{ID: "user-settings", Digest: "user-config-v1"}
+		expectation.Binding.ProjectConfiguration = implstate.EvidenceRef{ID: "project-settings", Digest: "project-config-v1"}
 	}
 	if scopeForExpectation(expectation) == ResponseScopeAssignment {
 		expectation.Binding.AssignmentID = "assignment-1"
@@ -337,7 +337,7 @@ func containsKind(kinds []ResponseKind, want ResponseKind) bool {
 
 func removeRunInputs() ResponseExpectation {
 	expectation := expectationFor(ResponseRoleBriefer, ResponseBriefReady)
-	expectation.Binding.Specification = implementationstate.EvidenceRef{}
+	expectation.Binding.Specification = implstate.EvidenceRef{}
 	return expectation
 }
 
@@ -358,7 +358,7 @@ func removeAssignmentInputs() ResponseExpectation {
 
 func removeBootstrapInputs() ResponseExpectation {
 	expectation := expectationFor(ResponseRoleBootstrapper, ResponseConfigurationProposed)
-	expectation.Binding.ProjectConfiguration = implementationstate.EvidenceRef{}
+	expectation.Binding.ProjectConfiguration = implstate.EvidenceRef{}
 	return expectation
 }
 

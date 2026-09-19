@@ -1,6 +1,6 @@
 //go:build !windows
 
-package runstore
+package store
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestRejectsTraversalAndSymlinkedRunComponents(t *testing.T) {
@@ -16,7 +16,7 @@ func TestRejectsTraversalAndSymlinkedRunComponents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []implementationstate.RunID{"", "..", "../other", `..\\other`, "nested/run"} {
+	for _, id := range []implstate.RunID{"", "..", "../other", `..\\other`, "nested/run"} {
 		if _, err := store.Create(id); !errors.Is(err, ErrInvalidRunID) {
 			t.Fatalf("Create(%q) error = %v, want invalid run ID", id, err)
 		}

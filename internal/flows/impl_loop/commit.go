@@ -10,9 +10,9 @@ import (
 	"os/exec"
 	"strings"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // ErrAssignmentCommit identifies an invalid controller-owned commit step.
@@ -114,12 +114,12 @@ func (GitCommitControl) Commit(ctx context.Context, repository, message string) 
 // is the current implementation_ready response: a later repair replaces its
 // message naturally, and no agent is asked merely to draft a commit message.
 type CommitAcceptedAssignmentInput struct {
-	Run          *implementationstate.Run
+	Run          *implstate.Run
 	StateStore   *runstore.StateStore
 	Journal      *runstore.Run
 	Repository   string
-	AssignmentID implementationstate.AssignmentID
-	OperationID  implementationstate.OperationID
+	AssignmentID implstate.AssignmentID
+	OperationID  implstate.OperationID
 	Response     AgentResponse
 	// Preparation is the post-reflection workspace snapshot turned into Git
 	// facts by CommitPreparationFromSnapshot. It is controller evidence, not
@@ -133,8 +133,8 @@ type CommitAcceptedAssignmentInput struct {
 }
 
 type CommitAcceptedAssignmentResult struct {
-	Intent               implementationstate.CommitIntent
-	Commit               implementationstate.CommitEvidence
+	Intent               implstate.CommitIntent
+	Commit               implstate.CommitEvidence
 	ReacceptanceRequired bool
 }
 
@@ -175,7 +175,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 		if err != nil {
 			return CommitAcceptedAssignmentResult{}, err
 		}
-		intent = implementationstate.CommitIntent{OperationID: input.OperationID, ParentCommit: input.Preparation.ParentCommit, Tree: input.Preparation.Tree, Message: message}
+		intent = implstate.CommitIntent{OperationID: input.OperationID, ParentCommit: input.Preparation.ParentCommit, Tree: input.Preparation.Tree, Message: message}
 		if err := input.Run.SetPendingCommitIntent(input.AssignmentID, intent); err != nil {
 			return CommitAcceptedAssignmentResult{}, fmt.Errorf("%w: record commit intent: %v", ErrAssignmentCommit, err)
 		}
@@ -201,7 +201,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	if !commitMatchesIntent(intent, observed) || !commitHasExpectedTrailers(input.Run, input.AssignmentID, observed.Message) || !worktreeMatchesCommit(observed) {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("actual commit or working copy does not match accepted intent: commit=%q parent=%q tree=%q", observed.CommitID, observed.ParentCommit, observed.Tree))
 	}
-	commit := implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
+	commit := implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState, Basis: implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
 	beforeCompletion, err := cloneCommitRun(input.Run)
 	if err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: checkpoint run before completed commit: %v", ErrAssignmentCommit, err)
@@ -216,16 +216,16 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	return CommitAcceptedAssignmentResult{Intent: intent, Commit: commit}, nil
 }
 
-func pendingCommitIntent(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (implementationstate.CommitIntent, bool) {
+func pendingCommitIntent(run *implstate.Run, assignmentID implstate.AssignmentID) (implstate.CommitIntent, bool) {
 	assignment := assignmentByID(run, assignmentID)
-	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
-		return implementationstate.CommitIntent{}, false
+	if assignment == nil || assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		return implstate.CommitIntent{}, false
 	}
 	intent := assignment.Acceptance.PendingCommit
 	return intent, intent.OperationID != "" && intent.ParentCommit != "" && intent.Tree != "" && strings.TrimSpace(intent.Message) != ""
 }
 
-func commitMatchesIntent(intent implementationstate.CommitIntent, observed CommitObservation) bool {
+func commitMatchesIntent(intent implstate.CommitIntent, observed CommitObservation) bool {
 	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Tree == intent.Tree && observed.Message == intent.Message
 }
 
@@ -233,7 +233,7 @@ func worktreeMatchesCommit(observed CommitObservation) bool {
 	return observed.Worktree.HeadOID == observed.CommitID && observed.Worktree.TreeOID == observed.Tree
 }
 
-func commitHasExpectedTrailers(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, message string) bool {
+func commitHasExpectedTrailers(run *implstate.Run, assignmentID implstate.AssignmentID, message string) bool {
 	if run == nil {
 		return false
 	}
@@ -242,7 +242,7 @@ func commitHasExpectedTrailers(run *implementationstate.Run, assignmentID implem
 		hasExactlyOneTrailer(message, "Stepan-Operation", string(pendingOperationID(run, assignmentID)))
 }
 
-func pendingOperationID(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) implementationstate.OperationID {
+func pendingOperationID(run *implstate.Run, assignmentID implstate.AssignmentID) implstate.OperationID {
 	intent, ok := pendingCommitIntent(run, assignmentID)
 	if !ok {
 		return ""
@@ -266,19 +266,19 @@ func hasExactlyOneTrailer(message, key, value string) bool {
 // is durable. When it fails earlier, restoring this checkpoint prevents a
 // caller from treating an unrecorded intent or completed assignment as state
 // that recovery can rely on.
-func cloneCommitRun(run *implementationstate.Run) (*implementationstate.Run, error) {
+func cloneCommitRun(run *implstate.Run) (*implstate.Run, error) {
 	data, err := json.Marshal(run)
 	if err != nil {
 		return nil, err
 	}
-	var clone implementationstate.Run
+	var clone implstate.Run
 	if err := json.Unmarshal(data, &clone); err != nil {
 		return nil, err
 	}
 	return &clone, nil
 }
 
-func restoreUndurableCommitRun(run, before *implementationstate.Run, event implementationstate.Event) {
+func restoreUndurableCommitRun(run, before *implstate.Run, event implstate.Event) {
 	if run != nil && before != nil && event.Sequence == 0 {
 		*run = *before
 	}
@@ -289,14 +289,14 @@ func restoreUndurableCommitRun(run, before *implementationstate.Run, event imple
 // using acceptance evidence for the old tree. Message-only mismatches are
 // instead paused: reaccepting unchanged files could not create a corrective
 // commit, but the unexpected commit remains untouched for user reconciliation.
-func canReacceptChangedCommit(intent implementationstate.CommitIntent, observed CommitObservation) bool {
+func canReacceptChangedCommit(intent implstate.CommitIntent, observed CommitObservation) bool {
 	// Only the tree/worktree is allowed to differ for an ordinary hook. A
 	// changed parent, message, or HEAD is ambiguous Git control-state drift and
 	// must stay paused rather than being misclassified as safe reacceptance.
 	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Message == intent.Message && observed.Worktree.HeadOID == observed.CommitID && (observed.Tree != intent.Tree || observed.Worktree.TreeOID != observed.Tree)
 }
 
-func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentInput, intent implementationstate.CommitIntent, observed CommitObservation) (CommitAcceptedAssignmentResult, error) {
+func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentInput, intent implstate.CommitIntent, observed CommitObservation) (CommitAcceptedAssignmentResult, error) {
 	if input.Journal == nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, errors.New("hook changed commit content but no run journal is available to record the actual working state"))
 	}
@@ -304,12 +304,12 @@ func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentI
 	if err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("encode hook-modified working state: %w", err))
 	}
-	stateID := implementationstate.EvidenceID(fmt.Sprintf("%s-commit-reconciliation-state", input.OperationID))
+	stateID := implstate.EvidenceID(fmt.Sprintf("%s-commit-reconciliation-state", input.OperationID))
 	state, err := input.Journal.Publish(stateID, stateData)
 	if err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("publish hook-modified working state: %w", err))
 	}
-	reconciled := implementationstate.CommitEvidence{OperationID: input.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: state, Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
+	reconciled := implstate.CommitEvidence{OperationID: input.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit, Tree: observed.Tree, Message: observed.Message, State: state, Basis: implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}}
 	if err := input.Run.RecordReconciledCommit(input.AssignmentID, reconciled); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("record hook-created commit for reconciliation: %w", err))
 	}
@@ -326,13 +326,13 @@ func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentI
 // acceptance proves exactly the state published during reconciliation. The
 // current snapshot-derived preparation additionally proves that no later edit
 // requires a corrective child commit.
-func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implementationstate.CommitEvidence, bool, error) {
+func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implstate.CommitEvidence, bool, error) {
 	assignment := assignmentByID(input.Run, input.AssignmentID)
-	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
-		return implementationstate.CommitEvidence{}, false, nil
+	if assignment == nil || assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+		return implstate.CommitEvidence{}, false, nil
 	}
 	if len(assignment.ReconciledCommits) != 0 && input.Journal == nil {
-		return implementationstate.CommitEvidence{}, false, errors.New("run journal is required to verify retained hook-created commit")
+		return implstate.CommitEvidence{}, false, errors.New("run journal is required to verify retained hook-created commit")
 	}
 	for index := len(assignment.ReconciledCommits) - 1; index >= 0; index-- {
 		commit := assignment.ReconciledCommits[index]
@@ -343,18 +343,18 @@ func reusableReconciledCommit(input CommitAcceptedAssignmentInput) (implementati
 		// same snapshot. Verify both immutable artifacts, then compare their
 		// content identity (digest), not their transport IDs.
 		if err := input.Journal.VerifyReference(commit.State); err != nil {
-			return implementationstate.CommitEvidence{}, false, fmt.Errorf("verify reconciled state %q: %w", commit.State.ID, err)
+			return implstate.CommitEvidence{}, false, fmt.Errorf("verify reconciled state %q: %w", commit.State.ID, err)
 		}
 		if err := input.Journal.VerifyReference(assignment.Acceptance.State); err != nil {
-			return implementationstate.CommitEvidence{}, false, fmt.Errorf("verify accepted state %q: %w", assignment.Acceptance.State.ID, err)
+			return implstate.CommitEvidence{}, false, fmt.Errorf("verify accepted state %q: %w", assignment.Acceptance.State.ID, err)
 		}
 		return commit, true, nil
 	}
-	return implementationstate.CommitEvidence{}, false, nil
+	return implstate.CommitEvidence{}, false, nil
 }
 
-func finalizeReconciledCommit(ctx context.Context, input CommitAcceptedAssignmentInput, commit implementationstate.CommitEvidence) (CommitAcceptedAssignmentResult, error) {
-	intent := implementationstate.CommitIntent{OperationID: commit.OperationID, ParentCommit: commit.ParentCommit, Tree: commit.Tree, Message: commit.Message}
+func finalizeReconciledCommit(ctx context.Context, input CommitAcceptedAssignmentInput, commit implstate.CommitEvidence) (CommitAcceptedAssignmentResult, error) {
+	intent := implstate.CommitIntent{OperationID: commit.OperationID, ParentCommit: commit.ParentCommit, Tree: commit.Tree, Message: commit.Message}
 	assignment := assignmentByID(input.Run, input.AssignmentID)
 	if assignment == nil || assignment.Acceptance == nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: accepted assignment disappeared before reconciled completion", ErrAssignmentCommit)
@@ -396,7 +396,7 @@ func pauseCommitAwaitingRetry(ctx context.Context, input CommitAcceptedAssignmen
 	if checkpointErr != nil {
 		return fmt.Errorf("%w: checkpoint run before pause: %v", ErrAssignmentCommit, checkpointErr)
 	}
-	if input.Run.Status == implementationstate.RunActive {
+	if input.Run.Status == implstate.RunActive {
 		if err := input.Run.Pause(cause.Error()); err != nil {
 			return errors.Join(cause, fmt.Errorf("pause awaiting commit: %w", err))
 		}
@@ -418,9 +418,9 @@ func validateCommitAcceptedAssignmentInput(input CommitAcceptedAssignmentInput) 
 	return nil
 }
 
-func requireActiveCommitRun(run *implementationstate.Run) error {
-	if run == nil || run.Status != implementationstate.RunActive {
-		status := implementationstate.RunStatus("")
+func requireActiveCommitRun(run *implstate.Run) error {
+	if run == nil || run.Status != implstate.RunActive {
+		status := implstate.RunStatus("")
 		if run != nil {
 			status = run.Status
 		}
@@ -429,19 +429,19 @@ func requireActiveCommitRun(run *implementationstate.Run) error {
 	return nil
 }
 
-func messageForImplementationCommit(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, response AgentResponse) (string, error) {
+func messageForImplementationCommit(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, response AgentResponse) (string, error) {
 	if run == nil || response.Kind != ResponseImplementationReady || response.Message == nil || strings.TrimSpace(*response.Message) == "" {
 		return "", fmt.Errorf("%w: implementation_ready with a non-empty message is required", ErrAssignmentCommit)
 	}
 	assignment := assignmentByID(run, assignmentID)
-	if assignment == nil || assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !responseMatchesAcceptedAssignment(run, *assignment, response) {
+	if assignment == nil || assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil || !responseMatchesAcceptedAssignment(run, *assignment, response) {
 		return "", fmt.Errorf("%w: implementation response is not bound to the accepted assignment", ErrAssignmentCommit)
 	}
 	body := strings.TrimSpace(*response.Message)
 	return body + "\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: " + string(assignmentID) + "\nStepan-Operation: " + string(operationID), nil
 }
 
-func assignmentByID(run *implementationstate.Run, id implementationstate.AssignmentID) *implementationstate.Assignment {
+func assignmentByID(run *implstate.Run, id implstate.AssignmentID) *implstate.Assignment {
 	for index := range run.Assignments {
 		if run.Assignments[index].ID == id {
 			return &run.Assignments[index]
@@ -450,7 +450,7 @@ func assignmentByID(run *implementationstate.Run, id implementationstate.Assignm
 	return nil
 }
 
-func responseMatchesAcceptedAssignment(run *implementationstate.Run, assignment implementationstate.Assignment, response AgentResponse) bool {
+func responseMatchesAcceptedAssignment(run *implstate.Run, assignment implstate.Assignment, response AgentResponse) bool {
 	return response.Binding.RunID == run.Identity.ID && response.Binding.AssignmentID == assignment.ID && response.Binding.BriefID == assignment.Acceptance.BriefID && response.Binding.Specification == run.Identity.Specification && response.Binding.Configuration == run.Identity.Configuration && response.Binding.TaskList == run.Identity.TaskList && strings.TrimSpace(response.Binding.CallID) != ""
 }
 

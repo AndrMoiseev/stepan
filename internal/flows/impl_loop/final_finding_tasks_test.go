@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestFinalFindingsAppendDurableOrdinaryTasksWithoutReopeningCompletedWork(t *testing.T) {
@@ -66,13 +66,13 @@ func TestFinalFindingsAppendDurableOrdinaryTasksWithoutReopeningCompletedWork(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(added.Tasks) != 1 || !strings.Contains(orchestrator.messages[0], "F-1") || fixture.run.LeafStatus["task"] != implementationstate.TaskComplete || fixture.run.LeafStatus["final-fix"] != implementationstate.TaskPending || fixture.run.FinalReviewRounds != 1 {
+	if len(added.Tasks) != 1 || !strings.Contains(orchestrator.messages[0], "F-1") || fixture.run.LeafStatus["task"] != implstate.TaskComplete || fixture.run.LeafStatus["final-fix"] != implstate.TaskPending || fixture.run.FinalReviewRounds != 1 {
 		t.Fatalf("final finding did not become an ordinary pending task: added=%#v run=%#v message=%q", added, fixture.run, orchestrator.messages)
 	}
 	if finding := added.Tasks[0].FinalFindings; len(finding) != 1 || finding[0].ReviewResultID != review.ResultID || finding[0].FindingID != "F-1" {
 		t.Fatalf("task provenance = %#v", finding)
 	}
-	if err := fixture.run.StartAssignment("final-fix-assignment", []implementationstate.TaskID{"final-fix"}); err != nil {
+	if err := fixture.run.StartAssignment("final-fix-assignment", []implstate.TaskID{"final-fix"}); err != nil {
 		t.Fatalf("appended finding bypassed the ordinary assignment loop: %v", err)
 	}
 	completeFinalFindingAssignment(t, fixture.run, fixture.journal)
@@ -97,7 +97,7 @@ func TestFinalFindingsAppendDurableOrdinaryTasksWithoutReopeningCompletedWork(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.LeafStatus["task"] != implementationstate.TaskComplete || restarted.LeafStatus["final-fix"] != implementationstate.TaskComplete || len(restarted.Tasks[len(restarted.Tasks)-1].FinalFindings) != 1 || restarted.Status != implementationstate.RunSucceeded {
+	if restarted.LeafStatus["task"] != implstate.TaskComplete || restarted.LeafStatus["final-fix"] != implstate.TaskComplete || len(restarted.Tasks[len(restarted.Tasks)-1].FinalFindings) != 1 || restarted.Status != implstate.RunSucceeded {
 		t.Fatalf("durable appended tasks = %#v", restarted)
 	}
 }
@@ -132,14 +132,14 @@ func TestFinalFindingTasksExecutionBlockedPausesAndReloadsAfterOneCall(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Call.Response.Kind != ResponseExecutionBlocked || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || len(fixture.run.Tasks) != 1 {
+	if result.Call.Response.Kind != ResponseExecutionBlocked || len(runtime.messages) != 1 || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || fixture.run.ExecutionBlock.BlockedAction != "run required checks" || len(fixture.run.Tasks) != 1 {
 		t.Fatalf("execution_blocked did not durably pause final-task routing: result=%#v run=%#v", result, fixture.run)
 	}
 	restarted, _, err := fixture.state.Current(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted.Status != implementationstate.RunPaused || restarted.ExecutionBlock == nil || restarted.ExecutionBlock.Diagnostic != "tool is not installed" || len(restarted.Tasks) != 1 {
+	if restarted.Status != implstate.RunPaused || restarted.ExecutionBlock == nil || restarted.ExecutionBlock.Diagnostic != "tool is not installed" || len(restarted.Tasks) != 1 {
 		t.Fatalf("execution-blocked final-task route did not reload: %#v", restarted)
 	}
 }
@@ -156,7 +156,7 @@ func TestFinalFindingTasksClarificationClosesAndReloadsAfterOneCall(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Call.Response.Kind != ResponseClarificationNeeded || len(runtime.messages) != 1 || fixture.run.Status != implementationstate.RunClosed || !strings.Contains(fixture.run.CloseReason, "which behavior is required?") {
+	if result.Call.Response.Kind != ResponseClarificationNeeded || len(runtime.messages) != 1 || fixture.run.Status != implstate.RunClosed || !strings.Contains(fixture.run.CloseReason, "which behavior is required?") {
 		t.Fatalf("clarification did not close final-task routing: result=%#v run=%#v", result, fixture.run)
 	}
 	restarted, _, err := fixture.state.Current(context.Background())
@@ -164,7 +164,7 @@ func TestFinalFindingTasksClarificationClosesAndReloadsAfterOneCall(t *testing.T
 		t.Fatal(err)
 	}
 	durable := finalRunResult(restarted, "clarify-final-tasks-result")
-	if restarted.Status != implementationstate.RunClosed || !strings.Contains(restarted.CloseReason, "boundaries:") || durable == nil || durable.Status != implementationstate.ResultSucceeded || len(durable.Evidence) != 1 {
+	if restarted.Status != implstate.RunClosed || !strings.Contains(restarted.CloseReason, "boundaries:") || durable == nil || durable.Status != implstate.ResultSucceeded || len(durable.Evidence) != 1 {
 		t.Fatalf("clarification final-task route did not durably close: run=%#v result=%#v", restarted, durable)
 	}
 	receipt, err := fixture.journal.Read(durable.Evidence[0])
@@ -205,38 +205,38 @@ func newFailedFinalFindingTasksFixture(t *testing.T) (implementerTransitionFixtu
 	return fixture, review, filepath.ToSlash(tasksPath)
 }
 
-func completeFinalFindingAssignment(t *testing.T, run *implementationstate.Run, journal interface {
-	Publish(implementationstate.EvidenceID, []byte) (implementationstate.EvidenceRef, error)
+func completeFinalFindingAssignment(t *testing.T, run *implstate.Run, journal interface {
+	Publish(implstate.EvidenceID, []byte) (implstate.EvidenceRef, error)
 }) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	brief, err := journal.Publish("final-fix-brief", []byte("correct the final finding"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddBriefVersion("final-fix-assignment", implementationstate.BriefVersion{ID: "final-fix-brief", Number: 1, Document: brief}); err != nil {
+	if err := run.AddBriefVersion("final-fix-assignment", implstate.BriefVersion{ID: "final-fix-brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
 	for _, item := range []struct {
-		operation implementationstate.OperationID
-		result    implementationstate.ResultID
-		kind      implementationstate.OperationKind
-	}{{"final-fix-check", "final-fix-check-result", implementationstate.OperationCheck}, {"final-fix-review", "final-fix-review-result", implementationstate.OperationReview}} {
-		if err := run.AddOperation("final-fix-assignment", implementationstate.Operation{ID: item.operation, Kind: item.kind, BriefID: "final-fix-brief", Basis: basis}); err != nil {
+		operation implstate.OperationID
+		result    implstate.ResultID
+		kind      implstate.OperationKind
+	}{{"final-fix-check", "final-fix-check-result", implstate.OperationCheck}, {"final-fix-review", "final-fix-review-result", implstate.OperationReview}} {
+		if err := run.AddOperation("final-fix-assignment", implstate.Operation{ID: item.operation, Kind: item.kind, BriefID: "final-fix-brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := run.StartAssignmentAttempt("final-fix-assignment", item.operation); err != nil {
 			t.Fatal(err)
 		}
-		if err := run.AddResult("final-fix-assignment", implementationstate.OperationResult{ID: item.result, OperationID: item.operation, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		if err := run.AddResult("final-fix-assignment", implstate.OperationResult{ID: item.result, OperationID: item.operation, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	intent := implementationstate.CommitIntent{OperationID: "final-fix-commit", ParentCommit: "commit", Tree: "tree-after-final-fix", Message: "correct final finding"}
-	if err := run.AcceptAssignment("final-fix-assignment", implementationstate.AcceptanceEvidence{BriefID: "final-fix-brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"final-fix-check-result"}, ReviewResultID: "final-fix-review-result", PendingCommit: intent}); err != nil {
+	intent := implstate.CommitIntent{OperationID: "final-fix-commit", ParentCommit: "commit", Tree: "tree-after-final-fix", Message: "correct final finding"}
+	if err := run.AcceptAssignment("final-fix-assignment", implstate.AcceptanceEvidence{BriefID: "final-fix-brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"final-fix-check-result"}, ReviewResultID: "final-fix-review-result", PendingCommit: intent}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.CommitAssignment("final-fix-assignment", implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "final-fix-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.CommitAssignment("final-fix-assignment", implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "final-fix-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -254,7 +254,7 @@ func TestFinalReviewPausesBeforeFourthRound(t *testing.T) {
 		runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseChangesRequested)}}}
 		_, err := runFinalReviewerTurn(context.Background(), FinalReviewInput{
 			Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
-			CheckResult: "final-checks-result", OperationID: implementationstate.OperationID("final-review-" + string(rune('0'+round))), ResultID: implementationstate.ResultID("final-review-result-" + string(rune('0'+round))), CallID: "final-review-call-" + string(rune('0'+round)), RoundID: "round", Limits: controlledCallLimits(),
+			CheckResult: "final-checks-result", OperationID: implstate.OperationID("final-review-" + string(rune('0'+round))), ResultID: implstate.ResultID("final-review-result-" + string(rune('0'+round))), CallID: "final-review-call-" + string(rune('0'+round)), RoundID: "round", Limits: controlledCallLimits(),
 		}, &AgentSession{Role: ResponseRoleFinalReviewer, runtime: runtime, thread: "final-reviewer"}, "base")
 		if err != nil {
 			t.Fatalf("round %d: %v", round, err)
@@ -265,7 +265,7 @@ func TestFinalReviewPausesBeforeFourthRound(t *testing.T) {
 		Workspace: &unchangedWorkspaceControl{}, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
 		CheckResult: "final-checks-result", OperationID: "final-review-4", ResultID: "final-review-result-4", CallID: "final-review-call-4", RoundID: "round", Limits: controlledCallLimits(),
 	}, &AgentSession{Role: ResponseRoleFinalReviewer, runtime: fourth, thread: "final-reviewer"}, "base")
-	if !errors.Is(err, implementationstate.ErrLimitExceeded) || fixture.run.Status != implementationstate.RunPaused || fixture.run.LimitPause == nil || fixture.run.FinalReviewRounds != 3 || len(fourth.messages) != 0 {
+	if !errors.Is(err, implstate.ErrLimitExceeded) || fixture.run.Status != implstate.RunPaused || fixture.run.LimitPause == nil || fixture.run.FinalReviewRounds != 3 || len(fourth.messages) != 0 {
 		t.Fatalf("fourth final review was not paused before dispatch: error=%v run=%#v messages=%#v", err, fixture.run, fourth.messages)
 	}
 }

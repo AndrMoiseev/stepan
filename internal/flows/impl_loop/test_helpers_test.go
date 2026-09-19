@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func mustControllerStore(t *testing.T, root string) *runstore.Store {

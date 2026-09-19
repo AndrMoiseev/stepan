@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -43,7 +43,7 @@ type AssignmentDiff struct {
 type WorkspaceCheckObserver struct {
 	repository     string
 	workspace      WorkspaceControl
-	run            *implementationstate.Run
+	run            *implstate.Run
 	journal        *runstore.Run
 	protectedPaths []string
 	diff           AssignmentDiff
@@ -59,7 +59,7 @@ type WorkspaceCheckObserver struct {
 
 // NewWorkspaceCheckObserver captures the assignment's initial candidate
 // state. The caller must retain one observer for the complete assignment.
-func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *implementationstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
+func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *implstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
 	return NewWorkspaceCheckObserverWithControl(ctx, GitWorkspaceControl{}, repository, run, journal, protectedPaths)
 }
 
@@ -67,7 +67,7 @@ func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *impl
 // seam. Production uses GitWorkspaceControl; orchestration tests can supply a
 // deterministic adapter while real mutation/restore behavior remains covered
 // by the default constructor's contract tests.
-func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
+func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace WorkspaceControl, repository string, run *implstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
 	if strings.TrimSpace(repository) == "" {
 		return nil, errors.New("workspace check observer requires a repository")
 	}
@@ -225,7 +225,7 @@ func (o *WorkspaceCheckObserver) AfterCheck(ctx context.Context, name string) er
 // ObserveCheckedState records the durable state only after publishing it. A
 // publisher failure is deliberately handled by the caller as execution
 // blocked, never by creating a synthetic or missing EvidenceRef.
-func (o *WorkspaceCheckObserver) ObserveCheckedState(state implementationstate.EvidenceRef) error {
+func (o *WorkspaceCheckObserver) ObserveCheckedState(state implstate.EvidenceRef) error {
 	if o == nil || !o.candidateChanged || o.run == nil {
 		return nil
 	}
@@ -256,8 +256,8 @@ func protectedCheckPaths(paths, protected []string) []string {
 }
 
 func (o *WorkspaceCheckObserver) block(cause error) error {
-	if o != nil && o.run != nil && o.run.Status == implementationstate.RunActive {
-		block := implementationstate.ExecutionBlock{
+	if o != nil && o.run != nil && o.run.Status == implstate.RunActive {
+		block := implstate.ExecutionBlock{
 			BlockedAction:      "safely observe or restore check-generated file changes",
 			Diagnostic:         cause.Error(),
 			Attempts:           []string{"captured the check workspace delta and could not safely recover it"},

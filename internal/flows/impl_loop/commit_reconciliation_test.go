@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
@@ -29,19 +29,19 @@ func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
 	if !reconciled.Retry || reconciled.Adopted || observer.calls != 1 {
 		t.Fatalf("pre-commit reconciliation = %#v, observations=%d", reconciled, observer.calls)
 	}
-	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit {
+	if run.Status != implstate.RunActive || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
 		t.Fatalf("safe retry changed accepted state: %#v", run)
 	}
 }
 
 func TestReconcilePendingCommitDoesNotReturnRetryWhileRunIsInactive(t *testing.T) {
-	for _, status := range []implementationstate.RunStatus{implementationstate.RunPaused, implementationstate.RunClosed} {
+	for _, status := range []implstate.RunStatus{implstate.RunPaused, implstate.RunClosed} {
 		t.Run(string(status), func(t *testing.T) {
 			repository := newFilesystemWorkspace(t)
 			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
 			defer stateStore.Close()
 			intent := persistPendingCommit(t, run, stateStore)
-			if status == implementationstate.RunPaused {
+			if status == implstate.RunPaused {
 				if err := run.Pause("waiting for user"); err != nil {
 					t.Fatal(err)
 				}
@@ -82,7 +82,7 @@ func TestReconcilePendingCommitAdoptsMatchingCommitOnlyOnce(t *testing.T) {
 		t.Fatalf("matching commit was not adopted: %#v", first)
 	}
 	parent, _ := run.TaskStatus("parent")
-	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete || parent != implementationstate.TaskComplete {
+	if run.Assignments[0].Status != implstate.AssignmentCommitted || run.LeafStatus["A"] != implstate.TaskComplete || parent != implstate.TaskComplete {
 		t.Fatalf("matching commit did not complete machine accounting: %#v", run)
 	}
 	second, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -109,7 +109,7 @@ func TestReconcilePendingCommitPausesWhenGitFactsAreAmbiguous(t *testing.T) {
 	if !errors.Is(err, ErrPendingCommitAmbiguous) {
 		t.Fatalf("ambiguous Git facts error = %v", err)
 	}
-	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit {
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
 		t.Fatalf("ambiguous reconciliation changed commit accounting: %#v", run)
 	}
 }
@@ -137,7 +137,7 @@ func TestReconcilePendingCommitPausesWhenExactGitFactsLackRequiredTrailer(t *tes
 	if !errors.Is(err, ErrPendingCommitAmbiguous) {
 		t.Fatalf("wrong service trailer error = %v", err)
 	}
-	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("wrong trailer changed accounting instead of pausing: %#v", run)
 	}
 }
@@ -160,15 +160,15 @@ func TestReconcilePendingCommitRestoresCallerStateWhenAccountingCannotBePersiste
 	if !errors.Is(err, ErrAssignmentCommit) {
 		t.Fatalf("reconcile with closed store error = %v", err)
 	}
-	if run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit {
+	if run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
 		t.Fatalf("undurable accounting advanced caller state: %#v", run)
 	}
 }
 
-func persistPendingCommit(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore) implementationstate.CommitIntent {
+func persistPendingCommit(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore) implstate.CommitIntent {
 	t.Helper()
 	acceptCommitFixture(t, stateStore, run)
-	intent := implementationstate.CommitIntent{
+	intent := implstate.CommitIntent{
 		OperationID: "commit-1", ParentCommit: "parent", Tree: "accepted-tree",
 		Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1",
 	}

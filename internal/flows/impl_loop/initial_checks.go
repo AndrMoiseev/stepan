@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -21,7 +21,7 @@ const initialRequiredChecksPauseReason = "initial required checks did not pass"
 // dependency: an unhealthy starting project is a user decision, not new
 // implementation scope.
 type InitialRequiredChecks struct {
-	Run        *implementationstate.Run
+	Run        *implstate.Run
 	Workspace  WorkspaceControl
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
@@ -36,8 +36,8 @@ type InitialRequiredChecks struct {
 	// first configured check; this limit keeps that recovery finite.
 	MaxCycles      int
 	ProtectedPaths []string
-	Operation      implementationstate.OperationID
-	Result         implementationstate.ResultID
+	Operation      implstate.OperationID
+	Result         implstate.ResultID
 }
 
 // InitialRequiredChecksResult exposes the bounded diagnostics that a UI can
@@ -47,7 +47,7 @@ type InitialRequiredChecksResult struct {
 	Set         CheckSet
 	Convergence RequiredCheckConvergence
 	Diagnostic  string
-	Evidence    implementationstate.EvidenceRef
+	Evidence    implstate.EvidenceRef
 }
 
 // RunInitialRequiredChecks runs the complete configured required set once on
@@ -59,29 +59,29 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	if err := validateInitialRequiredChecks(input); err != nil {
 		return InitialRequiredChecksResult{}, err
 	}
-	basis := implementationstate.AcceptanceBasis{
+	basis := implstate.AcceptanceBasis{
 		Specification: input.Run.Identity.Specification,
 		Configuration: input.Run.Identity.Configuration,
 	}
 	existing := finalRunOperation(input.Run, input.Operation)
 	if existing == nil {
-		if err := input.Run.AddRunOperation(implementationstate.Operation{
-			ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis,
-			Description: "initial required checks", Counter: implementationstate.CycleCounterNone,
+		if err := input.Run.AddRunOperation(implstate.Operation{
+			ID: input.Operation, Kind: implstate.OperationCheck, Basis: basis,
+			Description: "initial required checks", Counter: implstate.CycleCounterNone,
 		}); err != nil {
 			return InitialRequiredChecksResult{}, fmt.Errorf("%w: create baseline operation: %v", ErrInitialRequiredChecks, err)
 		}
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
 			return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline operation: %v", ErrInitialRequiredChecks, err)
 		}
-	} else if existing.Kind != implementationstate.OperationCheck || existing.Basis != basis || existing.Description != "initial required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationCheck || existing.Basis != basis || existing.Description != "initial required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: baseline operation cannot be resumed", ErrInitialRequiredChecks)
 	}
 	if _, _, err := input.StateStore.RecordRunAttemptStart(ctx, input.Run, input.Operation); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: reserve baseline check attempt: %v", ErrInitialRequiredChecks, err)
 	}
 
-	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implementationstate.EvidenceID(input.Result))
+	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implstate.EvidenceID(input.Result))
 	if err != nil {
 		return pauseInitialChecks(ctx, input, InitialRequiredChecksResult{}, fmt.Errorf("create baseline check publisher: %w", err))
 	}
@@ -105,30 +105,30 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 		return pauseInitialChecks(persistenceContext, input, result, fmt.Errorf("publish baseline check diagnostics: %w", publishErr))
 	}
 
-	status := implementationstate.ResultSucceeded
-	outcome := implementationstate.AttemptSucceeded
+	status := implstate.ResultSucceeded
+	outcome := implstate.AttemptSucceeded
 	if runErr != nil || !set.Succeeded() {
-		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
+		status, outcome = implstate.ResultFailed, implstate.AttemptFailed
 		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
-			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
+			status, outcome = implstate.ResultInterrupted, implstate.AttemptInterrupted
 		}
 	}
 	if _, err := input.StateStore.RecordRunAttemptOutcome(persistenceContext, input.Run, input.Operation, outcome, diagnostic); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline check outcome: %v", ErrInitialRequiredChecks, err)
 	}
 	state := finalInitialCheckedState(input.Run.CurrentState, set)
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{
+	if err := input.Run.AddRunResult(implstate.OperationResult{
 		ID: input.Result, OperationID: input.Operation, Status: status, State: state, Basis: basis,
 		Evidence: initialCheckEvidenceRefs(evidence, set),
 	}); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: record baseline check result: %v", ErrInitialRequiredChecks, err)
 	}
-	if state != input.Run.CurrentState && input.Run.Status == implementationstate.RunActive {
+	if state != input.Run.CurrentState && input.Run.Status == implstate.RunActive {
 		if err := input.Run.ObserveCodeState(state); err != nil {
 			return InitialRequiredChecksResult{}, fmt.Errorf("%w: record checked baseline state: %v", ErrInitialRequiredChecks, err)
 		}
 	}
-	if status == implementationstate.ResultSucceeded {
+	if status == implstate.ResultSucceeded {
 		if err := input.Run.RecordInitialBaselinePass(input.Operation, input.Result); err != nil {
 			return InitialRequiredChecksResult{}, fmt.Errorf("%w: record passed initial baseline: %v", ErrInitialRequiredChecks, err)
 		}
@@ -136,7 +136,7 @@ func RunInitialRequiredChecks(ctx context.Context, input InitialRequiredChecks) 
 	if _, err := input.StateStore.Record(persistenceContext, input.Run); err != nil {
 		return InitialRequiredChecksResult{}, fmt.Errorf("%w: persist baseline check result: %v", ErrInitialRequiredChecks, err)
 	}
-	if status != implementationstate.ResultSucceeded {
+	if status != implstate.ResultSucceeded {
 		if UserOperationInterrupted(checkContext) {
 			return result, ErrUserOperationInterrupted
 		}
@@ -156,14 +156,14 @@ func validateInitialRequiredChecks(input InitialRequiredChecks) error {
 	if input.Run == nil || input.StateStore == nil || input.Journal == nil || input.Runner == nil || strings.TrimSpace(input.Repository) == "" || input.Operation == "" || input.Result == "" {
 		return fmt.Errorf("%w: run, store, journal, repository, runner, operation, and result are required", ErrInitialRequiredChecks)
 	}
-	if input.Run.Status != implementationstate.RunActive || input.Run.TaskExtractionPending || len(input.Run.Tasks) == 0 || len(input.Run.Assignments) != 0 || input.MaxCycles <= 0 {
+	if input.Run.Status != implstate.RunActive || input.Run.TaskExtractionPending || len(input.Run.Tasks) == 0 || len(input.Run.Assignments) != 0 || input.MaxCycles <= 0 {
 		return fmt.Errorf("%w: checks must run once after extraction on the current initial baseline", ErrInitialRequiredChecks)
 	}
 	return nil
 }
 
 func pauseInitialChecks(ctx context.Context, input InitialRequiredChecks, result InitialRequiredChecksResult, cause error) (InitialRequiredChecksResult, error) {
-	if input.Run.Status == implementationstate.RunActive {
+	if input.Run.Status == implstate.RunActive {
 		diagnostic := strings.TrimSpace(result.Diagnostic)
 		if diagnostic == "" && cause != nil {
 			diagnostic = cause.Error()
@@ -189,7 +189,7 @@ func pauseInitialChecks(ctx context.Context, input InitialRequiredChecks, result
 	return result, cause
 }
 
-func finalInitialCheckedState(fallback implementationstate.EvidenceRef, set CheckSet) implementationstate.EvidenceRef {
+func finalInitialCheckedState(fallback implstate.EvidenceRef, set CheckSet) implstate.EvidenceRef {
 	state := fallback
 	for _, result := range set.Results {
 		if result.Presentation != nil {
@@ -199,8 +199,8 @@ func finalInitialCheckedState(fallback implementationstate.EvidenceRef, set Chec
 	return state
 }
 
-func initialCheckEvidenceRefs(summary implementationstate.EvidenceRef, set CheckSet) []implementationstate.EvidenceRef {
-	references := []implementationstate.EvidenceRef{summary}
+func initialCheckEvidenceRefs(summary implstate.EvidenceRef, set CheckSet) []implstate.EvidenceRef {
+	references := []implstate.EvidenceRef{summary}
 	for _, result := range set.Results {
 		if result.Presentation == nil {
 			continue
@@ -235,7 +235,7 @@ func initialCheckSet(convergence RequiredCheckConvergence) CheckSet {
 	return convergence.Cycles[len(convergence.Cycles)-1].Set
 }
 
-func publishInitialCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, convergence RequiredCheckConvergence, setErr error) (implementationstate.EvidenceRef, error) {
+func publishInitialCheckEvidence(journal *runstore.Run, id implstate.ResultID, convergence RequiredCheckConvergence, setErr error) (implstate.EvidenceRef, error) {
 	evidence := initialCheckSetEvidence{Kind: CheckSetRequired}
 	if setErr != nil {
 		evidence.Error = setErr.Error()
@@ -254,9 +254,9 @@ func publishInitialCheckEvidence(journal *runstore.Run, id implementationstate.R
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(id)+"-diagnostics"), data)
+	return journal.Publish(implstate.EvidenceID(string(id)+"-diagnostics"), data)
 }
 
 func initialCheckDiagnostic(set CheckSet, setErr error) string {

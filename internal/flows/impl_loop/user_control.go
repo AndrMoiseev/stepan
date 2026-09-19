@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var (
@@ -38,7 +38,7 @@ var (
 // type directly; ControlledCheckRunner adapts configured commands.
 type UserRunControl struct {
 	mu            sync.Mutex
-	run           *implementationstate.Run
+	run           *implstate.Run
 	stateStore    *runstore.StateStore
 	active        *userControlledOperation
 	transitioning bool
@@ -52,7 +52,7 @@ type userControlledOperation struct {
 
 // NewUserRunControl creates the process-local control boundary for one
 // already-open durable run.
-func NewUserRunControl(run *implementationstate.Run, stateStore *runstore.StateStore) (*UserRunControl, error) {
+func NewUserRunControl(run *implstate.Run, stateStore *runstore.StateStore) (*UserRunControl, error) {
 	if run == nil || stateStore == nil {
 		return nil, errors.New("implementation user control requires run and state store")
 	}
@@ -76,8 +76,8 @@ func (control *UserRunControl) BeginOperation(parent context.Context) (context.C
 	if control.transitioning {
 		return nil, nil, ErrUserControlTransitioning
 	}
-	if control.run.Status != implementationstate.RunActive {
-		return nil, nil, fmt.Errorf("%w: only an active run can start an operation", implementationstate.ErrInvalidTransition)
+	if control.run.Status != implstate.RunActive {
+		return nil, nil, fmt.Errorf("%w: only an active run can start an operation", implstate.ErrInvalidTransition)
 	}
 	if control.active != nil {
 		return nil, nil, ErrUserControlBusy
@@ -101,7 +101,7 @@ func (control *UserRunControl) BeginOperation(parent context.Context) (context.C
 // Pause interrupts an active operation, if any, and durably records a
 // resumable user pause. It intentionally performs no Git reset, checkout, or
 // workspace restoration. A normal pause does not reset counters; that policy
-// remains in implementationstate.Resume for limit pauses only.
+// remains in implstate.Resume for limit pauses only.
 func (control *UserRunControl) Pause(ctx context.Context, reason string) error {
 	return control.transition(ctx, reason, false)
 }
@@ -127,7 +127,7 @@ func (control *UserRunControl) transition(ctx context.Context, reason string, cl
 	}
 	if !mayUserTransition(control.run.Status, closeRun) {
 		control.mu.Unlock()
-		return fmt.Errorf("%w: run cannot be user-%s", implementationstate.ErrInvalidTransition, userTransitionName(closeRun))
+		return fmt.Errorf("%w: run cannot be user-%s", implstate.ErrInvalidTransition, userTransitionName(closeRun))
 	}
 	control.transitioning = true
 	active := control.active
@@ -147,7 +147,7 @@ func (control *UserRunControl) transition(ctx context.Context, reason string, cl
 	defer control.mu.Unlock()
 	defer func() { control.transitioning = false }()
 	if !mayUserTransition(control.run.Status, closeRun) {
-		return fmt.Errorf("%w: run changed while user-%s was in progress", implementationstate.ErrInvalidTransition, userTransitionName(closeRun))
+		return fmt.Errorf("%w: run changed while user-%s was in progress", implstate.ErrInvalidTransition, userTransitionName(closeRun))
 	}
 	candidate, err := userControlCandidate(control.run)
 	if err != nil {
@@ -180,11 +180,11 @@ func UserOperationInterrupted(ctx context.Context) bool {
 	return ctx != nil && errors.Is(context.Cause(ctx), ErrUserOperationInterrupted)
 }
 
-func mayUserTransition(status implementationstate.RunStatus, closeRun bool) bool {
+func mayUserTransition(status implstate.RunStatus, closeRun bool) bool {
 	if closeRun {
-		return status == implementationstate.RunActive || status == implementationstate.RunPaused
+		return status == implstate.RunActive || status == implstate.RunPaused
 	}
-	return status == implementationstate.RunActive
+	return status == implstate.RunActive
 }
 
 func userTransitionName(closeRun bool) string {
@@ -194,8 +194,8 @@ func userTransitionName(closeRun bool) string {
 	return "pause"
 }
 
-func userControlCandidate(run *implementationstate.Run) (*implementationstate.Run, error) {
-	event, err := implementationstate.NewRunStateEvent(1, run)
+func userControlCandidate(run *implstate.Run) (*implstate.Run, error) {
+	event, err := implstate.NewRunStateEvent(1, run)
 	if err != nil {
 		return nil, err
 	}

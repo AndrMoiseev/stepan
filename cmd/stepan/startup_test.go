@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestDiscoverImplementationStartupLeavesMissingStoreUntouched(t *testing.T) {
@@ -29,7 +29,7 @@ func TestDiscoverImplementationStartupLeavesMissingStoreUntouched(t *testing.T) 
 
 func TestDiscoveredImplementationStartupOnlyRecoversAfterResume(t *testing.T) {
 	startup := &impl_loop.StartupRun{
-		Run:              &implementationstate.Run{Status: implementationstate.RunActive},
+		Run:              &implstate.Run{Status: implstate.RunActive},
 		Summary:          impl_loop.StartupSummary{Change: "change", Lifecycle: impl_loop.LifecyclePaused},
 		RecoveryRequired: true,
 	}
@@ -38,7 +38,7 @@ func TestDiscoveredImplementationStartupOnlyRecoversAfterResume(t *testing.T) {
 	continued := 0
 	err := runDiscoveredImplementationInteractive(context.Background(), startup, ui, func(context.Context) (*impl_loop.InteractiveRun, error) {
 		recoveries++
-		run := &implementationstate.Run{Status: implementationstate.RunPaused}
+		run := &implstate.Run{Status: implstate.RunPaused}
 		return &impl_loop.InteractiveRun{Run: run, Resume: func(context.Context, impl_loop.ResumeInput) (impl_loop.ResumeResult, error) {
 			return impl_loop.ResumeResult{}, run.Resume()
 		}}, nil

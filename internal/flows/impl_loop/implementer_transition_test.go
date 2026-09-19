@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -26,7 +26,7 @@ func TestImplementerChecksRequestedReturnsConfiguredResultsToContinuation(t *tes
 		t.Fatalf("requested feedback = %#v", result)
 	}
 	assertRunOrder(t, fixture.runner, "test_auth")
-	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+	if fixture.run.Assignments[0].Status != implstate.AssignmentActive || fixture.run.LeafStatus["task"] != implstate.TaskPending {
 		t.Fatalf("checks_requested changed task lifecycle: %#v", fixture.run.Assignments[0])
 	}
 	if got := fixture.run.Assignments[0].Counters.ChecksRequested; got != 1 {
@@ -55,13 +55,13 @@ func TestImplementerReadyAlwaysRunsFullRequiredSetWithoutCompletingAssignment(t 
 		t.Fatalf("required result = %#v", result)
 	}
 	assertRunOrder(t, fixture.runner, "test_auth", "lint", "test_all")
-	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+	if fixture.run.Assignments[0].Status != implstate.AssignmentActive || fixture.run.LeafStatus["task"] != implstate.TaskPending {
 		t.Fatalf("implementation_ready accepted or completed assignment: %#v", fixture.run.Assignments[0])
 	}
 	if got := fixture.run.Assignments[0].Counters.ChecksRequested; got != 1 {
 		t.Fatalf("prior requested counter = %d, want 1", got)
 	}
-	if len(fixture.run.Assignments[0].Results) != 2 || fixture.run.Assignments[0].Results[1].Status != implementationstate.ResultSucceeded {
+	if len(fixture.run.Assignments[0].Results) != 2 || fixture.run.Assignments[0].Results[1].Status != implstate.ResultSucceeded {
 		t.Fatalf("durable required result = %#v", fixture.run.Assignments[0].Results)
 	}
 }
@@ -70,14 +70,14 @@ func TestImplementerChecksRequestedHasSeparateFiveRequestLimit(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
 	for index := 1; index <= 4; index++ {
-		operation := implementationstate.OperationID("prior-request-" + strconv.Itoa(index))
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: operation, Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Counter: implementationstate.CycleCounterChecksRequested}); err != nil {
+		operation := implstate.OperationID("prior-request-" + strconv.Itoa(index))
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: operation, Kind: implstate.OperationCheck, BriefID: "brief", Basis: implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}, Counter: implstate.CycleCounterChecksRequested}); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := fixture.state.RecordAssignmentAttemptStartWithLimits(context.Background(), fixture.run, "assignment", operation, controlledCallLimits()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := fixture.state.RecordAssignmentAttemptOutcome(context.Background(), fixture.run, "assignment", operation, implementationstate.AttemptSucceeded, "prior completed request"); err != nil {
+		if _, err := fixture.state.RecordAssignmentAttemptOutcome(context.Background(), fixture.run, "assignment", operation, implstate.AttemptSucceeded, "prior completed request"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -85,12 +85,12 @@ func TestImplementerChecksRequestedHasSeparateFiveRequestLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := ApplyImplementerTransition(context.Background(), fixture.input("requested-6", "requested-result-6"), fixture.response(ResponseChecksRequested, []string{"lint"}))
-	if !errors.Is(err, implementationstate.ErrLimitExceeded) || fixture.run.Status != implementationstate.RunPaused {
+	if !errors.Is(err, implstate.ErrLimitExceeded) || fixture.run.Status != implstate.RunPaused {
 		t.Fatalf("sixth requested check = %v, run=%#v", err, fixture.run)
 	}
 	assertRunOrder(t, fixture.runner, "lint")
 	current, _, err := runstore.ReadJournalCurrent(fixture.journal)
-	if err != nil || current.Status != implementationstate.RunPaused || current.Assignments[0].Counters.ChecksRequested != 5 {
+	if err != nil || current.Status != implstate.RunPaused || current.Assignments[0].Counters.ChecksRequested != 5 {
 		t.Fatalf("durable five-request limit = %#v, %v", current, err)
 	}
 }
@@ -108,10 +108,10 @@ func TestUserControlWaitsForFullImplementerCheckBookkeepingBeforePauseOrClose(t 
 	for _, test := range []struct {
 		name       string
 		transition func(*UserRunControl) error
-		wantStatus implementationstate.RunStatus
+		wantStatus implstate.RunStatus
 	}{
-		{"pause", func(control *UserRunControl) error { return control.Pause(context.Background(), "user paused command") }, implementationstate.RunPaused},
-		{"close", func(control *UserRunControl) error { return control.Close(context.Background(), "user closed command") }, implementationstate.RunClosed},
+		{"pause", func(control *UserRunControl) error { return control.Pause(context.Background(), "user paused command") }, implstate.RunPaused},
+		{"close", func(control *UserRunControl) error { return control.Close(context.Background(), "user closed command") }, implstate.RunClosed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newImplementerTransitionFixture(t)
@@ -150,7 +150,7 @@ func TestUserControlWaitsForFullImplementerCheckBookkeepingBeforePauseOrClose(t 
 				t.Fatal(err)
 			}
 			assignment := persisted.Assignments[0]
-			if persisted.Status != test.wantStatus || len(assignment.Operations) != 1 || len(assignment.Operations[0].Attempts) != 1 || assignment.Operations[0].Attempts[0].Outcome != implementationstate.AttemptInterrupted || len(assignment.Results) != 1 || assignment.Results[0].Status != implementationstate.ResultInterrupted {
+			if persisted.Status != test.wantStatus || len(assignment.Operations) != 1 || len(assignment.Operations[0].Attempts) != 1 || assignment.Operations[0].Attempts[0].Outcome != implstate.AttemptInterrupted || len(assignment.Results) != 1 || assignment.Results[0].Status != implstate.ResultInterrupted {
 				t.Fatalf("durable user interruption = %#v", persisted)
 			}
 			captures, differences := workspace.captures, workspace.diffs
@@ -159,11 +159,11 @@ func TestUserControlWaitsForFullImplementerCheckBookkeepingBeforePauseOrClose(t 
 			if err != nil || laterSequence != sequence || workspace.captures != captures || workspace.diffs != differences || len(later.Assignments[0].Results) != 1 {
 				t.Fatalf("route wrote after user command returned: sequence %d -> %d, workspace %d/%d -> %d/%d, state=%#v, error=%v", sequence, laterSequence, captures, differences, workspace.captures, workspace.diffs, later, err)
 			}
-			if test.wantStatus == implementationstate.RunPaused {
+			if test.wantStatus == implstate.RunPaused {
 				if err := persisted.Resume(); err != nil {
 					t.Fatalf("paused run did not remain resumable: %v", err)
 				}
-			} else if err := persisted.Resume(); !errors.Is(err, implementationstate.ErrInvalidTransition) {
+			} else if err := persisted.Resume(); !errors.Is(err, implstate.ErrInvalidTransition) {
 				t.Fatalf("closed run resumed: %v", err)
 			}
 		})
@@ -171,7 +171,7 @@ func TestUserControlWaitsForFullImplementerCheckBookkeepingBeforePauseOrClose(t 
 }
 
 type implementerTransitionFixture struct {
-	run        *implementationstate.Run
+	run        *implstate.Run
 	state      *runstore.StateStore
 	journal    *runstore.Run
 	repository string
@@ -191,14 +191,14 @@ func newImplementerTransitionFixture(t *testing.T) implementerTransitionFixture 
 		t.Fatal(err)
 	}
 	runner.commands = nil
-	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief, err := journal.Publish("brief", []byte("brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := run.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.Record(context.Background(), run); err != nil {
@@ -215,6 +215,6 @@ func (fixture implementerTransitionFixture) response(kind ResponseKind, names []
 	return AgentResponse{Kind: kind, CheckNames: names, Binding: fixture.binding()}
 }
 
-func (fixture implementerTransitionFixture) input(operation implementationstate.OperationID, result implementationstate.ResultID) ImplementerTransitionInput {
+func (fixture implementerTransitionFixture) input(operation implstate.OperationID, result implstate.ResultID) ImplementerTransitionInput {
 	return ImplementerTransitionInput{Run: fixture.run, Workspace: &unchangedWorkspaceControl{}, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository, AssignmentID: "assignment", BriefID: "brief", Selection: fixture.selection, Runner: fixture.runner, Limits: controlledCallLimits(), OperationID: operation, ResultID: result}
 }

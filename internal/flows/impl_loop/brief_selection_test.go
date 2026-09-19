@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestExecuteBriefSelectionAcceptsContiguousInitialPrefixesAndPersistsAssignment(t *testing.T) {
-	for _, selection := range [][]implementationstate.TaskID{{"A"}, {"A", "B"}, {"A", "B", "C"}} {
+	for _, selection := range [][]implstate.TaskID{{"A"}, {"A", "B"}, {"A", "B", "C"}} {
 		t.Run(joinTaskIDs(selection), func(t *testing.T) {
 			run, stateStore, journal, repository, expectation := newBriefSelectionFixture(t)
 			defer stateStore.Close()
@@ -28,7 +28,7 @@ func TestExecuteBriefSelectionAcceptsContiguousInitialPrefixesAndPersistsAssignm
 			if result.AssignmentID != "assignment-1" || !reflect.DeepEqual(result.TaskIDs, selection) || result.Call.Attempts != 1 {
 				t.Fatalf("selection result = %#v", result)
 			}
-			if len(run.Assignments) != 1 || run.Assignments[0].ID != "assignment-1" || run.Assignments[0].Status != implementationstate.AssignmentActive || !reflect.DeepEqual(run.Assignments[0].TaskIDs, selection) {
+			if len(run.Assignments) != 1 || run.Assignments[0].ID != "assignment-1" || run.Assignments[0].Status != implstate.AssignmentActive || !reflect.DeepEqual(run.Assignments[0].TaskIDs, selection) {
 				t.Fatalf("assignment was not created from selection: %#v", run.Assignments)
 			}
 			current, _, err := runstore.ReadJournalCurrent(journal)
@@ -43,7 +43,7 @@ func TestExecuteBriefSelectionAcceptsContiguousInitialPrefixesAndPersistsAssignm
 }
 
 func TestExecuteBriefSelectionRejectsGapsParentsAndPartialTasksBeforeAssignment(t *testing.T) {
-	for _, selection := range [][]implementationstate.TaskID{{"B"}, {"A", "C"}, {"root"}, {"A-part"}} {
+	for _, selection := range [][]implstate.TaskID{{"B"}, {"A", "C"}, {"root"}, {"A-part"}} {
 		t.Run(joinTaskIDs(selection), func(t *testing.T) {
 			run, stateStore, journal, repository, expectation := newBriefSelectionFixture(t)
 			defer stateStore.Close()
@@ -52,17 +52,17 @@ func TestExecuteBriefSelectionRejectsGapsParentsAndPartialTasksBeforeAssignment(
 			}
 			runtime := &controlledCallRuntime{turns: []controlledTurn{
 				{raw: briefReadyResponse(t, selection)},
-				{raw: briefReadyResponse(t, []implementationstate.TaskID{"A"})},
+				{raw: briefReadyResponse(t, []implstate.TaskID{"A"})},
 			}}
 			result, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("assignment-1", run, stateStore, journal, repository, expectation, runtime))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Call.Attempts != 2 || len(runtime.messages) != 2 || len(run.Assignments) != 1 || !reflect.DeepEqual(run.Assignments[0].TaskIDs, []implementationstate.TaskID{"A"}) {
+			if result.Call.Attempts != 2 || len(runtime.messages) != 2 || len(run.Assignments) != 1 || !reflect.DeepEqual(run.Assignments[0].TaskIDs, []implstate.TaskID{"A"}) {
 				t.Fatalf("invalid selection was not rejected before assignment: result=%#v assignments=%#v messages=%#v", result, run.Assignments, runtime.messages)
 			}
 			attempts := run.RunOperations[len(run.RunOperations)-1].Attempts
-			if len(attempts) != 2 || attempts[0].Outcome != implementationstate.AttemptRejected || attempts[1].Outcome != implementationstate.AttemptSucceeded {
+			if len(attempts) != 2 || attempts[0].Outcome != implstate.AttemptRejected || attempts[1].Outcome != implstate.AttemptSucceeded {
 				t.Fatalf("selection retries were not durable: %#v", attempts)
 			}
 		})
@@ -80,7 +80,7 @@ func TestExecuteBriefSelectionPausesForExecutionBlockedWithoutAssignment(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Call.Response.Kind != ResponseExecutionBlocked || run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || len(run.Assignments) != 0 || len(runtime.messages) != 1 {
+	if result.Call.Response.Kind != ResponseExecutionBlocked || run.Status != implstate.RunPaused || run.ExecutionBlock == nil || len(run.Assignments) != 0 || len(runtime.messages) != 1 {
 		t.Fatalf("brief-selection execution block advanced work: result=%#v run=%#v turns=%#v", result, run, runtime.messages)
 	}
 }
@@ -91,7 +91,7 @@ func TestExecuteBriefSelectionRejectsReselectingAnActiveAssignment(t *testing.T)
 	if err := PrepareBriefSelection(context.Background(), stateStore, run, "first-select"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("existing", []implementationstate.TaskID{"A"}); err != nil {
+	if err := run.StartAssignment("existing", []implstate.TaskID{"A"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
@@ -100,7 +100,7 @@ func TestExecuteBriefSelectionRejectsReselectingAnActiveAssignment(t *testing.T)
 	if err := PrepareBriefSelection(context.Background(), stateStore, run, "second-select"); !errors.Is(err, ErrBriefSelection) {
 		t.Fatalf("prepare while assignment is active = %v, want ErrBriefSelection", err)
 	}
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponse(t, []implementationstate.TaskID{"A"})}}}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponse(t, []implstate.TaskID{"A"})}}}
 	if _, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("other", run, stateStore, journal, repository, expectation, runtime)); !errors.Is(err, ErrBriefSelection) {
 		t.Fatalf("reselect active task error = %v, want ErrBriefSelection", err)
 	}
@@ -113,8 +113,8 @@ func TestValidateBriefSelectionResponseRejectsWrongBinding(t *testing.T) {
 	run, stateStore, _, _, expectation := newBriefSelectionFixture(t)
 	defer stateStore.Close()
 	brief := "brief"
-	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implementationstate.TaskID{"A"}, Brief: &brief, Binding: expectation.Binding}
-	response.Binding.TaskList = implementationstate.EvidenceRef{ID: "other", Digest: "other"}
+	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implstate.TaskID{"A"}, Brief: &brief, Binding: expectation.Binding}
+	response.Binding.TaskList = implstate.EvidenceRef{ID: "other", Digest: "other"}
 	if err := validateBriefSelectionResponse(run, expectation, response); !errors.Is(err, ErrBriefSelection) {
 		t.Fatalf("wrong response binding = %v, want ErrBriefSelection", err)
 	}
@@ -186,7 +186,7 @@ func TestBriefSelectionBrieferSessionsAreScopedToStableAssignments(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("assignment-a", []implementationstate.TaskID{"A"}); err != nil {
+	if err := run.StartAssignment("assignment-a", []implstate.TaskID{"A"}); err != nil {
 		t.Fatal(err)
 	}
 	commitBriefSelectionAssignment(t, run, journal, "assignment-a")
@@ -222,7 +222,7 @@ func TestBriefSelectionBrieferSessionsAreScopedToStableAssignments(t *testing.T)
 			t.Fatalf("second briefer context lacks %q:\n%s", required, secondContext)
 		}
 	}
-	if err := run.StartAssignment("assignment-b", []implementationstate.TaskID{"B"}); err != nil {
+	if err := run.StartAssignment("assignment-b", []implstate.TaskID{"B"}); err != nil {
 		t.Fatal(err)
 	}
 	refinementStart, err := BuildBrieferStartContext(journal, run, "assignment-b")
@@ -241,20 +241,20 @@ func TestBriefSelectionBrieferSessionsAreScopedToStableAssignments(t *testing.T)
 	}
 }
 
-func commitBriefSelectionAssignment(t *testing.T, run *implementationstate.Run, journal *runstore.Run, assignmentID implementationstate.AssignmentID) {
+func commitBriefSelectionAssignment(t *testing.T, run *implstate.Run, journal *runstore.Run, assignmentID implstate.AssignmentID) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	briefDocument, err := journal.Publish(implementationstate.EvidenceID("brief-"+assignmentID), []byte("brief"))
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	briefDocument, err := journal.Publish(implstate.EvidenceID("brief-"+assignmentID), []byte("brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	briefID := implementationstate.BriefID("brief-" + assignmentID)
-	if err := run.AddBriefVersion(assignmentID, implementationstate.BriefVersion{ID: briefID, Number: 1, Document: briefDocument}); err != nil {
+	briefID := implstate.BriefID("brief-" + assignmentID)
+	if err := run.AddBriefVersion(assignmentID, implstate.BriefVersion{ID: briefID, Number: 1, Document: briefDocument}); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []implementationstate.Operation{
-		{ID: "check-" + implementationstate.OperationID(assignmentID), Kind: implementationstate.OperationCheck, BriefID: briefID, Basis: basis},
-		{ID: "review-" + implementationstate.OperationID(assignmentID), Kind: implementationstate.OperationReview, BriefID: briefID, Basis: basis},
+	for _, operation := range []implstate.Operation{
+		{ID: "check-" + implstate.OperationID(assignmentID), Kind: implstate.OperationCheck, BriefID: briefID, Basis: basis},
+		{ID: "review-" + implstate.OperationID(assignmentID), Kind: implstate.OperationReview, BriefID: briefID, Basis: basis},
 	} {
 		if err := run.AddOperation(assignmentID, operation); err != nil {
 			t.Fatal(err)
@@ -262,27 +262,27 @@ func commitBriefSelectionAssignment(t *testing.T, run *implementationstate.Run, 
 		if _, err := run.StartAssignmentAttempt(assignmentID, operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := run.AddResult(assignmentID, implementationstate.OperationResult{ID: implementationstate.ResultID(operation.ID + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		if err := run.AddResult(assignmentID, implstate.OperationResult{ID: implstate.ResultID(operation.ID + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	intent := implementationstate.CommitIntent{OperationID: "commit-" + implementationstate.OperationID(assignmentID), ParentCommit: "base", Tree: "tree", Message: "commit assignment"}
-	if err := run.AcceptAssignment(assignmentID, implementationstate.AcceptanceEvidence{BriefID: briefID, State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-" + implementationstate.ResultID(assignmentID) + "-result"}, ReviewResultID: implementationstate.ResultID("review-" + implementationstate.ResultID(assignmentID) + "-result"), PendingCommit: intent}); err != nil {
+	intent := implstate.CommitIntent{OperationID: "commit-" + implstate.OperationID(assignmentID), ParentCommit: "base", Tree: "tree", Message: "commit assignment"}
+	if err := run.AcceptAssignment(assignmentID, implstate.AcceptanceEvidence{BriefID: briefID, State: run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"check-" + implstate.ResultID(assignmentID) + "-result"}, ReviewResultID: implstate.ResultID("review-" + implstate.ResultID(assignmentID) + "-result"), PendingCommit: intent}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.CommitAssignment(assignmentID, implementationstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "commit-" + string(assignmentID), ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.CommitAssignment(assignmentID, implstate.CommitEvidence{OperationID: intent.OperationID, CommitID: "commit-" + string(assignmentID), ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func newBriefSelectionFixture(t *testing.T) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
+func newBriefSelectionFixture(t *testing.T) (*implstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
 	t.Helper()
 	return newBriefSelectionFixtureInRepository(t, newFilesystemWorkspace(t))
 }
 
 // newBriefSelectionFixtureInRepository keeps the state store isolated while
 // allowing related controller cases to share one lightweight workspace fixture.
-func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
+func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*implstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
 	t.Helper()
 	store, err := runstore.New(t.TempDir())
 	if err != nil {
@@ -292,7 +292,7 @@ func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*imp
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	ref := func(id implstate.EvidenceID) implstate.EvidenceRef {
 		contents := []byte(id)
 		if id == "specification" {
 			contents = []byte("# Specification\nCOMPLETE-SPECIFICATION-MARKER\n")
@@ -303,8 +303,8 @@ func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*imp
 		}
 		return value
 	}
-	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("specification"), TaskList: ref("tasks"), Configuration: ref("configuration")}
-	run, err := implementationstate.NewRun(identity, []implementationstate.Task{
+	identity := implstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("specification"), TaskList: ref("tasks"), Configuration: ref("configuration")}
+	run, err := implstate.NewRun(identity, []implstate.Task{
 		{ID: "root", Order: 0, Title: "parent"},
 		{ID: "A", ParentID: "root", Order: 1, Title: "A"},
 		{ID: "B", ParentID: "root", Order: 2, Title: "B"},
@@ -313,14 +313,14 @@ func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*imp
 	if err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
@@ -338,7 +338,7 @@ func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*imp
 	return run, stateStore, journal, repository, expectation
 }
 
-func briefSelectionCall(assignmentID implementationstate.AssignmentID, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, repository string, expectation ResponseExpectation, runtime *controlledCallRuntime) BriefSelectionCall {
+func briefSelectionCall(assignmentID implstate.AssignmentID, run *implstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, repository string, expectation ResponseExpectation, runtime *controlledCallRuntime) BriefSelectionCall {
 	return BriefSelectionCall{assignmentID: assignmentID, call: ControlledAgentCall{
 		Session: &AgentSession{Role: ResponseRoleBriefer, runtime: runtime, thread: "thread", restart: func(context.Context) (*AgentSession, error) {
 			return &AgentSession{Role: ResponseRoleBriefer, runtime: runtime, thread: "thread"}, nil
@@ -356,7 +356,7 @@ func briefSelectionCall(assignmentID implementationstate.AssignmentID, run *impl
 	}}
 }
 
-func briefReadyResponse(t *testing.T, taskIDs []implementationstate.TaskID) json.RawMessage {
+func briefReadyResponse(t *testing.T, taskIDs []implstate.TaskID) json.RawMessage {
 	t.Helper()
 	payload := responsePayloadMap(ResponseBriefReady)
 	values := make([]string, len(taskIDs))
@@ -372,7 +372,7 @@ func briefReadyResponse(t *testing.T, taskIDs []implementationstate.TaskID) json
 	return raw
 }
 
-func joinTaskIDs(ids []implementationstate.TaskID) string {
+func joinTaskIDs(ids []implstate.TaskID) string {
 	result := ""
 	for index, id := range ids {
 		if index != 0 {

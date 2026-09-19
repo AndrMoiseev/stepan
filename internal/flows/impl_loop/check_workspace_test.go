@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestWorkspaceCheckIncludesNewGeneratedFileInAssignmentDiff(t *testing.T) {
@@ -37,15 +37,15 @@ func TestWorkspaceCheckIncludesNewGeneratedFileInAssignmentDiff(t *testing.T) {
 
 func TestWorkspaceCheckChangingAcceptedCodeInvalidatesAcceptance(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
-	accepted := implementationstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
-	run := &implementationstate.Run{
-		Status:       implementationstate.RunActive,
+	accepted := implstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
+	run := &implstate.Run{
+		Status:       implstate.RunActive,
 		CurrentState: accepted,
-		Assignments: []implementationstate.Assignment{{
-			ID: "assignment", Status: implementationstate.AssignmentAcceptedAwaitingCommit,
-			TaskIDs: []implementationstate.TaskID{"task"}, Acceptance: &implementationstate.AcceptanceEvidence{State: accepted},
+		Assignments: []implstate.Assignment{{
+			ID: "assignment", Status: implstate.AssignmentAcceptedAwaitingCommit,
+			TaskIDs: []implstate.TaskID{"task"}, Acceptance: &implstate.AcceptanceEvidence{State: accepted},
 		}},
-		LeafStatus: map[implementationstate.TaskID]implementationstate.TaskStatus{"task": implementationstate.TaskAcceptedAwaitingCommit},
+		LeafStatus: map[implstate.TaskID]implstate.TaskStatus{"task": implstate.TaskAcceptedAwaitingCommit},
 	}
 	_, reporter, _ := newWorkspaceCheckReporter(t, repository, run, nil)
 	selection := testCheckSelection(nil)
@@ -62,7 +62,7 @@ func TestWorkspaceCheckChangingAcceptedCodeInvalidatesAcceptance(t *testing.T) {
 		t.Fatalf("changed accepted check = %#v, error %v", set, err)
 	}
 	assignment := run.Assignments[0]
-	if assignment.Status != implementationstate.AssignmentActive || assignment.Acceptance != nil || len(assignment.AcceptanceHistory) != 1 || run.LeafStatus["task"] != implementationstate.TaskPending {
+	if assignment.Status != implstate.AssignmentActive || assignment.Acceptance != nil || len(assignment.AcceptanceHistory) != 1 || run.LeafStatus["task"] != implstate.TaskPending {
 		t.Fatalf("accepted assignment remained current after check mutation: %#v", run)
 	}
 	if run.CurrentState == accepted {
@@ -136,7 +136,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 			if err != nil {
 				t.Fatal(err)
 			}
-			accepted := implementationstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
+			accepted := implstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
 			model := acceptedTestRun(accepted)
 			observer, err := NewWorkspaceCheckObserverWithControl(context.Background(), newFilesystemWorkspaceControl(), repository, model, journal, []string{".stepan/settings.json"})
 			if err != nil {
@@ -174,7 +174,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 				if got := observer.AssignmentDiff().Paths; !reflect.DeepEqual(got, []string{"generated.go"}) {
 					t.Fatalf("surviving generated diff = %#v", got)
 				}
-				if model.Status != implementationstate.RunPaused || model.CurrentState != accepted {
+				if model.Status != implstate.RunPaused || model.CurrentState != accepted {
 					t.Fatalf("changed candidate without durable state was not fail-closed: %#v", model)
 				}
 			} else if got := observer.AssignmentDiff().Paths; len(got) != 0 {
@@ -277,19 +277,19 @@ func (p failingCheckPublisher) ReportCheck(context.Context, string, checkexec.Co
 	return CheckPresentation{}, p.err
 }
 
-func acceptedTestRun(accepted implementationstate.EvidenceRef) *implementationstate.Run {
-	return &implementationstate.Run{
-		Status:       implementationstate.RunActive,
+func acceptedTestRun(accepted implstate.EvidenceRef) *implstate.Run {
+	return &implstate.Run{
+		Status:       implstate.RunActive,
 		CurrentState: accepted,
-		Assignments: []implementationstate.Assignment{{
-			ID: "assignment", Status: implementationstate.AssignmentAcceptedAwaitingCommit,
-			TaskIDs: []implementationstate.TaskID{"task"}, Acceptance: &implementationstate.AcceptanceEvidence{State: accepted},
+		Assignments: []implstate.Assignment{{
+			ID: "assignment", Status: implstate.AssignmentAcceptedAwaitingCommit,
+			TaskIDs: []implstate.TaskID{"task"}, Acceptance: &implstate.AcceptanceEvidence{State: accepted},
 		}},
-		LeafStatus: map[implementationstate.TaskID]implementationstate.TaskStatus{"task": implementationstate.TaskAcceptedAwaitingCommit},
+		LeafStatus: map[implstate.TaskID]implstate.TaskStatus{"task": implstate.TaskAcceptedAwaitingCommit},
 	}
 }
 
-func newWorkspaceCheckReporter(t *testing.T, repository string, model *implementationstate.Run, journal *runstore.Run, protected ...string) (*WorkspaceCheckObserver, *WorkspaceCheckReporter, *runstore.Run) {
+func newWorkspaceCheckReporter(t *testing.T, repository string, model *implstate.Run, journal *runstore.Run, protected ...string) (*WorkspaceCheckObserver, *WorkspaceCheckReporter, *runstore.Run) {
 	t.Helper()
 	store, err := runstore.New(t.TempDir())
 	if err != nil {

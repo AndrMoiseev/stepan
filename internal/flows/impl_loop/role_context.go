@@ -11,8 +11,8 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -101,8 +101,8 @@ type CheckCatalogEntry struct {
 // or task-reviewer session. There is deliberately no specification field: a
 // brief must be sufficient for both roles to do their work and escalate gaps.
 type TaskRoleStartInput struct {
-	AssignmentID implementationstate.AssignmentID
-	BriefID      implementationstate.BriefID
+	AssignmentID implstate.AssignmentID
+	BriefID      implstate.BriefID
 	Brief        string
 	Rules        RulesIndex
 	Checks       []CheckCatalogEntry
@@ -133,7 +133,7 @@ type OrchestratorStartInput struct {
 // initial assignment selection. Its contents cannot be substituted with an
 // arbitrary role context at the production session boundary.
 type BrieferStartContext struct {
-	assignmentID implementationstate.AssignmentID
+	assignmentID implstate.AssignmentID
 	start        RoleStartContext
 }
 
@@ -141,7 +141,7 @@ func (context BrieferStartContext) roleStartContext() RoleStartContext {
 	return context.start
 }
 
-func (context BrieferStartContext) assignment() implementationstate.AssignmentID {
+func (context BrieferStartContext) assignment() implstate.AssignmentID {
 	return context.assignmentID
 }
 
@@ -354,7 +354,7 @@ func BuildOrchestratorStartContext(input OrchestratorStartInput) (RoleStartConte
 // renders the whole current machine task tree, including derived statuses and
 // current progress. Reading the specification through the run journal keeps
 // the prompt tied to the exact evidence version recorded in the run.
-func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (BrieferStartContext, error) {
+func BuildBrieferStartContext(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID) (BrieferStartContext, error) {
 	if journal == nil || run == nil || strings.TrimSpace(string(assignmentID)) == "" || run.TaskExtractionPending || len(run.Tasks) == 0 {
 		return BrieferStartContext{}, fmt.Errorf("%w: briefer requires an extracted run and journal", ErrInvalidRoleContext)
 	}
@@ -382,11 +382,11 @@ func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Ru
 		if !taskHasChild(run, task.ID) {
 			leafTotal++
 			switch status {
-			case implementationstate.TaskPending:
+			case implstate.TaskPending:
 				leafPending++
-			case implementationstate.TaskAcceptedAwaitingCommit:
+			case implstate.TaskAcceptedAwaitingCommit:
 				leafAccepted++
-			case implementationstate.TaskComplete:
+			case implstate.TaskComplete:
 				leafComplete++
 			}
 		}
@@ -407,7 +407,7 @@ func BuildBrieferStartContext(journal *runstore.Run, run *implementationstate.Ru
 	return BrieferStartContext{assignmentID: assignmentID, start: start}, nil
 }
 
-func taskHasChild(run *implementationstate.Run, id implementationstate.TaskID) bool {
+func taskHasChild(run *implstate.Run, id implstate.TaskID) bool {
 	for _, task := range run.Tasks {
 		if task.ParentID == id {
 			return true
@@ -416,7 +416,7 @@ func taskHasChild(run *implementationstate.Run, id implementationstate.TaskID) b
 	return false
 }
 
-func taskIDStrings(ids []implementationstate.TaskID) []string {
+func taskIDStrings(ids []implstate.TaskID) []string {
 	values := make([]string, len(ids))
 	for index, id := range ids {
 		values[index] = string(id)

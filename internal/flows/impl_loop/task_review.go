@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var ErrInvalidTaskReviewRoute = errors.New("invalid task review route")
@@ -23,17 +23,17 @@ var ErrInvalidTaskReviewRoute = errors.New("invalid task review route")
 type TaskReviewInput struct {
 	Owner        *SessionOwner
 	Workspace    WorkspaceControl
-	Run          *implementationstate.Run
+	Run          *implstate.Run
 	StateStore   *runstore.StateStore
 	Journal      *runstore.Run
 	Repository   string
-	AssignmentID implementationstate.AssignmentID
+	AssignmentID implstate.AssignmentID
 	Rules        RulesIndex
 	Checks       []CheckCatalogEntry
-	OperationID  implementationstate.OperationID
-	ResultID     implementationstate.ResultID
+	OperationID  implstate.OperationID
+	ResultID     implstate.ResultID
 	CallID       string
-	Limits       implementationstate.CycleLimits
+	Limits       implstate.CycleLimits
 	Timeout      time.Duration // zero selects ControlledAgentCall default
 	// ReviewTestChanges is derived by the controller from the complete diff.
 	// It cannot be supplied by a reviewer.
@@ -45,7 +45,7 @@ type TaskReviewInput struct {
 type TaskReviewResult struct {
 	Response AgentResponse
 	Session  *AgentSession
-	Record   implementationstate.TaskReviewRecord
+	Record   implstate.TaskReviewRecord
 	Attempts uint64
 	DiffBase string
 }
@@ -107,7 +107,7 @@ func RouteTaskReviewDispute(ctx context.Context, input TaskReviewInput, reviewer
 	if err := validateExecutorDispute(input.Run, input.AssignmentID, dispute); err != nil {
 		return TaskReviewResult{}, err
 	}
-	if err := input.Run.RecordTaskReviewDispute(input.AssignmentID, implementationstate.TaskReviewDispute{FindingID: dispute.FindingIDs[0], Arguments: *dispute.Message, References: slices.Clone(dispute.References)}); err != nil {
+	if err := input.Run.RecordTaskReviewDispute(input.AssignmentID, implstate.TaskReviewDispute{FindingID: dispute.FindingIDs[0], Arguments: *dispute.Message, References: slices.Clone(dispute.References)}); err != nil {
 		return TaskReviewResult{}, fmt.Errorf("%w: record executor dispute: %v", ErrInvalidTaskReviewRoute, err)
 	}
 	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
@@ -171,21 +171,21 @@ func RouteTaskReviewChanges(ctx context.Context, review TaskReviewResult, execut
 }
 
 type assignmentBrief struct {
-	ID   implementationstate.BriefID
+	ID   implstate.BriefID
 	Text string
 }
 
-func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *AgentSession, briefID implementationstate.BriefID, message, diffBase string) (TaskReviewResult, error) {
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *AgentSession, briefID implstate.BriefID, message, diffBase string) (TaskReviewResult, error) {
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	existing := assignmentOperation(input.Run, input.AssignmentID, input.OperationID)
 	if existing == nil {
-		if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, BriefID: briefID, Basis: basis, Description: "task review", Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+		if err := input.Run.AddOperation(input.AssignmentID, implstate.Operation{ID: input.OperationID, Kind: implstate.OperationReview, BriefID: briefID, Basis: basis, Description: "task review", Counter: implstate.CycleCounterAssignmentReview}); err != nil {
 			return TaskReviewResult{}, fmt.Errorf("%w: create review operation: %v", ErrInvalidTaskReviewRoute, err)
 		}
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
 			return TaskReviewResult{}, fmt.Errorf("%w: persist review operation: %v", ErrInvalidTaskReviewRoute, err)
 		}
-	} else if existing.Kind != implementationstate.OperationReview || existing.BriefID != briefID || existing.Basis != basis || existing.Description != "task review" || existing.Counter != implementationstate.CycleCounterAssignmentReview || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationReview || existing.BriefID != briefID || existing.Basis != basis || existing.Description != "task review" || existing.Counter != implstate.CycleCounterAssignmentReview || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
 		return TaskReviewResult{}, fmt.Errorf("%w: review operation cannot be resumed", ErrInvalidTaskReviewRoute)
 	}
 	binding := ResponseBinding{CallID: input.CallID, RunID: input.Run.Identity.ID, AssignmentID: input.AssignmentID, BriefID: briefID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
@@ -227,7 +227,7 @@ func runTaskReviewerTurn(ctx context.Context, input TaskReviewInput, session *Ag
 	if err != nil {
 		return TaskReviewResult{}, err
 	}
-	if err := input.Run.AddResult(input.AssignmentID, implementationstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: resultStatus, State: input.Run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := input.Run.AddResult(input.AssignmentID, implstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: resultStatus, State: input.Run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return TaskReviewResult{}, err
 	}
 	if err := input.Run.RecordTaskReview(input.AssignmentID, record); err != nil {
@@ -246,7 +246,7 @@ func validateTaskReviewInput(input TaskReviewInput) error {
 	return nil
 }
 
-func currentAssignmentBrief(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (assignmentBrief, error) {
+func currentAssignmentBrief(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID) (assignmentBrief, error) {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		return assignmentBrief{}, fmt.Errorf("%w: assignment has no current brief", ErrInvalidTaskReviewRoute)
@@ -259,7 +259,7 @@ func currentAssignmentBrief(journal *runstore.Run, run *implementationstate.Run,
 	return assignmentBrief{ID: brief.ID, Text: string(data)}, nil
 }
 
-func assignmentForReview(run *implementationstate.Run, id implementationstate.AssignmentID) *implementationstate.Assignment {
+func assignmentForReview(run *implstate.Run, id implstate.AssignmentID) *implstate.Assignment {
 	if run == nil {
 		return nil
 	}
@@ -271,7 +271,7 @@ func assignmentForReview(run *implementationstate.Run, id implementationstate.As
 	return nil
 }
 
-func assignmentDiffBase(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) string {
+func assignmentDiffBase(run *implstate.Run, assignmentID implstate.AssignmentID) string {
 	base := run.Identity.BaselineCommit
 	for _, assignment := range run.Assignments {
 		if assignment.ID == assignmentID {
@@ -385,18 +385,18 @@ func renderTaskReviewPacket(rules RulesIndex, diff, checks, previous string) str
 	return text.String()
 }
 
-func currentRequiredCheckEvidence(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (string, error) {
+func currentRequiredCheckEvidence(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID) (string, error) {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil {
 		return "", fmt.Errorf("%w: unknown assignment", ErrInvalidTaskReviewRoute)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
 	for index := len(assignment.Results) - 1; index >= 0; index-- {
 		result := assignment.Results[index]
 		for operationIndex := range assignment.Operations {
 			operation := assignment.Operations[operationIndex]
-			if operation.ID != result.OperationID || operation.Counter != implementationstate.CycleCounterMandatoryChecks || operation.BriefID != briefID || operation.Basis != basis || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
+			if operation.ID != result.OperationID || operation.Counter != implstate.CycleCounterMandatoryChecks || operation.BriefID != briefID || operation.Basis != basis || result.Status != implstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
 				continue
 			}
 			if len(result.Evidence) == 0 {
@@ -412,7 +412,7 @@ func currentRequiredCheckEvidence(journal *runstore.Run, run *implementationstat
 	return "", fmt.Errorf("%w: current required check evidence is absent", ErrInvalidTaskReviewRoute)
 }
 
-func validateTaskReviewerResponse(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, response AgentResponse) error {
+func validateTaskReviewerResponse(run *implstate.Run, assignmentID implstate.AssignmentID, response AgentResponse) error {
 	if response.Kind != ResponseReviewPassed && response.Kind != ResponseChangesRequested {
 		return fmt.Errorf("%w: reviewer must pass or request changes", ErrInvalidTaskReviewRoute)
 	}
@@ -426,7 +426,7 @@ func validateTaskReviewerResponse(run *implementationstate.Run, assignmentID imp
 		previous := latestReviewFindings(assignmentForReview(run, assignmentID))
 		seen := map[string]bool{}
 		for index, id := range response.FindingIDs {
-			decision := implementationstate.FindingStatus(response.FindingDecisions[index])
+			decision := implstate.FindingStatus(response.FindingDecisions[index])
 			if seen[id] || !decisionValidForFinding(decision, previous[id], previous[id].ID != "") || !blockingFindingBasis(response.Bases[index]) {
 				return fmt.Errorf("%w: blocking finding %q lacks a defect, explicit requirement, or rule basis", ErrInvalidTaskReviewRoute, id)
 			}
@@ -436,7 +436,7 @@ func validateTaskReviewerResponse(run *implementationstate.Run, assignmentID imp
 			seen[id] = true
 		}
 		for id, finding := range previous {
-			if (finding.Status == implementationstate.FindingOpen || finding.Status == implementationstate.FindingRetained) && !seen[id] {
+			if (finding.Status == implstate.FindingOpen || finding.Status == implstate.FindingRetained) && !seen[id] {
 				return fmt.Errorf("%w: reviewer omitted an unresolved finding %q", ErrInvalidTaskReviewRoute, id)
 			}
 		}
@@ -445,18 +445,18 @@ func validateTaskReviewerResponse(run *implementationstate.Run, assignmentID imp
 	return nil
 }
 
-func decisionValidForFinding(decision implementationstate.FindingStatus, previous implementationstate.TaskReviewFinding, exists bool) bool {
+func decisionValidForFinding(decision implstate.FindingStatus, previous implstate.TaskReviewFinding, exists bool) bool {
 	if !decisionValid(decision) {
 		return false
 	}
 	if exists {
-		return decision == implementationstate.FindingResolved || decision == implementationstate.FindingRetained
+		return decision == implstate.FindingResolved || decision == implstate.FindingRetained
 	}
-	return decision == implementationstate.FindingOpen
+	return decision == implstate.FindingOpen
 }
 
-func decisionValid(decision implementationstate.FindingStatus) bool {
-	return decision == implementationstate.FindingOpen || decision == implementationstate.FindingResolved || decision == implementationstate.FindingRetained
+func decisionValid(decision implstate.FindingStatus) bool {
+	return decision == implstate.FindingOpen || decision == implstate.FindingResolved || decision == implstate.FindingRetained
 }
 
 func blockingFindingBasis(basis string) bool {
@@ -472,23 +472,23 @@ func blockingFindingBasis(basis string) bool {
 	return false
 }
 
-func taskReviewRecord(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.TaskReviewRecord, implementationstate.ResultStatus, error) {
+func taskReviewRecord(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, resultID implstate.ResultID, response AgentResponse) (implstate.TaskReviewRecord, implstate.ResultStatus, error) {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil {
-		return implementationstate.TaskReviewRecord{}, "", fmt.Errorf("%w: unknown assignment", ErrInvalidTaskReviewRoute)
+		return implstate.TaskReviewRecord{}, "", fmt.Errorf("%w: unknown assignment", ErrInvalidTaskReviewRoute)
 	}
 	previous := latestReviewFindings(assignment)
-	record := implementationstate.TaskReviewRecord{OperationID: operationID, ResultID: resultID, Round: uint64(len(assignment.TaskReviews) + 1), State: run.CurrentState, Disputes: cloneTaskReviewDisputes(assignment.PendingTaskReviewDisputes)}
+	record := implstate.TaskReviewRecord{OperationID: operationID, ResultID: resultID, Round: uint64(len(assignment.TaskReviews) + 1), State: run.CurrentState, Disputes: cloneTaskReviewDisputes(assignment.PendingTaskReviewDisputes)}
 	if response.Kind == ResponseReviewPassed {
 		for _, finding := range previous {
-			finding.Status, finding.Resolution = implementationstate.FindingResolved, "reviewer confirmed the current diff resolves the finding"
+			finding.Status, finding.Resolution = implstate.FindingResolved, "reviewer confirmed the current diff resolves the finding"
 			record.Findings = append(record.Findings, finding)
 		}
 		record.Discussion = *response.Message
-		return record, implementationstate.ResultSucceeded, nil
+		return record, implstate.ResultSucceeded, nil
 	}
 	for index, id := range response.FindingIDs {
-		finding := implementationstate.TaskReviewFinding{ID: id, Problem: response.Findings[index], Location: response.Locations[index], Basis: response.Bases[index], ExpectedResult: response.ExpectedResults[index], Status: implementationstate.FindingStatus(response.FindingDecisions[index]), Resolution: response.FindingReasons[index]}
+		finding := implstate.TaskReviewFinding{ID: id, Problem: response.Findings[index], Location: response.Locations[index], Basis: response.Bases[index], ExpectedResult: response.ExpectedResults[index], Status: implstate.FindingStatus(response.FindingDecisions[index]), Resolution: response.FindingReasons[index]}
 		if prior, found := previous[id]; found {
 			// The reviewer must retain the original identity and description when
 			// deciding an existing finding; its decision reason is the mutable
@@ -498,29 +498,29 @@ func taskReviewRecord(run *implementationstate.Run, assignmentID implementations
 		record.Findings = append(record.Findings, finding)
 	}
 	record.Discussion = "reviewer recorded explicit per-finding decisions"
-	return record, implementationstate.ResultFailed, nil
+	return record, implstate.ResultFailed, nil
 }
 
-func cloneTaskReviewDisputes(disputes []implementationstate.TaskReviewDispute) []implementationstate.TaskReviewDispute {
-	result := make([]implementationstate.TaskReviewDispute, len(disputes))
+func cloneTaskReviewDisputes(disputes []implstate.TaskReviewDispute) []implstate.TaskReviewDispute {
+	result := make([]implstate.TaskReviewDispute, len(disputes))
 	for index, dispute := range disputes {
-		result[index] = implementationstate.TaskReviewDispute{FindingID: dispute.FindingID, Arguments: dispute.Arguments, References: slices.Clone(dispute.References)}
+		result[index] = implstate.TaskReviewDispute{FindingID: dispute.FindingID, Arguments: dispute.Arguments, References: slices.Clone(dispute.References)}
 	}
 	return result
 }
 
-func latestReviewFindings(assignment *implementationstate.Assignment) map[string]implementationstate.TaskReviewFinding {
+func latestReviewFindings(assignment *implstate.Assignment) map[string]implstate.TaskReviewFinding {
 	if assignment == nil || len(assignment.TaskReviews) == 0 {
-		return map[string]implementationstate.TaskReviewFinding{}
+		return map[string]implstate.TaskReviewFinding{}
 	}
-	findings := make(map[string]implementationstate.TaskReviewFinding)
+	findings := make(map[string]implstate.TaskReviewFinding)
 	for _, finding := range assignment.TaskReviews[len(assignment.TaskReviews)-1].Findings {
 		findings[finding.ID] = finding
 	}
 	return findings
 }
 
-func validateExecutorDispute(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, response AgentResponse) error {
+func validateExecutorDispute(run *implstate.Run, assignmentID implstate.AssignmentID, response AgentResponse) error {
 	if response.Kind != ResponseReviewDisputed || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != assignmentID || len(response.FindingIDs) != 1 || response.Message == nil || strings.TrimSpace(*response.Message) == "" || len(response.References) == 0 {
 		return fmt.Errorf("%w: invalid executor review dispute", ErrInvalidTaskReviewRoute)
 	}
@@ -532,15 +532,15 @@ func validateExecutorDispute(run *implementationstate.Run, assignmentID implemen
 	return fmt.Errorf("%w: executor cannot dispute a closed or unknown finding", ErrInvalidTaskReviewRoute)
 }
 
-func publishTaskReviewEvidence(journal *runstore.Run, resultID implementationstate.ResultID, record implementationstate.TaskReviewRecord) (implementationstate.EvidenceRef, error) {
+func publishTaskReviewEvidence(journal *runstore.Run, resultID implstate.ResultID, record implstate.TaskReviewRecord) (implstate.EvidenceRef, error) {
 	data, err := json.Marshal(record)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-discussion"), data)
+	return journal.Publish(implstate.EvidenceID(string(resultID)+"-discussion"), data)
 }
 
-func renderTaskReviewHistory(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) string {
+func renderTaskReviewHistory(run *implstate.Run, assignmentID implstate.AssignmentID) string {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil || len(assignment.TaskReviews) == 0 {
 		return ""
@@ -558,11 +558,11 @@ func renderTaskReviewHistory(run *implementationstate.Run, assignmentID implemen
 	return strings.TrimSpace(text.String())
 }
 
-func taskReviewChangesMessage(record implementationstate.TaskReviewRecord) string {
+func taskReviewChangesMessage(record implstate.TaskReviewRecord) string {
 	var text strings.Builder
 	text.WriteString("# Task reviewer findings\n")
 	for _, finding := range record.Findings {
-		if finding.Status != implementationstate.FindingOpen && finding.Status != implementationstate.FindingRetained {
+		if finding.Status != implstate.FindingOpen && finding.Status != implstate.FindingRetained {
 			continue
 		}
 		fmt.Fprintf(&text, "\n## %s\n\nProblem: %s\n\nLocation: %s\n\nBasis: %s\n\nExpected result: %s\n", finding.ID, finding.Problem, finding.Location, finding.Basis, finding.ExpectedResult)

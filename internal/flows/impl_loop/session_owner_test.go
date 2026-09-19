@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -26,7 +26,7 @@ func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
 		t.Fatalf("orchestrator session = %p, %v; want continued %p", same, err, orchestrator)
 	}
 
-	assignmentA := implementationstate.AssignmentID("assignment-a")
+	assignmentA := implstate.AssignmentID("assignment-a")
 	brieferA, err := owner.Briefer(context.Background(), assignmentA, sessionBrieferStartContext(t, assignmentA))
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
 		t.Fatalf("next final-review round = %p, %v; want fresh session", next, err)
 	}
 
-	assignmentB := implementationstate.AssignmentID("assignment-b")
+	assignmentB := implstate.AssignmentID("assignment-b")
 	for _, role := range []ResponseRole{ResponseRoleBriefer, ResponseRoleImplementer, ResponseRoleTaskReviewer} {
 		var next *AgentSession
 		if role == ResponseRoleBriefer {
@@ -183,7 +183,7 @@ func sessionStartContext(t *testing.T, role ResponseRole) RoleStartContext {
 	return start
 }
 
-func sessionBrieferStartContext(t *testing.T, assignmentID implementationstate.AssignmentID) BrieferStartContext {
+func sessionBrieferStartContext(t *testing.T, assignmentID implstate.AssignmentID) BrieferStartContext {
 	t.Helper()
 	return BrieferStartContext{assignmentID: assignmentID, start: sessionStartContext(t, ResponseRoleBriefer)}
 }

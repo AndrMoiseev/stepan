@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 var (
@@ -169,35 +169,35 @@ func RouteImplementerChecks(ctx context.Context, route ImplementerCheckRoute) (I
 // configuration, and the current brief. It is intentionally read-only: a
 // later reviewer correction changes the observed code and the next executor
 // implementation_ready must create a new mandatory-check operation.
-func CanStartTaskReview(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) error {
-	if run == nil || run.Status != implementationstate.RunActive {
+func CanStartTaskReview(run *implstate.Run, assignmentID implstate.AssignmentID) error {
+	if run == nil || run.Status != implstate.RunActive {
 		return ErrTaskReviewNotReady
 	}
-	var assignment *implementationstate.Assignment
+	var assignment *implstate.Assignment
 	for index := range run.Assignments {
 		if run.Assignments[index].ID == assignmentID {
 			assignment = &run.Assignments[index]
 			break
 		}
 	}
-	if assignment == nil || assignment.Status != implementationstate.AssignmentActive || len(assignment.Briefs) == 0 {
+	if assignment == nil || assignment.Status != implstate.AssignmentActive || len(assignment.Briefs) == 0 {
 		return ErrTaskReviewNotReady
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	currentBrief := assignment.Briefs[len(assignment.Briefs)-1].ID
 	for resultIndex := len(assignment.Results) - 1; resultIndex >= 0; resultIndex-- {
 		result := assignment.Results[resultIndex]
-		var operation *implementationstate.Operation
+		var operation *implstate.Operation
 		for operationIndex := range assignment.Operations {
 			if assignment.Operations[operationIndex].ID == result.OperationID {
 				operation = &assignment.Operations[operationIndex]
 				break
 			}
 		}
-		if operation == nil || operation.Counter != implementationstate.CycleCounterMandatoryChecks {
+		if operation == nil || operation.Counter != implstate.CycleCounterMandatoryChecks {
 			continue
 		}
-		if result.Status == implementationstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis && operation.Basis == basis && operation.BriefID == currentBrief {
+		if result.Status == implstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis && operation.Basis == basis && operation.BriefID == currentBrief {
 			return nil
 		}
 		return ErrTaskReviewNotReady
@@ -286,7 +286,7 @@ func sameImplementerBinding(left, right ResponseBinding) bool {
 	return left.RunID == right.RunID && left.AssignmentID == right.AssignmentID && left.BriefID == right.BriefID && left.Specification == right.Specification && left.Configuration == right.Configuration && left.TaskList == right.TaskList
 }
 
-func isImplementerAgentOperation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, briefID implementationstate.BriefID) bool {
+func isImplementerAgentOperation(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, briefID implstate.BriefID) bool {
 	if run == nil {
 		return false
 	}
@@ -296,7 +296,7 @@ func isImplementerAgentOperation(run *implementationstate.Run, assignmentID impl
 		}
 		for _, operation := range assignment.Operations {
 			if operation.ID == operationID {
-				return operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterNone && operation.BriefID == briefID
+				return operation.Kind == implstate.OperationAgent && operation.Counter == implstate.CycleCounterNone && operation.BriefID == briefID
 			}
 		}
 	}
@@ -329,6 +329,6 @@ func ImplementerCheckFeedback(transition ImplementerTransitionResult) string {
 	return strings.TrimSpace(text.String())
 }
 
-func writeEvidenceReference(text *strings.Builder, label string, reference implementationstate.EvidenceRef) {
+func writeEvidenceReference(text *strings.Builder, label string, reference implstate.EvidenceRef) {
 	fmt.Fprintf(text, "- %s: %s (sha256 %s)\n", label, reference.ID, reference.Digest)
 }

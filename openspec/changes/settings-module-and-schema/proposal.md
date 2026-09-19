@@ -22,4 +22,4 @@
 
 ## Impact
 
-Затрагиваются `internal/usersettings`, `internal/implementationconfig`, конфигурационная часть `internal/flows/impl_loop`, сборка runtime в `cmd/stepan` и `internal/implementationruntime`, bootstrap, архитектурные правила, пользовательские примеры JSON и диагностика ошибок. Выбор провайдера в `flows/spec` остаётся CLI-контрактом; общий реестр профилей становится доступным другим flow без обязательного перевода их на профили в этом изменении.
+Затрагиваются `internal/usersettings`, `internal/implementationconfig`, конфигурационная часть `internal/flows/impl_loop`, сборка runtime в `cmd/stepan` и `internal/flows/impl_loop/runtime`, bootstrap, архитектурные правила, пользовательские примеры JSON и диагностика ошибок. Выбор провайдера в `flows/spec` остаётся CLI-контрактом; общий реестр профилей становится доступным другим flow без обязательного перевода их на профили в этом изменении.

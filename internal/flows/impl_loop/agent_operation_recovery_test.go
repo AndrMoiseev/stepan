@@ -5,14 +5,14 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestRecoverAgentOperationUsesDurableResultAndPreservesInterruptedAttempt(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
 	basis := call.Run.RunOperations[0].Basis
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "recovery"
 	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, call.OperationID, call.Limits); err != nil {
 		t.Fatal(err)
@@ -29,10 +29,10 @@ func TestRecoverAgentOperationUsesDurableResultAndPreservesInterruptedAttempt(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := call.Run.AddRunResult(implementationstate.OperationResult{ID: "completed-explorer-result", OperationID: call.OperationID, Status: implementationstate.ResultSucceeded, State: call.Run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := call.Run.AddRunResult(implstate.OperationResult{ID: "completed-explorer-result", OperationID: call.OperationID, Status: implstate.ResultSucceeded, State: call.Run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := call.Run.AddRunOperation(implementationstate.Operation{ID: "interrupted-parent", Kind: implementationstate.OperationAgent, Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "parent"}); err != nil {
+	if err := call.Run.AddRunOperation(implstate.Operation{ID: "interrupted-parent", Kind: implstate.OperationAgent, Basis: basis, Counter: implstate.CycleCounterExplorer, Episode: "parent"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := call.StateStore.RecordRunAttemptStartWithLimits(context.Background(), call.Run, "interrupted-parent", call.Limits); err != nil {

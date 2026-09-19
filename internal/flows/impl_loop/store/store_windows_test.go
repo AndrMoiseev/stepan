@@ -1,6 +1,6 @@
 //go:build windows && process_integration
 
-package runstore
+package store
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 // A junction requires no Developer Mode or symbolic-link privilege, and is a
@@ -28,7 +28,7 @@ func TestRejectsTraversalAndJunctionedRunComponents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []implementationstate.RunID{"", "..", "../other", `..\\other`, "nested/run"} {
+	for _, id := range []implstate.RunID{"", "..", "../other", `..\\other`, "nested/run"} {
 		if _, err := store.Create(id); !errors.Is(err, ErrInvalidRunID) {
 			t.Fatalf("Create(%q) error = %v, want invalid run ID", id, err)
 		}
@@ -65,7 +65,7 @@ func TestRejectsJunctionedFilesAndArtifactTargets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reference := implementationstate.EvidenceRef{ID: "artifact", Digest: sha256Hex([]byte("contents"))}
+	reference := implstate.EvidenceRef{ID: "artifact", Digest: sha256Hex([]byte("contents"))}
 	target := run.filePath(reference.ID)
 	if err := os.WriteFile(run.markerPath(target), []byte(reference.Digest+"\n"), 0o600); err != nil {
 		t.Fatal(err)

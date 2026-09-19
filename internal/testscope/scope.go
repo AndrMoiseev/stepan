@@ -83,9 +83,9 @@ func isProcessIntegrationPath(path string) bool {
 		"internal/agentruntime/claudeapp/",
 		"internal/agentruntime/nessyapp/",
 		"internal/checkexec/",
-		"internal/implementationruntime/",
+		"internal/flows/impl_loop/runtime/",
 		"internal/processjob/",
-		"internal/runstore/",
+		"internal/flows/impl_loop/store/",
 	} {
 		if strings.HasPrefix(path, prefix) {
 			return true

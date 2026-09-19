@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *testing.T) {
@@ -29,16 +29,16 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	}
 	assertRunOrder(t, runner, "lint")
 	assertResultStatuses(t, result.Set, CheckFailed, CheckNotRun, CheckNotRun)
-	if run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || run.ExecutionBlock.BlockedAction != "run the initial required checks" || !strings.Contains(run.ExecutionBlock.Diagnostic, "lint baseline failed") || len(run.ExecutionBlock.Attempts) != 1 || !strings.Contains(run.ExecutionBlock.RequiredUserAction, "repair the environment") {
+	if run.Status != implstate.RunPaused || run.ExecutionBlock == nil || run.ExecutionBlock.BlockedAction != "run the initial required checks" || !strings.Contains(run.ExecutionBlock.Diagnostic, "lint baseline failed") || len(run.ExecutionBlock.Attempts) != 1 || !strings.Contains(run.ExecutionBlock.RequiredUserAction, "repair the environment") {
 		t.Fatalf("baseline failure did not pause the run: %#v", run)
 	}
 	if len(run.Assignments) != 0 {
 		t.Fatalf("baseline failure created an assignment: %#v", run.Assignments)
 	}
-	if len(run.RunOperations) != 1 || run.RunOperations[0].Counter != implementationstate.CycleCounterNone || len(run.RunOperations[0].Attempts) != 1 || run.RunOperations[0].Attempts[0].Outcome != implementationstate.AttemptFailed {
+	if len(run.RunOperations) != 1 || run.RunOperations[0].Counter != implstate.CycleCounterNone || len(run.RunOperations[0].Attempts) != 1 || run.RunOperations[0].Attempts[0].Outcome != implstate.AttemptFailed {
 		t.Fatalf("baseline operation did not preserve run-level attempt semantics: %#v", run.RunOperations)
 	}
-	if len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultFailed || len(run.RunResults[0].Evidence) != 4 {
+	if len(run.RunResults) != 1 || run.RunResults[0].Status != implstate.ResultFailed || len(run.RunResults[0].Evidence) != 4 {
 		t.Fatalf("baseline result lacks durable evidence: %#v", run.RunResults)
 	}
 	if !strings.Contains(result.Diagnostic, "lint baseline failed") {
@@ -55,7 +55,7 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != run.ExecutionBlock.Diagnostic || len(current.RunResults) != 1 || current.RunResults[0].State != run.CurrentState {
+	if current.Status != implstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != run.ExecutionBlock.Diagnostic || len(current.RunResults) != 1 || current.RunResults[0].State != run.CurrentState {
 		t.Fatalf("durable paused baseline state = %#v", current)
 	}
 }
@@ -110,14 +110,14 @@ func TestInitialRequiredChecksPersistsInterruptedResultAfterCallerCancellation(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Set.Results[0].Status != CheckFailed || run.Status != implementationstate.RunPaused || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultInterrupted {
+	if result.Set.Results[0].Status != CheckFailed || run.Status != implstate.RunPaused || len(run.RunResults) != 1 || run.RunResults[0].Status != implstate.ResultInterrupted {
 		t.Fatalf("canceled baseline was not durably interrupted and paused: result=%#v run=%#v", result, run)
 	}
 	current, _, err := runstore.ReadJournalCurrent(journal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunPaused || len(current.RunResults) != 1 || current.RunResults[0].Status != implementationstate.ResultInterrupted {
+	if current.Status != implstate.RunPaused || len(current.RunResults) != 1 || current.RunResults[0].Status != implstate.ResultInterrupted {
 		t.Fatalf("durable canceled baseline = %#v", current)
 	}
 }
@@ -140,7 +140,7 @@ func TestInitialRequiredChecksBlocksProtectedMutationWithDurableEvidence(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != implementationstate.RunPaused || run.ExecutionBlock == nil || run.InitialBaseline != nil || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultFailed {
+	if run.Status != implstate.RunPaused || run.ExecutionBlock == nil || run.InitialBaseline != nil || len(run.RunResults) != 1 || run.RunResults[0].Status != implstate.ResultFailed {
 		t.Fatalf("protected baseline mutation was not durably blocked: result=%#v run=%#v", result, run)
 	}
 	violation, err := os.ReadFile(journal.ViolationJournalPath())
@@ -168,7 +168,7 @@ func TestInitialRequiredChecksRunsEntireProjectOrderAndBindsObservedBaseline(t *
 	}
 	assertRunOrder(t, runner, "test_all", "lint", "build")
 	assertResultStatuses(t, result.Set, CheckSucceeded, CheckSucceeded, CheckSucceeded)
-	if run.Status != implementationstate.RunActive || len(run.RunResults) != 1 || run.RunResults[0].Status != implementationstate.ResultSucceeded {
+	if run.Status != implstate.RunActive || len(run.RunResults) != 1 || run.RunResults[0].Status != implstate.ResultSucceeded {
 		t.Fatalf("successful baseline state = %#v", run)
 	}
 	if run.RunResults[0].State != run.CurrentState || run.CurrentState == run.Identity.BaselineState {
@@ -182,7 +182,7 @@ func TestInitialRequiredChecksRunsEntireProjectOrderAndBindsObservedBaseline(t *
 func TestInitialRequiredChecksRejectsAnythingButExtractedInitialBaseline(t *testing.T) {
 	run, state, journal, repository := newInitialCheckRun(t)
 	defer state.Close()
-	run.CurrentState = implementationstate.EvidenceRef{ID: "other", Digest: run.Identity.BaselineState.Digest}
+	run.CurrentState = implstate.EvidenceRef{ID: "other", Digest: run.Identity.BaselineState.Digest}
 	if _, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
 		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"lint"}), Runner: &recordingCheckRunner{}, MaxCycles: 3, Operation: "baseline", Result: "result",
@@ -191,7 +191,7 @@ func TestInitialRequiredChecksRejectsAnythingButExtractedInitialBaseline(t *test
 	}
 }
 
-func newInitialCheckRun(t *testing.T) (*implementationstate.Run, *runstore.StateStore, *runstore.Run, string) {
+func newInitialCheckRun(t *testing.T) (*implstate.Run, *runstore.StateStore, *runstore.Run, string) {
 	t.Helper()
 	repository := newFilesystemWorkspace(t)
 	store, err := runstore.New(t.TempDir())
@@ -202,7 +202,7 @@ func newInitialCheckRun(t *testing.T) (*implementationstate.Run, *runstore.State
 	if err != nil {
 		t.Fatal(err)
 	}
-	publish := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	publish := func(id implstate.EvidenceID) implstate.EvidenceRef {
 		t.Helper()
 		ref, err := journal.Publish(id, []byte(id))
 		if err != nil {
@@ -211,10 +211,10 @@ func newInitialCheckRun(t *testing.T) (*implementationstate.Run, *runstore.State
 		return ref
 	}
 	baseline := publish("baseline")
-	run, err := implementationstate.NewRun(implementationstate.RunIdentity{
+	run, err := implstate.NewRun(implstate.RunIdentity{
 		ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base",
 		BaselineState: baseline, Specification: publish("specification"), TaskList: publish("tasks"), Configuration: publish("configuration"),
-	}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}

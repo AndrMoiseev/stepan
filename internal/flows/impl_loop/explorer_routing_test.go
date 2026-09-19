@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -24,7 +24,7 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 	t.Cleanup(func() { _ = owner.Close() })
 
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "final-review"
 	call.Expectation = explorerExpectationFrom(t, expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed), "explorer-call")
 	call.Policy = AgentCallPolicy{Role: AgentRoleExplorer, CallID: call.Expectation.Binding.CallID}
@@ -63,7 +63,7 @@ func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing
 		t.Fatalf("Explorer counter after returning to source = %d, want 1", got)
 	}
 	attempts := current.RunOperations[0].Attempts
-	if len(attempts) != 2 || attempts[0].Outcome != implementationstate.AttemptRejected || attempts[1].Outcome != implementationstate.AttemptSucceeded {
+	if len(attempts) != 2 || attempts[0].Outcome != implstate.AttemptRejected || attempts[1].Outcome != implstate.AttemptSucceeded {
 		t.Fatalf("durable technical attempts = %#v", attempts)
 	}
 }
@@ -75,7 +75,7 @@ func TestRouteExplorerContinuesValidEscalationsWithoutSizeRetry(t *testing.T) {
 			owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: explorerRuntime})
 			t.Cleanup(func() { _ = owner.Close() })
 			call := controlledCallFixture(t, &controlledCallRuntime{})
-			call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+			call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 			call.Run.RunOperations[0].Episode = "final-review"
 			source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 			call.Expectation = explorerExpectationFrom(t, source, "explorer-call")
@@ -104,7 +104,7 @@ func TestRouteExplorerExecutionBlockedDurablyPausesWithoutSourceContinuation(t *
 	owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: explorerRuntime})
 	t.Cleanup(func() { _ = owner.Close() })
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "final-review"
 	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 	call.Expectation = explorerExpectationFrom(t, source, "explorer-call")
@@ -133,14 +133,14 @@ func TestRouteExplorerExecutionBlockedDurablyPausesWithoutSourceContinuation(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != "tool is not installed" || current.ExecutionBlock.RequiredUserAction != "install the configured tool" || !slices.Equal(current.ExecutionBlock.Attempts, []string{"checked PATH", "read project settings"}) {
+	if current.Status != implstate.RunPaused || current.ExecutionBlock == nil || current.ExecutionBlock.Diagnostic != "tool is not installed" || current.ExecutionBlock.RequiredUserAction != "install the configured tool" || !slices.Equal(current.ExecutionBlock.Attempts, []string{"checked PATH", "read project settings"}) {
 		t.Fatalf("durable execution-blocked pause = %#v", current)
 	}
 }
 
 func TestRouteExplorerAfterRestartUsesDurableAuxiliaryResultAndFreshSourceSession(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "restart"
 	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 	call.Expectation = explorerExpectationFrom(t, source, "restart-explorer-call")
@@ -161,7 +161,7 @@ func TestRouteExplorerAfterRestartUsesDurableAuxiliaryResultAndFreshSourceSessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := call.Run.AddRunResult(implementationstate.OperationResult{ID: "restart-explorer-result", OperationID: call.OperationID, Status: implementationstate.ResultSucceeded, State: call.Run.CurrentState, Basis: call.Run.RunOperations[0].Basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := call.Run.AddRunResult(implstate.OperationResult{ID: "restart-explorer-result", OperationID: call.OperationID, Status: implstate.ResultSucceeded, State: call.Run.CurrentState, Basis: call.Run.RunOperations[0].Basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := call.StateStore.Record(context.Background(), call.Run); err != nil {
@@ -203,7 +203,7 @@ func TestRouteExplorerAfterRestartUsesDurableAuxiliaryResultAndFreshSourceSessio
 
 func TestRouteExplorerAfterRestartRestartsInterruptedAuxiliaryWithinExistingCounter(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "restart-interrupted"
 	source := expectationFor(ResponseRoleFinalReviewer, ResponseReviewPassed)
 	call.Expectation = explorerExpectationFrom(t, source, "restart-interrupted-explorer-call")
@@ -288,7 +288,7 @@ func (r *explorerRoutingRuntime) Close() error                          { return
 
 func TestRouteExplorerRefusesExplorerDelegation(t *testing.T) {
 	call := controlledCallFixture(t, &controlledCallRuntime{})
-	call.Run.RunOperations[0].Counter = implementationstate.CycleCounterExplorer
+	call.Run.RunOperations[0].Counter = implstate.CycleCounterExplorer
 	call.Run.RunOperations[0].Episode = "explorer"
 	owner := newSessionOwnerForTest(t, &terminatedSessionFactory{})
 	t.Cleanup(func() { _ = owner.Close() })
@@ -336,7 +336,7 @@ func explorationResponseWithFact(t *testing.T, message, fact string) json.RawMes
 func sourceContinuationCall(t *testing.T, explorer ControlledAgentCall, source ResponseExpectation) ControlledAgentCall {
 	t.Helper()
 	basis := explorer.Run.RunOperations[0].Basis
-	if err := explorer.Run.AddRunOperation(implementationstate.Operation{ID: "source-continuation", Kind: implementationstate.OperationReview, Counter: implementationstate.CycleCounterNone, Basis: basis}); err != nil {
+	if err := explorer.Run.AddRunOperation(implstate.Operation{ID: "source-continuation", Kind: implstate.OperationReview, Counter: implstate.CycleCounterNone, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	expectation := source

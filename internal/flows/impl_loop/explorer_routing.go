@@ -9,9 +9,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // DefaultExplorerResponseCharacters is a Unicode-character limit, not a byte
@@ -35,7 +35,7 @@ type ExplorerRoute struct {
 	// is supplied, RouteExplorer reads the durable response instead of
 	// dispatching Explorer again after a process restart. Empty preserves the
 	// lower-level route seam for callers that retain recovery themselves.
-	ExplorerResultID implementationstate.ResultID
+	ExplorerResultID implstate.ResultID
 	// SourceContinuation is the controller-owned next turn in the exact
 	// source session. It has its own operation and response expectation;
 	// Explorer's result never chooses either.
@@ -141,7 +141,7 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 		}
 	}
 	if response.Kind == ResponseExecutionBlocked {
-		if call.Run.Status == implementationstate.RunPaused {
+		if call.Run.Status == implstate.RunPaused {
 			return ExplorerRouteResult{Response: response, Attempts: attempts, Paused: true, PauseReason: call.Run.PauseReason}, nil
 		}
 		reason, err := persistExplorerExecutionBlocked(ctx, call, response)
@@ -169,8 +169,8 @@ func RouteExplorer(ctx context.Context, route ExplorerRoute) (ExplorerRouteResul
 	}, nil
 }
 
-func recoverPublishedExplorerResponse(journal *runstore.Run, resultID implementationstate.ResultID) (AgentResponse, bool, error) {
-	reference, err := journal.PublishedReference(implementationstate.EvidenceID(string(resultID) + "-response"))
+func recoverPublishedExplorerResponse(journal *runstore.Run, resultID implstate.ResultID) (AgentResponse, bool, error) {
+	reference, err := journal.PublishedReference(implstate.EvidenceID(string(resultID) + "-response"))
 	if errors.Is(err, runstore.ErrReferenceUnavailable) {
 		return AgentResponse{}, false, nil
 	}
@@ -259,7 +259,7 @@ func persistExplorerExecutionBlocked(ctx context.Context, call ControlledAgentCa
 	if err != nil {
 		return "", err
 	}
-	event, err := implementationstate.NewRunStateEvent(1, call.Run)
+	event, err := implstate.NewRunStateEvent(1, call.Run)
 	if err != nil {
 		return "", fmt.Errorf("clone Explorer execution-blocked state: %w", err)
 	}
@@ -294,11 +294,11 @@ func validateSourceContinuation(route ExplorerRoute) error {
 	return nil
 }
 
-func isExplorerOperation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) bool {
+func isExplorerOperation(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) bool {
 	if assignmentID == "" {
 		for _, operation := range run.RunOperations {
 			if operation.ID == operationID {
-				return operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterExplorer && strings.TrimSpace(operation.Episode) != ""
+				return operation.Kind == implstate.OperationAgent && operation.Counter == implstate.CycleCounterExplorer && strings.TrimSpace(operation.Episode) != ""
 			}
 		}
 		return false
@@ -309,7 +309,7 @@ func isExplorerOperation(run *implementationstate.Run, assignmentID implementati
 		}
 		for _, operation := range assignment.Operations {
 			if operation.ID == operationID {
-				return operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterExplorer && strings.TrimSpace(operation.Episode) != ""
+				return operation.Kind == implstate.OperationAgent && operation.Counter == implstate.CycleCounterExplorer && strings.TrimSpace(operation.Episode) != ""
 			}
 		}
 	}
@@ -348,7 +348,7 @@ func explorerSourceFor(expectation ResponseExpectation) ExplorerSource {
 	}
 }
 
-func explorerAssignmentID(expectation ResponseExpectation) implementationstate.AssignmentID {
+func explorerAssignmentID(expectation ResponseExpectation) implstate.AssignmentID {
 	if expectation.Scope == ResponseScopeAssignment {
 		return expectation.Binding.AssignmentID
 	}

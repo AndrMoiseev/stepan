@@ -102,7 +102,7 @@
 
 ## TASK-5.4-002 — full-log paths need a later read-only agent access seam
 
-- Origin: task 5.4 initial review; affected locations: `internal/flows/impl_loop/check_presentation.go`, `internal/runstore/store.go`, and later runtime adapters.
+- Origin: task 5.4 initial review; affected locations: `internal/flows/impl_loop/check_presentation.go`, `internal/flows/impl_loop/store/store.go`, and later runtime adapters.
 - Status: `open`.
 - Potential problem: canonical log paths are inside the shared run files directory, while current adapters expose external paths through a writable ArtifactRoot or reject them. Granting that whole root would expose unrelated evidence; a normal per-session root leaves the paths unreadable, and Nessy readers reject non-UTF-8 logs.
 - Evidence: current task proves controller-side verified reads, but role/context integration is scheduled for later tasks and has no read-only selected-evidence view yet.
@@ -172,7 +172,7 @@
 
 ## TD-6.5-002 — Nessy preflight defers envelope-schema validation
 
-- Origin: task 6.5 rereview cycle 1; affected locations: `internal/agentruntime/nessyapp/config.go`, `runtime.go`, and `internal/implementationruntime/factories.go`.
+- Origin: task 6.5 rereview cycle 1; affected locations: `internal/agentruntime/nessyapp/config.go`, `runtime.go`, and `internal/flows/impl_loop/runtime/factories.go`.
 - Status: `open`.
 - Potential problem: Nessy `ValidateRuntimeConfig` omits `EnvelopeSchema`, although `StartRuntime` later validates it.
 - Evidence: with an installed CLI and otherwise valid configuration, an empty or malformed controller-owned schema can pass role preparation and fail only when `PreparedRole.Start` creates the runtime.
@@ -262,7 +262,7 @@
 
 ## STD-8.3-001 — baseline evidence validation predicates are duplicated
 
-- Origin: task 8.3 rereview cycle 1; affected location: `internal/implementationstate/state.go` (`RecordInitialBaselinePass`, `validateInitialBaseline`).
+- Origin: task 8.3 rereview cycle 1; affected location: `internal/flows/impl_loop/state/state.go` (`RecordInitialBaselinePass`, `validateInitialBaseline`).
 - Status: `open`.
 - Potential problem: two copies of the baseline operation/result predicate can drift as evidence rules evolve.
 - Evidence: record-time validation and restored-state validation separately enumerate the same operation kind, counter, status, state, and basis relationships.
@@ -372,7 +372,7 @@
 
 ## TD-9.3-005 — persisted pending disputes are not deduplicated
 
-- Origin: task 9.3 rereview cycle 1; affected locations: `internal/implementationstate/state.go`, `internal/flows/impl_loop/task_review.go`.
+- Origin: task 9.3 rereview cycle 1; affected locations: `internal/flows/impl_loop/state/state.go`, `internal/flows/impl_loop/task_review.go`.
 - Status: `open`.
 - Potential problem: retry after dispute persistence but before reviewer completion can append the same semantic dispute again.
 - Evidence: pending disputes are durable, but no stable dispute identity or idempotent append rule rejects a duplicate retry.
@@ -392,7 +392,7 @@
 
 ## TD-9.4-001 — refinement invalidates acceptance before a durable transition boundary
 
-- Origin: task 9.4 initial review; affected locations: `internal/flows/impl_loop/brief_refinement.go`, `internal/implementationstate/state.go` (`BeginBriefRefinement`).
+- Origin: task 9.4 initial review; affected locations: `internal/flows/impl_loop/brief_refinement.go`, `internal/flows/impl_loop/state/state.go` (`BeginBriefRefinement`).
 - Status: `open`.
 - Potential problem: acceptance can be durably invalidated before current-diff capture succeeds.
 - Evidence: correction cycle 1 moved transition work to a clone and removed the caller-memory divergence on a zero-event operation-record failure, but the reopened candidate is persisted before later Git/diff preparation.
@@ -421,7 +421,7 @@
 - Possible follow-up: propagate the effective continuation session through the Explorer route result and assert it in a recreation regression.
 ## TD-9.5-001 — persisted pause can contain execution and limit reasons simultaneously
 
-- Origin: task 9.5 initial review; affected location: `internal/implementationstate/state.go` (`validateLifecycle`).
+- Origin: task 9.5 initial review; affected location: `internal/flows/impl_loop/state/state.go` (`validateLifecycle`).
 - Status: `open`.
 - Potential problem: validation accepts a paused state containing both `ExecutionBlock` and `LimitPause`, without tying `PauseReason` to one exclusive pause kind.
 - Evidence: lifecycle validation checks both payloads independently but does not reject their coexistence.
@@ -506,7 +506,7 @@
 - Possible follow-up: transition a clone, record it durably, then adopt the candidate.
 ## TD-10.3-002 — reconciled commit evidence refs are not included in runstore reference validation
 
-- Origin: task 10.3 rereview cycle 1; affected location: `internal/runstore/state.go` (`stateEvidenceRefs`).
+- Origin: task 10.3 rereview cycle 1; affected location: `internal/flows/impl_loop/store/state.go` (`stateEvidenceRefs`).
 - Status: `open`.
 - Potential problem: `Assignment.ReconciledCommits` state/basis references are omitted from linked evidence verification.
 - Evidence: orphaned or tampered reconciliation artifacts can escape the generic state reference walk.
@@ -555,7 +555,7 @@
 
 ## TD-10.5-002 — final-finding provenance is omitted from briefer context
 
-- Origin: task 10.5 initial review; affected locations: `internal/implementationstate/state.go`, `internal/flows/impl_loop/role_context.go`.
+- Origin: task 10.5 initial review; affected locations: `internal/flows/impl_loop/state/state.go`, `internal/flows/impl_loop/role_context.go`.
 - Status: `open`.
 - Potential problem: corrective tasks persist final-review/finding identifiers, but briefer context exposes only ordinary task fields and not the finding problem, location, basis, or expected result.
 - Evidence: `BuildBrieferStartContext` does not serialize `Task.FinalFindings` or the final-review receipt.
@@ -565,7 +565,7 @@
 
 ## TD-11.1-001 — user-control mutex does not serialize all shared Run mutations
 
-- Origin: task 11.1 initial review; affected locations: `internal/flows/impl_loop/controlled_agent_call.go`, `internal/flows/impl_loop/user_control.go`, and state-replacement paths in `internal/runstore/state.go`.
+- Origin: task 11.1 initial review; affected locations: `internal/flows/impl_loop/controlled_agent_call.go`, `internal/flows/impl_loop/user_control.go`, and state-replacement paths in `internal/flows/impl_loop/store/state.go`.
 - Status: `open`.
 - Potential problem: agent registration and operation completion can read or replace the shared `Run` without participating in the `UserRunControl` mutex.
 - Evidence: registration precedes durable attempt reservation, while state-store recording may replace the run concurrently with pause/close reading it under a different synchronization boundary.
@@ -585,7 +585,7 @@
 
 ## TD-11.2-001 — projection-only failure can strand same-process reconciliation
 
-- Origin: task 11.2 initial review; affected locations: `internal/flows/impl_loop/commit.go`, `internal/runstore/state.go`.
+- Origin: task 11.2 initial review; affected locations: `internal/flows/impl_loop/commit.go`, `internal/flows/impl_loop/store/state.go`.
 - Status: `open`.
 - Potential problem: when the pending-intent JSONL append succeeds but SQLite projection fails, the live retry can reach Git before applying that pending projection; recording completion then conflicts with `ErrPendingEvent` until the store is reopened.
 - Evidence: a nonzero durable event leaves the in-memory pending intent in place while the projection remains pending.
@@ -705,7 +705,7 @@
 
 ## TASK-12.2-D002 — unrelated corrupt run can break no-run startup
 
-- Origin: task 12.2 initial review; affected locations: `cmd/stepan/main.go`, `internal/flows/impl_loop/controller_lock.go`, `internal/runstore/state.go`.
+- Origin: task 12.2 initial review; affected locations: `cmd/stepan/main.go`, `internal/flows/impl_loop/controller_lock.go`, `internal/flows/impl_loop/store/state.go`.
 - Status: `open`.
 - Potential problem: ordinary startup validates every retained run before work-copy comparison, so malformed unrelated history aborts an application that has no implementation run for this repository.
 - Evidence: only a wholly absent store is treated as no-run; errors from unrelated journals propagate.
@@ -715,7 +715,7 @@
 
 ## TASK-12.2-D003 — startup materializes the full state journal
 
-- Origin: task 12.2 correction-cycle-1 rereview; affected locations: `internal/runstore/state.go`, `internal/flows/impl_loop/startup.go`.
+- Origin: task 12.2 correction-cycle-1 rereview; affected locations: `internal/flows/impl_loop/store/state.go`, `internal/flows/impl_loop/startup.go`.
 - Status: `open`.
 - Potential problem: startup loads every full-state journal event although presentation needs only chronological transition information and a small window.
 - Evidence: `JournalStates` builds an in-memory slice of all snapshots.
@@ -755,7 +755,7 @@
 
 ## TASK-12.2-008 — recovered execution-blocked response can replay forever
 
-- Origin: task 12.2 exceptional correction-cycle-8 rereview; affected locations: `internal/flows/impl_loop/restart_dispatch.go`, `internal/implementationstate/state.go`.
+- Origin: task 12.2 exceptional correction-cycle-8 rereview; affected locations: `internal/flows/impl_loop/restart_dispatch.go`, `internal/flows/impl_loop/state/state.go`.
 - Status: `open`.
 - Potential problem: replaying a durable `execution_blocked` response pauses the run without recording that the response was consumed, so remediation followed by another `/resume` selects and replays the same response again.
 - Evidence: the recovered block creates neither a consumed-response result nor a downstream operation; latest-operation classification remains unchanged after the pause is cleared.

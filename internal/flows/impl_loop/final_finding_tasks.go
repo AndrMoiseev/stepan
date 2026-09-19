@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var ErrFinalFindingTasks = errors.New("invalid final finding task route")
@@ -23,7 +23,7 @@ var ErrFinalFindingTasks = errors.New("invalid final finding task route")
 // failed final review into new, ordinary tasks. The orchestrator may edit only
 // tasks.md; it cannot choose task status, bypass checks or review, or commit.
 type FinalFindingTasksInput struct {
-	Run        *implementationstate.Run
+	Run        *implstate.Run
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
@@ -33,16 +33,16 @@ type FinalFindingTasksInput struct {
 	Review    FinalReviewResult
 	TasksPath string
 
-	OperationID implementationstate.OperationID
-	ResultID    implementationstate.ResultID
+	OperationID implstate.OperationID
+	ResultID    implstate.ResultID
 	CallID      string
-	Limits      implementationstate.CycleLimits
+	Limits      implstate.CycleLimits
 	Timeout     time.Duration
 }
 
 type FinalFindingTasksResult struct {
 	Call  ControlledAgentCallResult
-	Tasks []implementationstate.Task
+	Tasks []implstate.Task
 }
 
 // AddFinalFindingTasks appends corrective root leaves after the completed
@@ -53,9 +53,9 @@ func AddFinalFindingTasks(ctx context.Context, input FinalFindingTasksInput) (Fi
 	if err != nil {
 		return FinalFindingTasksResult{}, err
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	if existing := finalRunOperation(input.Run, input.OperationID); existing == nil {
-		if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationAgent, Basis: basis, Description: "append tasks for final review findings"}); err != nil {
+		if err := input.Run.AddRunOperation(implstate.Operation{ID: input.OperationID, Kind: implstate.OperationAgent, Basis: basis, Description: "append tasks for final review findings"}); err != nil {
 			return FinalFindingTasksResult{}, fmt.Errorf("%w: create task-addition operation: %v", ErrFinalFindingTasks, err)
 		}
 		// The operation is recorded before an external orchestrator turn. A crash
@@ -63,7 +63,7 @@ func AddFinalFindingTasks(ctx context.Context, input FinalFindingTasksInput) (Fi
 		if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
 			return FinalFindingTasksResult{}, fmt.Errorf("%w: persist task-addition operation: %v", ErrFinalFindingTasks, err)
 		}
-	} else if existing.Kind != implementationstate.OperationAgent || existing.Description != "append tasks for final review findings" || existing.Basis != basis || finalRunResult(input.Run, input.ResultID) != nil {
+	} else if existing.Kind != implstate.OperationAgent || existing.Description != "append tasks for final review findings" || existing.Basis != basis || finalRunResult(input.Run, input.ResultID) != nil {
 		return FinalFindingTasksResult{}, fmt.Errorf("%w: task-addition operation cannot be retried", ErrFinalFindingTasks)
 	}
 	beforeMarkdown, err := readFinalFindingTasksMarkdown(input.Repository, input.TasksPath)
@@ -119,7 +119,7 @@ func AddFinalFindingTasks(ctx context.Context, input FinalFindingTasksInput) (Fi
 	if err := input.Run.AppendFinalFindingTasks(tasks); err != nil {
 		return FinalFindingTasksResult{Call: result}, fmt.Errorf("%w: append machine tasks: %v", ErrFinalFindingTasks, err)
 	}
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: implementationstate.ResultSucceeded, State: input.Run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := input.Run.AddRunResult(implstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: implstate.ResultSucceeded, State: input.Run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return FinalFindingTasksResult{Call: result}, fmt.Errorf("%w: record task-addition result: %v", ErrFinalFindingTasks, err)
 	}
 	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
@@ -158,24 +158,24 @@ func validateFinalFindingTasksInput(input FinalFindingTasksInput) (AgentResponse
 	return finalReview, nil
 }
 
-func failedFinalReview(run *implementationstate.Run, resultID implementationstate.ResultID) bool {
+func failedFinalReview(run *implstate.Run, resultID implstate.ResultID) bool {
 	result := finalRunResult(run, resultID)
-	operation := implementationstate.Operation{}
+	operation := implstate.Operation{}
 	if result != nil {
 		if found := finalRunOperation(run, result.OperationID); found != nil {
 			operation = *found
 		}
 	}
-	return result != nil && result.Status == implementationstate.ResultFailed && operation.Kind == implementationstate.OperationReview && operation.Counter == implementationstate.CycleCounterFinalReview
+	return result != nil && result.Status == implstate.ResultFailed && operation.Kind == implstate.OperationReview && operation.Counter == implstate.CycleCounterFinalReview
 }
 
-func durableFailedFinalReview(run *implementationstate.Run, journal *runstore.Run, resultID implementationstate.ResultID) (AgentResponse, error) {
+func durableFailedFinalReview(run *implstate.Run, journal *runstore.Run, resultID implstate.ResultID) (AgentResponse, error) {
 	result := finalRunResult(run, resultID)
 	if result == nil || journal == nil {
 		return AgentResponse{}, fmt.Errorf("%w: durable final-review receipt is required", ErrFinalFindingTasks)
 	}
 	for _, evidence := range result.Evidence {
-		if evidence.ID != implementationstate.EvidenceID(string(resultID)+"-discussion") {
+		if evidence.ID != implstate.EvidenceID(string(resultID)+"-discussion") {
 			continue
 		}
 		data, err := journal.Read(evidence)
@@ -196,7 +196,7 @@ func durableFailedFinalReview(run *implementationstate.Run, journal *runstore.Ru
 	return AgentResponse{}, fmt.Errorf("%w: durable final-review receipt is missing", ErrFinalFindingTasks)
 }
 
-func validateFinalFindingTasksResponse(run *implementationstate.Run, reviewResultID implementationstate.ResultID, finalReview AgentResponse, response AgentResponse) error {
+func validateFinalFindingTasksResponse(run *implstate.Run, reviewResultID implstate.ResultID, finalReview AgentResponse, response AgentResponse) error {
 	if run == nil || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: task additions are not bound to the final-review run", ErrFinalFindingTasks)
 	}
@@ -228,13 +228,13 @@ func persistFinalFindingTasksClarification(ctx context.Context, input FinalFindi
 	if err != nil {
 		return fmt.Errorf("%w: publish final-finding clarification: %v", ErrFinalFindingTasks, err)
 	}
-	event, err := implementationstate.NewRunStateEvent(1, input.Run)
+	event, err := implstate.NewRunStateEvent(1, input.Run)
 	if err != nil {
 		return fmt.Errorf("%w: clone run for final-finding clarification: %v", ErrFinalFindingTasks, err)
 	}
 	candidate := event.State
-	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
-	if err := candidate.AddRunResult(implementationstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: implementationstate.ResultSucceeded, State: candidate.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	if err := candidate.AddRunResult(implstate.OperationResult{ID: input.ResultID, OperationID: input.OperationID, Status: implstate.ResultSucceeded, State: candidate.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return fmt.Errorf("%w: record final-finding clarification: %v", ErrFinalFindingTasks, err)
 	}
 	if err := candidate.Close(briefClarificationCloseReason(response)); err != nil {
@@ -260,7 +260,7 @@ func validateFinalFindingTasksMarkdownAppend(before, after []byte) error {
 	return nil
 }
 
-func validateFinalFindingCoverage(review AgentResponse, tasks []implementationstate.Task) error {
+func validateFinalFindingCoverage(review AgentResponse, tasks []implstate.Task) error {
 	want := make(map[string]bool, len(review.FindingIDs))
 	for _, id := range review.FindingIDs {
 		want[id] = false
@@ -289,12 +289,12 @@ type finalFindingTaskPayload struct {
 	FindingIDs []string `json:"finding_ids"`
 }
 
-func decodeFinalFindingTasks(reviewResultID implementationstate.ResultID, ids []implementationstate.TaskID, payloads []string) ([]implementationstate.Task, error) {
+func decodeFinalFindingTasks(reviewResultID implstate.ResultID, ids []implstate.TaskID, payloads []string) ([]implstate.Task, error) {
 	if reviewResultID == "" || len(ids) == 0 || len(ids) != len(payloads) {
 		return nil, fmt.Errorf("%w: final task IDs and payloads must be non-empty and have equal length", ErrFinalFindingTasks)
 	}
-	seen := make(map[implementationstate.TaskID]bool, len(ids))
-	tasks := make([]implementationstate.Task, 0, len(ids))
+	seen := make(map[implstate.TaskID]bool, len(ids))
+	tasks := make([]implstate.Task, 0, len(ids))
 	for index, id := range ids {
 		var payload finalFindingTaskPayload
 		decoder := json.NewDecoder(strings.NewReader(payloads[index]))
@@ -310,16 +310,16 @@ func decodeFinalFindingTasks(reviewResultID implementationstate.ResultID, ids []
 			return nil, fmt.Errorf("%w: task %q is not an appended root finding task", ErrFinalFindingTasks, id)
 		}
 		findingSeen := make(map[string]bool, len(payload.FindingIDs))
-		references := make([]implementationstate.FinalFindingReference, 0, len(payload.FindingIDs))
+		references := make([]implstate.FinalFindingReference, 0, len(payload.FindingIDs))
 		for _, findingID := range payload.FindingIDs {
 			if strings.TrimSpace(findingID) == "" || findingSeen[findingID] {
 				return nil, fmt.Errorf("%w: task %q has invalid finding links", ErrFinalFindingTasks, id)
 			}
 			findingSeen[findingID] = true
-			references = append(references, implementationstate.FinalFindingReference{ReviewResultID: reviewResultID, FindingID: findingID})
+			references = append(references, implstate.FinalFindingReference{ReviewResultID: reviewResultID, FindingID: findingID})
 		}
 		seen[id] = true
-		tasks = append(tasks, implementationstate.Task{ID: id, Order: index, Title: payload.Title, FinalFindings: references})
+		tasks = append(tasks, implstate.Task{ID: id, Order: index, Title: payload.Title, FinalFindings: references})
 	}
 	return tasks, nil
 }
@@ -335,19 +335,19 @@ func renderFinalFindingTaskRequest(review AgentResponse, tasksPath string) strin
 	return text.String()
 }
 
-func publishFinalFindingTaskEvidence(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+func publishFinalFindingTaskEvidence(journal *runstore.Run, resultID implstate.ResultID, response AgentResponse) (implstate.EvidenceRef, error) {
 	return publishFinalFindingTaskResponse(journal, resultID, response, "-tasks")
 }
 
-func publishFinalFindingTaskResponse(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse, suffix string) (implementationstate.EvidenceRef, error) {
+func publishFinalFindingTaskResponse(journal *runstore.Run, resultID implstate.ResultID, response AgentResponse, suffix string) (implstate.EvidenceRef, error) {
 	if journal == nil {
-		return implementationstate.EvidenceRef{}, errors.New("final-finding route requires a run journal")
+		return implstate.EvidenceRef{}, errors.New("final-finding route requires a run journal")
 	}
 	data, err := json.Marshal(struct {
 		Response AgentResponse `json:"response"`
 	}{Response: response})
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+suffix), data)
+	return journal.Publish(implstate.EvidenceID(string(resultID)+suffix), data)
 }

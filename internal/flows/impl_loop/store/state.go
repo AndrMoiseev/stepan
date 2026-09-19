@@ -1,4 +1,4 @@
-package runstore
+package store
 
 import (
 	"bufio"
@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	_ "modernc.org/sqlite"
 )
 
@@ -147,9 +147,9 @@ func (s *StateStore) Close() error {
 // Record writes one new event to JSONL and synchronizes it before applying the
 // event to SQLite. If projection fails after the journal is durable, retrying
 // Record with the same state applies that exact event without a second line.
-func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, error) {
+func (s *StateStore) Record(ctx context.Context, state *implstate.Run) (implstate.Event, error) {
 	if s == nil || s.db == nil || s.writer == nil {
-		return implementationstate.Event{}, fmt.Errorf("%w: nil state store", ErrUnsafePath)
+		return implstate.Event{}, fmt.Errorf("%w: nil state store", ErrUnsafePath)
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -162,22 +162,22 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 
 	lastSeq, err := s.refreshCleanSequence(ctx)
 	if err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	if err := s.verifyStateReferences(state); err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
-	event, err := implementationstate.NewRunStateEvent(lastSeq+1, state)
+	event, err := implstate.NewRunStateEvent(lastSeq+1, state)
 	if err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	data, err := marshalEvent(event)
 	if err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	journal := appendJournalResult(s.journalPath, data)
 	if !journal.durable {
-		return implementationstate.Event{}, journal.err
+		return implstate.Event{}, journal.err
 	}
 	s.pending = &pendingEvent{data: bytes.Clone(data)}
 	if journal.err != nil {
@@ -194,9 +194,9 @@ func (s *StateStore) Record(ctx context.Context, state *implementationstate.Run)
 // resolvePending applies a previously durable event without creating a new
 // journal record. It is used by the attempt-start boundary so a caller can
 // retry the same start after a projection-only failure.
-func (s *StateStore) resolvePending(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, bool, error) {
+func (s *StateStore) resolvePending(ctx context.Context, state *implstate.Run) (implstate.Event, bool, error) {
 	if s == nil || s.db == nil || s.writer == nil {
-		return implementationstate.Event{}, false, fmt.Errorf("%w: nil state store", ErrUnsafePath)
+		return implstate.Event{}, false, fmt.Errorf("%w: nil state store", ErrUnsafePath)
 	}
 	s.writer.Lock()
 	defer s.writer.Unlock()
@@ -205,32 +205,32 @@ func (s *StateStore) resolvePending(ctx context.Context, state *implementationst
 	return s.applyPendingLocked(ctx, state)
 }
 
-func (s *StateStore) applyPendingLocked(ctx context.Context, state *implementationstate.Run) (implementationstate.Event, bool, error) {
+func (s *StateStore) applyPendingLocked(ctx context.Context, state *implstate.Run) (implstate.Event, bool, error) {
 	if s.pending == nil {
-		return implementationstate.Event{}, false, nil
+		return implstate.Event{}, false, nil
 	}
 	pending, err := eventFromData(s.pending.data)
 	if err != nil {
-		return implementationstate.Event{}, true, err
+		return implstate.Event{}, true, err
 	}
 	if err := s.verifyStateReferences(state); err != nil {
-		return implementationstate.Event{}, true, err
+		return implstate.Event{}, true, err
 	}
-	event, err := implementationstate.NewRunStateEvent(pending.Sequence, state)
+	event, err := implstate.NewRunStateEvent(pending.Sequence, state)
 	if err != nil {
-		return implementationstate.Event{}, true, err
+		return implstate.Event{}, true, err
 	}
 	data, err := marshalEvent(event)
 	if err != nil {
-		return implementationstate.Event{}, true, err
+		return implstate.Event{}, true, err
 	}
 	if !bytes.Equal(data, s.pending.data) {
-		return implementationstate.Event{}, true, ErrPendingEvent
+		return implstate.Event{}, true, ErrPendingEvent
 	}
 	if err := s.applyCanonical(ctx, s.pending.data, true); err != nil {
 		event, cloneErr := cloneEventFromData(s.pending.data)
 		if cloneErr != nil {
-			return implementationstate.Event{}, true, errors.Join(err, cloneErr)
+			return implstate.Event{}, true, errors.Join(err, cloneErr)
 		}
 		return event, true, err
 	}
@@ -243,10 +243,10 @@ func (s *StateStore) applyPendingLocked(ctx context.Context, state *implementati
 // attempt before its external agent or command is dispatched. It changes the
 // caller only after the attempt has reached durable JSONL. Callers MUST NOT
 // dispatch when this method returns an error.
-func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
-	return s.recordAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) (implstate.OperationAttempt, implstate.Event, error) {
+	return s.recordAttemptStart(ctx, state, func(candidate *implstate.Run) (implstate.OperationAttempt, error) {
 		return candidate.StartAssignmentAttempt(assignmentID, operationID)
-	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+	}, func(current *implstate.Run) (implstate.OperationAttempt, bool) {
 		return assignmentLastAttempt(current, assignmentID, operationID)
 	})
 }
@@ -254,12 +254,12 @@ func (s *StateStore) RecordAssignmentAttemptStart(ctx context.Context, state *im
 // RecordAssignmentAttemptStartWithLimits persists either a reserved attempt or
 // the limit pause that prevented it before a caller can dispatch external
 // work. The returned event is non-zero for a durably recorded limit pause.
-func (s *StateStore) RecordAssignmentAttemptStartWithLimits(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, limits implementationstate.CycleLimits) (implementationstate.OperationAttempt, implementationstate.Event, error) {
-	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+func (s *StateStore) RecordAssignmentAttemptStartWithLimits(ctx context.Context, state *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, limits implstate.CycleLimits) (implstate.OperationAttempt, implstate.Event, error) {
+	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implstate.Run) (implstate.OperationAttempt, error) {
 		return candidate.StartAssignmentAttemptWithLimits(assignmentID, operationID, limits)
-	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+	}, func(current *implstate.Run) (implstate.OperationAttempt, bool) {
 		return assignmentLastAttempt(current, assignmentID, operationID)
-	}, func(current *implementationstate.Run) bool {
+	}, func(current *implstate.Run) bool {
 		return limitPauseMatches(current, assignmentID, operationID)
 	})
 }
@@ -267,22 +267,22 @@ func (s *StateStore) RecordAssignmentAttemptStartWithLimits(ctx context.Context,
 // RecordRunAttemptStart is the final-review counterpart of
 // RecordAssignmentAttemptStart. It provides the same record-before-dispatch
 // boundary for a run-level operation.
-func (s *StateStore) RecordRunAttemptStart(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, implementationstate.Event, error) {
-	return s.recordAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+func (s *StateStore) RecordRunAttemptStart(ctx context.Context, state *implstate.Run, operationID implstate.OperationID) (implstate.OperationAttempt, implstate.Event, error) {
+	return s.recordAttemptStart(ctx, state, func(candidate *implstate.Run) (implstate.OperationAttempt, error) {
 		return candidate.StartRunAttempt(operationID)
-	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+	}, func(current *implstate.Run) (implstate.OperationAttempt, bool) {
 		return runLastAttempt(current, operationID)
 	})
 }
 
 // RecordRunAttemptStartWithLimits is the final-review counterpart of
 // RecordAssignmentAttemptStartWithLimits.
-func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID, limits implementationstate.CycleLimits) (implementationstate.OperationAttempt, implementationstate.Event, error) {
-	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implementationstate.Run) (implementationstate.OperationAttempt, error) {
+func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state *implstate.Run, operationID implstate.OperationID, limits implstate.CycleLimits) (implstate.OperationAttempt, implstate.Event, error) {
+	return s.recordLimitedAttemptStart(ctx, state, func(candidate *implstate.Run) (implstate.OperationAttempt, error) {
 		return candidate.StartRunAttemptWithLimits(operationID, limits)
-	}, func(current *implementationstate.Run) (implementationstate.OperationAttempt, bool) {
+	}, func(current *implstate.Run) (implstate.OperationAttempt, bool) {
 		return runLastAttempt(current, operationID)
-	}, func(current *implementationstate.Run) bool {
+	}, func(current *implstate.Run) bool {
 		return limitPauseMatches(current, "", operationID)
 	})
 }
@@ -290,31 +290,31 @@ func (s *StateStore) RecordRunAttemptStartWithLimits(ctx context.Context, state 
 // RecordAssignmentAttemptOutcome persists the technical observation made
 // after an assignment-scoped external attempt. Unlike an OperationResult, it
 // leaves the operation open for a bounded technical retry.
-func (s *StateStore) RecordAssignmentAttemptOutcome(ctx context.Context, state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, outcome implementationstate.AttemptOutcome, diagnostic string) (implementationstate.Event, error) {
-	return s.recordAttemptOutcome(ctx, state, func(candidate *implementationstate.Run) error {
+func (s *StateStore) RecordAssignmentAttemptOutcome(ctx context.Context, state *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, outcome implstate.AttemptOutcome, diagnostic string) (implstate.Event, error) {
+	return s.recordAttemptOutcome(ctx, state, func(candidate *implstate.Run) error {
 		return candidate.RecordAssignmentAttemptOutcome(assignmentID, operationID, outcome, diagnostic)
 	})
 }
 
 // RecordRunAttemptOutcome is the run-scoped counterpart of
 // RecordAssignmentAttemptOutcome.
-func (s *StateStore) RecordRunAttemptOutcome(ctx context.Context, state *implementationstate.Run, operationID implementationstate.OperationID, outcome implementationstate.AttemptOutcome, diagnostic string) (implementationstate.Event, error) {
-	return s.recordAttemptOutcome(ctx, state, func(candidate *implementationstate.Run) error {
+func (s *StateStore) RecordRunAttemptOutcome(ctx context.Context, state *implstate.Run, operationID implstate.OperationID, outcome implstate.AttemptOutcome, diagnostic string) (implstate.Event, error) {
+	return s.recordAttemptOutcome(ctx, state, func(candidate *implstate.Run) error {
 		return candidate.RecordRunAttemptOutcome(operationID, outcome, diagnostic)
 	})
 }
 
-func (s *StateStore) recordAttemptOutcome(ctx context.Context, state *implementationstate.Run, record func(*implementationstate.Run) error) (implementationstate.Event, error) {
+func (s *StateStore) recordAttemptOutcome(ctx context.Context, state *implstate.Run, record func(*implstate.Run) error) (implstate.Event, error) {
 	if state == nil {
-		return implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+		return implstate.Event{}, fmt.Errorf("%w: nil run state", implstate.ErrInvalidState)
 	}
-	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
+	candidateEvent, err := implstate.NewRunStateEvent(1, state)
 	if err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	candidate := candidateEvent.State
 	if err := record(candidate); err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	event, err := s.Record(ctx, candidate)
 	if event.Sequence != 0 {
@@ -323,26 +323,26 @@ func (s *StateStore) recordAttemptOutcome(ctx context.Context, state *implementa
 	return event, err
 }
 
-func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool)) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+func (s *StateStore) recordAttemptStart(ctx context.Context, state *implstate.Run, start func(*implstate.Run) (implstate.OperationAttempt, error), last func(*implstate.Run) (implstate.OperationAttempt, bool)) (implstate.OperationAttempt, implstate.Event, error) {
 	if state == nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+		return implstate.OperationAttempt{}, implstate.Event{}, fmt.Errorf("%w: nil run state", implstate.ErrInvalidState)
 	}
 	if event, pending, err := s.resolvePending(ctx, state); pending {
 		if err != nil {
-			return implementationstate.OperationAttempt{}, event, err
+			return implstate.OperationAttempt{}, event, err
 		}
 		if attempt, found := last(state); found {
 			return attempt, event, nil
 		}
 	}
-	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
+	candidateEvent, err := implstate.NewRunStateEvent(1, state)
 	if err != nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+		return implstate.OperationAttempt{}, implstate.Event{}, err
 	}
 	candidate := candidateEvent.State
 	attempt, err := start(candidate)
 	if err != nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+		return implstate.OperationAttempt{}, implstate.Event{}, err
 	}
 	event, err := s.Record(ctx, candidate)
 	if event.Sequence != 0 {
@@ -351,32 +351,32 @@ func (s *StateStore) recordAttemptStart(ctx context.Context, state *implementati
 	return attempt, event, err
 }
 
-func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *implementationstate.Run, start func(*implementationstate.Run) (implementationstate.OperationAttempt, error), last func(*implementationstate.Run) (implementationstate.OperationAttempt, bool), matchesLimitPause func(*implementationstate.Run) bool) (implementationstate.OperationAttempt, implementationstate.Event, error) {
+func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *implstate.Run, start func(*implstate.Run) (implstate.OperationAttempt, error), last func(*implstate.Run) (implstate.OperationAttempt, bool), matchesLimitPause func(*implstate.Run) bool) (implstate.OperationAttempt, implstate.Event, error) {
 	if state == nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, fmt.Errorf("%w: nil run state", implementationstate.ErrInvalidState)
+		return implstate.OperationAttempt{}, implstate.Event{}, fmt.Errorf("%w: nil run state", implstate.ErrInvalidState)
 	}
 	if event, pending, err := s.resolvePending(ctx, state); pending {
 		if err != nil {
-			return implementationstate.OperationAttempt{}, event, err
+			return implstate.OperationAttempt{}, event, err
 		}
 		if matchesLimitPause(state) {
-			return implementationstate.OperationAttempt{}, event, implementationstate.ErrLimitExceeded
+			return implstate.OperationAttempt{}, event, implstate.ErrLimitExceeded
 		}
 		if attempt, found := last(state); found {
 			return attempt, event, nil
 		}
 	}
 	if matchesLimitPause(state) {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, implementationstate.ErrLimitExceeded
+		return implstate.OperationAttempt{}, implstate.Event{}, implstate.ErrLimitExceeded
 	}
-	candidateEvent, err := implementationstate.NewRunStateEvent(1, state)
+	candidateEvent, err := implstate.NewRunStateEvent(1, state)
 	if err != nil {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, err
+		return implstate.OperationAttempt{}, implstate.Event{}, err
 	}
 	candidate := candidateEvent.State
 	attempt, startErr := start(candidate)
-	if startErr != nil && !errors.Is(startErr, implementationstate.ErrLimitExceeded) {
-		return implementationstate.OperationAttempt{}, implementationstate.Event{}, startErr
+	if startErr != nil && !errors.Is(startErr, implstate.ErrLimitExceeded) {
+		return implstate.OperationAttempt{}, implstate.Event{}, startErr
 	}
 	event, recordErr := s.Record(ctx, candidate)
 	if event.Sequence != 0 {
@@ -388,11 +388,11 @@ func (s *StateStore) recordLimitedAttemptStart(ctx context.Context, state *imple
 	return attempt, event, recordErr
 }
 
-func limitPauseMatches(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) bool {
-	return state != nil && state.Status == implementationstate.RunPaused && state.LimitPause != nil && state.LimitPause.AssignmentID == assignmentID && state.LimitPause.OperationID == operationID
+func limitPauseMatches(state *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) bool {
+	return state != nil && state.Status == implstate.RunPaused && state.LimitPause != nil && state.LimitPause.AssignmentID == assignmentID && state.LimitPause.OperationID == operationID
 }
 
-func assignmentLastAttempt(state *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {
+func assignmentLastAttempt(state *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) (implstate.OperationAttempt, bool) {
 	for _, assignment := range state.Assignments {
 		if assignment.ID != assignmentID {
 			continue
@@ -403,22 +403,22 @@ func assignmentLastAttempt(state *implementationstate.Run, assignmentID implemen
 			}
 		}
 	}
-	return implementationstate.OperationAttempt{}, false
+	return implstate.OperationAttempt{}, false
 }
 
-func runLastAttempt(state *implementationstate.Run, operationID implementationstate.OperationID) (implementationstate.OperationAttempt, bool) {
+func runLastAttempt(state *implstate.Run, operationID implstate.OperationID) (implstate.OperationAttempt, bool) {
 	for _, operation := range state.RunOperations {
 		if operation.ID == operationID && len(operation.Attempts) != 0 {
 			return operation.Attempts[len(operation.Attempts)-1], true
 		}
 	}
-	return implementationstate.OperationAttempt{}, false
+	return implstate.OperationAttempt{}, false
 }
 
 // Current returns the current SQLite projection and the sequence that produced
 // it. It never reads the journal, keeping JSONL as the recovery source rather
 // than a second cache on normal reads.
-func (s *StateStore) Current(ctx context.Context) (*implementationstate.Run, uint64, error) {
+func (s *StateStore) Current(ctx context.Context) (*implstate.Run, uint64, error) {
 	if s == nil || s.db == nil {
 		return nil, 0, fmt.Errorf("%w: nil state store", ErrUnsafePath)
 	}
@@ -434,7 +434,7 @@ func (s *StateStore) Current(ctx context.Context) (*implementationstate.Run, uin
 	if sequence <= 0 {
 		return nil, 0, fmt.Errorf("%w: non-positive projected sequence", ErrJournalSequence)
 	}
-	var state implementationstate.Run
+	var state implstate.Run
 	if err := json.Unmarshal(stateJSON, &state); err != nil {
 		return nil, 0, fmt.Errorf("decode current state projection: %w", err)
 	}
@@ -449,14 +449,14 @@ func (s *StateStore) Current(ctx context.Context) (*implementationstate.Run, uin
 // its SQLite projection. An incomplete final fragment is ignored, matching
 // recovery semantics, while corruption of a completed record is rejected.
 // This is the status-read path used even while a controller process is active.
-func ReadJournalCurrent(run *Run) (*implementationstate.Run, uint64, error) {
+func ReadJournalCurrent(run *Run) (*implstate.Run, uint64, error) {
 	if run == nil {
 		return nil, 0, fmt.Errorf("%w: nil run", ErrUnsafePath)
 	}
 	store := &StateStore{journalPath: filepath.Join(run.directory, JournalFileName), run: run}
-	verified := make(map[implementationstate.EvidenceRef]struct{})
-	var current *implementationstate.Run
-	journal, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+	verified := make(map[implstate.EvidenceRef]struct{})
+	var current *implstate.Run
+	journal, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implstate.Event) error {
 		if err := store.verifyStateReferencesSeen(event.State, verified); err != nil {
 			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
 		}
@@ -478,14 +478,14 @@ func ReadJournalCurrent(run *Run) (*implementationstate.Run, uint64, error) {
 // JournalStates returns the validated durable snapshots in their global event
 // order. It is a status-read helper: like ReadJournalCurrent it never opens or
 // rebuilds SQLite, which makes it safe for startup presentation.
-func JournalStates(run *Run) ([]implementationstate.Event, error) {
+func JournalStates(run *Run) ([]implstate.Event, error) {
 	if run == nil {
 		return nil, fmt.Errorf("%w: nil run", ErrUnsafePath)
 	}
 	store := &StateStore{journalPath: filepath.Join(run.directory, JournalFileName), run: run}
-	verified := make(map[implementationstate.EvidenceRef]struct{})
-	events := make([]implementationstate.Event, 0)
-	_, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+	verified := make(map[implstate.EvidenceRef]struct{})
+	events := make([]implstate.Event, 0)
+	_, err := scanJournal(store.journalPath, func(_ int64, _ []byte, event implstate.Event) error {
 		if err := store.verifyStateReferencesSeen(event.State, verified); err != nil {
 			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
 		}
@@ -555,9 +555,9 @@ func projectionMatchesJournal(ctx context.Context, db *sql.DB, journalPath strin
 		}
 	}
 	var expectedCount int
-	var lastEvent implementationstate.Event
+	var lastEvent implstate.Event
 	haveEvent := false
-	_, err := scanJournal(journalPath, func(_ int64, data []byte, event implementationstate.Event) error {
+	_, err := scanJournal(journalPath, func(_ int64, data []byte, event implstate.Event) error {
 		expectedCount++
 		var stored []byte
 		if err := db.QueryRowContext(ctx, "SELECT event_json FROM applied_events WHERE sequence = ?", event.Sequence).Scan(&stored); err != nil {
@@ -639,7 +639,7 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 			return err
 		}
 	}
-	rebuiltJournal, err := scanJournal(store.journalPath, func(_ int64, data []byte, event implementationstate.Event) error {
+	rebuiltJournal, err := scanJournal(store.journalPath, func(_ int64, data []byte, event implstate.Event) error {
 		if err := replacement.applyCanonical(ctx, data, true); err != nil {
 			return fmt.Errorf("rebuild state projection at journal event %d: %w", event.Sequence, err)
 		}
@@ -874,7 +874,7 @@ type queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func marshalEvent(event implementationstate.Event) ([]byte, error) {
+func marshalEvent(event implstate.Event) ([]byte, error) {
 	if err := event.Validate(); err != nil {
 		return nil, err
 	}
@@ -885,25 +885,25 @@ func marshalEvent(event implementationstate.Event) ([]byte, error) {
 	return append(data, '\n'), nil
 }
 
-func eventFromData(data []byte) (implementationstate.Event, error) {
-	var event implementationstate.Event
+func eventFromData(data []byte) (implstate.Event, error) {
+	var event implstate.Event
 	if err := json.Unmarshal(data, &event); err != nil {
-		return implementationstate.Event{}, fmt.Errorf("decode journal event: %w", err)
+		return implstate.Event{}, fmt.Errorf("decode journal event: %w", err)
 	}
 	if err := event.Validate(); err != nil {
-		return implementationstate.Event{}, err
+		return implstate.Event{}, err
 	}
 	return event, nil
 }
 
-func cloneEventFromData(data []byte) (implementationstate.Event, error) {
+func cloneEventFromData(data []byte) (implstate.Event, error) {
 	return eventFromData(bytes.Clone(data))
 }
 
-func eventWithError(data []byte, operationErr error) (implementationstate.Event, error) {
+func eventWithError(data []byte, operationErr error) (implstate.Event, error) {
 	event, err := cloneEventFromData(data)
 	if err != nil {
-		return implementationstate.Event{}, errors.Join(operationErr, err)
+		return implstate.Event{}, errors.Join(operationErr, err)
 	}
 	return event, operationErr
 }
@@ -980,7 +980,7 @@ var errProjectionMismatch = errors.New("state projection does not match journal"
 // exact newline-terminated canonical bytes and their starting byte offset.
 // The only tolerated tear is an unterminated final record; any completed bad
 // record is reported with its deterministic byte position.
-func scanJournal(path string, callback func(offset int64, data []byte, event implementationstate.Event) error) (journalContents, error) {
+func scanJournal(path string, callback func(offset int64, data []byte, event implstate.Event) error) (journalContents, error) {
 	var journal journalContents
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1081,8 +1081,8 @@ func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
 // validateJournal performs a full streaming validation before any destructive
 // tail discard or projection replacement.
 func (s *StateStore) validateJournal() (journalContents, error) {
-	verified := make(map[implementationstate.EvidenceRef]struct{})
-	return scanJournal(s.journalPath, func(_ int64, _ []byte, event implementationstate.Event) error {
+	verified := make(map[implstate.EvidenceRef]struct{})
+	return scanJournal(s.journalPath, func(_ int64, _ []byte, event implstate.Event) error {
 		if err := s.verifyStateReferencesSeen(event.State, verified); err != nil {
 			return fmt.Errorf("verify journal event %d references: %w", event.Sequence, err)
 		}
@@ -1090,11 +1090,11 @@ func (s *StateStore) validateJournal() (journalContents, error) {
 	})
 }
 
-func (s *StateStore) verifyStateReferences(state *implementationstate.Run) error {
-	return s.verifyStateReferencesSeen(state, make(map[implementationstate.EvidenceRef]struct{}))
+func (s *StateStore) verifyStateReferences(state *implstate.Run) error {
+	return s.verifyStateReferencesSeen(state, make(map[implstate.EvidenceRef]struct{}))
 }
 
-func (s *StateStore) verifyStateReferencesSeen(state *implementationstate.Run, verified map[implementationstate.EvidenceRef]struct{}) error {
+func (s *StateStore) verifyStateReferencesSeen(state *implstate.Run, verified map[implstate.EvidenceRef]struct{}) error {
 	if state == nil || state.Identity.ID != s.run.ID() {
 		return ErrRunIdentity
 	}
@@ -1110,15 +1110,15 @@ func (s *StateStore) verifyStateReferencesSeen(state *implementationstate.Run, v
 	return nil
 }
 
-func stateEvidenceRefs(state *implementationstate.Run) []implementationstate.EvidenceRef {
-	references := []implementationstate.EvidenceRef{
+func stateEvidenceRefs(state *implstate.Run) []implstate.EvidenceRef {
+	references := []implstate.EvidenceRef{
 		state.Identity.BaselineState,
 		state.Identity.Specification,
 		state.Identity.TaskList,
 		state.Identity.Configuration,
 		state.CurrentState,
 	}
-	appendBasis := func(basis implementationstate.AcceptanceBasis) {
+	appendBasis := func(basis implstate.AcceptanceBasis) {
 		references = append(references, basis.Specification, basis.Configuration)
 	}
 	for _, assignment := range state.Assignments {
@@ -1150,7 +1150,7 @@ func stateEvidenceRefs(state *implementationstate.Run) []implementationstate.Evi
 		appendBasis(result.Basis)
 		references = append(references, result.Evidence...)
 	}
-	for _, evidence := range append([]implementationstate.FinalAcceptanceEvidence{derefFinalAcceptance(state.FinalAcceptance)}, state.FinalAcceptanceHistory...) {
+	for _, evidence := range append([]implstate.FinalAcceptanceEvidence{derefFinalAcceptance(state.FinalAcceptance)}, state.FinalAcceptanceHistory...) {
 		if evidence.State.ID == "" {
 			continue
 		}
@@ -1160,7 +1160,7 @@ func stateEvidenceRefs(state *implementationstate.Run) []implementationstate.Evi
 	return references
 }
 
-func appendAcceptanceReferences(references *[]implementationstate.EvidenceRef, acceptance *implementationstate.AcceptanceEvidence, appendBasis func(implementationstate.AcceptanceBasis)) {
+func appendAcceptanceReferences(references *[]implstate.EvidenceRef, acceptance *implstate.AcceptanceEvidence, appendBasis func(implstate.AcceptanceBasis)) {
 	if acceptance == nil {
 		return
 	}
@@ -1168,9 +1168,9 @@ func appendAcceptanceReferences(references *[]implementationstate.EvidenceRef, a
 	appendBasis(acceptance.Basis)
 }
 
-func derefFinalAcceptance(evidence *implementationstate.FinalAcceptanceEvidence) implementationstate.FinalAcceptanceEvidence {
+func derefFinalAcceptance(evidence *implstate.FinalAcceptanceEvidence) implstate.FinalAcceptanceEvidence {
 	if evidence == nil {
-		return implementationstate.FinalAcceptanceEvidence{}
+		return implstate.FinalAcceptanceEvidence{}
 	}
 	return *evidence
 }
@@ -1191,12 +1191,12 @@ func stateWriterLock(path string) (*sync.Mutex, error) {
 	return actual.(*sync.Mutex), nil
 }
 
-var beforeProjectionCommitHook func(implementationstate.Event) error
+var beforeProjectionCommitHook func(implstate.Event) error
 var beforeJournalAppendHook func()
 var beforeJournalSyncHook func() error
 var afterJournalSyncHook func() error
-var beforeProjectionTransactionHook func(implementationstate.Event) error
-var afterProjectionTransactionHook func(implementationstate.Event) error
+var beforeProjectionTransactionHook func(implstate.Event) error
+var afterProjectionTransactionHook func(implstate.Event) error
 var publishReplacementProjection = replaceProjectionFile
 var beforeRecoveryReplayHook func() error
 var syncReplacementDirectory = syncDirectory

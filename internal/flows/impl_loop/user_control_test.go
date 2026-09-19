@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestUserPauseInterruptsActiveAgentAndPersistsResumableState(t *testing.T) {
@@ -37,7 +37,7 @@ func TestUserPauseInterruptsActiveAgentAndPersistsResumableState(t *testing.T) {
 	if runtime.interrupts != 1 {
 		t.Fatalf("agent interrupts = %d, want 1", runtime.interrupts)
 	}
-	if call.Run.Status != implementationstate.RunPaused || call.Run.PauseReason != "user requested pause" {
+	if call.Run.Status != implstate.RunPaused || call.Run.PauseReason != "user requested pause" {
 		t.Fatalf("paused run = %#v", call.Run)
 	}
 	if err := call.StateStore.Close(); err != nil {
@@ -53,7 +53,7 @@ func TestUserPauseInterruptsActiveAgentAndPersistsResumableState(t *testing.T) {
 		t.Fatal(err)
 	}
 	attempts := persisted.RunOperations[0].Attempts
-	if persisted.Status != implementationstate.RunPaused || len(attempts) != 1 || attempts[0].Outcome != implementationstate.AttemptInterrupted {
+	if persisted.Status != implstate.RunPaused || len(attempts) != 1 || attempts[0].Outcome != implstate.AttemptInterrupted {
 		t.Fatalf("durable pause and interrupted attempt = %#v", persisted)
 	}
 	if err := persisted.Resume(); err != nil {
@@ -90,17 +90,17 @@ func TestUserCloseInterruptsActiveCommandIsTerminalAndIsNotSuccess(t *testing.T)
 	if err := <-commandDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("interrupted command error = %v", err)
 	}
-	if run.Status != implementationstate.RunClosed || run.CloseReason != "user stopped run" || run.Status == implementationstate.RunSucceeded {
+	if run.Status != implstate.RunClosed || run.CloseReason != "user stopped run" || run.Status == implstate.RunSucceeded {
 		t.Fatalf("closed run = %#v", run)
 	}
-	if err := run.Resume(); !errors.Is(err, implementationstate.ErrInvalidTransition) {
+	if err := run.Resume(); !errors.Is(err, implstate.ErrInvalidTransition) {
 		t.Fatalf("closed run resumed: %v", err)
 	}
 	persisted, _, err := runstore.ReadJournalCurrent(journal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Status != implementationstate.RunClosed || persisted.Status == implementationstate.RunSucceeded {
+	if persisted.Status != implstate.RunClosed || persisted.Status == implstate.RunSucceeded {
 		t.Fatalf("durable closed state = %#v", persisted)
 	}
 }

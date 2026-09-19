@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -43,7 +43,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := func(id implementationstate.EvidenceID, data []byte) implementationstate.EvidenceRef {
+	ref := func(id implstate.EvidenceID, data []byte) implstate.EvidenceRef {
 		t.Helper()
 		value, publishErr := journal.Publish(id, data)
 		if publishErr != nil {
@@ -51,7 +51,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 		}
 		return value
 	}
-	identity := implementationstate.RunIdentity{
+	identity := implstate.RunIdentity{
 		ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "implementation", BaselineCommit: baseline.HeadOID,
 		BaselineState: ref("baseline", baselineData), Specification: ref("specification", []byte("# complete specification\n")),
 		TaskList: ref("tasks", []byte("- [ ] source task\n")), Configuration: ref("configuration", []byte("deterministic test configuration")),
@@ -81,9 +81,9 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	selectAssignment := func(assignmentID implementationstate.AssignmentID, taskID implementationstate.TaskID, operation, callID string) {
+	selectAssignment := func(assignmentID implstate.AssignmentID, taskID implstate.TaskID, operation, callID string) {
 		t.Helper()
-		if err := PrepareBriefSelection(ctx, state, run, implementationstate.OperationID(operation)); err != nil {
+		if err := PrepareBriefSelection(ctx, state, run, implstate.OperationID(operation)); err != nil {
 			t.Fatal(err)
 		}
 		brief := e2ePayload(t, ResponseBriefReady, func(payload map[string]any) {
@@ -93,7 +93,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 		result, selectionErr := ExecuteBriefSelection(ctx, BriefSelectionCall{assignmentID: assignmentID, call: ControlledAgentCall{
 			Session:    &AgentSession{Role: ResponseRoleBriefer, runtime: &controlledCallRuntime{turns: []controlledTurn{{raw: brief}}}, thread: "fake-briefer"},
 			Repository: repository, Workspace: workspace, Policy: AgentCallPolicy{Role: AgentRoleBriefer, CallID: callID}, Run: run, Journal: journal, StateStore: state,
-			OperationID: implementationstate.OperationID(operation), Limits: controlledCallLimits(), Expectation: e2eRunExpectation(ResponseRoleBriefer, ResponseStateInitialBriefing, run, callID), Message: "select assignment",
+			OperationID: implstate.OperationID(operation), Limits: controlledCallLimits(), Expectation: e2eRunExpectation(ResponseRoleBriefer, ResponseStateInitialBriefing, run, callID), Message: "select assignment",
 		}})
 		if selectionErr != nil || result.AssignmentID != assignmentID {
 			t.Fatalf("brief selection assignment=%#v error=%v", result, selectionErr)
@@ -180,7 +180,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Status != implementationstate.RunSucceeded || len(persisted.Assignments) != 2 || persisted.LeafStatus["source"] != implementationstate.TaskComplete || persisted.LeafStatus["final-fix"] != implementationstate.TaskComplete || persisted.FinalAcceptance == nil {
+	if persisted.Status != implstate.RunSucceeded || len(persisted.Assignments) != 2 || persisted.LeafStatus["source"] != implstate.TaskComplete || persisted.LeafStatus["final-fix"] != implstate.TaskComplete || persisted.FinalAcceptance == nil {
 		t.Fatalf("durable machine accounting = %#v", persisted)
 	}
 	if len(persisted.RunOperations) < 8 || len(persisted.RunResults) < 8 {
@@ -220,33 +220,33 @@ func e2ePayload(t *testing.T, kind ResponseKind, change func(map[string]any)) js
 	return raw
 }
 
-func e2eRunExpectation(role ResponseRole, state ResponseState, run *implementationstate.Run, callID string) ResponseExpectation {
+func e2eRunExpectation(role ResponseRole, state ResponseState, run *implstate.Run, callID string) ResponseExpectation {
 	return ResponseExpectation{Role: role, State: state, Scope: ResponseScopeRun, Binding: ResponseBinding{CallID: callID, RunID: run.Identity.ID, Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 }
 
-func e2eAssignmentExpectation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, callID string) ResponseExpectation {
+func e2eAssignmentExpectation(run *implstate.Run, assignmentID implstate.AssignmentID, briefID implstate.BriefID, callID string) ResponseExpectation {
 	return ResponseExpectation{Role: ResponseRoleImplementer, State: ResponseStateImplementing, Scope: ResponseScopeAssignment, Binding: ResponseBinding{CallID: callID, RunID: run.Identity.ID, AssignmentID: assignmentID, BriefID: briefID, Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 }
 
-func e2eRunImplementer(t *testing.T, ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, checks setting.CheckSelection, runner CheckRunner, assignmentID implementationstate.AssignmentID, _ implementationstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
+func e2eRunImplementer(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, checks setting.CheckSelection, runner CheckRunner, assignmentID implstate.AssignmentID, _ implstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
 	t.Helper()
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		t.Fatalf("assignment %q has no brief", assignmentID)
 	}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	phase := "initial"
 	if !requestFirst {
 		phase = "fix"
 	}
-	originOperation := implementationstate.OperationID(string(assignmentID) + "-" + phase + "-implement")
-	if err := run.AddOperation(assignmentID, implementationstate.Operation{ID: originOperation, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis}); err != nil {
+	originOperation := implstate.OperationID(string(assignmentID) + "-" + phase + "-implement")
+	if err := run.AddOperation(assignmentID, implstate.Operation{ID: originOperation, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
-	continuationOperation := implementationstate.OperationID(string(assignmentID) + "-" + phase + "-ready")
+	continuationOperation := implstate.OperationID(string(assignmentID) + "-" + phase + "-ready")
 	if requestFirst {
-		if err := run.AddOperation(assignmentID, implementationstate.Operation{ID: continuationOperation, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis}); err != nil {
+		if err := run.AddOperation(assignmentID, implstate.Operation{ID: continuationOperation, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -255,15 +255,15 @@ func e2eRunImplementer(t *testing.T, ctx context.Context, run *implementationsta
 	}
 	runtime := &controlledCallRuntime{turns: turns}
 	originCallID := string(originOperation) + "-call"
-	transition := ImplementerTransitionInput{Run: run, Workspace: workspace, StateStore: state, Journal: journal, Repository: repository, AssignmentID: assignmentID, BriefID: briefID, Selection: checks, Runner: runner, Limits: controlledCallLimits(), OperationID: implementationstate.OperationID(string(assignmentID) + "-" + phase + "-requested-checks"), ResultID: implementationstate.ResultID(string(assignmentID) + "-" + phase + "-requested-checks-result")}
+	transition := ImplementerTransitionInput{Run: run, Workspace: workspace, StateStore: state, Journal: journal, Repository: repository, AssignmentID: assignmentID, BriefID: briefID, Selection: checks, Runner: runner, Limits: controlledCallLimits(), OperationID: implstate.OperationID(string(assignmentID) + "-" + phase + "-requested-checks"), ResultID: implstate.ResultID(string(assignmentID) + "-" + phase + "-requested-checks-result")}
 	route := ImplementerCheckRoute{OriginatingCall: ControlledAgentCall{Session: &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "fake-executor"}, Repository: repository, Workspace: workspace, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: originCallID, AllowUnprotected: true}, Run: run, Journal: journal, StateStore: state, AssignmentID: assignmentID, OperationID: originOperation, Limits: controlledCallLimits(), Expectation: e2eAssignmentExpectation(run, assignmentID, briefID, originCallID), Message: "implement assignment"}, Transition: transition}
 	if requestFirst {
 		continuationCallID := string(continuationOperation) + "-call"
 		route.Continuation = ControlledAgentCall{Repository: repository, Workspace: workspace, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: continuationCallID, AllowUnprotected: true}, Run: run, Journal: journal, StateStore: state, AssignmentID: assignmentID, OperationID: continuationOperation, Limits: controlledCallLimits(), Expectation: e2eAssignmentExpectation(run, assignmentID, briefID, continuationCallID)}
-		route.ContinuationTransition = ImplementerTransitionInput{Run: run, Workspace: workspace, StateStore: state, Journal: journal, Repository: repository, AssignmentID: assignmentID, BriefID: briefID, Selection: checks, Runner: runner, Limits: controlledCallLimits(), OperationID: implementationstate.OperationID(string(assignmentID) + "-" + phase + "-required-checks"), ResultID: implementationstate.ResultID(string(assignmentID) + "-" + phase + "-required-checks-result")}
+		route.ContinuationTransition = ImplementerTransitionInput{Run: run, Workspace: workspace, StateStore: state, Journal: journal, Repository: repository, AssignmentID: assignmentID, BriefID: briefID, Selection: checks, Runner: runner, Limits: controlledCallLimits(), OperationID: implstate.OperationID(string(assignmentID) + "-" + phase + "-required-checks"), ResultID: implstate.ResultID(string(assignmentID) + "-" + phase + "-required-checks-result")}
 	} else {
-		route.Transition.OperationID = implementationstate.OperationID(string(assignmentID) + "-" + phase + "-required-checks")
-		route.Transition.ResultID = implementationstate.ResultID(string(assignmentID) + "-" + phase + "-required-checks-result")
+		route.Transition.OperationID = implstate.OperationID(string(assignmentID) + "-" + phase + "-required-checks")
+		route.Transition.ResultID = implstate.ResultID(string(assignmentID) + "-" + phase + "-required-checks-result")
 	}
 	result, err := RouteImplementerChecks(ctx, route)
 	if err != nil || !result.ReviewReady || !result.RequiredChecks.Set.Succeeded() {
@@ -275,7 +275,7 @@ func e2eRunImplementer(t *testing.T, ctx context.Context, run *implementationsta
 	return result.Response
 }
 
-func e2eTaskReview(t *testing.T, ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, resultID implementationstate.ResultID, callID string, kind ResponseKind) TaskReviewResult {
+func e2eTaskReview(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implstate.AssignmentID, operationID implstate.OperationID, resultID implstate.ResultID, callID string, kind ResponseKind) TaskReviewResult {
 	t.Helper()
 	runtime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: e2ePayload(t, kind, nil)}}}
 	owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: runtime})
@@ -287,21 +287,21 @@ func e2eTaskReview(t *testing.T, ctx context.Context, run *implementationstate.R
 	return result
 }
 
-func e2eAcceptAndCommit(ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implementationstate.AssignmentID, ready AgentResponse, reviewResult implementationstate.ResultID, reflectionOperation implementationstate.OperationID, reflectionResult implementationstate.ResultID, reflectionCall string, commitOperation implementationstate.OperationID, reflect func()) (CommitAcceptedAssignmentResult, error) {
+func e2eAcceptAndCommit(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implstate.AssignmentID, ready AgentResponse, reviewResult implstate.ResultID, reflectionOperation implstate.OperationID, reflectionResult implstate.ResultID, reflectionCall string, commitOperation implstate.OperationID, reflect func()) (CommitAcceptedAssignmentResult, error) {
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		return CommitAcceptedAssignmentResult{}, ErrAcceptanceReflection
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	_, err := AcceptAssignmentAndReflectProgress(ctx, AcceptanceReflectionInput{
 		Run: run, StateStore: state, Journal: journal, Repository: repository, Workspace: workspace,
 		Session: &AgentSession{Role: ResponseRoleOrchestrator, runtime: &controlledCallRuntime{
 			turns: []controlledTurn{{raw: e2ePayloadNoTest(ResponseProgressReflected), before: reflect}},
 		}, thread: "fake-orchestrator"},
 		AssignmentID: assignmentID,
-		Acceptance: implementationstate.AcceptanceEvidence{
+		Acceptance: implstate.AcceptanceEvidence{
 			BriefID: assignment.Briefs[len(assignment.Briefs)-1].ID, State: run.CurrentState, Basis: basis,
-			CheckResultIDs: []implementationstate.ResultID{implementationstate.ResultID(string(assignmentID) + "-fix-required-checks-result")}, ReviewResultID: reviewResult,
+			CheckResultIDs: []implstate.ResultID{implstate.ResultID(string(assignmentID) + "-fix-required-checks-result")}, ReviewResultID: reviewResult,
 		},
 		TasksPath: "openspec/changes/change/tasks.md", ReflectionOperationID: reflectionOperation, ReflectionResultID: reflectionResult, ReflectionCallID: reflectionCall, Limits: controlledCallLimits(),
 	})

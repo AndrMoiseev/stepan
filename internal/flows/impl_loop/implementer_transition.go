@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -26,20 +26,20 @@ var ErrRequiredChecksChanged = errors.New("required checks changed the workspace
 // allocated by the controller; an agent cannot choose an executable command,
 // an operation, or an assignment by putting one in its response.
 type ImplementerTransitionInput struct {
-	Run            *implementationstate.Run
+	Run            *implstate.Run
 	Workspace      WorkspaceControl
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
 	Repository     string
-	AssignmentID   implementationstate.AssignmentID
-	BriefID        implementationstate.BriefID
+	AssignmentID   implstate.AssignmentID
+	BriefID        implstate.BriefID
 	Selection      setting.CheckSelection
 	Runner         CheckRunner
 	UserControl    *UserRunControl
-	Limits         implementationstate.CycleLimits
+	Limits         implstate.CycleLimits
 	ProtectedPaths []string
-	OperationID    implementationstate.OperationID
-	ResultID       implementationstate.ResultID
+	OperationID    implstate.OperationID
+	ResultID       implstate.ResultID
 }
 
 // ImplementerTransitionResult is the bounded, durable check feedback to send
@@ -50,7 +50,7 @@ type ImplementerTransitionInput struct {
 type ImplementerTransitionResult struct {
 	Set                CheckSet
 	Diagnostic         string
-	Evidence           implementationstate.EvidenceRef
+	Evidence           implstate.EvidenceRef
 	RequiredAcceptance bool
 	// WorkspaceChanged is meaningful only for RequiredAcceptance. It is true
 	// for any mutation during the complete set, including a later reversion.
@@ -59,7 +59,7 @@ type ImplementerTransitionResult struct {
 	// ExecutionBlock is populated only for a required check that could not run
 	// because of environment/configuration or controller infrastructure. Its
 	// failed result remains durable evidence and the executor is not continued.
-	ExecutionBlock *implementationstate.ExecutionBlock
+	ExecutionBlock *implstate.ExecutionBlock
 }
 
 // ValidateImplementerTransitionResponse is suitable for
@@ -68,7 +68,7 @@ type ImplementerTransitionResult struct {
 // "tests -run One") becomes a technical response retry instead of a command
 // dispatch. The flat response schema already rejects all command/argument
 // fields; this validation additionally binds names to the configured catalog.
-func ValidateImplementerTransitionResponse(selection setting.CheckSelection, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, response AgentResponse) error {
+func ValidateImplementerTransitionResponse(selection setting.CheckSelection, run *implstate.Run, assignmentID implstate.AssignmentID, briefID implstate.BriefID, response AgentResponse) error {
 	if err := validateImplementerResponseBinding(run, assignmentID, briefID, response); err != nil {
 		return err
 	}
@@ -106,18 +106,18 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 	}
 
 	kind := CheckSetRequested
-	counter := implementationstate.CycleCounterChecksRequested
+	counter := implstate.CycleCounterChecksRequested
 	description := "requested executor checks"
 	if response.Kind == ResponseImplementationReady {
 		kind = CheckSetRequired
-		counter = implementationstate.CycleCounterMandatoryChecks
+		counter = implstate.CycleCounterMandatoryChecks
 		description = "required acceptance checks"
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	existing := assignmentOperation(input.Run, input.AssignmentID, input.OperationID)
 	if existing == nil {
-		if err := input.Run.AddOperation(input.AssignmentID, implementationstate.Operation{
-			ID: input.OperationID, Kind: implementationstate.OperationCheck, BriefID: input.BriefID,
+		if err := input.Run.AddOperation(input.AssignmentID, implstate.Operation{
+			ID: input.OperationID, Kind: implstate.OperationCheck, BriefID: input.BriefID,
 			Basis: basis, Description: description, Counter: counter,
 		}); err != nil {
 			return ImplementerTransitionResult{}, fmt.Errorf("%w: create check operation: %v", ErrImplementerTransition, err)
@@ -125,14 +125,14 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
 			return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check operation: %v", ErrImplementerTransition, err)
 		}
-	} else if existing.Kind != implementationstate.OperationCheck || existing.BriefID != input.BriefID || existing.Basis != basis || existing.Description != description || existing.Counter != counter || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationCheck || existing.BriefID != input.BriefID || existing.Basis != basis || existing.Description != description || existing.Counter != counter || assignmentResultForOperation(input.Run, input.AssignmentID, existing.ID) != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: check operation cannot be resumed", ErrImplementerTransition)
 	}
 	if _, _, err := input.StateStore.RecordAssignmentAttemptStartWithLimits(ctx, input.Run, input.AssignmentID, input.OperationID, input.Limits); err != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: reserve check attempt: %w", ErrImplementerTransition, err)
 	}
 
-	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implementationstate.EvidenceID(input.ResultID))
+	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implstate.EvidenceID(input.ResultID))
 	if err != nil {
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: create check publisher: %v", ErrImplementerTransition, err)
 	}
@@ -170,11 +170,11 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: publish check diagnostics: %v", ErrImplementerTransition, publishErr)
 	}
 
-	status, outcome := implementationstate.ResultSucceeded, implementationstate.AttemptSucceeded
+	status, outcome := implstate.ResultSucceeded, implstate.AttemptSucceeded
 	if err != nil || !set.Succeeded() || (kind == CheckSetRequired && workspaceChanged) {
-		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
+		status, outcome = implstate.ResultFailed, implstate.AttemptFailed
 		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
-			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
+			status, outcome = implstate.ResultInterrupted, implstate.AttemptInterrupted
 		}
 	}
 	persistContext := context.WithoutCancel(checkContext)
@@ -182,7 +182,7 @@ func ApplyImplementerTransition(ctx context.Context, input ImplementerTransition
 		return ImplementerTransitionResult{}, fmt.Errorf("%w: persist check outcome: %v", ErrImplementerTransition, recordErr)
 	}
 	state := checkSetState(input.Run.CurrentState, set)
-	if err := input.Run.AddResult(input.AssignmentID, implementationstate.OperationResult{
+	if err := input.Run.AddResult(input.AssignmentID, implstate.OperationResult{
 		ID: input.ResultID, OperationID: input.OperationID, Status: status, State: state, Basis: basis,
 		Evidence: checkSetEvidenceRefs(evidence, set),
 	}); err != nil {
@@ -233,18 +233,18 @@ func validateImplementerTransitionInput(input ImplementerTransitionInput) error 
 	return nil
 }
 
-func validTransitionLimits(limits implementationstate.CycleLimits) bool {
+func validTransitionLimits(limits implstate.CycleLimits) bool {
 	return limits.AssignmentReview > 0 && limits.MandatoryChecks > 0 && limits.ChecksRequested > 0 && limits.BriefRefinement > 0 && limits.Explorer > 0 && limits.TechnicalAttempts > 0 && limits.FinalReview > 0
 }
 
-func validateImplementerResponseBinding(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, response AgentResponse) error {
+func validateImplementerResponseBinding(run *implstate.Run, assignmentID implstate.AssignmentID, briefID implstate.BriefID, response AgentResponse) error {
 	if run == nil || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != assignmentID || response.Binding.BriefID != briefID || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: response is not bound to the current assignment", ErrImplementerTransition)
 	}
 	return nil
 }
 
-func checkSetState(fallback implementationstate.EvidenceRef, set CheckSet) implementationstate.EvidenceRef {
+func checkSetState(fallback implstate.EvidenceRef, set CheckSet) implstate.EvidenceRef {
 	state := fallback
 	for _, result := range set.Results {
 		if result.Presentation != nil {
@@ -254,8 +254,8 @@ func checkSetState(fallback implementationstate.EvidenceRef, set CheckSet) imple
 	return state
 }
 
-func checkSetEvidenceRefs(summary implementationstate.EvidenceRef, set CheckSet) []implementationstate.EvidenceRef {
-	references := []implementationstate.EvidenceRef{summary}
+func checkSetEvidenceRefs(summary implstate.EvidenceRef, set CheckSet) []implstate.EvidenceRef {
+	references := []implstate.EvidenceRef{summary}
 	for _, result := range set.Results {
 		if result.Presentation == nil {
 			continue
@@ -293,7 +293,7 @@ func checkExecutionDiagnostic(result CheckSetResult, fallback string) string {
 	return fallback
 }
 
-func publishImplementerCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, set CheckSet, setErr error) (implementationstate.EvidenceRef, error) {
+func publishImplementerCheckEvidence(journal *runstore.Run, id implstate.ResultID, set CheckSet, setErr error) (implstate.EvidenceRef, error) {
 	evidence := struct {
 		Kind    CheckSetKind                     `json:"kind"`
 		Results []implementerCheckResultEvidence `json:"results"`
@@ -314,9 +314,9 @@ func publishImplementerCheckEvidence(journal *runstore.Run, id implementationsta
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(id)+"-diagnostics"), data)
+	return journal.Publish(implstate.EvidenceID(string(id)+"-diagnostics"), data)
 }
 
 // implementerCheckResultEvidence deliberately excludes command environment

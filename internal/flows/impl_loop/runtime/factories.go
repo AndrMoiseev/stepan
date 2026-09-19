@@ -1,7 +1,7 @@
-// Package implementationruntime composes provider adapters for the
+// Package runtime composes provider adapters for the
 // implementation loop. The loop itself depends only on agentruntime's
 // provider-neutral Runtime interface and its RuntimeFactory contract.
-package implementationruntime
+package runtime
 
 import (
 	"context"

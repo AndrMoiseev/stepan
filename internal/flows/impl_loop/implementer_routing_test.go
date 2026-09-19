@@ -8,16 +8,16 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
 func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-continuation"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterNone}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-continuation"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterNone}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -75,7 +75,7 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 		t.Fatalf("feedback exposed command environment:\n%s", result.Feedback)
 	}
 	assertRunOrder(t, fixture.runner, "test_auth", "lint", "test_all")
-	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+	if fixture.run.Assignments[0].Status != implstate.AssignmentActive || fixture.run.LeafStatus["task"] != implstate.TaskPending {
 		t.Fatalf("automatic required checks accepted or committed assignment: %#v", fixture.run.Assignments[0])
 	}
 }
@@ -83,8 +83,8 @@ func TestRouteImplementerChecksContinuesExactExecutorSessionWithSafeFeedback(t *
 func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterNone}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: "executor-origin", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterNone}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -103,7 +103,7 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 		t.Fatalf("initial ready route = %#v, turns=%#v", result, runtime.messages)
 	}
 	assertRunOrder(t, fixture.runner, "lint", "test_all")
-	if fixture.run.Assignments[0].Status != implementationstate.AssignmentActive || fixture.run.LeafStatus["task"] != implementationstate.TaskPending {
+	if fixture.run.Assignments[0].Status != implstate.AssignmentActive || fixture.run.LeafStatus["task"] != implstate.TaskPending {
 		t.Fatalf("initial ready accepted or committed assignment: %#v", fixture.run.Assignments[0])
 	}
 }
@@ -111,8 +111,8 @@ func TestRouteImplementerChecksInitialReadyRunsRequiredSetWithoutRetry(t *testin
 func TestRouteImplementerChecksPausesForExecutorExecutionBlockedWithoutChecks(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: "executor-origin", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -127,7 +127,7 @@ func TestRouteImplementerChecksPausesForExecutorExecutionBlockedWithoutChecks(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.runner.commands) != 0 {
+	if result.Response.Kind != ResponseExecutionBlocked || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.runner.commands) != 0 {
 		t.Fatalf("executor execution block advanced work: result=%#v run=%#v turns=%#v checks=%#v", result, fixture.run, runtime.messages, fixture.runner.commands)
 	}
 }
@@ -156,8 +156,8 @@ func TestRouteImplementerChecksPausesForUnavailableRequiredCheckInfrastructure(t
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newImplementerTransitionFixture(t)
 			defer fixture.state.Close()
-			basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-			if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+			basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: "executor-origin", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -171,7 +171,7 @@ func TestRouteImplementerChecksPausesForUnavailableRequiredCheckInfrastructure(t
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.RequiredChecks.ExecutionBlock == nil || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.run.Assignments[0].Results) != 1 || fixture.run.Assignments[0].Results[0].Status != implementationstate.ResultFailed || CanStartTaskReview(fixture.run, "assignment") == nil {
+			if result.RequiredChecks.ExecutionBlock == nil || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.run.Assignments[0].Results) != 1 || fixture.run.Assignments[0].Results[0].Status != implstate.ResultFailed || CanStartTaskReview(fixture.run, "assignment") == nil {
 				t.Fatalf("required infrastructure failure was treated as executor feedback: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 			}
 		})
@@ -202,8 +202,8 @@ func TestRouteImplementerChecksPausesForRequestedCheckInfrastructure(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newImplementerTransitionFixture(t)
 			defer fixture.state.Close()
-			basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-			if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: "executor-origin", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+			basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+			if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: "executor-origin", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := fixture.state.Record(context.Background(), fixture.run); err != nil {
@@ -223,7 +223,7 @@ func TestRouteImplementerChecksPausesForRequestedCheckInfrastructure(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Response.Kind != ResponseChecksRequested || result.Checks.ExecutionBlock == nil || fixture.run.Status != implementationstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.run.Assignments[0].Results) != 1 || fixture.run.Assignments[0].Results[0].Status != implementationstate.ResultFailed {
+			if result.Response.Kind != ResponseChecksRequested || result.Checks.ExecutionBlock == nil || fixture.run.Status != implstate.RunPaused || fixture.run.ExecutionBlock == nil || len(runtime.messages) != 1 || len(fixture.run.Assignments[0].Results) != 1 || fixture.run.Assignments[0].Results[0].Status != implstate.ResultFailed {
 				t.Fatalf("requested infrastructure failure was treated as executor feedback: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 			}
 		})
@@ -233,9 +233,9 @@ func TestRouteImplementerChecksPausesForRequestedCheckInfrastructure(t *testing.
 func TestRouteImplementerChecksReturnsRequestedCheckExitFailureAsExecutorFeedback(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-continuation"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-continuation"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -271,7 +271,7 @@ func TestRouteImplementerChecksReturnsRequestedCheckExitFailureAsExecutorFeedbac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Checks.ExecutionBlock != nil || fixture.run.Status != implementationstate.RunActive || result.ContinuationResponse.Kind != ResponseImplementationReady || !result.RequiredChecks.Set.Succeeded() || len(runtime.messages) != 2 {
+	if result.Checks.ExecutionBlock != nil || fixture.run.Status != implstate.RunActive || result.ContinuationResponse.Kind != ResponseImplementationReady || !result.RequiredChecks.Set.Succeeded() || len(runtime.messages) != 2 {
 		t.Fatalf("requested exit failure did not return executor feedback: result=%#v run=%#v turns=%#v", result, fixture.run, runtime.messages)
 	}
 	assertRunOrder(t, fixture.runner, "test_auth", "lint", "test_all")
@@ -280,9 +280,9 @@ func TestRouteImplementerChecksReturnsRequestedCheckExitFailureAsExecutorFeedbac
 func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-stability"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-stability"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -316,7 +316,7 @@ func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t 
 	if !result.ReviewReady || result.RequiredChecks.WorkspaceChanged || !result.RequiredChecks.Set.Succeeded() {
 		t.Fatalf("stable required set did not solely enable review: %#v", result)
 	}
-	if len(fixture.run.Assignments[0].Results) != 2 || fixture.run.Assignments[0].Results[0].Status != implementationstate.ResultFailed || fixture.run.Assignments[0].Results[1].Status != implementationstate.ResultSucceeded {
+	if len(fixture.run.Assignments[0].Results) != 2 || fixture.run.Assignments[0].Results[0].Status != implstate.ResultFailed || fixture.run.Assignments[0].Results[1].Status != implstate.ResultSucceeded {
 		t.Fatalf("mutating required set remained acceptance evidence: %#v", fixture.run.Assignments[0].Results)
 	}
 	if len(runtime.messages) != 2 || !strings.Contains(runtime.messages[1], "not acceptance evidence") {
@@ -327,9 +327,9 @@ func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t 
 func TestRouteImplementerChecksRestartsFullRequiredSetAfterCorrection(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-correction"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-correction"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -378,9 +378,9 @@ func TestRouteImplementerChecksRestartsFullRequiredSetAfterCorrection(t *testing
 func TestRouteImplementerChecksPausesBeforeFourthFailedRequiredSet(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-correction-1", "executor-correction-2", "executor-correction-3"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-correction-1", "executor-correction-2", "executor-correction-3"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -394,10 +394,10 @@ func TestRouteImplementerChecksPausesBeforeFourthFailedRequiredSet(t *testing.T)
 		fixture.runner.commands = append(fixture.runner.commands, command)
 		return checkexec.Result{ExitCode: 1, Stderr: []byte("still failing")}, nil
 	})
-	makeCall := func(operationID implementationstate.OperationID, callID string) ControlledAgentCall {
+	makeCall := func(operationID implstate.OperationID, callID string) ControlledAgentCall {
 		return ControlledAgentCall{Repository: fixture.repository, Workspace: &unchangedWorkspaceControl{}, Policy: AgentCallPolicy{Role: AgentRoleExecutor, CallID: callID, AllowUnprotected: true}, Run: fixture.run, Journal: fixture.journal, StateStore: fixture.state, AssignmentID: "assignment", OperationID: operationID, Limits: controlledCallLimits(), Expectation: expectation(callID)}
 	}
-	input := func(operation implementationstate.OperationID, result implementationstate.ResultID) ImplementerTransitionInput {
+	input := func(operation implstate.OperationID, result implstate.ResultID) ImplementerTransitionInput {
 		transition := fixture.input(operation, result)
 		transition.Runner = runner
 		return transition
@@ -414,10 +414,10 @@ func TestRouteImplementerChecksPausesBeforeFourthFailedRequiredSet(t *testing.T)
 	}
 	route.OriginatingCall.Session = &AgentSession{Role: ResponseRoleImplementer, runtime: runtime, thread: "same-executor-thread"}
 	_, err := RouteImplementerChecks(context.Background(), route)
-	if !errors.Is(err, implementationstate.ErrLimitExceeded) {
+	if !errors.Is(err, implstate.ErrLimitExceeded) {
 		t.Fatalf("fourth required set error = %v, want limit pause", err)
 	}
-	if fixture.run.Status != implementationstate.RunPaused || fixture.run.LimitPause == nil || fixture.run.LimitPause.Counter != implementationstate.CycleCounterMandatoryChecks {
+	if fixture.run.Status != implstate.RunPaused || fixture.run.LimitPause == nil || fixture.run.LimitPause.Counter != implstate.CycleCounterMandatoryChecks {
 		t.Fatalf("fourth required set did not pause mandatory cycle: %#v", fixture.run)
 	}
 	assertRunOrder(t, fixture.runner, "lint", "lint", "lint")
@@ -470,9 +470,9 @@ func TestTaskReviewReadinessRequiresFreshMandatorySetAfterCorrection(t *testing.
 func TestRouteImplementerChecksRejectsMismatchedOriginatingCallBinding(t *testing.T) {
 	fixture := newImplementerTransitionFixture(t)
 	defer fixture.state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"executor-origin", "executor-continuation"} {
-		if err := fixture.run.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterNone}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: fixture.run.Identity.Specification, Configuration: fixture.run.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"executor-origin", "executor-continuation"} {
+		if err := fixture.run.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterNone}); err != nil {
 			t.Fatal(err)
 		}
 	}

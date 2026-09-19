@@ -10,8 +10,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 // MaxCheckDiagnosticsRunes is the maximum complete-command diagnostic sent to
@@ -24,7 +24,7 @@ const omittedCheckOutput = "\n… [output omitted; see complete stdout/stderr lo
 // Path is an absolute path in the run's external files directory; Reference
 // carries the ID and digest needed to verify it before reading.
 type CheckLog struct {
-	Reference implementationstate.EvidenceRef
+	Reference implstate.EvidenceRef
 	Path      string
 }
 
@@ -33,7 +33,7 @@ type CheckLog struct {
 // acceptance code can compare the exact checked state without storing output
 // in machine state.
 type CheckedState struct {
-	Reference      implementationstate.EvidenceRef
+	Reference      implstate.EvidenceRef
 	HeadOID        string
 	HeadRef        string
 	TreeOID        string
@@ -65,7 +65,7 @@ type CheckResultPublisher struct {
 	run        *runstore.Run
 	repository string
 	workspace  WorkspaceControl
-	resultID   implementationstate.EvidenceID
+	resultID   implstate.EvidenceID
 	next       uint64
 }
 
@@ -73,13 +73,13 @@ type CheckResultPublisher struct {
 // one run. repository is the Git worktree whose state the check observes;
 // resultID must be unique for this completed check-set attempt, including a
 // retry after a process restart.
-func NewCheckResultPublisher(run *runstore.Run, repository string, resultID implementationstate.EvidenceID) (*CheckResultPublisher, error) {
+func NewCheckResultPublisher(run *runstore.Run, repository string, resultID implstate.EvidenceID) (*CheckResultPublisher, error) {
 	return NewCheckResultPublisherWithControl(run, GitWorkspaceControl{}, repository, resultID)
 }
 
 // NewCheckResultPublisherWithControl publishes a checked state observed
 // through the workspace seam.
-func NewCheckResultPublisherWithControl(run *runstore.Run, workspace WorkspaceControl, repository string, resultID implementationstate.EvidenceID) (*CheckResultPublisher, error) {
+func NewCheckResultPublisherWithControl(run *runstore.Run, workspace WorkspaceControl, repository string, resultID implstate.EvidenceID) (*CheckResultPublisher, error) {
 	if run == nil {
 		return nil, fmt.Errorf("check result publisher requires a run")
 	}
@@ -110,11 +110,11 @@ func (p *CheckResultPublisher) ReportCheck(ctx context.Context, name string, com
 
 	p.next++
 	prefix := fmt.Sprintf("%s-check-%d-%s", p.resultID, p.next, name)
-	stdout, err := p.publishLog(implementationstate.EvidenceID(prefix+"-stdout"), result.Stdout)
+	stdout, err := p.publishLog(implstate.EvidenceID(prefix+"-stdout"), result.Stdout)
 	if err != nil {
 		return CheckPresentation{}, fmt.Errorf("publish stdout: %w", err)
 	}
-	stderr, err := p.publishLog(implementationstate.EvidenceID(prefix+"-stderr"), result.Stderr)
+	stderr, err := p.publishLog(implstate.EvidenceID(prefix+"-stderr"), result.Stderr)
 	if err != nil {
 		return CheckPresentation{}, fmt.Errorf("publish stderr: %w", err)
 	}
@@ -122,7 +122,7 @@ func (p *CheckResultPublisher) ReportCheck(ctx context.Context, name string, com
 	if err != nil {
 		return CheckPresentation{}, fmt.Errorf("encode checked state: %w", err)
 	}
-	stateRef, err := p.run.Publish(implementationstate.EvidenceID(prefix+"-state"), stateData)
+	stateRef, err := p.run.Publish(implstate.EvidenceID(prefix+"-state"), stateData)
 	if err != nil {
 		return CheckPresentation{}, fmt.Errorf("publish checked state: %w", err)
 	}
@@ -147,7 +147,7 @@ func (p *CheckResultPublisher) ReportCheck(ctx context.Context, name string, com
 	}, nil
 }
 
-func (p *CheckResultPublisher) publishLog(id implementationstate.EvidenceID, data []byte) (CheckLog, error) {
+func (p *CheckResultPublisher) publishLog(id implstate.EvidenceID, data []byte) (CheckLog, error) {
 	reference, err := p.run.Publish(id, data)
 	if err != nil {
 		return CheckLog{}, err

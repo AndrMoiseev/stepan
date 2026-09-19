@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -342,9 +342,9 @@ func bootstrapExpectation(callID string, project BootstrapProjectContext) Respon
 	}}
 }
 
-func bootstrapContextEvidence(id, value string) implementationstate.EvidenceRef {
+func bootstrapContextEvidence(id, value string) implstate.EvidenceRef {
 	digest := sha256.Sum256([]byte(value))
-	return implementationstate.EvidenceRef{ID: implementationstate.EvidenceID(id), Digest: hex.EncodeToString(digest[:])}
+	return implstate.EvidenceRef{ID: implstate.EvidenceID(id), Digest: hex.EncodeToString(digest[:])}
 }
 
 // Close releases the dedicated bootstrapper thread and provider runtime.

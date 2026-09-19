@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestBeginNewChangeRejectsPreviouslyClosedRunAndLoadsOnlyFreshChange(t *testing.T) {
@@ -27,7 +27,7 @@ func TestBeginNewChangeRejectsPreviouslyClosedRunAndLoadsOnlyFreshChange(t *test
 		t.Fatal(err)
 	}
 
-	mustRecordControllerRun(t, store, "closed-run", repository, implementationstate.RunClosed)
+	mustRecordControllerRun(t, store, "closed-run", repository, implstate.RunClosed)
 	if _, err := BeginNewChange(context.Background(), store, repository, "change"); !errors.Is(err, ErrChangeAlreadyStarted) {
 		t.Fatalf("closed change start error = %v, want ErrChangeAlreadyStarted", err)
 	}
@@ -37,14 +37,14 @@ func TestContinueOwnRunUsesOnlyCurrentWorkingCopyAndNeverClosedRun(t *testing.T)
 	store := mustControllerStore(t, t.TempDir())
 	ownerRepository := newGitWorkspace(t)
 	otherRepository := newGitWorkspace(t)
-	mustRecordControllerRun(t, store, "paused-run", ownerRepository, implementationstate.RunPaused)
-	mustRecordControllerRun(t, store, "closed-run", otherRepository, implementationstate.RunClosed)
+	mustRecordControllerRun(t, store, "paused-run", ownerRepository, implstate.RunPaused)
+	mustRecordControllerRun(t, store, "closed-run", otherRepository, implstate.RunClosed)
 
 	resumed, err := ContinueOwnRun(context.Background(), store, ownerRepository)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resumed.Run.Identity.ID != "paused-run" || resumed.Run.Status != implementationstate.RunPaused || resumed.Journal.ID() != "paused-run" {
+	if resumed.Run.Identity.ID != "paused-run" || resumed.Run.Status != implstate.RunPaused || resumed.Journal.ID() != "paused-run" {
 		t.Fatalf("resumed run = %#v", resumed.Run)
 	}
 	if err := resumed.Close(); err != nil {
@@ -59,8 +59,8 @@ func TestForeignUnavailableRunsDoNotBlockCurrentWorkCopy(t *testing.T) {
 	store := mustControllerStore(t, t.TempDir())
 	current := newGitWorkspace(t)
 	foreign := newGitWorkspace(t)
-	mustRecordControllerRun(t, store, "foreign-closed", foreign, implementationstate.RunClosed)
-	mustRecordControllerRun(t, store, "foreign-open", foreign, implementationstate.RunPaused)
+	mustRecordControllerRun(t, store, "foreign-closed", foreign, implstate.RunClosed)
+	mustRecordControllerRun(t, store, "foreign-open", foreign, implstate.RunPaused)
 	if err := os.RemoveAll(foreign); err != nil {
 		t.Fatal(err)
 	}

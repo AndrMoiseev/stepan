@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestExecuteBriefSelectionPublishesControllerGeneratedMarkdownBeforeJournalReference(t *testing.T) {
@@ -20,7 +20,7 @@ func TestExecuteBriefSelectionPublishesControllerGeneratedMarkdownBeforeJournalR
 		t.Fatal(err)
 	}
 	content := "## Expected result\n\nImplement only task A."
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A"}, content)}}}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implstate.TaskID{"A"}, content)}}}
 	if _, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("assignment-1", run, stateStore, journal, repository, expectation, runtime)); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestPersistRefinedBriefKeepsAssignmentTasksAndBuildsSharedCurrentRoleContex
 	if err := PrepareBriefSelection(context.Background(), stateStore, run, "select"); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implementationstate.TaskID{"A", "B"}, "initial brief")}}}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponseWithContent(t, []implstate.TaskID{"A", "B"}, "initial brief")}}}
 	if _, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("assignment-1", run, stateStore, journal, repository, expectation, runtime)); err != nil {
 		t.Fatal(err)
 	}
@@ -63,12 +63,12 @@ func TestPersistRefinedBriefKeepsAssignmentTasksAndBuildsSharedCurrentRoleContex
 	refinement := ResponseExpectation{Role: ResponseRoleBriefer, State: ResponseStateBriefRefinement, Scope: ResponseScopeAssignment, Binding: expectation.Binding}
 	refinement.Binding.AssignmentID, refinement.Binding.BriefID = "assignment-1", initial.ID
 	refinedBody := "refined brief evaluates the code already written"
-	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implementationstate.TaskID{"A", "B"}, Brief: &refinedBody, Binding: refinement.Binding}
+	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implstate.TaskID{"A", "B"}, Brief: &refinedBody, Binding: refinement.Binding}
 	refined, err := PersistRefinedBriefVersion(context.Background(), journal, stateStore, run, refinement, response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if refined.ID != "brief-assignment-1-v2" || refined.Number != 2 || !reflect.DeepEqual(run.Assignments[0].TaskIDs, []implementationstate.TaskID{"A", "B"}) {
+	if refined.ID != "brief-assignment-1-v2" || refined.Number != 2 || !reflect.DeepEqual(run.Assignments[0].TaskIDs, []implstate.TaskID{"A", "B"}) {
 		t.Fatalf("refined assignment = %#v, brief = %#v", run.Assignments[0], refined)
 	}
 	implementer, reviewer, err := BuildCurrentTaskRoleContexts(journal, run, "assignment-1", RulesIndex{EntryFile: "rules.md", EntryContent: "current rules", Documents: []string{"rules.md"}}, nil)
@@ -97,7 +97,7 @@ func TestPersistRefinedBriefRejectsChangedAssignmentSelection(t *testing.T) {
 	if err := PrepareBriefSelection(context.Background(), stateStore, run, "select"); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponse(t, []implementationstate.TaskID{"A", "B"})}}}
+	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: briefReadyResponse(t, []implstate.TaskID{"A", "B"})}}}
 	if _, err := ExecuteBriefSelection(context.Background(), briefSelectionCall("assignment-1", run, stateStore, journal, repository, expectation, runtime)); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestPersistRefinedBriefRejectsChangedAssignmentSelection(t *testing.T) {
 	refinement := ResponseExpectation{Role: ResponseRoleBriefer, State: ResponseStateBriefRefinement, Scope: ResponseScopeAssignment, Binding: expectation.Binding}
 	refinement.Binding.AssignmentID, refinement.Binding.BriefID = "assignment-1", current.ID
 	body := "attempt to change scope"
-	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implementationstate.TaskID{"A"}, Brief: &body, Binding: refinement.Binding}
+	response := AgentResponse{Kind: ResponseBriefReady, TaskIDs: []implstate.TaskID{"A"}, Brief: &body, Binding: refinement.Binding}
 	if _, err := PersistRefinedBriefVersion(context.Background(), journal, stateStore, run, refinement, response); !errors.Is(err, ErrBriefVersion) {
 		t.Fatalf("changed task selection = %v, want ErrBriefVersion", err)
 	}
@@ -114,7 +114,7 @@ func TestPersistRefinedBriefRejectsChangedAssignmentSelection(t *testing.T) {
 	}
 }
 
-func briefReadyResponseWithContent(t *testing.T, taskIDs []implementationstate.TaskID, content string) json.RawMessage {
+func briefReadyResponseWithContent(t *testing.T, taskIDs []implstate.TaskID, content string) json.RawMessage {
 	t.Helper()
 	payload := responsePayloadMap(ResponseBriefReady)
 	values := make([]string, len(taskIDs))
@@ -130,7 +130,7 @@ func briefReadyResponseWithContent(t *testing.T, taskIDs []implementationstate.T
 	return raw
 }
 
-func mustReadBrief(t *testing.T, journal *runstore.Run, reference implementationstate.EvidenceRef) []byte {
+func mustReadBrief(t *testing.T, journal *runstore.Run, reference implstate.EvidenceRef) []byte {
 	t.Helper()
 	data, err := journal.Read(reference)
 	if err != nil {

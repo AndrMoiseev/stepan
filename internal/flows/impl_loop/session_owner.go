@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 var (
@@ -66,7 +66,7 @@ type SessionRestore struct {
 	Role ResponseRole
 	// AssignmentID is required for briefer, implementer, and task-reviewer
 	// sessions. FinalReviewRound is required for a final-review session.
-	AssignmentID     implementationstate.AssignmentID
+	AssignmentID     implstate.AssignmentID
 	FinalReviewRound string
 	Start            RoleStartContext
 }
@@ -143,7 +143,7 @@ func (owner *SessionOwner) Orchestrator(ctx context.Context, start RoleStartCont
 // start from a caller-provided fragment or substitute another assignment's
 // bootstrap. Repeated calls for this assignment deliberately continue the
 // same session for later brief refinements.
-func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implementationstate.AssignmentID, start BrieferStartContext) (*AgentSession, error) {
+func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implstate.AssignmentID, start BrieferStartContext) (*AgentSession, error) {
 	if strings.TrimSpace(string(assignmentID)) == "" || assignmentID != start.assignment() {
 		return nil, errors.New("implementation briefer session requires its matching assignment ID")
 	}
@@ -155,7 +155,7 @@ func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implementat
 // than an opportunity to create an independent interpretation after the fact.
 // A resumed process has no such conversation and must create a new session
 // through its recovery flow with the complete durable context.
-func (owner *SessionOwner) ExistingBriefer(assignmentID implementationstate.AssignmentID) (*AgentSession, error) {
+func (owner *SessionOwner) ExistingBriefer(assignmentID implstate.AssignmentID) (*AgentSession, error) {
 	if owner == nil || strings.TrimSpace(string(assignmentID)) == "" {
 		return nil, errors.New("implementation briefer continuation requires an assignment ID")
 	}
@@ -175,7 +175,7 @@ func (owner *SessionOwner) ExistingBriefer(assignmentID implementationstate.Assi
 // Assignment returns the implementer or task-reviewer conversation
 // for one assignment. A different assignment gets an entirely new session for
 // each role, while follow-up work for this assignment keeps its conversation.
-func (owner *SessionOwner) Assignment(ctx context.Context, assignmentID implementationstate.AssignmentID, role ResponseRole, start RoleStartContext) (*AgentSession, error) {
+func (owner *SessionOwner) Assignment(ctx context.Context, assignmentID implstate.AssignmentID, role ResponseRole, start RoleStartContext) (*AgentSession, error) {
 	if strings.TrimSpace(string(assignmentID)) == "" {
 		return nil, errors.New("implementation assignment session requires an assignment ID")
 	}

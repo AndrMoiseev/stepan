@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -20,7 +20,7 @@ var ErrFinalAcceptanceRoute = errors.New("invalid final acceptance route")
 // recordFinalExplorerState is a narrow recovery seam. The response artifact
 // is deliberately published before this call, so a crash at this boundary can
 // be recovered without asking Explorer to repeat completed research.
-var recordFinalExplorerState = func(ctx context.Context, state *runstore.StateStore, run *implementationstate.Run) (implementationstate.Event, error) {
+var recordFinalExplorerState = func(ctx context.Context, state *runstore.StateStore, run *implstate.Run) (implstate.Event, error) {
 	return state.Record(ctx, run)
 }
 
@@ -28,7 +28,7 @@ var recordFinalExplorerState = func(ctx context.Context, state *runstore.StateSt
 // deliberately run-scoped: it cannot be requested, narrowed, or bypassed by
 // the final reviewer, and it never waits for a manual check.
 type FinalRequiredChecks struct {
-	Run            *implementationstate.Run
+	Run            *implstate.Run
 	Workspace      WorkspaceControl
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
@@ -38,15 +38,15 @@ type FinalRequiredChecks struct {
 	UserControl    *UserRunControl
 	MaxCycles      int
 	ProtectedPaths []string
-	Operation      implementationstate.OperationID
-	Result         implementationstate.ResultID
+	Operation      implstate.OperationID
+	Result         implstate.ResultID
 }
 
 type FinalRequiredChecksResult struct {
 	Set         CheckSet
 	Convergence RequiredCheckConvergence
 	Diagnostic  string
-	Evidence    implementationstate.EvidenceRef
+	Evidence    implstate.EvidenceRef
 }
 
 // RunFinalRequiredChecks runs the entire configured required set on the
@@ -56,22 +56,22 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 	if err := validateFinalRequiredChecks(input); err != nil {
 		return FinalRequiredChecksResult{}, err
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	existing := finalRunOperation(input.Run, input.Operation)
 	if existing == nil {
-		if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.Operation, Kind: implementationstate.OperationCheck, Basis: basis, Description: "final required checks"}); err != nil {
+		if err := input.Run.AddRunOperation(implstate.Operation{ID: input.Operation, Kind: implstate.OperationCheck, Basis: basis, Description: "final required checks"}); err != nil {
 			return FinalRequiredChecksResult{}, fmt.Errorf("%w: create final check operation: %v", ErrFinalAcceptanceRoute, err)
 		}
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
 			return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check operation: %v", ErrFinalAcceptanceRoute, err)
 		}
-	} else if existing.Kind != implementationstate.OperationCheck || existing.Basis != basis || existing.Description != "final required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationCheck || existing.Basis != basis || existing.Description != "final required checks" || finalRunResultForOperation(input.Run, existing.ID) != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: final check operation cannot be resumed", ErrFinalAcceptanceRoute)
 	}
 	if _, _, err := input.StateStore.RecordRunAttemptStart(ctx, input.Run, input.Operation); err != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: reserve final check attempt: %v", ErrFinalAcceptanceRoute, err)
 	}
-	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implementationstate.EvidenceID(input.Result))
+	publisher, err := NewCheckResultPublisherWithControl(input.Journal, input.Workspace, input.Repository, implstate.EvidenceID(input.Result))
 	if err != nil {
 		return pauseFinalChecks(ctx, input, FinalRequiredChecksResult{}, fmt.Errorf("create final check publisher: %w", err))
 	}
@@ -94,21 +94,21 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 	if publishErr != nil {
 		return pauseFinalChecks(persistContext, input, result, fmt.Errorf("publish final check diagnostics: %w", publishErr))
 	}
-	status, outcome := implementationstate.ResultSucceeded, implementationstate.AttemptSucceeded
+	status, outcome := implstate.ResultSucceeded, implstate.AttemptSucceeded
 	if runErr != nil || !set.Succeeded() {
-		status, outcome = implementationstate.ResultFailed, implementationstate.AttemptFailed
+		status, outcome = implstate.ResultFailed, implstate.AttemptFailed
 		if errors.Is(checkContext.Err(), context.Canceled) || errors.Is(checkContext.Err(), context.DeadlineExceeded) {
-			status, outcome = implementationstate.ResultInterrupted, implementationstate.AttemptInterrupted
+			status, outcome = implstate.ResultInterrupted, implstate.AttemptInterrupted
 		}
 	}
 	if _, err := input.StateStore.RecordRunAttemptOutcome(persistContext, input.Run, input.Operation, outcome, diagnostic); err != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check outcome: %v", ErrFinalAcceptanceRoute, err)
 	}
 	state := finalInitialCheckedState(input.Run.CurrentState, set)
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{ID: input.Result, OperationID: input.Operation, Status: status, State: state, Basis: basis, Evidence: initialCheckEvidenceRefs(evidence, set)}); err != nil {
+	if err := input.Run.AddRunResult(implstate.OperationResult{ID: input.Result, OperationID: input.Operation, Status: status, State: state, Basis: basis, Evidence: initialCheckEvidenceRefs(evidence, set)}); err != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: record final check result: %v", ErrFinalAcceptanceRoute, err)
 	}
-	if state != input.Run.CurrentState && input.Run.Status == implementationstate.RunActive {
+	if state != input.Run.CurrentState && input.Run.Status == implstate.RunActive {
 		if err := input.Run.ObserveCodeState(state); err != nil {
 			return FinalRequiredChecksResult{}, fmt.Errorf("%w: record final checked state: %v", ErrFinalAcceptanceRoute, err)
 		}
@@ -116,7 +116,7 @@ func RunFinalRequiredChecks(ctx context.Context, input FinalRequiredChecks) (Fin
 	if _, err := input.StateStore.Record(persistContext, input.Run); err != nil {
 		return FinalRequiredChecksResult{}, fmt.Errorf("%w: persist final check result: %v", ErrFinalAcceptanceRoute, err)
 	}
-	if status != implementationstate.ResultSucceeded {
+	if status != implstate.ResultSucceeded {
 		if UserOperationInterrupted(checkContext) {
 			return result, ErrUserOperationInterrupted
 		}
@@ -136,7 +136,7 @@ func validateFinalRequiredChecks(input FinalRequiredChecks) error {
 }
 
 func pauseFinalChecks(ctx context.Context, input FinalRequiredChecks, result FinalRequiredChecksResult, cause error) (FinalRequiredChecksResult, error) {
-	if input.Run.Status == implementationstate.RunActive {
+	if input.Run.Status == implstate.RunActive {
 		diagnostic := strings.TrimSpace(result.Diagnostic)
 		if diagnostic == "" && cause != nil {
 			diagnostic = cause.Error()
@@ -158,9 +158,9 @@ func pauseFinalChecks(ctx context.Context, input FinalRequiredChecks, result Fin
 	return result, cause
 }
 
-func publishFinalCheckEvidence(journal *runstore.Run, id implementationstate.ResultID, convergence RequiredCheckConvergence, setErr error) (implementationstate.EvidenceRef, error) {
+func publishFinalCheckEvidence(journal *runstore.Run, id implstate.ResultID, convergence RequiredCheckConvergence, setErr error) (implstate.EvidenceRef, error) {
 	if journal == nil {
-		return implementationstate.EvidenceRef{}, errors.New("final checks require a run journal")
+		return implstate.EvidenceRef{}, errors.New("final checks require a run journal")
 	}
 	evidence := initialCheckSetEvidence{Kind: CheckSetRequired}
 	if setErr != nil {
@@ -180,9 +180,9 @@ func publishFinalCheckEvidence(journal *runstore.Run, id implementationstate.Res
 	}
 	data, err := json.Marshal(evidence)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(id)+"-diagnostics"), data)
+	return journal.Publish(implstate.EvidenceID(string(id)+"-diagnostics"), data)
 }
 
 // FinalReviewInput contains only controller-created inputs. The required-check
@@ -191,17 +191,17 @@ func publishFinalCheckEvidence(journal *runstore.Run, id implementationstate.Res
 type FinalReviewInput struct {
 	Owner       *SessionOwner
 	Workspace   WorkspaceControl
-	Run         *implementationstate.Run
+	Run         *implstate.Run
 	StateStore  *runstore.StateStore
 	Journal     *runstore.Run
 	Repository  string
 	Rules       RulesIndex
-	CheckResult implementationstate.ResultID
-	OperationID implementationstate.OperationID
-	ResultID    implementationstate.ResultID
+	CheckResult implstate.ResultID
+	OperationID implstate.OperationID
+	ResultID    implstate.ResultID
 	CallID      string
 	RoundID     string
-	Limits      implementationstate.CycleLimits
+	Limits      implstate.CycleLimits
 	Timeout     time.Duration
 	Explorer    *FinalReviewExplorer
 }
@@ -210,11 +210,11 @@ type FinalReviewInput struct {
 // episode and the next turn in the same final-reviewer session. More than one
 // request is explicit rather than letting the reviewer mint identifiers.
 type FinalReviewExplorer struct {
-	ExplorerOperationID     implementationstate.OperationID
-	ExplorerResultID        implementationstate.ResultID
+	ExplorerOperationID     implstate.OperationID
+	ExplorerResultID        implstate.ResultID
 	ExplorerCallID          string
-	ContinuationOperationID implementationstate.OperationID
-	ContinuationResultID    implementationstate.ResultID
+	ContinuationOperationID implstate.OperationID
+	ContinuationResultID    implstate.ResultID
 	ContinuationCallID      string
 	ExplorerCharacters      int
 	Additional              []FinalReviewExplorer
@@ -225,8 +225,8 @@ type FinalReviewResult struct {
 	Session  *AgentSession
 	Attempts uint64
 	DiffBase string
-	Evidence implementationstate.EvidenceRef
-	ResultID implementationstate.ResultID
+	Evidence implstate.EvidenceRef
+	ResultID implstate.ResultID
 }
 
 // StartFinalReview opens a new final-review session for this round. It passes
@@ -270,16 +270,16 @@ func runFinalReviewerTurn(ctx context.Context, input FinalReviewInput, session *
 	if session == nil || session.Role != ResponseRoleFinalReviewer {
 		return FinalReviewResult{}, fmt.Errorf("%w: an independent final reviewer session is required", ErrFinalAcceptanceRoute)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	existing := finalRunOperation(input.Run, input.OperationID)
 	if existing == nil {
-		if err := input.Run.AddRunOperation(implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationReview, Basis: basis, Description: "independent final review", Counter: implementationstate.CycleCounterFinalReview}); err != nil {
+		if err := input.Run.AddRunOperation(implstate.Operation{ID: input.OperationID, Kind: implstate.OperationReview, Basis: basis, Description: "independent final review", Counter: implstate.CycleCounterFinalReview}); err != nil {
 			return FinalReviewResult{}, fmt.Errorf("%w: create final review operation: %v", ErrFinalAcceptanceRoute, err)
 		}
 		if _, err := input.StateStore.Record(ctx, input.Run); err != nil {
 			return FinalReviewResult{}, fmt.Errorf("%w: persist final review operation: %v", ErrFinalAcceptanceRoute, err)
 		}
-	} else if existing.Kind != implementationstate.OperationReview || existing.Basis != basis || existing.Description != "independent final review" || existing.Counter != implementationstate.CycleCounterFinalReview || finalRunResultForOperation(input.Run, existing.ID) != nil {
+	} else if existing.Kind != implstate.OperationReview || existing.Basis != basis || existing.Description != "independent final review" || existing.Counter != implstate.CycleCounterFinalReview || finalRunResultForOperation(input.Run, existing.ID) != nil {
 		return FinalReviewResult{}, fmt.Errorf("%w: final review operation cannot be resumed", ErrFinalAcceptanceRoute)
 	}
 	binding := ResponseBinding{CallID: input.CallID, RunID: input.Run.Identity.ID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
@@ -287,11 +287,11 @@ func runFinalReviewerTurn(ctx context.Context, input FinalReviewInput, session *
 	return dispatchFinalReviewerCall(ctx, input, session, call, input.OperationID, input.ResultID, diffBase, 0)
 }
 
-func finalReviewerCall(input FinalReviewInput, session *AgentSession, operationID implementationstate.OperationID, expectation ResponseExpectation, message string) ControlledAgentCall {
+func finalReviewerCall(input FinalReviewInput, session *AgentSession, operationID implstate.OperationID, expectation ResponseExpectation, message string) ControlledAgentCall {
 	return ControlledAgentCall{Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleFinalReviewer, CallID: expectation.Binding.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, OperationID: operationID, Limits: input.Limits, Expectation: expectation, Message: message, Timeout: input.Timeout, ValidateResponse: validateFinalReviewerResponse}
 }
 
-func dispatchFinalReviewerCall(ctx context.Context, input FinalReviewInput, session *AgentSession, call ControlledAgentCall, operationID implementationstate.OperationID, resultID implementationstate.ResultID, diffBase string, episode int) (FinalReviewResult, error) {
+func dispatchFinalReviewerCall(ctx context.Context, input FinalReviewInput, session *AgentSession, call ControlledAgentCall, operationID implstate.OperationID, resultID implstate.ResultID, diffBase string, episode int) (FinalReviewResult, error) {
 	expected, err := ensureFinalCheckedWorkspace(ctx, input)
 	if err != nil {
 		return FinalReviewResult{Session: session, DiffBase: diffBase}, err
@@ -318,17 +318,17 @@ func dispatchFinalReviewerCall(ctx context.Context, input FinalReviewInput, sess
 	return continueFinalReviewExplorer(ctx, input, turn.Session, call.Expectation, turn.Response, diffBase, episode)
 }
 
-func persistFinalReviewOutcome(ctx context.Context, input FinalReviewInput, operationID implementationstate.OperationID, resultID implementationstate.ResultID, response AgentResponse) (FinalReviewResult, error) {
+func persistFinalReviewOutcome(ctx context.Context, input FinalReviewInput, operationID implstate.OperationID, resultID implstate.ResultID, response AgentResponse) (FinalReviewResult, error) {
 	evidence, err := publishFinalReviewEvidence(input.Journal, resultID, response)
 	if err != nil {
 		return FinalReviewResult{}, err
 	}
-	status := implementationstate.ResultSucceeded
+	status := implstate.ResultSucceeded
 	if response.Kind == ResponseChangesRequested || response.Kind == ResponseClarificationNeeded {
-		status = implementationstate.ResultFailed
+		status = implstate.ResultFailed
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{ID: resultID, OperationID: operationID, Status: status, State: input.Run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	if err := input.Run.AddRunResult(implstate.OperationResult{ID: resultID, OperationID: operationID, Status: status, State: input.Run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return FinalReviewResult{}, fmt.Errorf("%w: record final review result: %v", ErrFinalAcceptanceRoute, err)
 	}
 	if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
@@ -391,10 +391,10 @@ func prepareFinalReviewExplorerOperations(ctx context.Context, input FinalReview
 	if value == nil || value.ExplorerOperationID == "" || value.ExplorerResultID == "" || strings.TrimSpace(value.ExplorerCallID) == "" || value.ContinuationOperationID == "" || value.ContinuationResultID == "" || strings.TrimSpace(value.ContinuationCallID) == "" {
 		return fmt.Errorf("%w: final Explorer route identities are required", ErrFinalAcceptanceRoute)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
-	for _, operation := range []implementationstate.Operation{
-		{ID: value.ExplorerOperationID, Kind: implementationstate.OperationAgent, Basis: basis, Description: "research for final review", Counter: implementationstate.CycleCounterExplorer, Episode: "final-reviewer"},
-		{ID: value.ContinuationOperationID, Kind: implementationstate.OperationReview, Basis: basis, Description: "continue final review after research"},
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	for _, operation := range []implstate.Operation{
+		{ID: value.ExplorerOperationID, Kind: implstate.OperationAgent, Basis: basis, Description: "research for final review", Counter: implstate.CycleCounterExplorer, Episode: "final-reviewer"},
+		{ID: value.ContinuationOperationID, Kind: implstate.OperationReview, Basis: basis, Description: "continue final review after research"},
 	} {
 		if finalRunOperation(input.Run, operation.ID) == nil {
 			if err := input.Run.AddRunOperation(operation); err != nil {
@@ -420,12 +420,12 @@ func persistFinalExplorerOutcome(ctx context.Context, input FinalReviewInput, va
 	if err != nil {
 		return err
 	}
-	status := implementationstate.ResultSucceeded
+	status := implstate.ResultSucceeded
 	if response.Kind == ResponseExecutionBlocked {
-		status = implementationstate.ResultFailed
+		status = implstate.ResultFailed
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
-	if err := candidate.AddRunResult(implementationstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: candidate.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	if err := candidate.AddRunResult(implstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: candidate.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return err
 	}
 	written, err := recordFinalExplorerState(context.WithoutCancel(ctx), input.StateStore, candidate)
@@ -438,8 +438,8 @@ func persistFinalExplorerOutcome(ctx context.Context, input FinalReviewInput, va
 	return nil
 }
 
-func cloneFinalExplorerRun(run *implementationstate.Run) (*implementationstate.Run, error) {
-	event, err := implementationstate.NewRunStateEvent(1, run)
+func cloneFinalExplorerRun(run *implstate.Run) (*implstate.Run, error) {
+	event, err := implstate.NewRunStateEvent(1, run)
 	if err != nil {
 		return nil, fmt.Errorf("%w: clone final Explorer state: %v", ErrFinalAcceptanceRoute, err)
 	}
@@ -462,14 +462,14 @@ func finalReviewExplorerAt(value *FinalReviewExplorer, episode int) *FinalReview
 // CompleteFinalAcceptance is the terminal controller route. It rereads the
 // durable checked-state snapshot immediately before success, so a reviewer
 // cannot approve a working copy that changed after final checks.
-func CompleteFinalAcceptance(ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, checks implementationstate.ResultID, review FinalReviewResult) error {
+func CompleteFinalAcceptance(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, checks implstate.ResultID, review FinalReviewResult) error {
 	if run == nil || state == nil || journal == nil || strings.TrimSpace(repository) == "" || review.Response.Kind != ResponseReviewPassed || review.ResultID == "" || !currentSuccessfulFinalChecks(run, checks) {
 		return fmt.Errorf("%w: successful final review and durable state are required", ErrFinalAcceptanceRoute)
 	}
 	if _, err := ensureFinalCheckedWorkspaceForCompletion(ctx, run, state, journal, workspace, repository, checks); err != nil {
 		return err
 	}
-	if err := run.RecordFinalAcceptance(implementationstate.FinalAcceptanceEvidence{State: run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}, CheckResultIDs: []implementationstate.ResultID{checks}, ReviewResultID: review.ResultID}); err != nil {
+	if err := run.RecordFinalAcceptance(implstate.FinalAcceptanceEvidence{State: run.CurrentState, Basis: implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}, CheckResultIDs: []implstate.ResultID{checks}, ReviewResultID: review.ResultID}); err != nil {
 		return fmt.Errorf("%w: record final acceptance: %v", ErrFinalAcceptanceRoute, err)
 	}
 	if err := run.Succeed(); err != nil {
@@ -485,13 +485,13 @@ func ensureFinalCheckedWorkspace(ctx context.Context, input FinalReviewInput) (g
 	return ensureFinalCheckedWorkspaceForCompletion(ctx, input.Run, input.StateStore, input.Journal, input.Workspace, input.Repository, input.CheckResult)
 }
 
-func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, resultID implementationstate.ResultID) (git.Snapshot, error) {
+func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, resultID implstate.ResultID) (git.Snapshot, error) {
 	expected, err := finalCheckedSnapshot(run, journal, resultID)
 	if err != nil {
 		return git.Snapshot{}, err
 	}
 	if err := effectiveWorkspaceControl(workspace).EnsureUnchanged(ctx, repository, expected); err != nil {
-		if run.Status == implementationstate.RunActive {
+		if run.Status == implstate.RunActive {
 			if pauseErr := run.Pause(unexpectedWorkspaceChangePauseReason); pauseErr != nil {
 				return git.Snapshot{}, fmt.Errorf("%w: pause changed final workspace: %v", ErrFinalAcceptanceRoute, pauseErr)
 			}
@@ -513,7 +513,7 @@ func ensureFinalCheckedWorkspaceAfterCall(ctx context.Context, input FinalReview
 }
 
 func pauseFinalWorkspaceChanged(ctx context.Context, input FinalReviewInput, reason string) error {
-	if input.Run.Status == implementationstate.RunActive {
+	if input.Run.Status == implstate.RunActive {
 		if err := input.Run.Pause(unexpectedWorkspaceChangePauseReason); err != nil {
 			return fmt.Errorf("%w: pause changed final workspace: %v", ErrFinalAcceptanceRoute, err)
 		}
@@ -524,7 +524,7 @@ func pauseFinalWorkspaceChanged(ctx context.Context, input FinalReviewInput, rea
 	return fmt.Errorf("%w: %s", ErrFinalAcceptanceRoute, reason)
 }
 
-func finalCheckedSnapshot(run *implementationstate.Run, journal *runstore.Run, resultID implementationstate.ResultID) (git.Snapshot, error) {
+func finalCheckedSnapshot(run *implstate.Run, journal *runstore.Run, resultID implstate.ResultID) (git.Snapshot, error) {
 	if run == nil || journal == nil || !currentSuccessfulFinalChecks(run, resultID) {
 		return git.Snapshot{}, fmt.Errorf("%w: current successful final checks are required", ErrFinalAcceptanceRoute)
 	}
@@ -554,7 +554,7 @@ func sameFinalCheckedSnapshot(left, right git.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
-func finalRunOperation(run *implementationstate.Run, id implementationstate.OperationID) *implementationstate.Operation {
+func finalRunOperation(run *implstate.Run, id implstate.OperationID) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
@@ -566,7 +566,7 @@ func finalRunOperation(run *implementationstate.Run, id implementationstate.Oper
 	return nil
 }
 
-func finalRunResult(run *implementationstate.Run, id implementationstate.ResultID) *implementationstate.OperationResult {
+func finalRunResult(run *implstate.Run, id implstate.ResultID) *implstate.OperationResult {
 	if run == nil {
 		return nil
 	}
@@ -588,31 +588,31 @@ func validateFinalReviewInput(input FinalReviewInput) error {
 	return validateRulesIndex(input.Rules)
 }
 
-func runHasOnlyCompletedTasks(run *implementationstate.Run) bool {
-	if run == nil || run.Status != implementationstate.RunActive || len(run.Tasks) == 0 || len(run.Assignments) == 0 {
+func runHasOnlyCompletedTasks(run *implstate.Run) bool {
+	if run == nil || run.Status != implstate.RunActive || len(run.Tasks) == 0 || len(run.Assignments) == 0 {
 		return false
 	}
 	for _, status := range run.LeafStatus {
-		if status != implementationstate.TaskComplete {
+		if status != implstate.TaskComplete {
 			return false
 		}
 	}
 	for _, assignment := range run.Assignments {
-		if assignment.Status != implementationstate.AssignmentCommitted {
+		if assignment.Status != implstate.AssignmentCommitted {
 			return false
 		}
 	}
 	return true
 }
 
-func currentSuccessfulFinalChecks(run *implementationstate.Run, id implementationstate.ResultID) bool {
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+func currentSuccessfulFinalChecks(run *implstate.Run, id implstate.ResultID) bool {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	for _, result := range run.RunResults {
-		if result.ID != id || result.Status != implementationstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
+		if result.ID != id || result.Status != implstate.ResultSucceeded || result.State != run.CurrentState || result.Basis != basis {
 			continue
 		}
 		for _, operation := range run.RunOperations {
-			if operation.ID == result.OperationID && operation.Kind == implementationstate.OperationCheck && operation.Description == "final required checks" && operation.Basis == basis {
+			if operation.ID == result.OperationID && operation.Kind == implstate.OperationCheck && operation.Description == "final required checks" && operation.Basis == basis {
 				return true
 			}
 		}
@@ -637,7 +637,7 @@ func validateFinalReviewerResponse(response AgentResponse) error {
 		}
 		seen := map[string]bool{}
 		for index, id := range response.FindingIDs {
-			if seen[id] || implementationstate.FindingStatus(response.FindingDecisions[index]) != implementationstate.FindingOpen || !blockingFindingBasis(response.Bases[index]) || strings.TrimSpace(response.FindingReasons[index]) == "" {
+			if seen[id] || implstate.FindingStatus(response.FindingDecisions[index]) != implstate.FindingOpen || !blockingFindingBasis(response.Bases[index]) || strings.TrimSpace(response.FindingReasons[index]) == "" {
 				return fmt.Errorf("%w: final finding %q is not a concrete blocking finding", ErrFinalAcceptanceRoute, id)
 			}
 			seen[id] = true
@@ -649,38 +649,38 @@ func validateFinalReviewerResponse(response AgentResponse) error {
 	return nil
 }
 
-func publishFinalReviewEvidence(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+func publishFinalReviewEvidence(journal *runstore.Run, resultID implstate.ResultID, response AgentResponse) (implstate.EvidenceRef, error) {
 	data, err := json.Marshal(struct {
 		Response AgentResponse `json:"response"`
 	}{Response: response})
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-discussion"), data)
+	return journal.Publish(implstate.EvidenceID(string(resultID)+"-discussion"), data)
 }
 
 // publishFinalExplorerResponse uses the same response-only representation as
 // the other Explorer routes. Its stable ID is also the crash-recovery marker:
 // a later state event links this immutable artifact to the operation.
-func publishFinalExplorerResponse(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+func publishFinalExplorerResponse(journal *runstore.Run, resultID implstate.ResultID, response AgentResponse) (implstate.EvidenceRef, error) {
 	data, err := json.Marshal(response)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	id := implementationstate.EvidenceID(string(resultID) + "-response")
+	id := implstate.EvidenceID(string(resultID) + "-response")
 	existing, err := journal.PublishedReference(id)
 	if err == nil {
 		stored, readErr := journal.Read(existing)
 		if readErr != nil {
-			return implementationstate.EvidenceRef{}, readErr
+			return implstate.EvidenceRef{}, readErr
 		}
 		if !bytes.Equal(stored, data) {
-			return implementationstate.EvidenceRef{}, fmt.Errorf("%w: final Explorer response differs from immutable published response", runstore.ErrConflictingPublication)
+			return implstate.EvidenceRef{}, fmt.Errorf("%w: final Explorer response differs from immutable published response", runstore.ErrConflictingPublication)
 		}
 		return existing, nil
 	}
 	if !errors.Is(err, runstore.ErrReferenceUnavailable) {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	return journal.Publish(id, data)
 }

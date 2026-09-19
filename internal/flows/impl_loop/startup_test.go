@@ -9,15 +9,15 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestDiscoverStartupRunFindsPausedWorkCopyWithoutOpeningProjection(t *testing.T) {
 	run, state, journal, workCopy := newInitialCheckRun(t)
-	if err := run.AddRunOperation(implementationstate.Operation{
-		ID: "initial-check", Kind: implementationstate.OperationCheck,
-		Basis:       implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration},
+	if err := run.AddRunOperation(implstate.Operation{
+		ID: "initial-check", Kind: implstate.OperationCheck,
+		Basis:       implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration},
 		Description: "run required check lint",
 	}); err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestDiscoverStartupRunSkipsClosedRunAndTerminalStatuses(t *testing.T) {
 	if err != nil || found != nil {
 		t.Fatalf("closed discovery = %#v, %v", found, err)
 	}
-	for _, status := range []implementationstate.RunStatus{implementationstate.RunClosed, implementationstate.RunSucceeded} {
+	for _, status := range []implstate.RunStatus{implstate.RunClosed, implstate.RunSucceeded} {
 		if isUnclosedStatus(status) {
 			t.Fatalf("terminal status %q was selected as unclosed", status)
 		}
@@ -89,23 +89,23 @@ func TestDiscoverStartupRunSkipsClosedRunAndTerminalStatuses(t *testing.T) {
 }
 
 func TestStartupSummaryUsesLatestDurableTransitionForStageAndAction(t *testing.T) {
-	basis := implementationstate.AcceptanceBasis{
-		Specification: implementationstate.EvidenceRef{ID: "spec", Digest: "spec"},
-		Configuration: implementationstate.EvidenceRef{ID: "config", Digest: "config"},
+	basis := implstate.AcceptanceBasis{
+		Specification: implstate.EvidenceRef{ID: "spec", Digest: "spec"},
+		Configuration: implstate.EvidenceRef{ID: "config", Digest: "config"},
 	}
-	assignmentOperation := implementationstate.Operation{ID: "implement", Kind: implementationstate.OperationAgent, Basis: basis, Description: "implement assignment"}
-	resumeOperation := implementationstate.Operation{ID: "resume-check", Kind: implementationstate.OperationCheck, Basis: basis, Description: "go test ./...", UncountedResumeCheck: true}
-	base := func() *implementationstate.Run {
-		return &implementationstate.Run{
-			Status:                implementationstate.RunActive,
-			InitialBaselineStatus: implementationstate.InitialBaselinePassed,
-			Tasks:                 []implementationstate.Task{{ID: "task", Title: "task"}},
-			LeafStatus:            map[implementationstate.TaskID]implementationstate.TaskStatus{"task": implementationstate.TaskPending},
+	assignmentOperation := implstate.Operation{ID: "implement", Kind: implstate.OperationAgent, Basis: basis, Description: "implement assignment"}
+	resumeOperation := implstate.Operation{ID: "resume-check", Kind: implstate.OperationCheck, Basis: basis, Description: "go test ./...", UncountedResumeCheck: true}
+	base := func() *implstate.Run {
+		return &implstate.Run{
+			Status:                implstate.RunActive,
+			InitialBaselineStatus: implstate.InitialBaselinePassed,
+			Tasks:                 []implstate.Task{{ID: "task", Title: "task"}},
+			LeafStatus:            map[implstate.TaskID]implstate.TaskStatus{"task": implstate.TaskPending},
 		}
 	}
 	for _, test := range []struct {
 		name, wantStage, wantAction string
-		previous, current           *implementationstate.Run
+		previous, current           *implstate.Run
 	}{
 		{
 			name: "between assignments selects next", wantStage: "selecting next assignment", wantAction: "created implementation run",
@@ -113,52 +113,52 @@ func TestStartupSummaryUsesLatestDurableTransitionForStageAndAction(t *testing.T
 		},
 		{
 			name: "active assignment", wantStage: "implementing assignment assignment-1", wantAction: "implement assignment",
-			previous: func() *implementationstate.Run {
+			previous: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive}}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentActive}}
 				return r
 			}(),
-			current: func() *implementationstate.Run {
+			current: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentActive, Operations: []implstate.Operation{assignmentOperation}}}
 				return r
 			}(),
 		},
 		{
 			name: "resume check is newer than assignment operation", wantStage: "resume required checks", wantAction: "resume required check: go test ./...",
-			previous: func() *implementationstate.Run {
+			previous: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentActive, Operations: []implstate.Operation{assignmentOperation}}}
 				return r
 			}(),
-			current: func() *implementationstate.Run {
+			current: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive, Operations: []implementationstate.Operation{assignmentOperation}}}
-				r.RunOperations = []implementationstate.Operation{resumeOperation}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentActive, Operations: []implstate.Operation{assignmentOperation}}}
+				r.RunOperations = []implstate.Operation{resumeOperation}
 				return r
 			}(),
 		},
 		{
 			name: "accepted assignment awaits commit", wantStage: "committing accepted assignment assignment-1", wantAction: "accept assignment assignment-1",
-			previous: func() *implementationstate.Run {
+			previous: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentActive}}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentActive}}
 				return r
 			}(),
-			current: func() *implementationstate.Run {
+			current: func() *implstate.Run {
 				r := base()
-				r.Assignments = []implementationstate.Assignment{{ID: "assignment-1", Status: implementationstate.AssignmentAcceptedAwaitingCommit}}
+				r.Assignments = []implstate.Assignment{{ID: "assignment-1", Status: implstate.AssignmentAcceptedAwaitingCommit}}
 				return r
 			}(),
 		},
 		{
 			name: "failed resume check", wantStage: "resume required checks", wantAction: "resume required check: go test ./... (failed)",
-			previous: base(), current: func() *implementationstate.Run {
+			previous: base(), current: func() *implstate.Run {
 				r := base()
-				r.Status = implementationstate.RunPaused
+				r.Status = implstate.RunPaused
 				r.PauseReason = "execution_blocked: resume checks"
-				r.ExecutionBlock = &implementationstate.ExecutionBlock{BlockedAction: "resume checks", Diagnostic: "tests failed", RequiredUserAction: "fix tests"}
-				r.RunOperations = []implementationstate.Operation{resumeOperation}
+				r.ExecutionBlock = &implstate.ExecutionBlock{BlockedAction: "resume checks", Diagnostic: "tests failed", RequiredUserAction: "fix tests"}
+				r.RunOperations = []implstate.Operation{resumeOperation}
 				return r
 			}(),
 		},
@@ -197,7 +197,7 @@ func TestDiscoverStartupRunMarksOrphanedActiveRunRecoverableWithoutMutation(t *t
 		t.Fatalf("orphaned startup = %#v", found)
 	}
 	current, _, err := runstore.ReadJournalCurrent(journal)
-	if err != nil || current.Status != implementationstate.RunActive {
+	if err != nil || current.Status != implstate.RunActive {
 		t.Fatalf("discovery mutated active run = %#v, %v", current, err)
 	}
 }
@@ -241,30 +241,30 @@ func TestStartupSummaryUsesDurableResumeResultTransitions(t *testing.T) {
 func TestStartupSummaryUsesAssignmentResultAndFollowingPause(t *testing.T) {
 	run, state, journal, _ := newInitialCheckRun(t)
 	defer state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief, err := journal.Publish("brief", []byte("assignment brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := run.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddOperation("assignment", implementationstate.Operation{ID: "implement", Kind: implementationstate.OperationAgent, Basis: basis, BriefID: "brief", Description: "implement assignment"}); err != nil {
+	if err := run.AddOperation("assignment", implstate.Operation{ID: "implement", Kind: implstate.OperationAgent, Basis: basis, BriefID: "brief", Description: "implement assignment"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartAssignmentAttempt("assignment", "implement"); err != nil {
@@ -273,7 +273,7 @@ func TestStartupSummaryUsesAssignmentResultAndFollowingPause(t *testing.T) {
 	if _, err := state.Record(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddResult("assignment", implementationstate.OperationResult{ID: "implement-result", OperationID: "implement", Status: implementationstate.ResultFailed, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddResult("assignment", implstate.OperationResult{ID: "implement-result", OperationID: "implement", Status: implstate.ResultFailed, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.Record(context.Background(), run); err != nil {
@@ -304,30 +304,30 @@ func TestStartupSummaryUsesAssignmentResultAndFollowingPause(t *testing.T) {
 func TestStartupSummaryUsesAtomicAssignmentResultAndExecutionBlockedPause(t *testing.T) {
 	run, state, journal, _ := newInitialCheckRun(t)
 	defer state.Close()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief, err := journal.Publish("brief", []byte("assignment brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := run.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddOperation("assignment", implementationstate.Operation{ID: "implement", Kind: implementationstate.OperationAgent, Basis: basis, BriefID: "brief", Description: "implement assignment"}); err != nil {
+	if err := run.AddOperation("assignment", implstate.Operation{ID: "implement", Kind: implstate.OperationAgent, Basis: basis, BriefID: "brief", Description: "implement assignment"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartAssignmentAttempt("assignment", "implement"); err != nil {
@@ -336,10 +336,10 @@ func TestStartupSummaryUsesAtomicAssignmentResultAndExecutionBlockedPause(t *tes
 	if _, err := state.Record(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddResult("assignment", implementationstate.OperationResult{ID: "implement-result", OperationID: "implement", Status: implementationstate.ResultFailed, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddResult("assignment", implstate.OperationResult{ID: "implement-result", OperationID: "implement", Status: implstate.ResultFailed, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.PauseExecutionBlocked(implementationstate.ExecutionBlock{BlockedAction: "implement assignment", Diagnostic: "tool unavailable", Attempts: []string{"started executor"}, RequiredUserAction: "install tool"}); err != nil {
+	if err := run.PauseExecutionBlocked(implstate.ExecutionBlock{BlockedAction: "implement assignment", Diagnostic: "tool unavailable", Attempts: []string{"started executor"}, RequiredUserAction: "install tool"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.Record(context.Background(), run); err != nil {

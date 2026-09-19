@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // ErrAcceptanceReflection identifies an invalid controller transition from a
@@ -25,21 +25,21 @@ var ErrAcceptanceReflection = errors.New("invalid accepted-progress reflection")
 // is an exact repository-relative path: the orchestrator gets no authority
 // beyond that one informational file.
 type AcceptanceReflectionInput struct {
-	Run        *implementationstate.Run
+	Run        *implstate.Run
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
 	Workspace  WorkspaceControl
 	Session    *AgentSession
 
-	AssignmentID implementationstate.AssignmentID
-	Acceptance   implementationstate.AcceptanceEvidence
+	AssignmentID implstate.AssignmentID
+	Acceptance   implstate.AcceptanceEvidence
 	TasksPath    string
 
-	ReflectionOperationID implementationstate.OperationID
-	ReflectionResultID    implementationstate.ResultID
+	ReflectionOperationID implstate.OperationID
+	ReflectionResultID    implstate.ResultID
 	ReflectionCallID      string
-	Limits                implementationstate.CycleLimits
+	Limits                implstate.CycleLimits
 	Timeout               time.Duration
 }
 
@@ -58,7 +58,7 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 	if err := validateAcceptanceReflectionInput(input); err != nil {
 		return AcceptanceReflectionResult{}, err
 	}
-	basis := implementationstate.AcceptanceBasis{
+	basis := implstate.AcceptanceBasis{
 		Specification: input.Run.Identity.Specification,
 		Configuration: input.Run.Identity.Configuration,
 	}
@@ -67,21 +67,21 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		return AcceptanceReflectionResult{}, fmt.Errorf("%w: assignment is missing", ErrAcceptanceReflection)
 	}
 	operation := finalRunOperation(input.Run, input.ReflectionOperationID)
-	if assignment.Status == implementationstate.AssignmentActive {
+	if assignment.Status == implstate.AssignmentActive {
 		if operation != nil {
 			return AcceptanceReflectionResult{}, fmt.Errorf("%w: reflection operation already exists before acceptance", ErrAcceptanceReflection)
 		}
 		if err := input.Run.AcceptAssignment(input.AssignmentID, input.Acceptance); err != nil {
 			return AcceptanceReflectionResult{}, fmt.Errorf("%w: accept assignment: %v", ErrAcceptanceReflection, err)
 		}
-	} else if assignment.Status != implementationstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
+	} else if assignment.Status != implstate.AssignmentAcceptedAwaitingCommit || assignment.Acceptance == nil {
 		return AcceptanceReflectionResult{}, fmt.Errorf("%w: assignment is neither review-ready nor accepted", ErrAcceptanceReflection)
 	} else if !reflect.DeepEqual(*assignment.Acceptance, input.Acceptance) {
 		return AcceptanceReflectionResult{}, fmt.Errorf("%w: supplied acceptance differs from durable assignment acceptance", ErrAcceptanceReflection)
 	}
 	if operation == nil {
-		if err := input.Run.AddRunOperation(implementationstate.Operation{
-			ID: input.ReflectionOperationID, Kind: implementationstate.OperationAgent,
+		if err := input.Run.AddRunOperation(implstate.Operation{
+			ID: input.ReflectionOperationID, Kind: implstate.OperationAgent,
 			Basis: basis, Description: "reflect accepted task progress in tasks.md",
 		}); err != nil {
 			return AcceptanceReflectionResult{}, fmt.Errorf("%w: create reflection operation: %v", ErrAcceptanceReflection, err)
@@ -92,7 +92,7 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 		if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
 			return AcceptanceReflectionResult{}, fmt.Errorf("%w: persist accepted assignment: %v", ErrAcceptanceReflection, err)
 		}
-	} else if operation.Kind != implementationstate.OperationAgent || operation.Basis != basis || operation.Description != "reflect accepted task progress in tasks.md" || finalRunResultForOperation(input.Run, operation.ID) != nil {
+	} else if operation.Kind != implstate.OperationAgent || operation.Basis != basis || operation.Description != "reflect accepted task progress in tasks.md" || finalRunResultForOperation(input.Run, operation.ID) != nil {
 		return AcceptanceReflectionResult{}, fmt.Errorf("%w: reflection operation cannot be resumed", ErrAcceptanceReflection)
 	}
 
@@ -134,10 +134,10 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 	}
 	// Do not call ObserveCodeState here. The permitted tasks.md edit is not a
 	// code-state change and must not stale acceptance or require another review.
-	if err := input.Run.AddRunResult(implementationstate.OperationResult{
+	if err := input.Run.AddRunResult(implstate.OperationResult{
 		ID: input.ReflectionResultID, OperationID: input.ReflectionOperationID,
-		Status: implementationstate.ResultSucceeded, State: input.Run.CurrentState, Basis: basis,
-		Evidence: []implementationstate.EvidenceRef{reflectionState},
+		Status: implstate.ResultSucceeded, State: input.Run.CurrentState, Basis: basis,
+		Evidence: []implstate.EvidenceRef{reflectionState},
 	}); err != nil {
 		return AcceptanceReflectionResult{Call: result}, fmt.Errorf("%w: record reflection result: %v", ErrAcceptanceReflection, err)
 	}
@@ -147,7 +147,7 @@ func AcceptAssignmentAndReflectProgress(ctx context.Context, input AcceptanceRef
 	return AcceptanceReflectionResult{Call: result}, nil
 }
 
-func finalRunResultForOperation(run *implementationstate.Run, operationID implementationstate.OperationID) *implementationstate.OperationResult {
+func finalRunResultForOperation(run *implstate.Run, operationID implstate.OperationID) *implstate.OperationResult {
 	if run == nil {
 		return nil
 	}
@@ -159,12 +159,12 @@ func finalRunResultForOperation(run *implementationstate.Run, operationID implem
 	return nil
 }
 
-func publishReflectionWorkspace(journal *runstore.Run, resultID implementationstate.ResultID, snapshot git.Snapshot) (implementationstate.EvidenceRef, error) {
+func publishReflectionWorkspace(journal *runstore.Run, resultID implstate.ResultID, snapshot git.Snapshot) (implstate.EvidenceRef, error) {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-workspace"), data)
+	return journal.Publish(implstate.EvidenceID(string(resultID)+"-workspace"), data)
 }
 
 func validateAcceptanceReflectionInput(input AcceptanceReflectionInput) error {
@@ -192,7 +192,7 @@ func selectedChangeTasksPath(change string) (string, error) {
 	return "openspec/changes/" + change + "/tasks.md", nil
 }
 
-func validateProgressReflectionResponse(run *implementationstate.Run, response AgentResponse) error {
+func validateProgressReflectionResponse(run *implstate.Run, response AgentResponse) error {
 	if run == nil || response.Kind != ResponseProgressReflected || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: reflection response is not bound to the run", ErrAcceptanceReflection)
 	}
@@ -202,7 +202,7 @@ func validateProgressReflectionResponse(run *implementationstate.Run, response A
 	return nil
 }
 
-func reflectionOperationExists(run *implementationstate.Run, id implementationstate.OperationID) bool {
+func reflectionOperationExists(run *implstate.Run, id implstate.OperationID) bool {
 	for _, operation := range run.RunOperations {
 		if operation.ID == id {
 			return true
@@ -218,7 +218,7 @@ func reflectionOperationExists(run *implementationstate.Run, id implementationst
 	return false
 }
 
-func renderAcceptedProgressReflection(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, tasksPath string) string {
+func renderAcceptedProgressReflection(run *implstate.Run, assignmentID implstate.AssignmentID, tasksPath string) string {
 	var taskIDs []string
 	for _, assignment := range run.Assignments {
 		if assignment.ID != assignmentID {

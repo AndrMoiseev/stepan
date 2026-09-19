@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *testing.T) {
@@ -33,7 +33,7 @@ func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *te
 	if outcome.Disposition != CallRetry || !strings.Contains(outcome.Diagnostic, "response was rejected") {
 		t.Fatalf("outcome = %#v", outcome)
 	}
-	if run.Status != implementationstate.RunActive {
+	if run.Status != implstate.RunActive {
 		t.Fatalf("successful targeted restoration paused run: %#v", run)
 	}
 	assertAgentFile(t, repository, "prior-executor.go", "pre-existing executor work\n")
@@ -120,7 +120,7 @@ func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Disposition != CallExecutionBlocked || run.Status != implementationstate.RunPaused || run.PauseReason != executionBlockedPauseReason {
+	if outcome.Disposition != CallExecutionBlocked || run.Status != implstate.RunPaused || run.PauseReason != executionBlockedPauseReason {
 		t.Fatalf("ambiguous control-state change did not block: outcome=%#v run=%#v", outcome, run)
 	}
 	assertAgentFile(t, repository, "internal/engine.go", "unknown origin\n")
@@ -150,7 +150,7 @@ func TestObserveAgentCallBlocksWhenTargetedRollbackIsImpossible(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outcome.Disposition != CallExecutionBlocked || run.Status != implementationstate.RunPaused {
+	if outcome.Disposition != CallExecutionBlocked || run.Status != implstate.RunPaused {
 		t.Fatalf("unsafe restoration did not block: outcome=%#v run=%#v", outcome, run)
 	}
 	if info, err := os.Stat(filepath.Join(repository, ".stepan", "settings.json")); err != nil || !info.IsDir() {
@@ -162,7 +162,7 @@ func TestObserveAgentCallBlocksWhenTargetedRollbackIsImpossible(t *testing.T) {
 	}
 }
 
-func newAgentCallRun(t *testing.T) (*implementationstate.Run, *runstore.Run) {
+func newAgentCallRun(t *testing.T) (*implstate.Run, *runstore.Run) {
 	t.Helper()
 	store, err := runstore.New(t.TempDir())
 	if err != nil {
@@ -172,7 +172,7 @@ func newAgentCallRun(t *testing.T) (*implementationstate.Run, *runstore.Run) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &implementationstate.Run{Status: implementationstate.RunActive}, journal
+	return &implstate.Run{Status: implstate.RunActive}, journal
 }
 
 func writeAgentFile(t *testing.T, repository, relative, contents string) {

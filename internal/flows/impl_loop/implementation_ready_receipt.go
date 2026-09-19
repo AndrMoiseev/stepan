@@ -7,19 +7,19 @@ import (
 	"reflect"
 	"strings"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
-func implementationReadyReceiptIDs(operationID implementationstate.OperationID) (implementationstate.ResultID, implementationstate.EvidenceID, implementationstate.EvidenceID) {
+func implementationReadyReceiptIDs(operationID implstate.OperationID) (implstate.ResultID, implstate.EvidenceID, implstate.EvidenceID) {
 	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
-	return implementationstate.ResultID(string(operationID) + "-implementation-ready-result"), receiptID, workspaceID
+	return implstate.ResultID(string(operationID) + "-implementation-ready-result"), receiptID, workspaceID
 }
 
 // persistImplementationReadyReceipt links the shared controlled-call receipt
 // into the implementation state before mandatory checks begin.
-func persistImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, response AgentResponse, snapshot git.Snapshot) error {
+func persistImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, operationID implstate.OperationID, response AgentResponse, snapshot git.Snapshot) error {
 	if response.Kind != ResponseImplementationReady || response.Message == nil || strings.TrimSpace(*response.Message) == "" {
 		return errors.New("validated implementation_ready response with a commit message is required")
 	}
@@ -36,7 +36,7 @@ func persistImplementationReadyReceipt(ctx context.Context, input RestartContinu
 // recoverPublishedImplementationReady completes the publication-before-event
 // boundary. A partial publication is ambiguous and must be paused by the
 // caller; it is never permission to issue a second semantic request.
-func recoverPublishedImplementationReady(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (bool, error) {
+func recoverPublishedImplementationReady(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, operationID implstate.OperationID) (bool, error) {
 	resultID, _, _ := implementationReadyReceiptIDs(operationID)
 	if result := assignmentResultForOperation(input.Run, assignmentID, operationID); result != nil {
 		if result.ID != resultID {
@@ -58,9 +58,9 @@ func recoverPublishedImplementationReady(ctx context.Context, input RestartConti
 	return true, nil
 }
 
-func recordImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, responseRef, workspaceRef implementationstate.EvidenceRef) error {
+func recordImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, operationID implstate.OperationID, responseRef, workspaceRef implstate.EvidenceRef) error {
 	operation := assignmentOperation(input.Run, assignmentID, operationID)
-	if operation == nil || operation.Kind != implementationstate.OperationAgent || operation.Counter != implementationstate.CycleCounterNone || operation.BriefID == "" {
+	if operation == nil || operation.Kind != implstate.OperationAgent || operation.Counter != implstate.CycleCounterNone || operation.BriefID == "" {
 		return fmt.Errorf("implementation_ready receipt lacks its implementation operation %s", operationID)
 	}
 	response, _, durableResponseRef, durableWorkspaceRef, found, err := readControlledAgentSuccessReceipt(input.Journal, operationID)
@@ -84,9 +84,9 @@ func recordImplementationReadyReceipt(ctx context.Context, input RestartContinua
 		return fmt.Errorf("record implementation_ready workspace: %w", err)
 	}
 	resultID, _, _ := implementationReadyReceiptIDs(operationID)
-	if err := candidate.AddResult(assignmentID, implementationstate.OperationResult{
-		ID: resultID, OperationID: operationID, Status: implementationstate.ResultSucceeded,
-		State: workspaceRef, Basis: operation.Basis, Evidence: []implementationstate.EvidenceRef{responseRef, workspaceRef},
+	if err := candidate.AddResult(assignmentID, implstate.OperationResult{
+		ID: resultID, OperationID: operationID, Status: implstate.ResultSucceeded,
+		State: workspaceRef, Basis: operation.Basis, Evidence: []implstate.EvidenceRef{responseRef, workspaceRef},
 	}); err != nil {
 		return fmt.Errorf("record implementation_ready result: %w", err)
 	}
@@ -100,16 +100,16 @@ func recordImplementationReadyReceipt(ctx context.Context, input RestartContinua
 	return nil
 }
 
-func validateImplementationReadyReceiptBinding(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operation implementationstate.Operation, response AgentResponse) error {
+func validateImplementationReadyReceiptBinding(run *implstate.Run, assignmentID implstate.AssignmentID, operation implstate.Operation, response AgentResponse) error {
 	if run == nil || response.Kind != ResponseImplementationReady || response.Message == nil || strings.TrimSpace(*response.Message) == "" || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != assignmentID || response.Binding.BriefID != operation.BriefID || response.Binding.Specification != operation.Basis.Specification || response.Binding.Configuration != operation.Basis.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return errors.New("implementation_ready receipt is not bound to its durable operation")
 	}
 	return nil
 }
 
-func implementationReadyResponse(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, result implementationstate.OperationResult) (AgentResponse, error) {
+func implementationReadyResponse(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID, result implstate.OperationResult) (AgentResponse, error) {
 	operation := assignmentOperation(run, assignmentID, result.OperationID)
-	if operation == nil || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) < 2 {
+	if operation == nil || result.Status != implstate.ResultSucceeded || len(result.Evidence) < 2 {
 		return AgentResponse{}, errors.New("durable implementation_ready result is incomplete")
 	}
 	response, _, responseRef, workspaceRef, found, err := readControlledAgentSuccessReceipt(journal, result.OperationID)
@@ -128,18 +128,18 @@ func implementationReadyResponse(journal *runstore.Run, run *implementationstate
 	return response, nil
 }
 
-func latestImplementationReadyResponse(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (AgentResponse, error) {
+func latestImplementationReadyResponse(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID) (AgentResponse, error) {
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil {
 		return AgentResponse{}, errors.New("implementation_ready assignment is missing")
 	}
-	results := make(map[implementationstate.OperationID]implementationstate.OperationResult, len(assignment.Results))
+	results := make(map[implstate.OperationID]implstate.OperationResult, len(assignment.Results))
 	for _, result := range assignment.Results {
 		results[result.OperationID] = result
 	}
 	for index := len(assignment.Operations) - 1; index >= 0; index-- {
 		operation := assignment.Operations[index]
-		if operation.Kind != implementationstate.OperationAgent || operation.Counter != implementationstate.CycleCounterNone || operation.Episode != "" {
+		if operation.Kind != implstate.OperationAgent || operation.Counter != implstate.CycleCounterNone || operation.Episode != "" {
 			continue
 		}
 		result, ok := results[operation.ID]
@@ -151,7 +151,7 @@ func latestImplementationReadyResponse(journal *runstore.Run, run *implementatio
 	return AgentResponse{}, errors.New("durable implementation_ready response is missing")
 }
 
-func rebindImplementationReadyResponse(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, response AgentResponse) AgentResponse {
+func rebindImplementationReadyResponse(run *implstate.Run, assignmentID implstate.AssignmentID, response AgentResponse) AgentResponse {
 	assignment := assignmentByID(run, assignmentID)
 	response.Binding.RunID = run.Identity.ID
 	response.Binding.AssignmentID = assignmentID

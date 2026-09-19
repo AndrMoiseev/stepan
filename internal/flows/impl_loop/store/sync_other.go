@@ -1,6 +1,6 @@
 //go:build !windows
 
-package runstore
+package store
 
 import (
 	"os"

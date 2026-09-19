@@ -8,32 +8,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var ErrBriefRefinement = errors.New("invalid assignment brief refinement")
 
 // recordBriefRefinementState is a narrow seam for preserving the durable-event
 // boundary under tests; production always delegates directly to StateStore.
-var recordBriefRefinementState = func(ctx context.Context, store *runstore.StateStore, state *implementationstate.Run) (implementationstate.Event, error) {
+var recordBriefRefinementState = func(ctx context.Context, store *runstore.StateStore, state *implstate.Run) (implstate.Event, error) {
 	return store.Record(ctx, state)
 }
 
 type BriefRefinementInput struct {
 	Owner         *SessionOwner
 	Workspace     WorkspaceControl
-	Run           *implementationstate.Run
+	Run           *implstate.Run
 	StateStore    *runstore.StateStore
 	Journal       *runstore.Run
 	Repository    string
-	AssignmentID  implementationstate.AssignmentID
+	AssignmentID  implstate.AssignmentID
 	RequesterRole ResponseRole
 	Request       AgentResponse
-	OperationID   implementationstate.OperationID
-	ResultID      implementationstate.ResultID
+	OperationID   implstate.OperationID
+	ResultID      implstate.ResultID
 	CallID        string
-	Limits        implementationstate.CycleLimits
+	Limits        implstate.CycleLimits
 	Timeout       time.Duration
 	Explorer      *BriefRefinementExplorer
 }
@@ -41,11 +41,11 @@ type BriefRefinementInput struct {
 // BriefRefinementExplorer contains controller-allocated identities for one
 // Explorer episode and the continuing turn in the same briefer session.
 type BriefRefinementExplorer struct {
-	ExplorerOperationID     implementationstate.OperationID
-	ExplorerResultID        implementationstate.ResultID
+	ExplorerOperationID     implstate.OperationID
+	ExplorerResultID        implstate.ResultID
 	ExplorerCallID          string
-	ContinuationOperationID implementationstate.OperationID
-	ContinuationResultID    implementationstate.ResultID
+	ContinuationOperationID implstate.OperationID
+	ContinuationResultID    implstate.ResultID
 	ExplorerCharacters      int
 	// Additional holds controller-allocated episodes for a consecutive
 	// exploration request from the continuing briefer turn.
@@ -54,7 +54,7 @@ type BriefRefinementExplorer struct {
 
 type BriefRefinementResult struct {
 	Call        ControlledAgentCallResult
-	Brief       *implementationstate.BriefVersion
+	Brief       *implstate.BriefVersion
 	Closed      bool
 	Paused      bool
 	PauseReason string
@@ -113,12 +113,12 @@ func RefineBrief(ctx context.Context, input BriefRefinementInput) (BriefRefineme
 	return result, err
 }
 
-func refinementNeedsFreshSession(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) bool {
+func refinementNeedsFreshSession(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) bool {
 	operation := assignmentOperation(run, assignmentID, operationID)
 	if operation == nil || len(operation.Attempts) == 0 {
 		return false
 	}
-	return operation.Attempts[len(operation.Attempts)-1].Outcome != implementationstate.AttemptSucceeded
+	return operation.Attempts[len(operation.Attempts)-1].Outcome != implstate.AttemptSucceeded
 }
 
 func validateBriefRefinementInput(input BriefRefinementInput) error {
@@ -131,16 +131,16 @@ func validateBriefRefinementInput(input BriefRefinementInput) error {
 	return nil
 }
 
-func validateBriefRefinementRequest(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, request AgentResponse) error {
+func validateBriefRefinementRequest(run *implstate.Run, assignmentID implstate.AssignmentID, briefID implstate.BriefID, request AgentResponse) error {
 	if request.Kind != ResponseClarificationNeeded || request.Binding.RunID != run.Identity.ID || request.Binding.AssignmentID != assignmentID || request.Binding.BriefID != briefID || request.Binding.Specification != run.Identity.Specification || request.Binding.Configuration != run.Identity.Configuration || request.Binding.TaskList != run.Identity.TaskList || request.Question == nil || request.Context == nil || request.Boundaries == nil || len(request.References) == 0 {
 		return fmt.Errorf("%w: clarification request is not bound to the current brief", ErrBriefRefinement)
 	}
 	return nil
 }
 
-func prepareBriefRefinementOperation(ctx context.Context, input BriefRefinementInput, briefID implementationstate.BriefID) error {
+func prepareBriefRefinementOperation(ctx context.Context, input BriefRefinementInput, briefID implstate.BriefID) error {
 	if operation := assignmentOperation(input.Run, input.AssignmentID, input.OperationID); operation != nil {
-		if operation.Kind != implementationstate.OperationAgent || operation.Counter != implementationstate.CycleCounterBriefRefinement || operation.BriefID != briefID {
+		if operation.Kind != implstate.OperationAgent || operation.Counter != implstate.CycleCounterBriefRefinement || operation.BriefID != briefID {
 			return fmt.Errorf("%w: existing refinement operation has a different binding", ErrBriefRefinement)
 		}
 		return nil
@@ -152,14 +152,14 @@ func prepareBriefRefinementOperation(ctx context.Context, input BriefRefinementI
 	if err := candidate.BeginBriefRefinement(input.AssignmentID); err != nil {
 		return fmt.Errorf("%w: reopen assignment: %v", ErrBriefRefinement, err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
-	if err := candidate.AddOperation(input.AssignmentID, implementationstate.Operation{ID: input.OperationID, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "refine assignment brief", Counter: implementationstate.CycleCounterBriefRefinement}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	if err := candidate.AddOperation(input.AssignmentID, implstate.Operation{ID: input.OperationID, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "refine assignment brief", Counter: implstate.CycleCounterBriefRefinement}); err != nil {
 		return fmt.Errorf("%w: create refinement operation: %v", ErrBriefRefinement, err)
 	}
 	return persistBriefRefinementCandidate(ctx, input.StateStore, input.Run, candidate)
 }
 
-func briefRefinementCall(input BriefRefinementInput, session *AgentSession, operationID implementationstate.OperationID, binding ResponseBinding, message string) ControlledAgentCall {
+func briefRefinementCall(input BriefRefinementInput, session *AgentSession, operationID implstate.OperationID, binding ResponseBinding, message string) ControlledAgentCall {
 	call := ControlledAgentCall{Session: session, Repository: input.Repository, Workspace: input.Workspace, Policy: AgentCallPolicy{Role: AgentRoleBriefer, CallID: binding.CallID}, Run: input.Run, Journal: input.Journal, StateStore: input.StateStore, AssignmentID: input.AssignmentID, OperationID: operationID, Limits: input.Limits, Expectation: ResponseExpectation{Role: ResponseRoleBriefer, State: ResponseStateBriefRefinement, Scope: ResponseScopeAssignment, Binding: binding}, Message: message, Timeout: input.Timeout}
 	call.ValidateResponse = func(response AgentResponse) error {
 		switch response.Kind {
@@ -175,7 +175,7 @@ func briefRefinementCall(input BriefRefinementInput, session *AgentSession, oper
 	return call
 }
 
-func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInput, priorBriefID implementationstate.BriefID, operationID implementationstate.OperationID, resultID implementationstate.ResultID, response AgentResponse) (BriefRefinementResult, error) {
+func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInput, priorBriefID implstate.BriefID, operationID implstate.OperationID, resultID implstate.ResultID, response AgentResponse) (BriefRefinementResult, error) {
 	if existing := assignmentResult(input.Run, input.AssignmentID, resultID); existing != nil {
 		return recoveredBriefRefinementResult(input, *existing)
 	}
@@ -191,8 +191,8 @@ func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInp
 	if operation == nil || operation.BriefID != priorBriefID {
 		return BriefRefinementResult{}, fmt.Errorf("%w: outcome lacks its original refinement operation", ErrBriefRefinement)
 	}
-	result := implementationstate.OperationResult{ID: resultID, OperationID: operationID, Status: implementationstate.ResultSucceeded, State: candidate.CurrentState, Basis: operation.Basis, Evidence: []implementationstate.EvidenceRef{evidence}}
-	var published *implementationstate.BriefVersion
+	result := implstate.OperationResult{ID: resultID, OperationID: operationID, Status: implstate.ResultSucceeded, State: candidate.CurrentState, Basis: operation.Basis, Evidence: []implstate.EvidenceRef{evidence}}
+	var published *implstate.BriefVersion
 	switch response.Kind {
 	case ResponseBriefReady:
 		brief, document, err := publishRefinedBriefCandidate(input.Journal, candidate, input.AssignmentID, response)
@@ -202,7 +202,7 @@ func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInp
 		result.Evidence, published = append(result.Evidence, document), &brief
 	case ResponseClarificationNeeded:
 	case ResponseExecutionBlocked:
-		result.Status = implementationstate.ResultFailed
+		result.Status = implstate.ResultFailed
 	case ResponseExplorationRequested:
 	default:
 		return BriefRefinementResult{}, fmt.Errorf("%w: unsupported persisted briefer response %q", ErrBriefRefinement, response.Kind)
@@ -230,34 +230,34 @@ func persistBriefRefinementOutcome(ctx context.Context, input BriefRefinementInp
 	return BriefRefinementResult{Brief: published, Closed: response.Kind == ResponseClarificationNeeded, Paused: response.Kind == ResponseExecutionBlocked, PauseReason: candidate.PauseReason}, nil
 }
 
-func publishRefinedBriefCandidate(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, response AgentResponse) (implementationstate.BriefVersion, implementationstate.EvidenceRef, error) {
+func publishRefinedBriefCandidate(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID, response AgentResponse) (implstate.BriefVersion, implstate.EvidenceRef, error) {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil || !sameTaskIDs(run, assignmentID, response.TaskIDs) || response.Brief == nil {
-		return implementationstate.BriefVersion{}, implementationstate.EvidenceRef{}, fmt.Errorf("%w: refined brief changes the assignment", ErrBriefRefinement)
+		return implstate.BriefVersion{}, implstate.EvidenceRef{}, fmt.Errorf("%w: refined brief changes the assignment", ErrBriefRefinement)
 	}
 	number := len(assignment.Briefs) + 1
-	briefID := implementationstate.BriefID(fmt.Sprintf("brief-%s-v%d", assignmentID, number))
-	documentID := implementationstate.EvidenceID(fmt.Sprintf("brief-%s-v%d.md", assignmentID, number))
+	briefID := implstate.BriefID(fmt.Sprintf("brief-%s-v%d", assignmentID, number))
+	documentID := implstate.EvidenceID(fmt.Sprintf("brief-%s-v%d.md", assignmentID, number))
 	document, err := journal.Publish(documentID, renderBriefDocument(assignmentID, number, assignment.TaskIDs, *response.Brief))
 	if err != nil {
-		return implementationstate.BriefVersion{}, implementationstate.EvidenceRef{}, err
+		return implstate.BriefVersion{}, implstate.EvidenceRef{}, err
 	}
 	if err := journal.VerifyReference(document); err != nil {
-		return implementationstate.BriefVersion{}, implementationstate.EvidenceRef{}, err
+		return implstate.BriefVersion{}, implstate.EvidenceRef{}, err
 	}
-	brief := implementationstate.BriefVersion{ID: briefID, Number: number, Document: document}
+	brief := implstate.BriefVersion{ID: briefID, Number: number, Document: document}
 	if err := run.AddBriefVersion(assignmentID, brief); err != nil {
-		return implementationstate.BriefVersion{}, implementationstate.EvidenceRef{}, err
+		return implstate.BriefVersion{}, implstate.EvidenceRef{}, err
 	}
 	return brief, document, nil
 }
 
-func publishBriefRefinementResponse(journal *runstore.Run, resultID implementationstate.ResultID, response AgentResponse) (implementationstate.EvidenceRef, error) {
+func publishBriefRefinementResponse(journal *runstore.Run, resultID implstate.ResultID, response AgentResponse) (implstate.EvidenceRef, error) {
 	data, err := json.Marshal(response)
 	if err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	return journal.Publish(implementationstate.EvidenceID(string(resultID)+"-response"), data)
+	return journal.Publish(implstate.EvidenceID(string(resultID)+"-response"), data)
 }
 
 func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult, bool, error) {
@@ -266,7 +266,7 @@ func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult
 		// Publishing an accepted answer precedes recording its result. If the
 		// event could not be written at all, recover that exact accepted answer
 		// rather than asking the provider a second time.
-		reference, err := input.Journal.PublishedReference(implementationstate.EvidenceID(string(input.ResultID) + "-response"))
+		reference, err := input.Journal.PublishedReference(implstate.EvidenceID(string(input.ResultID) + "-response"))
 		if err != nil {
 			if errors.Is(err, runstore.ErrReferenceUnavailable) {
 				return BriefRefinementResult{}, false, nil
@@ -320,7 +320,7 @@ func recoverBriefRefinementExplorer(input BriefRefinementInput, request AgentRes
 	return recovered, true, err
 }
 
-func recoveredBriefRefinementResult(input BriefRefinementInput, result implementationstate.OperationResult) (BriefRefinementResult, error) {
+func recoveredBriefRefinementResult(input BriefRefinementInput, result implstate.OperationResult) (BriefRefinementResult, error) {
 	response, err := durableBriefRefinementResponse(input, result)
 	if err != nil {
 		return BriefRefinementResult{}, err
@@ -343,7 +343,7 @@ func recoveredBriefRefinementResult(input BriefRefinementInput, result implement
 	return answer, nil
 }
 
-func durableBriefRefinementResponse(input BriefRefinementInput, result implementationstate.OperationResult) (AgentResponse, error) {
+func durableBriefRefinementResponse(input BriefRefinementInput, result implstate.OperationResult) (AgentResponse, error) {
 	if len(result.Evidence) == 0 {
 		return AgentResponse{}, fmt.Errorf("%w: refinement result lacks response evidence", ErrBriefRefinement)
 	}
@@ -358,15 +358,15 @@ func durableBriefRefinementResponse(input BriefRefinementInput, result implement
 	return response, nil
 }
 
-func cloneBriefRefinementRun(run *implementationstate.Run) (*implementationstate.Run, error) {
-	event, err := implementationstate.NewRunStateEvent(1, run)
+func cloneBriefRefinementRun(run *implstate.Run) (*implstate.Run, error) {
+	event, err := implstate.NewRunStateEvent(1, run)
 	if err != nil {
 		return nil, fmt.Errorf("%w: clone run state: %v", ErrBriefRefinement, err)
 	}
 	return event.State, nil
 }
 
-func persistBriefRefinementCandidate(ctx context.Context, store *runstore.StateStore, current, candidate *implementationstate.Run) error {
+func persistBriefRefinementCandidate(ctx context.Context, store *runstore.StateStore, current, candidate *implstate.Run) error {
 	written, err := recordBriefRefinementState(ctx, store, candidate)
 	if written.Sequence != 0 {
 		*current = *candidate
@@ -403,7 +403,7 @@ func continueBriefRefinementExplorer(ctx context.Context, input BriefRefinementI
 		}
 		return continueBriefRefinementAfterExplorer(ctx, input, brief, sourceSession, sourceExpectation, request, value, response, episode)
 	}
-	if reference, err := input.Journal.PublishedReference(implementationstate.EvidenceID(string(value.ExplorerResultID) + "-response")); err == nil {
+	if reference, err := input.Journal.PublishedReference(implstate.EvidenceID(string(value.ExplorerResultID) + "-response")); err == nil {
 		data, readErr := input.Journal.Read(reference)
 		if readErr != nil {
 			return BriefRefinementResult{}, readErr
@@ -453,7 +453,7 @@ func continueBriefRefinementAfterExplorer(ctx context.Context, input BriefRefine
 	// The source response is also published before its state event. A failure
 	// at that boundary must continue from the accepted response, not redispatch
 	// the same briefer turn.
-	if reference, err := input.Journal.PublishedReference(implementationstate.EvidenceID(string(value.ContinuationResultID) + "-response")); err == nil {
+	if reference, err := input.Journal.PublishedReference(implstate.EvidenceID(string(value.ContinuationResultID) + "-response")); err == nil {
 		data, readErr := input.Journal.Read(reference)
 		if readErr != nil {
 			return BriefRefinementResult{}, readErr
@@ -491,7 +491,7 @@ func persistBriefRefinementContinuation(ctx context.Context, input BriefRefineme
 	return next, err
 }
 
-func persistBriefExplorerOutcome(ctx context.Context, input BriefRefinementInput, briefID implementationstate.BriefID, value *BriefRefinementExplorer, response AgentResponse) error {
+func persistBriefExplorerOutcome(ctx context.Context, input BriefRefinementInput, briefID implstate.BriefID, value *BriefRefinementExplorer, response AgentResponse) error {
 	if existing := assignmentResult(input.Run, input.AssignmentID, value.ExplorerResultID); existing != nil {
 		return nil
 	}
@@ -507,11 +507,11 @@ func persistBriefExplorerOutcome(ctx context.Context, input BriefRefinementInput
 	if operation == nil || operation.BriefID != briefID {
 		return fmt.Errorf("%w: Explorer outcome lacks its operation", ErrBriefRefinement)
 	}
-	status := implementationstate.ResultSucceeded
+	status := implstate.ResultSucceeded
 	if response.Kind == ResponseExecutionBlocked {
-		status = implementationstate.ResultFailed
+		status = implstate.ResultFailed
 	}
-	if err := candidate.AddResult(input.AssignmentID, implementationstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: candidate.CurrentState, Basis: operation.Basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := candidate.AddResult(input.AssignmentID, implstate.OperationResult{ID: value.ExplorerResultID, OperationID: value.ExplorerOperationID, Status: status, State: candidate.CurrentState, Basis: operation.Basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		return err
 	}
 	if response.Kind == ResponseExecutionBlocked {
@@ -526,7 +526,7 @@ func persistBriefExplorerOutcome(ctx context.Context, input BriefRefinementInput
 	return persistBriefRefinementCandidate(ctx, input.StateStore, input.Run, candidate)
 }
 
-func prepareBriefRefinementExplorerOperations(ctx context.Context, input BriefRefinementInput, briefID implementationstate.BriefID, value *BriefRefinementExplorer) error {
+func prepareBriefRefinementExplorerOperations(ctx context.Context, input BriefRefinementInput, briefID implstate.BriefID, value *BriefRefinementExplorer) error {
 	if value == nil || value.ExplorerOperationID == "" || value.ExplorerResultID == "" || value.ContinuationOperationID == "" || value.ContinuationResultID == "" || strings.TrimSpace(value.ExplorerCallID) == "" {
 		return fmt.Errorf("%w: Explorer route identities are required", ErrBriefRefinement)
 	}
@@ -534,8 +534,8 @@ func prepareBriefRefinementExplorerOperations(ctx context.Context, input BriefRe
 	if err != nil {
 		return err
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
-	for _, operation := range []implementationstate.Operation{{ID: value.ExplorerOperationID, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "research for brief refinement", Counter: implementationstate.CycleCounterExplorer, Episode: "brief_refinement"}, {ID: value.ContinuationOperationID, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "continue brief refinement after research"}} {
+	basis := implstate.AcceptanceBasis{Specification: candidate.Identity.Specification, Configuration: candidate.Identity.Configuration}
+	for _, operation := range []implstate.Operation{{ID: value.ExplorerOperationID, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "research for brief refinement", Counter: implstate.CycleCounterExplorer, Episode: "brief_refinement"}, {ID: value.ContinuationOperationID, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "continue brief refinement after research"}} {
 		if assignmentOperation(candidate, input.AssignmentID, operation.ID) == nil {
 			if err := candidate.AddOperation(input.AssignmentID, operation); err != nil {
 				return err
@@ -636,11 +636,11 @@ func durableBriefRefinementExplorerHistory(input BriefRefinementInput) ([]AgentR
 	}
 }
 
-func briefRefinementBinding(input BriefRefinementInput, briefID implementationstate.BriefID, callID string) ResponseBinding {
+func briefRefinementBinding(input BriefRefinementInput, briefID implstate.BriefID, callID string) ResponseBinding {
 	return ResponseBinding{CallID: callID, RunID: input.Run.Identity.ID, AssignmentID: input.AssignmentID, BriefID: briefID, Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration, TaskList: input.Run.Identity.TaskList}
 }
 
-func assignmentOperation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) *implementationstate.Operation {
+func assignmentOperation(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) *implstate.Operation {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil {
 		return nil
@@ -653,7 +653,7 @@ func assignmentOperation(run *implementationstate.Run, assignmentID implementati
 	return nil
 }
 
-func assignmentResult(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, resultID implementationstate.ResultID) *implementationstate.OperationResult {
+func assignmentResult(run *implstate.Run, assignmentID implstate.AssignmentID, resultID implstate.ResultID) *implstate.OperationResult {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil {
 		return nil
@@ -666,7 +666,7 @@ func assignmentResult(run *implementationstate.Run, assignmentID implementations
 	return nil
 }
 
-func assignmentResultForOperation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) *implementationstate.OperationResult {
+func assignmentResultForOperation(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) *implstate.OperationResult {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil {
 		return nil
@@ -679,7 +679,7 @@ func assignmentResultForOperation(run *implementationstate.Run, assignmentID imp
 	return nil
 }
 
-func sameTaskIDs(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, taskIDs []implementationstate.TaskID) bool {
+func sameTaskIDs(run *implstate.Run, assignmentID implstate.AssignmentID, taskIDs []implstate.TaskID) bool {
 	assignment := assignmentForReview(run, assignmentID)
 	if assignment == nil || len(taskIDs) != len(assignment.TaskIDs) {
 		return false

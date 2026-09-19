@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -67,7 +67,7 @@ func TestImplementationInteractiveControllerRejectsUnavailableCommandWithoutMuta
 	if message != "/implement is unavailable while the run is active" {
 		t.Fatalf("unavailable command message = %q", message)
 	}
-	if menu.Lifecycle != LifecycleActive || starts != 0 || run.Status != implementationstate.RunActive {
+	if menu.Lifecycle != LifecycleActive || starts != 0 || run.Status != implstate.RunActive {
 		t.Fatalf("unavailable command changed lifecycle: menu=%#v starts=%d run=%s", menu, starts, run.Status)
 	}
 }
@@ -76,11 +76,11 @@ func TestImplementationInteractiveControllerPauseAndStopUseDurableUserControl(t 
 	for _, test := range []struct {
 		name    string
 		input   string
-		want    implementationstate.RunStatus
+		want    implstate.RunStatus
 		message string
 	}{
-		{"pause active work", "/pause", implementationstate.RunPaused, "implementation run paused"},
-		{"stop active work", "/stop", implementationstate.RunClosed, "implementation run closed"},
+		{"pause active work", "/pause", implstate.RunPaused, "implementation run paused"},
+		{"stop active work", "/stop", implstate.RunClosed, "implementation run closed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run, state, journal, _ := newInitialCheckRun(t)
@@ -115,10 +115,10 @@ func TestImplementationInteractiveControllerPauseAndStopInterruptActiveOperation
 	for _, test := range []struct {
 		name  string
 		input string
-		want  implementationstate.RunStatus
+		want  implstate.RunStatus
 	}{
-		{"pause", "/pause", implementationstate.RunPaused},
-		{"stop", "/stop", implementationstate.RunClosed},
+		{"pause", "/pause", implstate.RunPaused},
+		{"stop", "/stop", implstate.RunClosed},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run, state, _, _ := newInitialCheckRun(t)
@@ -171,7 +171,7 @@ func TestImplementationInteractiveControllerResumeUsesReconciliationGate(t *test
 		},
 		Continue: func(_ context.Context, run *InteractiveRun) error {
 			continued++
-			if run.Run.Status != implementationstate.RunActive {
+			if run.Run.Status != implstate.RunActive {
 				t.Fatalf("continue received status %s", run.Run.Status)
 			}
 			return nil
@@ -182,7 +182,7 @@ func TestImplementationInteractiveControllerResumeUsesReconciliationGate(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message != "implementation run resumed" || fixture.run.Status != implementationstate.RunActive || continued != 1 {
+	if message != "implementation run resumed" || fixture.run.Status != implstate.RunActive || continued != 1 {
 		t.Fatalf("resume route = menu=%#v message=%q status=%s continued=%d", menu, message, fixture.run.Status, continued)
 	}
 	if menu.Lifecycle != LifecycleActive {
@@ -235,7 +235,7 @@ func TestRunImplementationInteractiveReportsManuallyEnteredUnavailableCommand(t 
 	if !slices.Equal(ui.messages, []string{"/resume is unavailable while the run is active"}) {
 		t.Fatalf("unavailable-command feedback = %#v", ui.messages)
 	}
-	if run.Status != implementationstate.RunActive || len(ui.errors) != 0 {
+	if run.Status != implstate.RunActive || len(ui.errors) != 0 {
 		t.Fatalf("unavailable command mutated run or reported an error: run=%s errors=%#v", run.Status, ui.errors)
 	}
 }
@@ -271,7 +271,7 @@ func TestRunImplementationInteractiveAcceptsStatusAndPauseWhileContinueRuns(t *t
 	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != implementationstate.RunPaused {
+	if run.Status != implstate.RunPaused {
 		t.Fatalf("run status after pause during continue = %s", run.Status)
 	}
 	if len(ui.menus) < 4 || ui.menus[1].Lifecycle != LifecycleActive || ui.menus[2].Lifecycle != LifecycleActive || ui.menus[3].Lifecycle != LifecyclePaused {
@@ -294,10 +294,10 @@ func TestRunImplementationInteractiveAcceptsStatusAndPauseWhileContinueRuns(t *t
 func TestRunImplementationInteractivePublishesConciseActiveProgressWithoutAgentTranscript(t *testing.T) {
 	run, state, _, _ := newInitialCheckRun(t)
 	defer state.Close()
-	run.Tasks = []implementationstate.Task{{ID: "12.3", Title: "show progress"}}
-	run.Assignments = []implementationstate.Assignment{{
-		ID: "assignment-12", TaskIDs: []implementationstate.TaskID{"12.3"}, Status: implementationstate.AssignmentActive,
-		Operations: []implementationstate.Operation{{ID: "implement", Kind: implementationstate.OperationAgent, Description: "implement assignment", Attempts: []implementationstate.OperationAttempt{{Number: 1}}}},
+	run.Tasks = []implstate.Task{{ID: "12.3", Title: "show progress"}}
+	run.Assignments = []implstate.Assignment{{
+		ID: "assignment-12", TaskIDs: []implstate.TaskID{"12.3"}, Status: implstate.AssignmentActive,
+		Operations: []implstate.Operation{{ID: "implement", Kind: implstate.OperationAgent, Description: "implement assignment", Attempts: []implstate.OperationAttempt{{Number: 1}}}},
 	}}
 	control, err := NewUserRunControl(run, state)
 	if err != nil {
@@ -420,14 +420,14 @@ func TestRunImplementationInteractiveStopJoinsBlockedResumeBeforeClosing(t *test
 	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
 		t.Fatal(err)
 	}
-	if fixture.run.Status != implementationstate.RunClosed || checks != 0 || continued != 0 {
+	if fixture.run.Status != implstate.RunClosed || checks != 0 || continued != 0 {
 		t.Fatalf("stop during resume = status %s, checks %d, continue %d", fixture.run.Status, checks, continued)
 	}
 	persisted, _, err := fixture.state.Current(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Status != implementationstate.RunClosed {
+	if persisted.Status != implstate.RunClosed {
 		t.Fatalf("durable status after stopped resume = %s", persisted.Status)
 	}
 	if len(ui.menus) < 2 || !slices.Equal(commandsFromHints(ui.menus[1].Commands), []InteractiveCommand{CommandStop, CommandStatus}) {
@@ -458,7 +458,7 @@ func TestRunImplementationInteractiveRefreshesMenuWhenResumeChecksBecomeActive(t
 	if err := RunImplementationInteractive(context.Background(), controller, ui); err != nil {
 		t.Fatal(err)
 	}
-	if checks != 1 || fixture.run.Status != implementationstate.RunPaused {
+	if checks != 1 || fixture.run.Status != implstate.RunPaused {
 		t.Fatalf("paused resume check = checks %d status %s", checks, fixture.run.Status)
 	}
 	if len(ui.menus) < 3 {
@@ -480,7 +480,7 @@ func TestStatusIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if message != "implementation run initial-baseline is active" || run.Status != implementationstate.RunActive {
+	if message != "implementation run initial-baseline is active" || run.Status != implstate.RunActive {
 		t.Fatalf("status route mutated run: message=%q state=%#v", message, run)
 	}
 }

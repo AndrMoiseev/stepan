@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(t *testing.T) {
@@ -25,7 +25,7 @@ func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(
 		t.Fatal(err)
 	}
 	store := mustControllerStore(t, storeRoot)
-	mustRecordControllerRun(t, store, "paused-run", workCopy, implementationstate.RunPaused)
+	mustRecordControllerRun(t, store, "paused-run", workCopy, implstate.RunPaused)
 	pausedRun, err := store.Open("paused-run")
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,7 @@ func TestControllerLockRejectsSecondProcessButAllowsStatusReadAndReleasesOnExit(
 		t.Fatalf("second controller error = %v", err)
 	}
 	current, err := FindUnclosedRun(context.Background(), store, workCopy)
-	if err != nil || current == nil || current.Identity.ID != "paused-run" || current.Status != implementationstate.RunPaused {
+	if err != nil || current == nil || current.Identity.ID != "paused-run" || current.Status != implstate.RunPaused {
 		t.Fatalf("status while locked = %#v, %v", current, err)
 	}
 	if _, err := os.Stat(projection); !errors.Is(err, os.ErrNotExist) {
@@ -107,7 +107,7 @@ func TestControllerLockHelper(t *testing.T) {
 }
 
 func TestAcquireNewRunControllerEnforcesPausedAndActiveButAllowsTerminalRuns(t *testing.T) {
-	for _, status := range []implementationstate.RunStatus{implementationstate.RunActive, implementationstate.RunPaused} {
+	for _, status := range []implstate.RunStatus{implstate.RunActive, implstate.RunPaused} {
 		t.Run(string(status), func(t *testing.T) {
 			store := mustControllerStore(t, t.TempDir())
 			workCopy := newGitWorkspace(t)
@@ -127,7 +127,7 @@ func TestAcquireNewRunControllerEnforcesPausedAndActiveButAllowsTerminalRuns(t *
 			_ = lease.Close()
 		})
 	}
-	for _, status := range []implementationstate.RunStatus{implementationstate.RunClosed} {
+	for _, status := range []implstate.RunStatus{implstate.RunClosed} {
 		t.Run(string(status), func(t *testing.T) {
 			store := mustControllerStore(t, t.TempDir())
 			workCopy := newGitWorkspace(t)
@@ -159,7 +159,7 @@ func TestDiscoverStartupRunKeepsLiveActiveOwnerNonResumable(t *testing.T) {
 	storeRoot := t.TempDir()
 	workCopy := newGitWorkspace(t)
 	store := mustControllerStore(t, storeRoot)
-	mustRecordControllerRun(t, store, "active-run", workCopy, implementationstate.RunActive)
+	mustRecordControllerRun(t, store, "active-run", workCopy, implstate.RunActive)
 
 	command := exec.Command(os.Args[0], "-test.run=^TestControllerLockHelper$")
 	command.Env = append(os.Environ(), "STEPAN_LOCK_HELPER=1", "STEPAN_LOCK_STORE="+storeRoot, "STEPAN_LOCK_WORK_COPY="+workCopy)
@@ -196,7 +196,7 @@ func TestDiscoverStartupRunKeepsLiveActiveOwnerNonResumable(t *testing.T) {
 		t.Fatalf("recovery while a controller owns the run = %v", err)
 	}
 	current, err := FindUnclosedRun(context.Background(), store, workCopy)
-	if err != nil || current.Status != implementationstate.RunActive {
+	if err != nil || current.Status != implstate.RunActive {
 		t.Fatalf("discovery changed live active state = %#v, %v", current, err)
 	}
 	if err := stdin.Close(); err != nil {
@@ -210,17 +210,17 @@ func TestDiscoverStartupRunKeepsLiveActiveOwnerNonResumable(t *testing.T) {
 func TestRecoverOwnRunTurnsOrphanedActiveStateIntoExplicitPause(t *testing.T) {
 	store := mustControllerStore(t, t.TempDir())
 	workCopy := newGitWorkspace(t)
-	mustRecordControllerRun(t, store, "orphaned-active", workCopy, implementationstate.RunActive)
+	mustRecordControllerRun(t, store, "orphaned-active", workCopy, implstate.RunActive)
 	recovered, control, err := RecoverOwnRun(context.Background(), store, workCopy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer recovered.Close()
-	if control == nil || recovered.Run.Status != implementationstate.RunPaused || !strings.Contains(recovered.Run.PauseReason, "interrupted") {
+	if control == nil || recovered.Run.Status != implstate.RunPaused || !strings.Contains(recovered.Run.PauseReason, "interrupted") {
 		t.Fatalf("recovered active run = %#v", recovered.Run)
 	}
 	current, err := FindUnclosedRun(context.Background(), store, workCopy)
-	if err != nil || current.Status != implementationstate.RunPaused {
+	if err != nil || current.Status != implstate.RunPaused {
 		t.Fatalf("recovery did not durably pause interrupted run = %#v, %v", current, err)
 	}
 }
@@ -238,34 +238,34 @@ func onlyControllerLockEntry(t *testing.T, store *runstore.Store) string {
 	return filepath.Join(directory, entries[0].Name())
 }
 
-func mustRecordControllerRun(t *testing.T, store *runstore.Store, id implementationstate.RunID, workCopy string, status implementationstate.RunStatus) {
+func mustRecordControllerRun(t *testing.T, store *runstore.Store, id implstate.RunID, workCopy string, status implstate.RunStatus) {
 	t.Helper()
 	run, err := store.Create(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publish := func(name implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	publish := func(name implstate.EvidenceID) implstate.EvidenceRef {
 		ref, err := run.Publish(name, []byte(name))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ref
 	}
-	model, err := implementationstate.NewRun(implementationstate.RunIdentity{
+	model, err := implstate.NewRun(implstate.RunIdentity{
 		ID: id, Change: "change", Repository: workCopy, WorkCopy: workCopy,
 		Branch: "implementation", BaselineCommit: "baseline",
 		BaselineState: publish("baseline"), Specification: publish("specification"),
 		TaskList: publish("tasks"), Configuration: publish("configuration"),
-	}, []implementationstate.Task{{ID: "task", Title: "task"}})
+	}, []implstate.Task{{ID: "task", Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	switch status {
-	case implementationstate.RunPaused:
+	case implstate.RunPaused:
 		if err := model.Pause("paused"); err != nil {
 			t.Fatal(err)
 		}
-	case implementationstate.RunClosed:
+	case implstate.RunClosed:
 		if err := model.Close("closed"); err != nil {
 			t.Fatal(err)
 		}
@@ -287,7 +287,7 @@ func TestFindUnclosedRunCanonicalizesWorkingCopy(t *testing.T) {
 	if err := os.MkdirAll(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	mustRecordControllerRun(t, store, "run", workCopy, implementationstate.RunActive)
+	mustRecordControllerRun(t, store, "run", workCopy, implstate.RunActive)
 	state, err := FindUnclosedRun(context.Background(), store, nested)
 	if err != nil || state == nil {
 		t.Fatalf("state = %#v, error = %v", state, err)

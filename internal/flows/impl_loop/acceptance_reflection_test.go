@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformationalMarkdownEdit(t *testing.T) {
@@ -33,7 +33,7 @@ func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformational
 	if err != nil {
 		t.Fatal(err)
 	}
-	var beforeCall *implementationstate.Run
+	var beforeCall *implstate.Run
 	var beforeCallErr error
 	runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: raw, before: func() {
 		beforeCall, _, beforeCallErr = runstore.ReadJournalCurrent(journal)
@@ -57,7 +57,7 @@ func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformational
 	if beforeCallErr != nil {
 		t.Fatalf("state was not readable during the orchestrator call: %v", beforeCallErr)
 	}
-	if beforeCall == nil || beforeCall.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || beforeCall.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || len(beforeCall.RunOperations) != 2 {
+	if beforeCall == nil || beforeCall.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || beforeCall.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit || len(beforeCall.RunOperations) != 2 {
 		t.Fatalf("acceptance was not durably recorded before the orchestrator turn: %#v", beforeCall)
 	}
 	if result.Call.Response.Kind != ResponseProgressReflected || len(runtime.messages) != 1 || !strings.Contains(runtime.messages[0], "openspec/changes/change/tasks.md") {
@@ -70,7 +70,7 @@ func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformational
 	if !strings.Contains(string(markdown), "[ ]") {
 		t.Fatalf("fixture did not leave the intended stale checkbox: %q", markdown)
 	}
-	if run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || run.Assignments[0].Acceptance == nil {
+	if run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit || run.Assignments[0].Acceptance == nil {
 		t.Fatalf("informational Markdown edit staled acceptance: %#v", run.Assignments[0])
 	}
 	if len(run.Assignments[0].TaskReviews) != 0 || len(run.Assignments[0].Operations) != 2 || len(run.RunResults) != 2 {
@@ -111,51 +111,51 @@ func TestValidateAcceptanceReflectionInputAllowsOnlySelectedChangeTasksPath(t *t
 	}
 }
 
-func acceptanceReflectionFixture(t *testing.T, repository string) (*implementationstate.Run, *runstore.StateStore, *runstore.Run) {
+func acceptanceReflectionFixture(t *testing.T, repository string) (*implstate.Run, *runstore.StateStore, *runstore.Run) {
 	t.Helper()
 	store := mustControllerStore(t, t.TempDir())
 	journal, err := store.Create("acceptance-reflection")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	ref := func(id implstate.EvidenceID) implstate.EvidenceRef {
 		value, err := journal.Publish(id, []byte(id))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return value
 	}
-	identity := implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("specification"), TaskList: ref("tasks"), Configuration: ref("configuration")}
-	run, err := implementationstate.NewRun(identity, []implementationstate.Task{
+	identity := implstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "feature", BaselineCommit: "base", BaselineState: ref("baseline"), Specification: ref("specification"), TaskList: ref("tasks"), Configuration: ref("configuration")}
+	run, err := implstate.NewRun(identity, []implstate.Task{
 		{ID: "parent", Order: 0, Title: "parent task"},
 		{ID: "A", ParentID: "parent", Order: 1, Title: "source task"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"A"}); err != nil {
+	if err := run.StartAssignment("assignment", []implstate.TaskID{"A"}); err != nil {
 		t.Fatal(err)
 	}
-	brief := implementationstate.BriefVersion{ID: "brief", Number: 1, Document: ref("brief")}
+	brief := implstate.BriefVersion{ID: "brief", Number: 1, Document: ref("brief")}
 	if err := run.AddBriefVersion("assignment", brief); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []implementationstate.Operation{
-		{ID: "check", Kind: implementationstate.OperationCheck, BriefID: brief.ID, Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks},
-		{ID: "review", Kind: implementationstate.OperationReview, BriefID: brief.ID, Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview},
+	for _, operation := range []implstate.Operation{
+		{ID: "check", Kind: implstate.OperationCheck, BriefID: brief.ID, Basis: basis, Counter: implstate.CycleCounterMandatoryChecks},
+		{ID: "review", Kind: implstate.OperationReview, BriefID: brief.ID, Basis: basis, Counter: implstate.CycleCounterAssignmentReview},
 	} {
 		if err := run.AddOperation("assignment", operation); err != nil {
 			t.Fatal(err)
@@ -163,7 +163,7 @@ func acceptanceReflectionFixture(t *testing.T, repository string) (*implementati
 		if _, err := run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		if err := run.AddResult("assignment", implstate.OperationResult{ID: implstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,11 +178,11 @@ func acceptanceReflectionFixture(t *testing.T, repository string) (*implementati
 	return run, stateStore, journal
 }
 
-func acceptanceReflectionEvidence(run *implementationstate.Run) implementationstate.AcceptanceEvidence {
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	return implementationstate.AcceptanceEvidence{
+func acceptanceReflectionEvidence(run *implstate.Run) implstate.AcceptanceEvidence {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	return implstate.AcceptanceEvidence{
 		BriefID: "brief", State: run.CurrentState, Basis: basis,
-		CheckResultIDs: []implementationstate.ResultID{"check-result"}, ReviewResultID: "review-result",
-		PendingCommit: implementationstate.CommitIntent{OperationID: "commit", ParentCommit: "base", Tree: "tree", Message: "commit accepted work"},
+		CheckResultIDs: []implstate.ResultID{"check-result"}, ReviewResultID: "review-result",
+		PendingCommit: implstate.CommitIntent{OperationID: "commit", ParentCommit: "base", Tree: "tree", Message: "commit accepted work"},
 	}
 }

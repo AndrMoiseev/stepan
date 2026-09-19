@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -68,7 +68,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	run, err := implementationstate.NewRun(implementationstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "implementation", BaselineCommit: baseline.HeadOID, BaselineState: baselineRef, Specification: specRef, TaskList: tasksRef, Configuration: configRef}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	run, err := implstate.NewRun(implstate.RunIdentity{ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "implementation", BaselineCommit: baseline.HeadOID, BaselineState: baselineRef, Specification: specRef, TaskList: tasksRef, Configuration: configRef}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if _, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}}); !errors.Is(err, ErrAssignmentCommit) {
 		t.Fatalf("hook refusal = %v", err)
 	}
-	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("hook refusal lost pending acceptance: %#v", run)
 	}
 	writeGitWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Updated rules\n")
@@ -104,7 +104,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if _, err := Resume(context.Background(), ResumeInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, Workspace: workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }), ConfigurationLoader: func(string) (setting.Configuration, error) { return configuration, nil }}); err != nil {
 		t.Fatal(err)
 	}
-	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {
+	if run.Status != implstate.RunActive || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("resume invalidated accepted pending commit: %#v", run)
 	}
 	if intent := run.Assignments[0].Acceptance.PendingCommit; intent.Tree == preparation.Tree || intent.Tree == "" {
@@ -119,16 +119,16 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	}
 }
 
-func recordResumeReflectionEvidence(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, reflection git.Snapshot) {
+func recordResumeReflectionEvidence(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, reflection git.Snapshot) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "reflect-progress", Kind: implementationstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "reflect-progress", Kind: implstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("reflect-progress"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.RecordRunAttemptOutcome("reflect-progress", implementationstate.AttemptSucceeded, ""); err != nil {
+	if err := run.RecordRunAttemptOutcome("reflect-progress", implstate.AttemptSucceeded, ""); err != nil {
 		t.Fatal(err)
 	}
 	data, err := json.Marshal(reflection)
@@ -139,7 +139,7 @@ func recordResumeReflectionEvidence(t *testing.T, run *implementationstate.Run, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{evidence}}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "reflect-progress-result", OperationID: "reflect-progress", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{evidence}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
@@ -156,43 +156,43 @@ func writeResumeGitSpecification(t *testing.T, repository string) {
 	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "specs", "base", "spec.md"), "base\n")
 }
 
-func prepareResumeCommitAcceptance(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run) {
+func prepareResumeCommitAcceptance(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore, journal *runstore.Run) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: "baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	if err := run.AddRunOperation(implstate.Operation{ID: "baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := run.StartRunAttempt("baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: "baseline-result", OperationID: "baseline", Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := run.RecordInitialBaselinePass("baseline", "baseline-result"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	if err := run.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
 	brief, err := journal.Publish("brief", []byte("brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
+	if err := run.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: brief}); err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []implementationstate.Operation{{ID: "check", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}} {
+	for _, operation := range []implstate.Operation{{ID: "check", Kind: implstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterMandatoryChecks}, {ID: "review", Kind: implstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview}} {
 		if err := run.AddOperation("assignment", operation); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		if err := run.AddResult("assignment", implstate.OperationResult{ID: implstate.ResultID(string(operation.ID) + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-result"}, ReviewResultID: "review-result"}); err != nil {
+	if err := run.AcceptAssignment("assignment", implstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"check-result"}, ReviewResultID: "review-result"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
@@ -268,7 +268,7 @@ func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := run.SetPendingCommitIntent("assignment", implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage}); err != nil {
+	if err := run.SetPendingCommitIntent("assignment", implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
@@ -295,13 +295,13 @@ func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(
 		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
 		Response: response, Preparation: preparation, Control: control,
 	})
-	if err != nil || control.commitCalls != 1 || result.Commit.CommitID != "commit" || run.Assignments[0].Status != implementationstate.AssignmentCommitted {
+	if err != nil || control.commitCalls != 1 || result.Commit.CommitID != "commit" || run.Assignments[0].Status != implstate.AssignmentCommitted {
 		t.Fatalf("resumed pending commit result=%#v error=%v calls=%d run=%#v", result, err, control.commitCalls, run)
 	}
 }
 
 func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitlyResumed(t *testing.T) {
-	for _, status := range []implementationstate.RunStatus{implementationstate.RunPaused, implementationstate.RunClosed} {
+	for _, status := range []implstate.RunStatus{implstate.RunPaused, implstate.RunClosed} {
 		t.Run(string(status), func(t *testing.T) {
 			repository := newGitWorkspace(t)
 			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
@@ -315,14 +315,14 @@ func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitl
 			if err != nil {
 				t.Fatal(err)
 			}
-			intent := implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1"}
+			intent := implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1"}
 			if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := stateStore.Record(context.Background(), run); err != nil {
 				t.Fatal(err)
 			}
-			if status == implementationstate.RunPaused {
+			if status == implstate.RunPaused {
 				err = run.Pause("waiting for user")
 			} else {
 				err = run.Close("user stopped run")
@@ -367,11 +367,11 @@ func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.
 		t.Fatalf("hook refusal error=%v pause=%q", err, run.PauseReason)
 	}
 	parentStatus, _ := run.TaskStatus("parent")
-	if run.Status != implementationstate.RunPaused || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implementationstate.TaskAcceptedAwaitingCommit || parentStatus != implementationstate.TaskPending {
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit || parentStatus != implstate.TaskPending {
 		t.Fatalf("hook refusal did not preserve awaiting commit state: %#v", run)
 	}
 	persisted, _, persistErr := runstore.ReadJournalCurrent(journal)
-	if persistErr != nil || persisted.Status != implementationstate.RunPaused || persisted.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || !strings.Contains(persisted.PauseReason, "hook rejected") {
+	if persistErr != nil || persisted.Status != implstate.RunPaused || persisted.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || !strings.Contains(persisted.PauseReason, "hook rejected") {
 		t.Fatalf("hook refusal pause was not durable: run=%#v error=%v", persisted, persistErr)
 	}
 	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "1" {
@@ -394,7 +394,7 @@ func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	intent := implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
+	intent := implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
 	if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
 		t.Fatal(err)
 	}
@@ -425,7 +425,7 @@ func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *te
 	if err != nil || !result.Adopted || result.Commit.CommitID != created {
 		t.Fatalf("reconcile created commit result=%#v error=%v", result, err)
 	}
-	if recovered.Assignments[0].Status != implementationstate.AssignmentCommitted || recovered.LeafStatus["A"] != implementationstate.TaskComplete {
+	if recovered.Assignments[0].Status != implstate.AssignmentCommitted || recovered.LeafStatus["A"] != implstate.TaskComplete {
 		t.Fatalf("recovered run did not complete exactly the committed assignment: %#v", recovered)
 	}
 	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
@@ -448,7 +448,7 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 		t.Fatalf("hook content change error=%v result=%#v", err, first)
 	}
 	firstCommit := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
-	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentActive || run.LeafStatus["A"] != implementationstate.TaskPending || run.Assignments[0].Commit != nil || len(run.Assignments[0].AcceptanceHistory) != 1 {
+	if run.Status != implstate.RunActive || run.Assignments[0].Status != implstate.AssignmentActive || run.LeafStatus["A"] != implstate.TaskPending || run.Assignments[0].Commit != nil || len(run.Assignments[0].AcceptanceHistory) != 1 {
 		t.Fatalf("hook-modified commit was incorrectly completed or paused: %#v", run)
 	}
 	if got := gitFixture(t, repository, "show", "HEAD:hook.txt"); got != "hook content\n" {
@@ -531,7 +531,7 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("unchanged reacceptance created a corrective commit: count=%s", count)
 	}
-	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete {
+	if run.Assignments[0].Status != implstate.AssignmentCommitted || run.LeafStatus["A"] != implstate.TaskComplete {
 		t.Fatalf("reused hook commit did not complete machine status: %#v", run)
 	}
 }
@@ -556,7 +556,7 @@ func captureCommitPreparation(t *testing.T, repository string) CommitPreparation
 	return preparation
 }
 
-func commitResponse(run *implementationstate.Run, operationID implementationstate.OperationID, message string) AgentResponse {
+func commitResponse(run *implstate.Run, operationID implstate.OperationID, message string) AgentResponse {
 	return AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: string(operationID) + "-call", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 }
 
@@ -569,12 +569,12 @@ func writeGitHook(t *testing.T, repository, name, body string) {
 	}
 }
 
-func reacceptAfterHook(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore) {
+func reacceptAfterHook(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	for _, operation := range []implementationstate.Operation{
-		{ID: "check-after-hook", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterMandatoryChecks},
-		{ID: "review-after-hook", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview},
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	for _, operation := range []implstate.Operation{
+		{ID: "check-after-hook", Kind: implstate.OperationCheck, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterMandatoryChecks},
+		{ID: "review-after-hook", Kind: implstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview},
 	} {
 		if err := run.AddOperation("assignment", operation); err != nil {
 			t.Fatal(err)
@@ -582,11 +582,11 @@ func reacceptAfterHook(t *testing.T, run *implementationstate.Run, stateStore *r
 		if _, err := run.StartAssignmentAttempt("assignment", operation.ID); err != nil {
 			t.Fatal(err)
 		}
-		if err := run.AddResult("assignment", implementationstate.OperationResult{ID: implementationstate.ResultID(operation.ID + "-result"), OperationID: operation.ID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
+		if err := run.AddResult("assignment", implstate.OperationResult{ID: implstate.ResultID(operation.ID + "-result"), OperationID: operation.ID, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := run.AcceptAssignment("assignment", implementationstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{"check-after-hook-result"}, ReviewResultID: "review-after-hook-result"}); err != nil {
+	if err := run.AcceptAssignment("assignment", implstate.AcceptanceEvidence{BriefID: "brief", State: run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{"check-after-hook-result"}, ReviewResultID: "review-after-hook-result"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stateStore.Record(context.Background(), run); err != nil {

@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 // ErrPendingCommitAmbiguous means that Git cannot prove whether the pending
@@ -71,16 +71,16 @@ func (GitCommitObserver) Observe(ctx context.Context, repository string) (Commit
 // unchanged pre-commit working copy is safe to retry; every other observation
 // pauses the run without changing Git or task completion.
 type ReconcilePendingCommitInput struct {
-	Run          *implementationstate.Run
+	Run          *implstate.Run
 	StateStore   *runstore.StateStore
 	Repository   string
-	AssignmentID implementationstate.AssignmentID
+	AssignmentID implstate.AssignmentID
 	Observer     CommitObserver
 }
 
 type PendingCommitReconciliation struct {
-	Intent  implementationstate.CommitIntent
-	Commit  implementationstate.CommitEvidence
+	Intent  implstate.CommitIntent
+	Commit  implstate.CommitEvidence
 	Adopted bool
 	Retry   bool
 }
@@ -105,10 +105,10 @@ func ReconcilePendingCommit(ctx context.Context, input ReconcilePendingCommitInp
 		return PendingCommitReconciliation{Intent: intent}, pausePendingCommitAmbiguity(ctx, input, fmt.Errorf("read Git state: %w", err))
 	}
 	if commitMatchesIntent(intent, observed) && commitHasExpectedTrailers(input.Run, input.AssignmentID, observed.Message) && worktreeMatchesCommit(observed) {
-		commit := implementationstate.CommitEvidence{
+		commit := implstate.CommitEvidence{
 			OperationID: intent.OperationID, CommitID: observed.CommitID, ParentCommit: observed.ParentCommit,
 			Tree: observed.Tree, Message: observed.Message, State: input.Run.CurrentState,
-			Basis: implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration},
+			Basis: implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration},
 		}
 		beforeCompletion, err := cloneCommitRun(input.Run)
 		if err != nil {
@@ -134,7 +134,7 @@ func pausePendingCommitAmbiguity(ctx context.Context, input ReconcilePendingComm
 	if checkpointErr != nil {
 		return fmt.Errorf("%w: checkpoint run before pause: %v", ErrAssignmentCommit, checkpointErr)
 	}
-	if input.Run.Status == implementationstate.RunActive {
+	if input.Run.Status == implstate.RunActive {
 		if err := input.Run.Pause(ErrPendingCommitAmbiguous.Error() + ": " + cause.Error()); err != nil {
 			return errors.Join(ErrPendingCommitAmbiguous, cause, fmt.Errorf("pause run: %w", err))
 		}

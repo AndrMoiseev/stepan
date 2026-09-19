@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -113,18 +113,18 @@ func CommandsForLifecycle(lifecycle ImplementationLifecycle) []CommandHint {
 	}
 }
 
-func lifecycleForRun(run *implementationstate.Run) ImplementationLifecycle {
+func lifecycleForRun(run *implstate.Run) ImplementationLifecycle {
 	if run == nil {
 		return LifecycleNoRun
 	}
 	switch run.Status {
-	case implementationstate.RunActive:
+	case implstate.RunActive:
 		return LifecycleActive
-	case implementationstate.RunPaused:
+	case implstate.RunPaused:
 		return LifecyclePaused
-	case implementationstate.RunClosed:
+	case implstate.RunClosed:
 		return LifecycleClosed
-	case implementationstate.RunSucceeded:
+	case implstate.RunSucceeded:
 		return LifecycleSucceeded
 	default:
 		return LifecycleNoRun
@@ -159,7 +159,7 @@ func unavailableCommandReason(lifecycle ImplementationLifecycle, command Interac
 // current run. Start and continuation wiring are supplied by the composition
 // root, while pause, stop, and resume use the durable loop APIs directly.
 type InteractiveRun struct {
-	Run         *implementationstate.Run
+	Run         *implstate.Run
 	Control     *UserRunControl
 	ResumeInput ResumeInput
 	// ResumeResult is populated only after the explicit /resume gate succeeds.
@@ -303,7 +303,7 @@ func (controller ImplementationInteractiveController) current(ctx context.Contex
 }
 
 func (controller ImplementationInteractiveController) continueRun(ctx context.Context, run *InteractiveRun) error {
-	if controller.Continue == nil || run == nil || run.Run == nil || run.Run.Status != implementationstate.RunActive {
+	if controller.Continue == nil || run == nil || run.Run == nil || run.Run.Status != implstate.RunActive {
 		return nil
 	}
 	return controller.Continue(ctx, run)
@@ -324,7 +324,7 @@ func interactiveLifecycle(run *InteractiveRun) ImplementationLifecycle {
 	return lifecycleForRun(run.Run)
 }
 
-func statusMessage(run *implementationstate.Run) string {
+func statusMessage(run *implstate.Run) string {
 	if run == nil {
 		return "no implementation run for this working copy"
 	}
@@ -338,14 +338,14 @@ func (controller ImplementationInteractiveController) runtimePlatform() setting.
 	return setting.HostPlatform()
 }
 
-func (run *InteractiveRun) artifactPath(reference implementationstate.EvidenceRef) (string, error) {
+func (run *InteractiveRun) artifactPath(reference implstate.EvidenceRef) (string, error) {
 	if run == nil || run.ResumeInput.Journal == nil {
 		return "", errors.New("run artifact store is unavailable")
 	}
 	return run.ResumeInput.Journal.ArtifactPath(reference)
 }
 
-func (run *InteractiveRun) readArtifact(reference implementationstate.EvidenceRef) ([]byte, error) {
+func (run *InteractiveRun) readArtifact(reference implstate.EvidenceRef) ([]byte, error) {
 	if run == nil || run.ResumeInput.Journal == nil {
 		return nil, errors.New("run artifact store is unavailable")
 	}

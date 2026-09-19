@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -113,16 +113,16 @@ var (
 // identifiers, so a stale or copied response cannot select another target.
 type ResponseBinding struct {
 	CallID        string
-	RunID         implementationstate.RunID
-	AssignmentID  implementationstate.AssignmentID
-	BriefID       implementationstate.BriefID
-	Specification implementationstate.EvidenceRef
-	Configuration implementationstate.EvidenceRef
-	TaskList      implementationstate.EvidenceRef
+	RunID         implstate.RunID
+	AssignmentID  implstate.AssignmentID
+	BriefID       implstate.BriefID
+	Specification implstate.EvidenceRef
+	Configuration implstate.EvidenceRef
+	TaskList      implstate.EvidenceRef
 	// Bootstrap captures each editable configuration input independently so a
 	// proposal cannot be applied to a configuration the agent did not inspect.
-	UserConfiguration    implementationstate.EvidenceRef
-	ProjectConfiguration implementationstate.EvidenceRef
+	UserConfiguration    implstate.EvidenceRef
+	ProjectConfiguration implstate.EvidenceRef
 }
 
 // ResponseExpectation is the controller's immutable context for one call.
@@ -143,7 +143,7 @@ type AgentResponse struct {
 	Kind ResponseKind
 
 	Message            *string
-	TaskIDs            []implementationstate.TaskID
+	TaskIDs            []implstate.TaskID
 	TaskPayloads       []string
 	Brief              *string
 	CheckNames         []string
@@ -360,7 +360,7 @@ func validateExpectation(expectation ResponseExpectation) error {
 	return nil
 }
 
-func validEvidence(value implementationstate.EvidenceRef) bool {
+func validEvidence(value implstate.EvidenceRef) bool {
 	return value.ID != "" && value.Digest != ""
 }
 
@@ -489,9 +489,9 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 		Binding: binding,
 	}
 	if values := optionalStrings(input.TaskIDs); values != nil {
-		result.TaskIDs = make([]implementationstate.TaskID, len(values))
+		result.TaskIDs = make([]implstate.TaskID, len(values))
 		for index, value := range values {
-			result.TaskIDs[index] = implementationstate.TaskID(value)
+			result.TaskIDs[index] = implstate.TaskID(value)
 		}
 	}
 	return result

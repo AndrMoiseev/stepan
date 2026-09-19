@@ -1,4 +1,4 @@
-package runstore
+package store
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 var (
@@ -68,7 +68,7 @@ type Store struct {
 // RunIDs returns the identifiers of all durable run directories. It does not
 // open projections or modify run data, so status inspection can use it while
 // another process owns the controller lock.
-func (s *Store) RunIDs() ([]implementationstate.RunID, error) {
+func (s *Store) RunIDs() ([]implstate.RunID, error) {
 	if s == nil {
 		return nil, fmt.Errorf("%w: nil store", ErrUnsafePath)
 	}
@@ -82,7 +82,7 @@ func (s *Store) RunIDs() ([]implementationstate.RunID, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list implementation runs: %w", err)
 	}
-	ids := make([]implementationstate.RunID, 0, len(entries))
+	ids := make([]implstate.RunID, 0, len(entries))
 	for _, entry := range entries {
 		info, err := entry.Info()
 		if err != nil {
@@ -91,7 +91,7 @@ func (s *Store) RunIDs() ([]implementationstate.RunID, error) {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return nil, fmt.Errorf("%w: %s", ErrUnsafePath, filepath.Join(s.runs, entry.Name()))
 		}
-		id := implementationstate.RunID(entry.Name())
+		id := implstate.RunID(entry.Name())
 		if _, err := validRunID(id); err != nil {
 			return nil, err
 		}
@@ -177,7 +177,7 @@ func (s *Store) RunsRoot() string {
 
 // Create creates (or reopens) one run directory and its related-files
 // directory. It never deletes data, including for closed runs.
-func (s *Store) Create(id implementationstate.RunID) (*Run, error) {
+func (s *Store) Create(id implstate.RunID) (*Run, error) {
 	if s == nil {
 		return nil, fmt.Errorf("%w: nil store", ErrUnsafePath)
 	}
@@ -203,7 +203,7 @@ func (s *Store) Create(id implementationstate.RunID) (*Run, error) {
 }
 
 // Open returns an existing complete run layout without creating it.
-func (s *Store) Open(id implementationstate.RunID) (*Run, error) {
+func (s *Store) Open(id implstate.RunID) (*Run, error) {
 	if s == nil {
 		return nil, fmt.Errorf("%w: nil store", ErrUnsafePath)
 	}
@@ -238,12 +238,12 @@ func (s *Store) Open(id implementationstate.RunID) (*Run, error) {
 // <root>/runs/<run-id>; Path and FilesPath make the fixed layout observable to
 // the later journal and SQLite layers without accepting caller-provided paths.
 type Run struct {
-	id        implementationstate.RunID
+	id        implstate.RunID
 	directory string
 	files     string
 }
 
-func (r *Run) ID() implementationstate.RunID { return r.id }
+func (r *Run) ID() implstate.RunID { return r.id }
 
 func (r *Run) Path() string {
 	if r == nil {
@@ -261,7 +261,7 @@ func (r *Run) FilesPath() string {
 
 // Publish stores data durably before returning a reference to it. The evidence
 // ID remains immutable: publishing a different payload under it is rejected.
-func (r *Run) Publish(id implementationstate.EvidenceID, data []byte) (implementationstate.EvidenceRef, error) {
+func (r *Run) Publish(id implstate.EvidenceID, data []byte) (implstate.EvidenceRef, error) {
 	return r.PublishReader(id, bytes.NewReader(data))
 }
 
@@ -269,23 +269,23 @@ func (r *Run) Publish(id implementationstate.EvidenceID, data []byte) (implement
 // directory. The final filename is derived from the evidence ID rather than a
 // caller path; the returned SHA-256 reference can therefore be safely written
 // into a later event only after this method succeeds.
-func (r *Run) PublishReader(id implementationstate.EvidenceID, source io.Reader) (implementationstate.EvidenceRef, error) {
+func (r *Run) PublishReader(id implstate.EvidenceID, source io.Reader) (implstate.EvidenceRef, error) {
 	if r == nil || source == nil {
-		return implementationstate.EvidenceRef{}, fmt.Errorf("%w: nil run or reader", ErrInvalidReference)
+		return implstate.EvidenceRef{}, fmt.Errorf("%w: nil run or reader", ErrInvalidReference)
 	}
 	if strings.TrimSpace(string(id)) == "" {
-		return implementationstate.EvidenceRef{}, fmt.Errorf("%w: empty evidence ID", ErrInvalidReference)
+		return implstate.EvidenceRef{}, fmt.Errorf("%w: empty evidence ID", ErrInvalidReference)
 	}
 	if err := requireDirectory(r.directory); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	if err := requireDirectory(r.files); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 
 	temporary, err := os.CreateTemp(r.files, ".publish-*")
 	if err != nil {
-		return implementationstate.EvidenceRef{}, fmt.Errorf("create artifact temporary file: %w", err)
+		return implstate.EvidenceRef{}, fmt.Errorf("create artifact temporary file: %w", err)
 	}
 	temporaryName := temporary.Name()
 	defer os.Remove(temporaryName)
@@ -293,27 +293,27 @@ func (r *Run) PublishReader(id implementationstate.EvidenceID, source io.Reader)
 	hash := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(temporary, hash), source); err != nil {
 		temporary.Close()
-		return implementationstate.EvidenceRef{}, fmt.Errorf("write artifact: %w", err)
+		return implstate.EvidenceRef{}, fmt.Errorf("write artifact: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		temporary.Close()
-		return implementationstate.EvidenceRef{}, fmt.Errorf("sync artifact: %w", err)
+		return implstate.EvidenceRef{}, fmt.Errorf("sync artifact: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return implementationstate.EvidenceRef{}, fmt.Errorf("close artifact: %w", err)
+		return implstate.EvidenceRef{}, fmt.Errorf("close artifact: %w", err)
 	}
 
-	reference := implementationstate.EvidenceRef{ID: id, Digest: hex.EncodeToString(hash.Sum(nil))}
+	reference := implstate.EvidenceRef{ID: id, Digest: hex.EncodeToString(hash.Sum(nil))}
 	target := r.filePath(id)
 	if err := r.publishTemporary(temporaryName, target, reference.Digest); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	return reference, nil
 }
 
 // VerifyReference checks that a previously published reference is present,
 // regular, and unchanged. Event writers use it before accepting a reference.
-func (r *Run) VerifyReference(reference implementationstate.EvidenceRef) error {
+func (r *Run) VerifyReference(reference implstate.EvidenceRef) error {
 	if r == nil {
 		return fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
 	}
@@ -335,22 +335,22 @@ func (r *Run) VerifyReference(reference implementationstate.EvidenceRef) error {
 
 // Read returns a verified copy of a related file. It is deliberately routed
 // through VerifyReference so recovery never silently consumes altered output.
-func (r *Run) Read(reference implementationstate.EvidenceRef) ([]byte, error) {
+func (r *Run) Read(reference implstate.EvidenceRef) ([]byte, error) {
 	return r.readVerified(reference)
 }
 
 // PublishedReference reconstructs the verified reference for an immutable
 // artifact that was published before its owning state event. It is intended
 // solely for crash recovery at that publication/event boundary.
-func (r *Run) PublishedReference(id implementationstate.EvidenceID) (implementationstate.EvidenceRef, error) {
+func (r *Run) PublishedReference(id implstate.EvidenceID) (implstate.EvidenceRef, error) {
 	if r == nil || strings.TrimSpace(string(id)) == "" {
-		return implementationstate.EvidenceRef{}, fmt.Errorf("%w: nil run or empty evidence ID", ErrInvalidReference)
+		return implstate.EvidenceRef{}, fmt.Errorf("%w: nil run or empty evidence ID", ErrInvalidReference)
 	}
 	if err := requireDirectory(r.directory); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	if err := requireDirectory(r.files); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	target := r.filePath(id)
 	var digest string
@@ -365,11 +365,11 @@ func (r *Run) PublishedReference(id implementationstate.EvidenceID) (implementat
 		digest = string(data[:len(data)-1])
 		return nil
 	}); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
-	reference := implementationstate.EvidenceRef{ID: id, Digest: digest}
+	reference := implstate.EvidenceRef{ID: id, Digest: digest}
 	if err := r.VerifyReference(reference); err != nil {
-		return implementationstate.EvidenceRef{}, err
+		return implstate.EvidenceRef{}, err
 	}
 	return reference, nil
 }
@@ -378,7 +378,7 @@ func (r *Run) PublishedReference(id implementationstate.EvidenceID) (implementat
 // The complete reference is verified before exposing the path, so callers can
 // present only durable run-local files to agents or users. Consumers that need
 // bytes must still use Read, which verifies the file digest through one handle.
-func (r *Run) ArtifactPath(reference implementationstate.EvidenceRef) (string, error) {
+func (r *Run) ArtifactPath(reference implstate.EvidenceRef) (string, error) {
 	if err := r.VerifyReference(reference); err != nil {
 		return "", err
 	}
@@ -427,7 +427,7 @@ func (r *Run) publishTemporary(temporary, target, digest string) error {
 	return nil
 }
 
-func (r *Run) readVerified(reference implementationstate.EvidenceRef) ([]byte, error) {
+func (r *Run) readVerified(reference implstate.EvidenceRef) ([]byte, error) {
 	if err := r.verifyReferenceMarker(reference); err != nil {
 		return nil, err
 	}
@@ -437,7 +437,7 @@ func (r *Run) readVerified(reference implementationstate.EvidenceRef) ([]byte, e
 // verifyReferenceMarker validates a reference and its bounded publication
 // marker. Read then verifies and materializes the artifact through one opened
 // handle, while VerifyReference uses the streaming artifact verifier below.
-func (r *Run) verifyReferenceMarker(reference implementationstate.EvidenceRef) error {
+func (r *Run) verifyReferenceMarker(reference implstate.EvidenceRef) error {
 	if r == nil {
 		return fmt.Errorf("%w: nil run", ErrReferenceUnavailable)
 	}
@@ -544,12 +544,12 @@ func discardFailedPublication(target, marker, directory string, publicationErr e
 	return publicationErr
 }
 
-func (r *Run) filePath(id implementationstate.EvidenceID) string {
+func (r *Run) filePath(id implstate.EvidenceID) string {
 	sum := sha256.Sum256([]byte(id))
 	return filepath.Join(r.files, hex.EncodeToString(sum[:]))
 }
 
-func validRunID(id implementationstate.RunID) (string, error) {
+func validRunID(id implstate.RunID) (string, error) {
 	name := string(id)
 	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
 		return "", fmt.Errorf("%w: %q", ErrInvalidRunID, name)
@@ -557,7 +557,7 @@ func validRunID(id implementationstate.RunID) (string, error) {
 	return name, nil
 }
 
-func validReference(reference implementationstate.EvidenceRef) error {
+func validReference(reference implstate.EvidenceRef) error {
 	if strings.TrimSpace(string(reference.ID)) == "" || len(reference.Digest) != sha256.Size*2 {
 		return fmt.Errorf("%w", ErrInvalidReference)
 	}

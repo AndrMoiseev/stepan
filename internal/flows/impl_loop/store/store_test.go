@@ -1,4 +1,4 @@
-package runstore
+package store
 
 import (
 	"crypto/sha256"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestRunLayoutAndRelatedFilesSurviveOpenAndClosedRuns(t *testing.T) {
@@ -50,8 +50,8 @@ func TestRunLayoutAndRelatedFilesSurviveOpenAndClosedRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, check := range []struct {
-		id        implementationstate.RunID
-		reference implementationstate.EvidenceRef
+		id        implstate.RunID
+		reference implstate.EvidenceRef
 		want      string
 	}{
 		{"run-open", openReference, "still resumable"},
@@ -90,7 +90,7 @@ func TestReferenceRequiresPublishedUnchangedFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	missing := implementationstate.EvidenceRef{ID: "not-published", Digest: sha256Hex([]byte("missing"))}
+	missing := implstate.EvidenceRef{ID: "not-published", Digest: sha256Hex([]byte("missing"))}
 	if err := run.VerifyReference(missing); !errors.Is(err, ErrReferenceUnavailable) {
 		t.Fatalf("verify missing reference error = %v, want unavailable", err)
 	}
@@ -124,7 +124,7 @@ func TestPublishCompletesBeforeReferenceCanBeReturned(t *testing.T) {
 	release := make(chan struct{})
 	reader := &gatedReader{started: started, release: release, data: []byte("complete result")}
 	type publication struct {
-		reference implementationstate.EvidenceRef
+		reference implstate.EvidenceRef
 		err       error
 	}
 	published := make(chan publication, 1)
@@ -221,7 +221,7 @@ func TestConcurrentSameIDPublishWaitsForWinningBarrier(t *testing.T) {
 	})
 
 	type result struct {
-		reference implementationstate.EvidenceRef
+		reference implstate.EvidenceRef
 		err       error
 	}
 	winner := make(chan result, 1)
@@ -302,7 +302,7 @@ func TestVerificationUsesFixedBufferForLargeArtifacts(t *testing.T) {
 	if err := writeRepeatedFile(target, chunk, size); err != nil {
 		t.Fatal(err)
 	}
-	reference := implementationstate.EvidenceRef{ID: "large-result", Digest: digest}
+	reference := implstate.EvidenceRef{ID: "large-result", Digest: digest}
 	if err := os.WriteFile(run.markerPath(target), []byte(digest+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

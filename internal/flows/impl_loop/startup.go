@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 // StartupRun is the read-only implementation context presented when Stepan
@@ -15,7 +15,7 @@ import (
 // no StateStore, controller lease, runtime, or check runner: discovery alone
 // must not be capable of continuing the run.
 type StartupRun struct {
-	Run              *implementationstate.Run
+	Run              *implstate.Run
 	Summary          StartupSummary
 	RecoveryRequired bool
 }
@@ -50,7 +50,7 @@ func DiscoverStartupRun(ctx context.Context, store *runstore.Store, workCopy str
 	}
 	summary := summarizeStartupJournal(run, events)
 	recoveryRequired := false
-	if run.Status == implementationstate.RunActive {
+	if run.Status == implstate.RunActive {
 		owned, err := ControllerOwned(ctx, store, workCopy)
 		if err != nil {
 			return nil, err
@@ -64,7 +64,7 @@ func DiscoverStartupRun(ctx context.Context, store *runstore.Store, workCopy str
 	return &StartupRun{Run: run, Summary: summary, RecoveryRequired: recoveryRequired}, nil
 }
 
-func summarizeStartupJournal(run *implementationstate.Run, events []implementationstate.Event) StartupSummary {
+func summarizeStartupJournal(run *implstate.Run, events []implstate.Event) StartupSummary {
 	summary := SummarizeStartupRun(run)
 	if action, resumeCheck := latestJournalAction(events); action != "" {
 		summary.LastAction = action
@@ -79,13 +79,13 @@ func summarizeStartupJournal(run *implementationstate.Run, events []implementati
 // on the projection's structural order. A failed resume writes a result and
 // then a separate pause event, so the pause is attributed to the immediately
 // preceding uncounted check result instead of hiding it as merely "pause run".
-func latestJournalAction(events []implementationstate.Event) (string, bool) {
+func latestJournalAction(events []implstate.Event) (string, bool) {
 	for index := len(events) - 1; index > 0; index-- {
 		previous, current := events[index-1].State, events[index].State
 		if current == nil || previous == nil {
 			continue
 		}
-		if current.Status != previous.Status && current.Status == implementationstate.RunPaused {
+		if current.Status != previous.Status && current.Status == implstate.RunPaused {
 			// Some controller routes add the failed assignment result and the
 			// execution-blocked pause to one cloned candidate before recording a
 			// single event. Attribute that atomic transition to the result first.
@@ -124,7 +124,7 @@ func latestJournalAction(events []implementationstate.Event) (string, bool) {
 	return "", false
 }
 
-func resultActionAt(events []implementationstate.Event, index int) (string, bool, bool) {
+func resultActionAt(events []implstate.Event, index int) (string, bool, bool) {
 	if index <= 0 || index >= len(events) {
 		return "", false, false
 	}
@@ -142,20 +142,20 @@ func resultActionAt(events []implementationstate.Event, index int) (string, bool
 	return "", false, false
 }
 
-func journalLastAction(previous, current *implementationstate.Run, fallback string) string {
+func journalLastAction(previous, current *implstate.Run, fallback string) string {
 	if previous == nil || current == nil {
 		return fallback
 	}
 	if current.Status != previous.Status {
 		switch current.Status {
-		case implementationstate.RunPaused:
+		case implstate.RunPaused:
 			if operation := latestChangedOperation(previous, current); operation != nil && operation.UncountedResumeCheck {
 				return operationAction(operation) + " (failed)"
 			}
 			return "pause run"
-		case implementationstate.RunClosed:
+		case implstate.RunClosed:
 			return "close run"
-		case implementationstate.RunActive:
+		case implstate.RunActive:
 			return "resume reconciliation"
 		}
 	}
@@ -164,11 +164,11 @@ func journalLastAction(previous, current *implementationstate.Run, fallback stri
 	}
 	if assignment := latestChangedAssignment(previous, current); assignment != nil {
 		switch assignment.Status {
-		case implementationstate.AssignmentActive:
+		case implstate.AssignmentActive:
 			return "select assignment " + string(assignment.ID)
-		case implementationstate.AssignmentAcceptedAwaitingCommit:
+		case implstate.AssignmentAcceptedAwaitingCommit:
 			return "accept assignment " + string(assignment.ID)
-		case implementationstate.AssignmentCommitted:
+		case implstate.AssignmentCommitted:
 			return "commit assignment " + string(assignment.ID)
 		}
 	}
@@ -181,7 +181,7 @@ func journalLastAction(previous, current *implementationstate.Run, fallback stri
 	return fallback
 }
 
-func latestChangedOperation(previous, current *implementationstate.Run) *implementationstate.Operation {
+func latestChangedOperation(previous, current *implstate.Run) *implstate.Operation {
 	for index := len(current.RunOperations) - 1; index >= 0; index-- {
 		if index >= len(previous.RunOperations) || !reflect.DeepEqual(current.RunOperations[index], previous.RunOperations[index]) {
 			return &current.RunOperations[index]
@@ -200,7 +200,7 @@ func latestChangedOperation(previous, current *implementationstate.Run) *impleme
 	return nil
 }
 
-func latestChangedRunResult(previous, current *implementationstate.Run) *implementationstate.OperationResult {
+func latestChangedRunResult(previous, current *implstate.Run) *implstate.OperationResult {
 	for index := len(current.RunResults) - 1; index >= 0; index-- {
 		if index >= len(previous.RunResults) || !reflect.DeepEqual(current.RunResults[index], previous.RunResults[index]) {
 			return &current.RunResults[index]
@@ -210,11 +210,11 @@ func latestChangedRunResult(previous, current *implementationstate.Run) *impleme
 }
 
 type assignmentResultChange struct {
-	assignment implementationstate.AssignmentID
-	result     *implementationstate.OperationResult
+	assignment implstate.AssignmentID
+	result     *implstate.OperationResult
 }
 
-func latestChangedAssignmentResult(previous, current *implementationstate.Run) *assignmentResultChange {
+func latestChangedAssignmentResult(previous, current *implstate.Run) *assignmentResultChange {
 	for assignment := len(current.Assignments) - 1; assignment >= 0; assignment-- {
 		if assignment >= len(previous.Assignments) {
 			continue
@@ -230,7 +230,7 @@ func latestChangedAssignmentResult(previous, current *implementationstate.Run) *
 	return nil
 }
 
-func runOperation(run *implementationstate.Run, id implementationstate.OperationID) *implementationstate.Operation {
+func runOperation(run *implstate.Run, id implstate.OperationID) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
@@ -242,7 +242,7 @@ func runOperation(run *implementationstate.Run, id implementationstate.Operation
 	return nil
 }
 
-func startupAssignmentOperation(run *implementationstate.Run, assignment implementationstate.AssignmentID, id implementationstate.OperationID) *implementationstate.Operation {
+func startupAssignmentOperation(run *implstate.Run, assignment implstate.AssignmentID, id implstate.OperationID) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
@@ -260,7 +260,7 @@ func startupAssignmentOperation(run *implementationstate.Run, assignment impleme
 	return nil
 }
 
-func latestChangedAssignment(previous, current *implementationstate.Run) *implementationstate.Assignment {
+func latestChangedAssignment(previous, current *implstate.Run) *implstate.Assignment {
 	for index := len(current.Assignments) - 1; index >= 0; index-- {
 		if index >= len(previous.Assignments) || !reflect.DeepEqual(current.Assignments[index], previous.Assignments[index]) {
 			return &current.Assignments[index]
@@ -269,7 +269,7 @@ func latestChangedAssignment(previous, current *implementationstate.Run) *implem
 	return nil
 }
 
-func operationAction(operation *implementationstate.Operation) string {
+func operationAction(operation *implstate.Operation) string {
 	if operation == nil {
 		return ""
 	}
@@ -285,7 +285,7 @@ func operationAction(operation *implementationstate.Operation) string {
 	return string(operation.Kind)
 }
 
-func journalStage(current, previous *implementationstate.Run, fallback string) string {
+func journalStage(current, previous *implstate.Run, fallback string) string {
 	if operation := latestChangedOperation(previous, current); operation != nil && operation.UncountedResumeCheck {
 		return "resume required checks"
 	}
@@ -295,7 +295,7 @@ func journalStage(current, previous *implementationstate.Run, fallback string) s
 // SummarizeStartupRun derives a human-readable startup panel from durable run
 // state. It does not mutate the state and is deliberately less detailed than
 // the continuous-progress presentation added later.
-func SummarizeStartupRun(run *implementationstate.Run) StartupSummary {
+func SummarizeStartupRun(run *implstate.Run) StartupSummary {
 	if run == nil {
 		return StartupSummary{Stage: "no implementation run", Lifecycle: LifecycleNoRun}
 	}
@@ -306,12 +306,12 @@ func SummarizeStartupRun(run *implementationstate.Run) StartupSummary {
 		Lifecycle:  lifecycleForRun(run),
 	}
 	switch run.Status {
-	case implementationstate.RunPaused:
+	case implstate.RunPaused:
 		summary.StopReason = run.PauseReason
 		if run.ExecutionBlock != nil && strings.TrimSpace(run.ExecutionBlock.Diagnostic) != "" {
 			summary.StopReason = run.ExecutionBlock.Diagnostic
 		}
-	case implementationstate.RunClosed:
+	case implstate.RunClosed:
 		summary.StopReason = run.CloseReason
 	}
 	return summary
@@ -344,11 +344,11 @@ func FormatStartupSummary(summary StartupSummary) string {
 	return strings.Join(lines, "\n")
 }
 
-func startupStage(run *implementationstate.Run) string {
+func startupStage(run *implstate.Run) string {
 	switch {
 	case run.TaskExtractionPending:
 		return "extracting implementation tasks"
-	case run.InitialBaselineStatus == implementationstate.InitialBaselinePending:
+	case run.InitialBaselineStatus == implstate.InitialBaselinePending:
 		return "initial required checks"
 	case pendingCommitAssignment(run) != "":
 		return "committing accepted assignment " + string(pendingCommitAssignment(run))
@@ -363,7 +363,7 @@ func startupStage(run *implementationstate.Run) string {
 	}
 }
 
-func startupLastAction(run *implementationstate.Run) string {
+func startupLastAction(run *implstate.Run) string {
 	if operation := latestStartupOperation(run); operation != nil {
 		if strings.TrimSpace(operation.Description) != "" {
 			return operation.Description
@@ -373,12 +373,12 @@ func startupLastAction(run *implementationstate.Run) string {
 	return "created implementation run"
 }
 
-func latestStartupOperation(run *implementationstate.Run) *implementationstate.Operation {
+func latestStartupOperation(run *implstate.Run) *implstate.Operation {
 	// Active assignments are the newest actionable context. Their operation
 	// history is therefore preferable to unrelated run-scoped setup work.
 	for index := len(run.Assignments) - 1; index >= 0; index-- {
 		assignment := &run.Assignments[index]
-		if assignment.Status == implementationstate.AssignmentActive && len(assignment.Operations) != 0 {
+		if assignment.Status == implstate.AssignmentActive && len(assignment.Operations) != 0 {
 			return &assignment.Operations[len(assignment.Operations)-1]
 		}
 	}
@@ -388,18 +388,18 @@ func latestStartupOperation(run *implementationstate.Run) *implementationstate.O
 	return nil
 }
 
-func activeAssignment(run *implementationstate.Run) implementationstate.AssignmentID {
+func activeAssignment(run *implstate.Run) implstate.AssignmentID {
 	for index := len(run.Assignments) - 1; index >= 0; index-- {
-		if run.Assignments[index].Status == implementationstate.AssignmentActive {
+		if run.Assignments[index].Status == implstate.AssignmentActive {
 			return run.Assignments[index].ID
 		}
 	}
 	return ""
 }
 
-func pendingCommitAssignment(run *implementationstate.Run) implementationstate.AssignmentID {
+func pendingCommitAssignment(run *implstate.Run) implstate.AssignmentID {
 	for index := len(run.Assignments) - 1; index >= 0; index-- {
-		if run.Assignments[index].Status == implementationstate.AssignmentAcceptedAwaitingCommit {
+		if run.Assignments[index].Status == implstate.AssignmentAcceptedAwaitingCommit {
 			return run.Assignments[index].ID
 		}
 	}

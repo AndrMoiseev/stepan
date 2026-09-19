@@ -49,6 +49,22 @@ func TestDependencyEvaluatorRejectsFlowDependencies(t *testing.T) {
 	assertPackageFailsForForbiddenFlowRule(t, implementationToSpec, modulePath+"/internal/flows/impl_loop", "internal/flows/spec")
 }
 
+func TestImplementationStoreMayUseOnlyNestedState(t *testing.T) {
+	config := loadConfig(t)
+	result := evaluateFixture(t, config, map[string]string{
+		"internal/flows/impl_loop/doc.go":       "package impl_loop\n",
+		"internal/flows/impl_loop/state/doc.go": "package state\n",
+		"internal/flows/impl_loop/store/doc.go": "package store\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state\"\n",
+	})
+	assertPackagePasses(t, result, modulePath+"/internal/flows/impl_loop/store")
+
+	result = evaluateFixture(t, config, map[string]string{
+		"internal/flows/impl_loop/doc.go":       "package impl_loop\n",
+		"internal/flows/impl_loop/store/doc.go": "package store\n\nimport _ \"github.com/AndrMoiseev/stepan/internal/flows/impl_loop\"\n",
+	})
+	assertPackageFailsForForbiddenFlowRule(t, result, modulePath+"/internal/flows/impl_loop/store", "internal/flows/impl_loop")
+}
+
 func TestExternalProcessTestsDeclareIntegrationSuite(t *testing.T) {
 	root := filepath.Join("..", "..")
 	var unclassified []string

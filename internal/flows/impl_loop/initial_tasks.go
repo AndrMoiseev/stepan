@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 var (
@@ -37,15 +37,15 @@ type NewChangeStart struct {
 
 // PrepareInitialTaskExtraction durably creates the pre-extraction machine
 // state and its controller-owned agent operation before an orchestrator turn.
-func PrepareInitialTaskExtraction(ctx context.Context, journal *runstore.Run, identity implementationstate.RunIdentity, operationID implementationstate.OperationID) (*implementationstate.Run, *runstore.StateStore, error) {
+func PrepareInitialTaskExtraction(ctx context.Context, journal *runstore.Run, identity implstate.RunIdentity, operationID implstate.OperationID) (*implstate.Run, *runstore.StateStore, error) {
 	if journal == nil || operationID == "" {
 		return nil, nil, fmt.Errorf("%w: extraction journal and operation are required", ErrTaskExtraction)
 	}
-	run, err := implementationstate.NewRunPendingTaskExtraction(identity)
+	run, err := implstate.NewRunPendingTaskExtraction(identity)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := run.AddRunOperation(implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationAgent, Basis: implementationstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}}); err != nil {
+	if err := run.AddRunOperation(implstate.Operation{ID: operationID, Kind: implstate.OperationAgent, Basis: implstate.AcceptanceBasis{Specification: identity.Specification, Configuration: identity.Configuration}}); err != nil {
 		return nil, nil, err
 	}
 	stateStore, err := runstore.OpenState(journal)
@@ -62,7 +62,7 @@ func PrepareInitialTaskExtraction(ctx context.Context, journal *runstore.Run, id
 // PersistInitialTaskExtraction records the formally accepted hierarchy after
 // the agent result. A crash before this record leaves TaskExtractionPending and
 // the reserved attempt visible for recovery rather than importing work.
-func PersistInitialTaskExtraction(ctx context.Context, stateStore *runstore.StateStore, run *implementationstate.Run, operationID implementationstate.OperationID, response AgentResponse) error {
+func PersistInitialTaskExtraction(ctx context.Context, stateStore *runstore.StateStore, run *implstate.Run, operationID implstate.OperationID, response AgentResponse) error {
 	if stateStore == nil || run == nil {
 		return fmt.Errorf("%w: extraction state is required", ErrTaskExtraction)
 	}
@@ -76,7 +76,7 @@ func PersistInitialTaskExtraction(ctx context.Context, stateStore *runstore.Stat
 	if err := run.CompleteInitialTaskExtraction(tasks); err != nil {
 		return err
 	}
-	if err := run.AddRunResult(implementationstate.OperationResult{ID: implementationstate.ResultID(string(operationID) + "-result"), OperationID: operationID, Status: implementationstate.ResultSucceeded, State: run.CurrentState, Basis: implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}}); err != nil {
+	if err := run.AddRunResult(implstate.OperationResult{ID: implstate.ResultID(string(operationID) + "-result"), OperationID: operationID, Status: implstate.ResultSucceeded, State: run.CurrentState, Basis: implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}}); err != nil {
 		return err
 	}
 	_, err = stateStore.Record(ctx, run)
@@ -121,7 +121,7 @@ func ExecuteInitialTaskExtraction(ctx context.Context, call ControlledAgentCall)
 	return result, nil
 }
 
-func validateInitialTaskExtractionResponse(run *implementationstate.Run, response AgentResponse) error {
+func validateInitialTaskExtractionResponse(run *implstate.Run, response AgentResponse) error {
 	if run == nil || response.Kind != ResponseTasksExtracted || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != run.Identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != run.Identity.Specification || response.Binding.Configuration != run.Identity.Configuration || response.Binding.TaskList != run.Identity.TaskList {
 		return fmt.Errorf("%w: response is not bound to pending run", ErrTaskExtraction)
 	}
@@ -157,7 +157,7 @@ func BeginNewChange(ctx context.Context, store *runstore.Store, workCopy, change
 // unclosed run already tied to this working copy.
 type ResumedRun struct {
 	Lease      *ControllerLease
-	Run        *implementationstate.Run
+	Run        *implstate.Run
 	Journal    *runstore.Run
 	StateStore *runstore.StateStore
 }
@@ -174,7 +174,7 @@ func RecoverOwnRun(ctx context.Context, store *runstore.Store, workCopy string) 
 	fail := func(err error) (*ResumedRun, *UserRunControl, error) {
 		return nil, nil, errors.Join(err, resumed.Close())
 	}
-	if resumed.Run.Status == implementationstate.RunActive {
+	if resumed.Run.Status == implstate.RunActive {
 		if err := resumed.Run.Pause("previous Stepan controller was interrupted; explicit /resume required"); err != nil {
 			return fail(err)
 		}
@@ -263,7 +263,7 @@ func changeHasRun(ctx context.Context, store *runstore.Store, workCopy, change s
 // NewRunFromTaskExtraction converts the orchestrator's formal response into
 // the durable machine hierarchy. The task Markdown itself remains opaque: no
 // Markdown parser or checkbox comparison participates in this conversion.
-func NewRunFromTaskExtraction(identity implementationstate.RunIdentity, response AgentResponse) (*implementationstate.Run, error) {
+func NewRunFromTaskExtraction(identity implstate.RunIdentity, response AgentResponse) (*implstate.Run, error) {
 	if response.Kind != ResponseTasksExtracted || strings.TrimSpace(response.Binding.CallID) == "" || response.Binding.RunID != identity.ID || response.Binding.AssignmentID != "" || response.Binding.BriefID != "" || response.Binding.Specification != identity.Specification || response.Binding.Configuration != identity.Configuration || response.Binding.TaskList != identity.TaskList {
 		return nil, fmt.Errorf("%w: response is not bound to the new run inputs", ErrTaskExtraction)
 	}
@@ -271,7 +271,7 @@ func NewRunFromTaskExtraction(identity implementationstate.RunIdentity, response
 	if err != nil {
 		return nil, err
 	}
-	run, err := implementationstate.NewRun(identity, tasks)
+	run, err := implstate.NewRun(identity, tasks)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTaskExtraction, err)
 	}
@@ -281,12 +281,12 @@ func NewRunFromTaskExtraction(identity implementationstate.RunIdentity, response
 // DecodeExtractedTasks accepts only the formal task payload emitted by the
 // orchestrator. Order is the response order; every parent must already have
 // appeared, which makes the hierarchy and its source order unambiguous.
-func DecodeExtractedTasks(ids []implementationstate.TaskID, payloads []string) ([]implementationstate.Task, error) {
+func DecodeExtractedTasks(ids []implstate.TaskID, payloads []string) ([]implstate.Task, error) {
 	if len(ids) == 0 || len(ids) != len(payloads) {
 		return nil, fmt.Errorf("%w: task IDs and payloads must be non-empty and have equal length", ErrTaskExtraction)
 	}
-	tasks := make([]implementationstate.Task, 0, len(ids))
-	seen := make(map[implementationstate.TaskID]struct{}, len(ids))
+	tasks := make([]implstate.Task, 0, len(ids))
+	seen := make(map[implstate.TaskID]struct{}, len(ids))
 	for index, id := range ids {
 		if strings.TrimSpace(string(id)) == "" {
 			return nil, fmt.Errorf("%w: blank task ID at %d", ErrTaskExtraction, index)
@@ -298,13 +298,13 @@ func DecodeExtractedTasks(ids []implementationstate.TaskID, payloads []string) (
 		if err != nil {
 			return nil, fmt.Errorf("%w: task %q: %v", ErrTaskExtraction, id, err)
 		}
-		if implementationstate.TaskID(payload.ID) != id {
+		if implstate.TaskID(payload.ID) != id {
 			return nil, fmt.Errorf("%w: payload ID %q does not match task_ids[%d]", ErrTaskExtraction, payload.ID, index)
 		}
 		if strings.TrimSpace(payload.Title) == "" {
 			return nil, fmt.Errorf("%w: task %q has blank title", ErrTaskExtraction, id)
 		}
-		parent := implementationstate.TaskID(payload.ParentID)
+		parent := implstate.TaskID(payload.ParentID)
 		if parent != "" {
 			if _, exists := seen[parent]; !exists {
 				return nil, fmt.Errorf("%w: task %q has unknown or later parent %q", ErrTaskExtraction, id, parent)
@@ -315,7 +315,7 @@ func DecodeExtractedTasks(ids []implementationstate.TaskID, payloads []string) (
 		if index > 0 {
 			ancestor := tasks[len(tasks)-1].ID
 			for ancestor != "" && ancestor != parent {
-				found := implementationstate.TaskID("")
+				found := implstate.TaskID("")
 				for i := len(tasks) - 1; i >= 0; i-- {
 					if tasks[i].ID == ancestor {
 						found = tasks[i].ParentID
@@ -328,7 +328,7 @@ func DecodeExtractedTasks(ids []implementationstate.TaskID, payloads []string) (
 				return nil, fmt.Errorf("%w: task %q reopens closed parent %q", ErrTaskExtraction, id, parent)
 			}
 		}
-		tasks = append(tasks, implementationstate.Task{ID: id, ParentID: parent, Order: index, Title: payload.Title})
+		tasks = append(tasks, implstate.Task{ID: id, ParentID: parent, Order: index, Title: payload.Title})
 		seen[id] = struct{}{}
 	}
 	return tasks, nil

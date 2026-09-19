@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var ErrAgentOperationRecovery = errors.New("invalid implementation agent operation recovery")
@@ -38,12 +38,12 @@ type AgentOperationRecovery struct {
 // the controller before dispatch, so a mismatching result is a corrupted or
 // wrongly routed recovery request rather than permission to perform work
 // again.
-func RecoverAgentOperation(journal *runstore.Run, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, resultID implementationstate.ResultID) (AgentOperationRecovery, error) {
+func RecoverAgentOperation(journal *runstore.Run, run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID, resultID implstate.ResultID) (AgentOperationRecovery, error) {
 	if journal == nil || run == nil || operationID == "" || resultID == "" {
 		return AgentOperationRecovery{}, fmt.Errorf("%w: journal, run, operation ID, and result ID are required", ErrAgentOperationRecovery)
 	}
 	operation, result := recoveredAgentOperation(run, assignmentID, operationID)
-	if operation == nil || operation.Kind != implementationstate.OperationAgent {
+	if operation == nil || operation.Kind != implstate.OperationAgent {
 		return AgentOperationRecovery{}, fmt.Errorf("%w: agent operation %q is not present in its durable scope", ErrAgentOperationRecovery, operationID)
 	}
 	if result == nil {
@@ -66,9 +66,9 @@ func RecoverAgentOperation(journal *runstore.Run, run *implementationstate.Run, 
 	return AgentOperationRecovery{State: AgentOperationCompleted, Response: response, Attempts: uint64(len(operation.Attempts))}, nil
 }
 
-func recoveredAgentOperation(run *implementationstate.Run, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID) (*implementationstate.Operation, *implementationstate.OperationResult) {
+func recoveredAgentOperation(run *implstate.Run, assignmentID implstate.AssignmentID, operationID implstate.OperationID) (*implstate.Operation, *implstate.OperationResult) {
 	if assignmentID == "" {
-		var operation *implementationstate.Operation
+		var operation *implstate.Operation
 		for index := range run.RunOperations {
 			if run.RunOperations[index].ID == operationID {
 				operation = &run.RunOperations[index]
@@ -87,7 +87,7 @@ func recoveredAgentOperation(run *implementationstate.Run, assignmentID implemen
 		if assignment.ID != assignmentID {
 			continue
 		}
-		var operation *implementationstate.Operation
+		var operation *implstate.Operation
 		for index := range assignment.Operations {
 			if assignment.Operations[index].ID == operationID {
 				operation = &assignment.Operations[index]

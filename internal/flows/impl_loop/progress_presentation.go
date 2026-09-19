@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -16,12 +16,12 @@ import (
 // It intentionally has no provider transcript or raw agent response: those
 // streams are not part of the interactive implementation UI.
 type ProgressPresentationInput struct {
-	Run             *implementationstate.Run
+	Run             *implstate.Run
 	Runtime         setting.Platform
 	StartedAt       time.Time
 	Now             time.Time
-	ArtifactPath    func(implementationstate.EvidenceRef) (string, error)
-	ReadArtifact    func(implementationstate.EvidenceRef) ([]byte, error)
+	ArtifactPath    func(implstate.EvidenceRef) (string, error)
+	ReadArtifact    func(implstate.EvidenceRef) ([]byte, error)
 	RecentCheckRuns []CheckSetResult
 }
 
@@ -67,7 +67,7 @@ func FormatImplementationProgress(input ProgressPresentationInput) string {
 		block := input.Run.ExecutionBlock
 		lines = append(lines, fmt.Sprintf("diagnostic pause: %s — %s; required: %s", block.BlockedAction, block.Diagnostic, block.RequiredUserAction))
 	}
-	if input.Run.Status == implementationstate.RunClosed || input.Run.Status == implementationstate.RunSucceeded {
+	if input.Run.Status == implstate.RunClosed || input.Run.Status == implstate.RunSucceeded {
 		lines = append(lines, "final summary: terminal run retained for audit")
 	}
 	return strings.Join(lines, "\n")
@@ -85,7 +85,7 @@ type checkProgressEvidence struct {
 	} `json:"results"`
 }
 
-func formatPublishedCheckResults(references []implementationstate.EvidenceRef, read func(implementationstate.EvidenceRef) ([]byte, error)) []string {
+func formatPublishedCheckResults(references []implstate.EvidenceRef, read func(implstate.EvidenceRef) ([]byte, error)) []string {
 	if read == nil {
 		return nil
 	}
@@ -158,24 +158,24 @@ func crossBuildTarget(command checkexec.Command, runtimePlatform setting.Platfor
 	return os + "/" + architecture
 }
 
-func currentPresentationAssignment(run *implementationstate.Run) *implementationstate.Assignment {
+func currentPresentationAssignment(run *implstate.Run) *implstate.Assignment {
 	if run == nil {
 		return nil
 	}
 	for index := len(run.Assignments) - 1; index >= 0; index-- {
-		if run.Assignments[index].Status == implementationstate.AssignmentActive {
+		if run.Assignments[index].Status == implstate.AssignmentActive {
 			return &run.Assignments[index]
 		}
 	}
 	return nil
 }
 
-func activeOperation(run *implementationstate.Run) *implementationstate.Operation {
+func activeOperation(run *implstate.Run) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
-	var active *implementationstate.Operation
-	consider := func(operation *implementationstate.Operation, hasResult bool) {
+	var active *implstate.Operation
+	consider := func(operation *implstate.Operation, hasResult bool) {
 		if operation != nil && !hasResult {
 			active = operation
 		}
@@ -192,12 +192,12 @@ func activeOperation(run *implementationstate.Run) *implementationstate.Operatio
 	return active
 }
 
-func latestResult(run *implementationstate.Run) (*implementationstate.OperationResult, *implementationstate.Operation) {
+func latestResult(run *implstate.Run) (*implstate.OperationResult, *implstate.Operation) {
 	if run == nil {
 		return nil, nil
 	}
-	var result *implementationstate.OperationResult
-	var operation *implementationstate.Operation
+	var result *implstate.OperationResult
+	var operation *implstate.Operation
 	for index := range run.RunResults {
 		if found := findOperation(run.RunOperations, run.RunResults[index].OperationID); found != nil {
 			result, operation = &run.RunResults[index], found
@@ -214,7 +214,7 @@ func latestResult(run *implementationstate.Run) (*implementationstate.OperationR
 	return result, operation
 }
 
-func findOperation(operations []implementationstate.Operation, id implementationstate.OperationID) *implementationstate.Operation {
+func findOperation(operations []implstate.Operation, id implstate.OperationID) *implstate.Operation {
 	for index := range operations {
 		if operations[index].ID == id {
 			return &operations[index]
@@ -223,7 +223,7 @@ func findOperation(operations []implementationstate.Operation, id implementation
 	return nil
 }
 
-func runResultExists(results []implementationstate.OperationResult, operationID implementationstate.OperationID) bool {
+func runResultExists(results []implstate.OperationResult, operationID implstate.OperationID) bool {
 	for _, result := range results {
 		if result.OperationID == operationID {
 			return true
@@ -232,7 +232,7 @@ func runResultExists(results []implementationstate.OperationResult, operationID 
 	return false
 }
 
-func formatAssignment(run *implementationstate.Run, assignment *implementationstate.Assignment) string {
+func formatAssignment(run *implstate.Run, assignment *implstate.Assignment) string {
 	tasks := make([]string, 0, len(assignment.TaskIDs))
 	for _, id := range assignment.TaskIDs {
 		label := string(id)
@@ -247,16 +247,16 @@ func formatAssignment(run *implementationstate.Run, assignment *implementationst
 	return fmt.Sprintf("assignment: %s — %s", assignment.ID, strings.Join(tasks, ", "))
 }
 
-func presentationRole(operation implementationstate.Operation) string {
+func presentationRole(operation implstate.Operation) string {
 	switch operation.Kind {
-	case implementationstate.OperationCheck:
+	case implstate.OperationCheck:
 		return "check"
-	case implementationstate.OperationReview:
-		if operation.Counter == implementationstate.CycleCounterFinalReview {
+	case implstate.OperationReview:
+		if operation.Counter == implstate.CycleCounterFinalReview {
 			return "final reviewer"
 		}
 		return "task reviewer"
-	case implementationstate.OperationAgent:
+	case implstate.OperationAgent:
 		description := strings.ToLower(operation.Description)
 		switch {
 		case strings.Contains(description, "select") || strings.Contains(description, "brief"):
@@ -273,15 +273,15 @@ func presentationRole(operation implementationstate.Operation) string {
 	}
 }
 
-func operationDescription(operation implementationstate.Operation) string {
+func operationDescription(operation implstate.Operation) string {
 	if strings.TrimSpace(operation.Description) != "" {
 		return operation.Description
 	}
 	return string(operation.ID)
 }
 
-func formatCounters(run *implementationstate.Run) string {
-	counters := make(map[implementationstate.CycleCounter]uint64)
+func formatCounters(run *implstate.Run) string {
+	counters := make(map[implstate.CycleCounter]uint64)
 	for _, operation := range run.RunOperations {
 		counters[operation.Counter] += uint64(len(operation.Attempts))
 	}
@@ -291,7 +291,7 @@ func formatCounters(run *implementationstate.Run) string {
 		}
 	}
 	parts := make([]string, 0, len(counters))
-	for _, counter := range []implementationstate.CycleCounter{implementationstate.CycleCounterMandatoryChecks, implementationstate.CycleCounterChecksRequested, implementationstate.CycleCounterAssignmentReview, implementationstate.CycleCounterBriefRefinement, implementationstate.CycleCounterExplorer, implementationstate.CycleCounterFinalReview} {
+	for _, counter := range []implstate.CycleCounter{implstate.CycleCounterMandatoryChecks, implstate.CycleCounterChecksRequested, implstate.CycleCounterAssignmentReview, implstate.CycleCounterBriefRefinement, implstate.CycleCounterExplorer, implstate.CycleCounterFinalReview} {
 		if counters[counter] != 0 {
 			parts = append(parts, fmt.Sprintf("%s=%d", counter, counters[counter]))
 		}
@@ -299,7 +299,7 @@ func formatCounters(run *implementationstate.Run) string {
 	return strings.Join(parts, ", ")
 }
 
-func formatArtifactLinks(references []implementationstate.EvidenceRef, resolve func(implementationstate.EvidenceRef) (string, error)) string {
+func formatArtifactLinks(references []implstate.EvidenceRef, resolve func(implstate.EvidenceRef) (string, error)) string {
 	if len(references) == 0 {
 		return ""
 	}

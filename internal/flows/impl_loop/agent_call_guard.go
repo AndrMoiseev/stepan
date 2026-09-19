@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
 
 const executionBlockedPauseReason = "execution_blocked: cannot safely attribute or restore agent file changes"
@@ -81,15 +81,15 @@ type AgentCallOutcome struct {
 // delta, and restores only confirmed prohibited file edits. It never performs
 // a broad Git reset. The caller owns durable technical-attempt reservation and
 // retries when Disposition is CallRetry.
-func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPolicy, run *implementationstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
+func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPolicy, run *implstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
 	return observeAgentCall(ctx, GitWorkspaceControl{}, repository, policy, run, journal, invoke)
 }
 
-func observeAgentCall(ctx context.Context, workspace WorkspaceControl, repository string, policy AgentCallPolicy, run *implementationstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
+func observeAgentCall(ctx context.Context, workspace WorkspaceControl, repository string, policy AgentCallPolicy, run *implstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
 	if run == nil || journal == nil || invoke == nil {
 		return AgentCallOutcome{}, errors.New("observe agent call requires run, violation journal, and invocation")
 	}
-	if run.Status != implementationstate.RunActive {
+	if run.Status != implstate.RunActive {
 		return AgentCallOutcome{}, fmt.Errorf("observe agent call requires an active run")
 	}
 	policy, err := normalizeAgentCallPolicy(policy)
@@ -202,9 +202,9 @@ func validateCallPath(path string) (string, error) {
 	return clean, nil
 }
 
-func blockAgentCall(run *implementationstate.Run, cause error) (AgentCallOutcome, error) {
-	if run.Status == implementationstate.RunActive {
-		block := implementationstate.ExecutionBlock{
+func blockAgentCall(run *implstate.Run, cause error) (AgentCallOutcome, error) {
+	if run.Status == implstate.RunActive {
+		block := implstate.ExecutionBlock{
 			BlockedAction:      "cannot safely attribute or restore agent file changes",
 			Diagnostic:         cause.Error(),
 			Attempts:           []string{"captured the agent-call workspace delta and could not safely recover it"},

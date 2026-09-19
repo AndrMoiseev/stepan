@@ -1,6 +1,6 @@
 //go:build process_integration
 
-package runstore
+package store
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
 func TestStateStoreRecordsSequentialJournalAndReopensCurrentProjection(t *testing.T) {
@@ -57,7 +57,7 @@ func TestStateStoreRecordsSequentialJournalAndReopensCurrentProjection(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sequence != 2 || current.Status != implementationstate.RunPaused || current.PauseReason != "waiting for input" {
+	if sequence != 2 || current.Status != implstate.RunPaused || current.PauseReason != "waiting for input" {
 		t.Fatalf("reopened projection = sequence %d, state %#v", sequence, current)
 	}
 	journalSequence, err := journalLastSequence(reopened.JournalPath())
@@ -78,7 +78,7 @@ func TestStateStoreSyncsJournalBeforeProjectionAndRetriesPendingEventOnce(t *tes
 	defer state.Close()
 
 	injected := errors.New("injected projection failure")
-	replaceBeforeProjectionCommitHook(t, func(implementationstate.Event) error { return injected })
+	replaceBeforeProjectionCommitHook(t, func(implstate.Event) error { return injected })
 	model := newStoredModel(t, run)
 	event, err := state.Record(context.Background(), model)
 	if !errors.Is(err, injected) {
@@ -164,7 +164,7 @@ func TestStateStoreAppliesIdenticalEventOnceAndRollsBackFailedTransaction(t *tes
 
 	model := newStoredModel(t, run)
 	injected := errors.New("rollback transaction")
-	replaceBeforeProjectionCommitHook(t, func(implementationstate.Event) error { return injected })
+	replaceBeforeProjectionCommitHook(t, func(implstate.Event) error { return injected })
 	_, err = state.Record(context.Background(), model)
 	if !errors.Is(err, injected) {
 		t.Fatalf("Record() error = %v, want injected failure", err)
@@ -285,7 +285,7 @@ func TestStateStoreFailedRecordReturnsDefensiveCanonicalEvent(t *testing.T) {
 	}
 	defer state.Close()
 
-	replaceBeforeProjectionCommitHook(t, func(implementationstate.Event) error {
+	replaceBeforeProjectionCommitHook(t, func(implstate.Event) error {
 		return errors.New("projection failure")
 	})
 	model := newStoredModel(t, run)
@@ -304,7 +304,7 @@ func TestStateStoreFailedRecordReturnsDefensiveCanonicalEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Status != implementationstate.RunActive {
+	if current.Status != implstate.RunActive {
 		t.Fatalf("current state was affected by returned event mutation: %#v", current)
 	}
 }
@@ -312,10 +312,10 @@ func TestStateStoreFailedRecordReturnsDefensiveCanonicalEvent(t *testing.T) {
 func TestStateStoreTwoHandlesRefreshSequenceForIdenticalAndDifferingStates(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		mutate func(*implementationstate.Run) error
+		mutate func(*implstate.Run) error
 	}{
-		{name: "identical", mutate: func(*implementationstate.Run) error { return nil }},
-		{name: "differing", mutate: func(run *implementationstate.Run) error { return run.Pause("second handle") }},
+		{name: "identical", mutate: func(*implstate.Run) error { return nil }},
+		{name: "differing", mutate: func(run *implstate.Run) error { return run.Pause("second handle") }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run := newStoredRun(t)
@@ -402,7 +402,7 @@ func TestStateStoreSerializesConcurrentHandleWrites(t *testing.T) {
 }
 
 type recordResult struct {
-	event implementationstate.Event
+	event implstate.Event
 	err   error
 }
 
@@ -437,7 +437,7 @@ func TestStateStoreRejectsWrongOrUnavailableEvidenceBeforeJournalAppend(t *testi
 		}
 		defer state.Close()
 		model := newStoredModel(t, run)
-		model.Identity.BaselineState = implementationstate.EvidenceRef{ID: "missing", Digest: strings.Repeat("0", 64)}
+		model.Identity.BaselineState = implstate.EvidenceRef{ID: "missing", Digest: strings.Repeat("0", 64)}
 		if _, err := state.Record(context.Background(), model); !errors.Is(err, ErrReferenceUnavailable) {
 			t.Fatalf("Record() error = %v, want unavailable evidence", err)
 		}
@@ -454,20 +454,20 @@ func TestStateStoreRejectsWrongOrUnavailableEvidenceBeforeJournalAppend(t *testi
 		model := newStoredModel(t, run)
 		document := publishTestReference(t, run, "brief")
 		nested := publishTestReference(t, run, "nested-result")
-		if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+		if err := model.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
+		if err := model.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
 			t.Fatal(err)
 		}
-		basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-		if err := model.AddOperation("assignment", implementationstate.Operation{ID: "operation", Kind: implementationstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
+		basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+		if err := model.AddOperation("assignment", implstate.Operation{ID: "operation", Kind: implstate.OperationCheck, BriefID: "brief", Basis: basis}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := model.StartAssignmentAttempt("assignment", "operation"); err != nil {
 			t.Fatal(err)
 		}
-		if err := model.AddResult("assignment", implementationstate.OperationResult{ID: "result", OperationID: "operation", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis, Evidence: []implementationstate.EvidenceRef{nested}}); err != nil {
+		if err := model.AddResult("assignment", implstate.OperationResult{ID: "result", OperationID: "operation", Status: implstate.ResultSucceeded, State: model.CurrentState, Basis: basis, Evidence: []implstate.EvidenceRef{nested}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(run.filePath(nested.ID), []byte("altered"), 0o600); err != nil {
@@ -501,13 +501,13 @@ func newStoredRun(t *testing.T) *Run {
 	return run
 }
 
-func newStoredModel(t *testing.T, run *Run) *implementationstate.Run {
+func newStoredModel(t *testing.T, run *Run) *implstate.Run {
 	t.Helper()
 	baseline := publishTestReference(t, run, "baseline")
 	specification := publishTestReference(t, run, "specification")
 	tasks := publishTestReference(t, run, "tasks")
 	configuration := publishTestReference(t, run, "configuration")
-	model, err := implementationstate.NewRun(implementationstate.RunIdentity{
+	model, err := implstate.NewRun(implstate.RunIdentity{
 		ID:             "run-1",
 		Change:         "change",
 		Repository:     "/repository",
@@ -518,7 +518,7 @@ func newStoredModel(t *testing.T, run *Run) *implementationstate.Run {
 		Specification:  specification,
 		TaskList:       tasks,
 		Configuration:  configuration,
-	}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,16 +526,16 @@ func newStoredModel(t *testing.T, run *Run) *implementationstate.Run {
 	return model
 }
 
-func seedStoredInitialBaseline(t *testing.T, model *implementationstate.Run) {
+func seedStoredInitialBaseline(t *testing.T, model *implstate.Run) {
 	t.Helper()
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	if err := model.AddRunOperation(implementationstate.Operation{ID: "initial-baseline", Kind: implementationstate.OperationCheck, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.AddRunOperation(implstate.Operation{ID: "initial-baseline", Kind: implstate.OperationCheck, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := model.StartRunAttempt("initial-baseline"); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddRunResult(implementationstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implementationstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
+	if err := model.AddRunResult(implstate.OperationResult{ID: "initial-baseline-result", OperationID: "initial-baseline", Status: implstate.ResultSucceeded, State: model.CurrentState, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if err := model.RecordInitialBaselinePass("initial-baseline", "initial-baseline-result"); err != nil {
@@ -543,7 +543,7 @@ func seedStoredInitialBaseline(t *testing.T, model *implementationstate.Run) {
 	}
 }
 
-func publishTestReference(t *testing.T, run *Run, id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+func publishTestReference(t *testing.T, run *Run, id implstate.EvidenceID) implstate.EvidenceRef {
 	t.Helper()
 	reference, err := run.Publish(id, []byte(id))
 	if err != nil {
@@ -554,7 +554,7 @@ func publishTestReference(t *testing.T, run *Run, id implementationstate.Evidenc
 
 var stateStoreTestHookMu sync.Mutex
 
-func replaceBeforeProjectionCommitHook(t *testing.T, replacement func(implementationstate.Event) error) {
+func replaceBeforeProjectionCommitHook(t *testing.T, replacement func(implstate.Event) error) {
 	t.Helper()
 	stateStoreTestHookMu.Lock()
 	original := beforeProjectionCommitHook
@@ -647,7 +647,7 @@ func TestStateStoreRecoversMissingAndCorruptProjectionFromJournal(t *testing.T) 
 			if err != nil {
 				t.Fatal(err)
 			}
-			if sequence != 2 || current.Status != implementationstate.RunPaused {
+			if sequence != 2 || current.Status != implstate.RunPaused {
 				t.Fatalf("recovered projection = sequence %d, state %#v", sequence, current)
 			}
 			if _, err := recovered.Record(context.Background(), model); err != nil {
@@ -736,7 +736,7 @@ func TestStateStoreRecoveryRejectsMiddleJournalCorruptionAndMissingEvidence(t *t
 		if err := model.Pause("event after corruption"); err != nil {
 			t.Fatal(err)
 		}
-		event, err := implementationstate.NewRunStateEvent(2, model)
+		event, err := implstate.NewRunStateEvent(2, model)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -818,10 +818,10 @@ func TestStateStoreRecoveryReplaysEachDurableFailureBoundaryOnce(t *testing.T) {
 		{name: "before journal fsync", install: func(t *testing.T) { beforeJournalSyncHook = func() error { return errors.New("before journal fsync") } }},
 		{name: "after journal fsync", install: func(t *testing.T) { afterJournalSyncHook = func() error { return errors.New("after journal fsync") } }},
 		{name: "before sqlite transaction", install: func(t *testing.T) {
-			beforeProjectionTransactionHook = func(implementationstate.Event) error { return errors.New("before sqlite transaction") }
+			beforeProjectionTransactionHook = func(implstate.Event) error { return errors.New("before sqlite transaction") }
 		}},
 		{name: "after sqlite transaction", install: func(t *testing.T) {
-			afterProjectionTransactionHook = func(implementationstate.Event) error { return errors.New("after sqlite transaction") }
+			afterProjectionTransactionHook = func(implstate.Event) error { return errors.New("after sqlite transaction") }
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -888,7 +888,7 @@ func TestStateStoreKeepsExistingProjectionUntilReplacementPublishes(t *testing.T
 	if err := model.Pause("durable but not projected"); err != nil {
 		t.Fatal(err)
 	}
-	event, err := implementationstate.NewRunStateEvent(2, model)
+	event, err := implstate.NewRunStateEvent(2, model)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,14 +1003,14 @@ func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testin
 	}
 	model := newStoredModel(t, run)
 	document := publishTestReference(t, run, "brief")
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
+	if err := model.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "review", Kind: implementationstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+	if err := model.AddOperation("assignment", implstate.Operation{ID: "review", Kind: implstate.OperationReview, BriefID: "brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.Record(context.Background(), model); err != nil {
@@ -1021,7 +1021,7 @@ func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first != (implementationstate.OperationAttempt{Number: 1, SemanticRound: 1}) || event.Sequence != 2 {
+	if first != (implstate.OperationAttempt{Number: 1, SemanticRound: 1}) || event.Sequence != 2 {
 		t.Fatalf("durable first attempt = %#v, event %d", first, event.Sequence)
 	}
 	// Deliberately do not add a result: this represents a process death after
@@ -1046,7 +1046,7 @@ func TestRecordAssignmentAttemptStartPersistsAmbiguousStartBeforeRetry(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second != (implementationstate.OperationAttempt{Number: 2, SemanticRound: 1}) || event.Sequence != 3 {
+	if second != (implstate.OperationAttempt{Number: 2, SemanticRound: 1}) || event.Sequence != 3 {
 		t.Fatalf("technical retry = %#v, event %d; want same semantic round", second, event.Sequence)
 	}
 }
@@ -1060,20 +1060,20 @@ func TestRecordLimitedAttemptPersistsPauseBeforeAnExceededRound(t *testing.T) {
 	defer state.Close()
 
 	model := attemptStartModel(t, run)
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	for _, id := range []implementationstate.OperationID{"review-1", "review-2"} {
-		if err := model.AddOperation("assignment", implementationstate.Operation{ID: id, Kind: implementationstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, id := range []implstate.OperationID{"review-1", "review-2"} {
+		if err := model.AddOperation("assignment", implstate.Operation{ID: id, Kind: implstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	limits := implementationstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+	limits := implstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
 	if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "review-1", limits); err != nil || event.Sequence != 1 {
 		t.Fatalf("last permitted start = event %#v, error %v", event, err)
 	}
-	if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "review-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || attempt != (implementationstate.OperationAttempt{}) || event.Sequence != 2 {
+	if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "review-2", limits); !errors.Is(err, implstate.ErrLimitExceeded) || attempt != (implstate.OperationAttempt{}) || event.Sequence != 2 {
 		t.Fatalf("exceeded start = attempt %#v, event %#v, error %v", attempt, event, err)
 	}
-	if model.Status != implementationstate.RunPaused || model.LimitPause == nil || len(model.Assignments[0].Operations[2].Attempts) != 0 {
+	if model.Status != implstate.RunPaused || model.LimitPause == nil || len(model.Assignments[0].Operations[2].Attempts) != 0 {
 		t.Fatalf("caller did not retain durable pre-dispatch pause: %#v", model)
 	}
 	if err := state.Close(); err != nil {
@@ -1085,7 +1085,7 @@ func TestRecordLimitedAttemptPersistsPauseBeforeAnExceededRound(t *testing.T) {
 	}
 	defer reopened.Close()
 	current, sequence, err := reopened.Current(context.Background())
-	if err != nil || sequence != 2 || current.Status != implementationstate.RunPaused || current.LimitPause == nil {
+	if err != nil || sequence != 2 || current.Status != implstate.RunPaused || current.LimitPause == nil {
 		t.Fatalf("reopened limit pause = state %#v, sequence %d, error %v", current, sequence, err)
 	}
 }
@@ -1097,29 +1097,29 @@ func TestRecordExplorerLimitPauseResetsOnlyItsEpisodeOnResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := attemptStartModel(t, run)
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	for _, operation := range []implementationstate.Operation{
-		{ID: "explorer-review", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "review"},
-		{ID: "explorer-implementation-1", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "implementation"},
-		{ID: "explorer-implementation-2", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterExplorer, Episode: "implementation"},
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, operation := range []implstate.Operation{
+		{ID: "explorer-review", Kind: implstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implstate.CycleCounterExplorer, Episode: "review"},
+		{ID: "explorer-implementation-1", Kind: implstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implstate.CycleCounterExplorer, Episode: "implementation"},
+		{ID: "explorer-implementation-2", Kind: implstate.OperationAgent, BriefID: "attempt-brief", Basis: basis, Counter: implstate.CycleCounterExplorer, Episode: "implementation"},
 	} {
 		if err := model.AddOperation("assignment", operation); err != nil {
 			t.Fatal(err)
 		}
 	}
-	limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 3, FinalReview: 3}
-	for _, operationID := range []implementationstate.OperationID{"explorer-review", "explorer-implementation-1"} {
+	limits := implstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 3, FinalReview: 3}
+	for _, operationID := range []implstate.OperationID{"explorer-review", "explorer-implementation-1"} {
 		if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", operationID, limits); err != nil || event.Sequence == 0 {
 			t.Fatalf("permitted explorer %s = event %#v, error %v", operationID, event, err)
 		}
 	}
-	if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "explorer-implementation-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || event.Sequence == 0 {
+	if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", "explorer-implementation-2", limits); !errors.Is(err, implstate.ErrLimitExceeded) || event.Sequence == 0 {
 		t.Fatalf("exceeded explorer = event %#v, error %v", event, err)
 	}
 	if err := model.Validate(); err != nil {
 		t.Fatalf("durable explorer limit state is invalid: %v", err)
 	}
-	if model.LimitPause == nil || model.LimitPause.Counter != implementationstate.CycleCounterExplorer || model.LimitPause.Episode != "implementation" {
+	if model.LimitPause == nil || model.LimitPause.Counter != implstate.CycleCounterExplorer || model.LimitPause.Episode != "implementation" {
 		t.Fatalf("explorer limit pause = %#v", model.LimitPause)
 	}
 	if err := state.Close(); err != nil {
@@ -1158,17 +1158,17 @@ func TestFinalReviewLimitResumeUsesNewCycleAcrossStoreRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := newStoredModel(t, run)
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	for _, operationID := range []implementationstate.OperationID{"final-1", "final-2"} {
-		if err := model.AddRunOperation(implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationReview, Basis: basis, Counter: implementationstate.CycleCounterFinalReview}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	for _, operationID := range []implstate.OperationID{"final-1", "final-2"} {
+		if err := model.AddRunOperation(implstate.Operation{ID: operationID, Kind: implstate.OperationReview, Basis: basis, Counter: implstate.CycleCounterFinalReview}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 1}
+	limits := implstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 1}
 	if _, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "final-1", limits); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "final-2", limits); !errors.Is(err, implementationstate.ErrLimitExceeded) {
+	if _, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "final-2", limits); !errors.Is(err, implstate.ErrLimitExceeded) {
 		t.Fatalf("second final review = %v", err)
 	}
 	if err := model.Resume(); err != nil {
@@ -1220,28 +1220,28 @@ func TestFinalReviewLimitResumeUsesNewCycleAcrossStoreRecovery(t *testing.T) {
 func TestRecordLimitedAttemptPendingPauseIsIdempotent(t *testing.T) {
 	for _, test := range []struct {
 		name  string
-		setup func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int)
+		setup func(t *testing.T, model *implstate.Run) (implstate.OperationID, implstate.OperationID, implstate.CycleLimits, func(*implstate.Run) int)
 	}{
 		{
 			name: "semantic",
-			setup: func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int) {
+			setup: func(t *testing.T, model *implstate.Run) (implstate.OperationID, implstate.OperationID, implstate.CycleLimits, func(*implstate.Run) int) {
 				t.Helper()
-				basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-				for _, operationID := range []implementationstate.OperationID{"review-1", "review-2"} {
-					if err := model.AddOperation("assignment", implementationstate.Operation{ID: operationID, Kind: implementationstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implementationstate.CycleCounterAssignmentReview}); err != nil {
+				basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+				for _, operationID := range []implstate.OperationID{"review-1", "review-2"} {
+					if err := model.AddOperation("assignment", implstate.Operation{ID: operationID, Kind: implstate.OperationReview, BriefID: "attempt-brief", Basis: basis, Counter: implstate.CycleCounterAssignmentReview}); err != nil {
 						t.Fatal(err)
 					}
 				}
-				limits := implementationstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
-				return "review-1", "review-2", limits, func(state *implementationstate.Run) int { return len(state.Assignments[0].Operations[2].Attempts) }
+				limits := implstate.CycleLimits{AssignmentReview: 1, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+				return "review-1", "review-2", limits, func(state *implstate.Run) int { return len(state.Assignments[0].Operations[2].Attempts) }
 			},
 		},
 		{
 			name: "technical",
-			setup: func(t *testing.T, model *implementationstate.Run) (implementationstate.OperationID, implementationstate.OperationID, implementationstate.CycleLimits, func(*implementationstate.Run) int) {
+			setup: func(t *testing.T, model *implstate.Run) (implstate.OperationID, implstate.OperationID, implstate.CycleLimits, func(*implstate.Run) int) {
 				t.Helper()
-				limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 1, FinalReview: 3}
-				return "agent", "agent", limits, func(state *implementationstate.Run) int { return len(state.Assignments[0].Operations[0].Attempts) }
+				limits := implstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 1, FinalReview: 3}
+				return "agent", "agent", limits, func(state *implstate.Run) int { return len(state.Assignments[0].Operations[0].Attempts) }
 			},
 		},
 	} {
@@ -1258,20 +1258,20 @@ func TestRecordLimitedAttemptPendingPauseIsIdempotent(t *testing.T) {
 				t.Fatalf("last permitted attempt: %v", err)
 			}
 			injected := errors.New("injected projection failure")
-			replaceBeforeProjectionCommitHook(t, func(event implementationstate.Event) error {
+			replaceBeforeProjectionCommitHook(t, func(event implstate.Event) error {
 				if event.Sequence == 2 {
 					return injected
 				}
 				return nil
 			})
-			if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || !errors.Is(err, injected) || event.Sequence != 2 {
+			if _, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implstate.ErrLimitExceeded) || !errors.Is(err, injected) || event.Sequence != 2 {
 				t.Fatalf("durable limit pause = event %#v, error %v", event, err)
 			}
-			if model.Status != implementationstate.RunPaused || attempts(model) != 0 && test.name == "semantic" || attempts(model) != 1 && test.name == "technical" {
+			if model.Status != implstate.RunPaused || attempts(model) != 0 && test.name == "semantic" || attempts(model) != 1 && test.name == "technical" {
 				t.Fatalf("limit pause dispatched another action: state=%#v, attempts=%d", model, attempts(model))
 			}
 			beforeProjectionCommitHook = nil
-			if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implementationstate.ErrLimitExceeded) || attempt != (implementationstate.OperationAttempt{}) || event.Sequence != 2 {
+			if attempt, event, err := state.RecordAssignmentAttemptStartWithLimits(context.Background(), model, "assignment", blocked, limits); !errors.Is(err, implstate.ErrLimitExceeded) || attempt != (implstate.OperationAttempt{}) || event.Sequence != 2 {
 				t.Fatalf("pending pause retry = attempt %#v, event %#v, error %v", attempt, event, err)
 			}
 			if sequence, err := journalLastSequence(state.JournalPath()); err != nil || sequence != 2 {
@@ -1284,11 +1284,11 @@ func TestRecordLimitedAttemptPendingPauseIsIdempotent(t *testing.T) {
 func TestRecordRunTechnicalRetryDoesNotConsumeOrRecheckSemanticLimit(t *testing.T) {
 	for _, test := range []struct {
 		name    string
-		counter implementationstate.CycleCounter
+		counter implstate.CycleCounter
 		episode string
 	}{
-		{name: "final-review", counter: implementationstate.CycleCounterFinalReview},
-		{name: "run-explorer", counter: implementationstate.CycleCounterExplorer, episode: "initial-briefer"},
+		{name: "final-review", counter: implstate.CycleCounterFinalReview},
+		{name: "run-explorer", counter: implstate.CycleCounterExplorer, episode: "initial-briefer"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			run := newStoredRun(t)
@@ -1297,19 +1297,19 @@ func TestRecordRunTechnicalRetryDoesNotConsumeOrRecheckSemanticLimit(t *testing.
 				t.Fatal(err)
 			}
 			model := newStoredModel(t, run)
-			basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-			kind := implementationstate.OperationAgent
-			if test.counter == implementationstate.CycleCounterFinalReview {
-				kind = implementationstate.OperationReview
+			basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+			kind := implstate.OperationAgent
+			if test.counter == implstate.CycleCounterFinalReview {
+				kind = implstate.OperationReview
 			}
-			if err := model.AddRunOperation(implementationstate.Operation{ID: "operation", Kind: kind, Basis: basis, Counter: test.counter, Episode: test.episode}); err != nil {
+			if err := model.AddRunOperation(implstate.Operation{ID: "operation", Kind: kind, Basis: basis, Counter: test.counter, Episode: test.episode}); err != nil {
 				t.Fatal(err)
 			}
-			limits := implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 2, FinalReview: 1}
-			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implementationstate.OperationAttempt{Number: 1, SemanticRound: 1}) {
+			limits := implstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 1, TechnicalAttempts: 2, FinalReview: 1}
+			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implstate.OperationAttempt{Number: 1, SemanticRound: 1}) {
 				t.Fatalf("first limited attempt = %#v, %v", got, err)
 			}
-			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implementationstate.OperationAttempt{Number: 2, SemanticRound: 1}) {
+			if got, _, err := state.RecordRunAttemptStartWithLimits(context.Background(), model, "operation", limits); err != nil || got != (implstate.OperationAttempt{Number: 2, SemanticRound: 1}) {
 				t.Fatalf("technical retry at semantic limit = %#v, %v", got, err)
 			}
 			if err := model.Validate(); err != nil {
@@ -1339,7 +1339,7 @@ func TestRecordRunTechnicalRetryDoesNotConsumeOrRecheckSemanticLimit(t *testing.
 	}
 }
 
-func findStoredOperation(t *testing.T, model *implementationstate.Run, id implementationstate.OperationID) implementationstate.Operation {
+func findStoredOperation(t *testing.T, model *implstate.Run, id implstate.OperationID) implstate.Operation {
 	t.Helper()
 	for _, operation := range model.RunOperations {
 		if operation.ID == id {
@@ -1347,7 +1347,7 @@ func findStoredOperation(t *testing.T, model *implementationstate.Run, id implem
 		}
 	}
 	t.Fatalf("missing run operation %q", id)
-	return implementationstate.Operation{}
+	return implstate.Operation{}
 }
 
 func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
@@ -1358,26 +1358,26 @@ func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
 	}
 	model := newStoredModel(t, run)
 	document := publishTestReference(t, run, "brief")
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
+	if err := model.AddBriefVersion("assignment", implstate.BriefVersion{ID: "brief", Number: 1, Document: document}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "agent", Kind: implementationstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
+	if err := model.AddOperation("assignment", implstate.Operation{ID: "agent", Kind: implstate.OperationAgent, BriefID: "brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddRunOperation(implementationstate.Operation{ID: "run-agent", Kind: implementationstate.OperationAgent, Basis: basis}); err != nil {
+	if err := model.AddRunOperation(implstate.Operation{ID: "run-agent", Kind: implstate.OperationAgent, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := state.Record(context.Background(), model); err != nil {
 		t.Fatal(err)
 	}
-	if attempt, _, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 1}) {
+	if attempt, _, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent"); err != nil || attempt != (implstate.OperationAttempt{Number: 1}) {
 		t.Fatalf("first assignment CounterNone attempt = %#v, %v", attempt, err)
 	}
-	if attempt, _, err := state.RecordRunAttemptStart(context.Background(), model, "run-agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 1}) {
+	if attempt, _, err := state.RecordRunAttemptStart(context.Background(), model, "run-agent"); err != nil || attempt != (implstate.OperationAttempt{Number: 1}) {
 		t.Fatalf("first run CounterNone attempt = %#v, %v", attempt, err)
 	}
 	if err := state.Close(); err != nil {
@@ -1393,10 +1393,10 @@ func TestCounterNoneAttemptStartsPersistAcrossStoreRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attempt, _, err := reopened.RecordAssignmentAttemptStart(context.Background(), restarted, "assignment", "agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 2}) {
+	if attempt, _, err := reopened.RecordAssignmentAttemptStart(context.Background(), restarted, "assignment", "agent"); err != nil || attempt != (implstate.OperationAttempt{Number: 2}) {
 		t.Fatalf("assignment CounterNone attempt after restart = %#v, %v", attempt, err)
 	}
-	if attempt, _, err := reopened.RecordRunAttemptStart(context.Background(), restarted, "run-agent"); err != nil || attempt != (implementationstate.OperationAttempt{Number: 2}) {
+	if attempt, _, err := reopened.RecordRunAttemptStart(context.Background(), restarted, "run-agent"); err != nil || attempt != (implstate.OperationAttempt{Number: 2}) {
 		t.Fatalf("run CounterNone attempt after restart = %#v, %v", attempt, err)
 	}
 }
@@ -1418,7 +1418,7 @@ func TestRecordAttemptStartLeavesCallerUntouchedUntilDurableAndRetriesPendingSta
 		t.Fatal(err)
 	}
 	beforeClosed := mustJSON(t, &closed)
-	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &closed, "assignment", "agent"); !errors.Is(err, implementationstate.ErrInvalidTransition) {
+	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &closed, "assignment", "agent"); !errors.Is(err, implstate.ErrInvalidTransition) {
 		t.Fatalf("closed attempt start error = %v", err)
 	}
 	if got := mustJSON(t, &closed); !bytes.Equal(got, beforeClosed) {
@@ -1428,7 +1428,7 @@ func TestRecordAttemptStartLeavesCallerUntouchedUntilDurableAndRetriesPendingSta
 	invalid := *model
 	invalid.Identity.Change = ""
 	beforeInvalid := mustJSON(t, &invalid)
-	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &invalid, "assignment", "agent"); !errors.Is(err, implementationstate.ErrInvalidState) {
+	if _, _, err := state.RecordAssignmentAttemptStart(context.Background(), &invalid, "assignment", "agent"); !errors.Is(err, implstate.ErrInvalidState) {
 		t.Fatalf("invalid attempt start error = %v", err)
 	}
 	if got := mustJSON(t, &invalid); !bytes.Equal(got, beforeInvalid) {
@@ -1438,9 +1438,9 @@ func TestRecordAttemptStartLeavesCallerUntouchedUntilDurableAndRetriesPendingSta
 		t.Fatalf("pre-journal failures changed journal: sequence=%d, error=%v", sequence, err)
 	}
 
-	replaceBeforeProjectionCommitHook(t, func(implementationstate.Event) error { return errors.New("injected projection failure") })
+	replaceBeforeProjectionCommitHook(t, func(implstate.Event) error { return errors.New("injected projection failure") })
 	first, event, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
-	if err == nil || first != (implementationstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
+	if err == nil || first != (implstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
 		t.Fatalf("post-journal start = %#v, event=%d, error=%v", first, event.Sequence, err)
 	}
 	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
@@ -1473,14 +1473,14 @@ func TestRecordAttemptStartKeepsAfterJournalSyncFailurePending(t *testing.T) {
 	if _, err := state.Record(context.Background(), model); err != nil {
 		t.Fatal(err)
 	}
-	staleEvent, err := implementationstate.NewRunStateEvent(1, model)
+	staleEvent, err := implstate.NewRunStateEvent(1, model)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stale := staleEvent.State
 	replaceAfterJournalSyncHook(t, func() error { return errors.New("after journal sync") })
 	first, event, err := state.RecordAssignmentAttemptStart(context.Background(), model, "assignment", "agent")
-	if err == nil || first != (implementationstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
+	if err == nil || first != (implstate.OperationAttempt{Number: 1}) || event.Sequence != 2 {
 		t.Fatalf("after-sync attempt = %#v, event=%d, error=%v", first, event.Sequence, err)
 	}
 	if got := model.Assignments[0].Operations[0].Attempts; len(got) != 1 || got[0] != first {
@@ -1502,18 +1502,18 @@ func TestRecordAttemptStartKeepsAfterJournalSyncFailurePending(t *testing.T) {
 	}
 }
 
-func attemptStartModel(t *testing.T, run *Run) *implementationstate.Run {
+func attemptStartModel(t *testing.T, run *Run) *implstate.Run {
 	t.Helper()
 	model := newStoredModel(t, run)
 	document := publishTestReference(t, run, "attempt-brief")
-	basis := implementationstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
-	if err := model.StartAssignment("assignment", []implementationstate.TaskID{"task"}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: model.Identity.Specification, Configuration: model.Identity.Configuration}
+	if err := model.StartAssignment("assignment", []implstate.TaskID{"task"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddBriefVersion("assignment", implementationstate.BriefVersion{ID: "attempt-brief", Number: 1, Document: document}); err != nil {
+	if err := model.AddBriefVersion("assignment", implstate.BriefVersion{ID: "attempt-brief", Number: 1, Document: document}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.AddOperation("assignment", implementationstate.Operation{ID: "agent", Kind: implementationstate.OperationAgent, BriefID: "attempt-brief", Basis: basis}); err != nil {
+	if err := model.AddOperation("assignment", implstate.Operation{ID: "agent", Kind: implstate.OperationAgent, BriefID: "attempt-brief", Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	return model
@@ -1564,7 +1564,7 @@ func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t 
 			if err := model.Pause("second durable event"); err != nil {
 				t.Fatal(err)
 			}
-			event, err := implementationstate.NewRunStateEvent(2, model)
+			event, err := implstate.NewRunStateEvent(2, model)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1582,7 +1582,7 @@ func TestStateStoreRecoveryRemovesHotSQLiteJournalBeforePublishingReplacement(t 
 				t.Fatal(err)
 			}
 			defer recovered.Close()
-			if current, sequence, err := recovered.Current(context.Background()); err != nil || sequence != 2 || current.Status != implementationstate.RunPaused {
+			if current, sequence, err := recovered.Current(context.Background()); err != nil || sequence != 2 || current.Status != implstate.RunPaused {
 				t.Fatalf("recovered hot-journal projection = sequence %d, state %#v, error %v", sequence, current, err)
 			}
 			if _, err := os.Stat(state.DatabasePath() + "-journal"); !errors.Is(err, os.ErrNotExist) {

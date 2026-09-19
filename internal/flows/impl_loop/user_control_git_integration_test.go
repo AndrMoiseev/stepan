@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 func TestUserPauseAndClosePreserveCommittedAndUncommittedGitWork(t *testing.T) {
@@ -55,24 +55,24 @@ func TestUserPauseAndClosePreserveCommittedAndUncommittedGitWork(t *testing.T) {
 		t.Fatalf("uncommitted work was not retained: %q", status)
 	}
 	persisted, _, err := runstore.ReadJournalCurrent(journal)
-	if err != nil || persisted.Status != implementationstate.RunClosed || persisted.Status == implementationstate.RunSucceeded {
+	if err != nil || persisted.Status != implstate.RunClosed || persisted.Status == implstate.RunSucceeded {
 		t.Fatalf("terminal result was not a durable non-success close: %#v, %v", persisted, err)
 	}
 }
 
-func newUserControlGitRun(t *testing.T, journal *runstore.Run, repository string) (*implementationstate.Run, *runstore.StateStore) {
+func newUserControlGitRun(t *testing.T, journal *runstore.Run, repository string) (*implstate.Run, *runstore.StateStore) {
 	t.Helper()
-	publish := func(id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+	publish := func(id implstate.EvidenceID) implstate.EvidenceRef {
 		ref, err := journal.Publish(id, []byte(id))
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ref
 	}
-	run, err := implementationstate.NewRun(implementationstate.RunIdentity{
+	run, err := implstate.NewRun(implstate.RunIdentity{
 		ID: journal.ID(), Change: "change", Repository: repository, WorkCopy: repository, Branch: "implementation", BaselineCommit: "base",
 		BaselineState: publish("baseline"), Specification: publish("specification"), TaskList: publish("tasks"), Configuration: publish("configuration"),
-	}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}

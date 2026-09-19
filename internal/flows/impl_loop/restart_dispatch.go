@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -28,7 +28,7 @@ type RestartContinuationInput struct {
 	Owner          *SessionOwner
 	Journal        *runstore.Run
 	StateStore     *runstore.StateStore
-	Run            *implementationstate.Run
+	Run            *implstate.Run
 	Repository     string
 	Workspace      WorkspaceControl
 	Runner         CheckRunner
@@ -72,7 +72,7 @@ func DispatchRestartContinuation(ctx context.Context, input RestartContinuationI
 	const maxRestartTransitions = 10000
 	seen := make(map[string]struct{})
 	for transition := 0; transition < maxRestartTransitions; transition++ {
-		if input.Run.Status != implementationstate.RunActive {
+		if input.Run.Status != implstate.RunActive {
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
@@ -89,7 +89,7 @@ func DispatchRestartContinuation(ctx context.Context, input RestartContinuationI
 		if err := dispatchRestartStep(ctx, input, orchestrator, pkg, rules, catalog, limits, limitsConfig); err != nil {
 			return err
 		}
-		if input.Run.Status != implementationstate.RunActive {
+		if input.Run.Status != implstate.RunActive {
 			return nil
 		}
 		after, err := json.Marshal(input.Run)
@@ -103,11 +103,11 @@ func DispatchRestartContinuation(ctx context.Context, input RestartContinuationI
 	return pauseRestartContinuation(ctx, input, "continue implementation run", errors.New("restart continuation exceeded its defensive transition bound"))
 }
 
-func dispatchRestartStep(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, pkg openspec.Package, rules RulesIndex, catalog []CheckCatalogEntry, limits implementationstate.CycleLimits, limitsConfig setting.LoopLimits) error {
+func dispatchRestartStep(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, pkg openspec.Package, rules RulesIndex, catalog []CheckCatalogEntry, limits implstate.CycleLimits, limitsConfig setting.LoopLimits) error {
 	switch {
 	case input.Run.TaskExtractionPending:
 		return runRestartTaskExtraction(ctx, input, orchestrator, pkg, limits)
-	case input.Run.InitialBaselineStatus == implementationstate.InitialBaselinePending:
+	case input.Run.InitialBaselineStatus == implstate.InitialBaselinePending:
 		operation, result := nextRestartIDs(input.Run, "initial-required-checks")
 		if interrupted := latestIncompleteRunOperation(input.Run, "initial required checks"); interrupted != nil {
 			operation = interrupted.ID
@@ -150,7 +150,7 @@ func restoreRestartOrchestrator(ctx context.Context, input RestartContinuationIn
 	return pkg, session, err
 }
 
-func runRestartTaskExtraction(ctx context.Context, input RestartContinuationInput, session *AgentSession, _ openspec.Package, limits implementationstate.CycleLimits) error {
+func runRestartTaskExtraction(ctx context.Context, input RestartContinuationInput, session *AgentSession, _ openspec.Package, limits implstate.CycleLimits) error {
 	operation := latestIncompleteRunAgentOperation(input.Run)
 	if operation == nil {
 		return pauseRestartContinuation(ctx, input, "continue task extraction", errors.New("pending task extraction has no durable unfinished orchestrator operation"))
@@ -172,9 +172,9 @@ func runRestartTaskExtraction(ctx context.Context, input RestartContinuationInpu
 	return restartRouteError(ctx, input, "continue task extraction", err)
 }
 
-func runRestartBriefSelection(ctx context.Context, input RestartContinuationInput, limits implementationstate.CycleLimits, timeout time.Duration) error {
+func runRestartBriefSelection(ctx context.Context, input RestartContinuationInput, limits implstate.CycleLimits, timeout time.Duration) error {
 	operation, _ := nextRestartIDs(input.Run, "select-assignment")
-	var interrupted *implementationstate.Operation
+	var interrupted *implstate.Operation
 	if interrupted = latestIncompleteRunOperation(input.Run, "select next assignment"); interrupted != nil {
 		var err error
 		interrupted, err = supersedeStaleRunOperation(ctx, input, interrupted, "select-assignment")
@@ -202,7 +202,7 @@ func runRestartBriefSelection(ctx context.Context, input RestartContinuationInpu
 	return restartRouteError(ctx, input, "select next assignment", err)
 }
 
-func runRestartAcceptedAssignment(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, assignmentID implementationstate.AssignmentID, limits implementationstate.CycleLimits, timeout time.Duration) error {
+func runRestartAcceptedAssignment(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, assignmentID implstate.AssignmentID, limits implstate.CycleLimits, timeout time.Duration) error {
 	assignment := assignmentByID(input.Run, assignmentID)
 	if assignment == nil || assignment.Acceptance == nil || len(assignment.Briefs) == 0 {
 		return pauseRestartContinuation(ctx, input, "continue accepted assignment", errors.New("accepted assignment lacks durable acceptance or brief evidence"))
@@ -218,11 +218,11 @@ func runRestartAcceptedAssignment(ctx context.Context, input RestartContinuation
 	}
 
 	reflection := latestRunOperation(input.Run, "reflect accepted task progress in tasks.md")
-	var reflectionResult *implementationstate.OperationResult
+	var reflectionResult *implstate.OperationResult
 	if reflection != nil {
 		reflectionResult = finalRunResultForOperation(input.Run, reflection.ID)
 	}
-	reflectionCurrent := reflectionResult != nil && reflectionResult.Status == implementationstate.ResultSucceeded && reflectionResult.State == assignment.Acceptance.State && reflectionResult.Basis == assignment.Acceptance.Basis
+	reflectionCurrent := reflectionResult != nil && reflectionResult.Status == implstate.ResultSucceeded && reflectionResult.State == assignment.Acceptance.State && reflectionResult.Basis == assignment.Acceptance.Basis
 	if reflection == nil || !reflectionCurrent {
 		operation, result := nextRestartIDs(input.Run, "reflect-progress")
 		if reflection != nil && reflectionResult == nil {
@@ -262,12 +262,12 @@ func runRestartAcceptedAssignment(ctx context.Context, input RestartContinuation
 	return restartRouteError(ctx, input, "commit accepted assignment", err)
 }
 
-func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, rules RulesIndex, limits implementationstate.CycleLimits, limitsConfig setting.LoopLimits) error {
+func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, rules RulesIndex, limits implstate.CycleLimits, limitsConfig setting.LoopLimits) error {
 	timeout := time.Duration(limitsConfig.AgentTimeoutSeconds) * time.Second
 	checkResult, checkOperationIndex := latestCurrentFinalCheck(input.Run)
 	if checkResult == nil {
 		operation, result := nextRestartIDs(input.Run, "final-required-checks")
-		basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+		basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 		if interrupted := latestIncompleteRunOperation(input.Run, "final required checks"); interrupted != nil && interrupted.Basis == basis {
 			operation = interrupted.ID
 		}
@@ -296,7 +296,7 @@ func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInp
 		if err != nil {
 			return restartRouteError(ctx, input, "run final review", err)
 		}
-		if input.Run.Status != implementationstate.RunActive || review.Response.Kind != ResponseReviewPassed {
+		if input.Run.Status != implstate.RunActive || review.Response.Kind != ResponseReviewPassed {
 			return nil
 		}
 		return restartRouteError(ctx, input, "complete final acceptance", CompleteFinalAcceptance(ctx, input.Run, input.StateStore, input.Journal, input.Workspace, input.Repository, checkResult.ID, review))
@@ -324,7 +324,7 @@ func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInp
 		if reviewErr != nil {
 			return restartRouteError(ctx, input, "restart interrupted final-review helper", reviewErr)
 		}
-		if input.Run.Status != implementationstate.RunActive || review.Response.Kind != ResponseReviewPassed {
+		if input.Run.Status != implstate.RunActive || review.Response.Kind != ResponseReviewPassed {
 			return nil
 		}
 		return restartRouteError(ctx, input, "complete final acceptance", CompleteFinalAcceptance(ctx, input.Run, input.StateStore, input.Journal, input.Workspace, input.Repository, checkResult.ID, review))
@@ -333,7 +333,7 @@ func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInp
 	}
 }
 
-func runRestartFinalFindingTasks(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, interrupted *implementationstate.Operation, limits implementationstate.CycleLimits, timeout time.Duration) error {
+func runRestartFinalFindingTasks(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, interrupted *implstate.Operation, limits implstate.CycleLimits, timeout time.Duration) error {
 	_, reviewResult := latestFinalReviewAfter(input.Run, -1)
 	if reviewResult == nil {
 		return pauseRestartContinuation(ctx, input, "append final finding tasks", errors.New("final-finding helper has no durable final review"))
@@ -358,7 +358,7 @@ func runRestartFinalFindingTasks(ctx context.Context, input RestartContinuationI
 	return restartRouteError(ctx, input, "append final finding tasks", err)
 }
 
-func runRestartAssignment(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, assignmentID implementationstate.AssignmentID, rules RulesIndex, catalog []CheckCatalogEntry, limits implementationstate.CycleLimits, timeout time.Duration) error {
+func runRestartAssignment(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, assignmentID implstate.AssignmentID, rules RulesIndex, catalog []CheckCatalogEntry, limits implstate.CycleLimits, timeout time.Duration) error {
 	brieferStart, err := BuildBrieferStartContext(input.Journal, input.Run, assignmentID)
 	if err != nil {
 		return pauseRestartContinuation(ctx, input, "rebuild active assignment briefer context", err)
@@ -468,8 +468,8 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 		}
 		briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
 		operation, result := nextRestartIDs(input.Run, "brief-refinement")
-		var resumed *implementationstate.Operation
-		if interruptedOperation.Counter == implementationstate.CycleCounterBriefRefinement && interruptedOperation.Description == "refine assignment brief" {
+		var resumed *implstate.Operation
+		if interruptedOperation.Counter == implstate.CycleCounterBriefRefinement && interruptedOperation.Description == "refine assignment brief" {
 			operation, resumed = interruptedOperation.ID, interruptedOperation
 		}
 		question, contextText, boundaries := "Continue the interrupted brief refinement.", "The durable controller state records an unfinished refinement for this assignment.", "Preserve the selected task IDs and approved OpenSpec scope."
@@ -488,11 +488,11 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 	}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
 	operation, _ := nextRestartIDs(input.Run, "implement")
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	if interruptedOperation != nil {
 		operation = interruptedOperation.ID
 	} else {
-		if err := input.Run.AddOperation(assignmentID, implementationstate.Operation{ID: operation, Kind: implementationstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "continue implementation after restart"}); err != nil {
+		if err := input.Run.AddOperation(assignmentID, implstate.Operation{ID: operation, Kind: implstate.OperationAgent, BriefID: briefID, Basis: basis, Description: "continue implementation after restart"}); err != nil {
 			return pauseRestartContinuation(ctx, input, "prepare active assignment implementation", err)
 		}
 		if _, err := input.StateStore.Record(context.WithoutCancel(ctx), input.Run); err != nil {
@@ -524,7 +524,7 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 	return routeRestartImplementerResponse(ctx, input, assignmentID, briefID, operation, turn, limits)
 }
 
-func routeRestartImplementerResponse(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, operation implementationstate.OperationID, turn ControlledAgentCallResult, limits implementationstate.CycleLimits) error {
+func routeRestartImplementerResponse(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, briefID implstate.BriefID, operation implstate.OperationID, turn ControlledAgentCallResult, limits implstate.CycleLimits) error {
 	if turn.Response.Kind == ResponseExecutionBlocked {
 		block, err := ExecutionBlockFromResponse(turn.Response)
 		if err == nil {
@@ -559,14 +559,14 @@ const (
 // classifyRestartAssignmentAction considers only evidence on the current
 // acceptance basis. Stale checks and reviews are ignored in favor of a fresh
 // mandatory-check route backed by the durable implementation_ready receipt.
-func classifyRestartAssignmentAction(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (restartAssignmentAction, *implementationstate.Operation, error) {
+func classifyRestartAssignmentAction(run *implstate.Run, assignmentID implstate.AssignmentID) (restartAssignmentAction, *implstate.Operation, error) {
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		return 0, nil, errors.New("active assignment is missing")
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
-	results := make(map[implementationstate.OperationID]*implementationstate.OperationResult, len(assignment.Results))
+	results := make(map[implstate.OperationID]*implstate.OperationResult, len(assignment.Results))
 	for index := range assignment.Results {
 		result := &assignment.Results[index]
 		results[result.OperationID] = result
@@ -579,14 +579,14 @@ func classifyRestartAssignmentAction(run *implementationstate.Run, assignmentID 
 		result := results[operation.ID]
 		if result == nil {
 			switch {
-			case operation.Kind == implementationstate.OperationCheck && operation.Counter == implementationstate.CycleCounterMandatoryChecks && operation.Basis == basis:
+			case operation.Kind == implstate.OperationCheck && operation.Counter == implstate.CycleCounterMandatoryChecks && operation.Basis == basis:
 				return restartAssignmentChecks, operation, nil
-			case operation.Kind == implementationstate.OperationReview && operation.Counter == implementationstate.CycleCounterAssignmentReview && operation.Basis == basis:
+			case operation.Kind == implstate.OperationReview && operation.Counter == implstate.CycleCounterAssignmentReview && operation.Basis == basis:
 				return restartAssignmentReview, operation, nil
-			case operation.Kind == implementationstate.OperationAgent && (operation.Counter == implementationstate.CycleCounterBriefRefinement || operation.Episode == "brief_refinement" || strings.Contains(operation.Description, "brief refinement")):
+			case operation.Kind == implstate.OperationAgent && (operation.Counter == implstate.CycleCounterBriefRefinement || operation.Episode == "brief_refinement" || strings.Contains(operation.Description, "brief refinement")):
 				return restartAssignmentRefineBrief, operation, nil
-			case operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterNone && operation.BriefID != "" && operation.Episode == "":
-				if len(operation.Attempts) != 0 && operation.Attempts[len(operation.Attempts)-1].Outcome == implementationstate.AttemptSucceeded {
+			case operation.Kind == implstate.OperationAgent && operation.Counter == implstate.CycleCounterNone && operation.BriefID != "" && operation.Episode == "":
+				if len(operation.Attempts) != 0 && operation.Attempts[len(operation.Attempts)-1].Outcome == implstate.AttemptSucceeded {
 					return restartAssignmentImplement, operation, nil
 				}
 				if operation.Basis != basis {
@@ -603,13 +603,13 @@ func classifyRestartAssignmentAction(run *implementationstate.Run, assignmentID 
 			continue
 		}
 		switch operation.Kind {
-		case implementationstate.OperationReview:
-			if operation.Counter == implementationstate.CycleCounterAssignmentReview && result.Status == implementationstate.ResultSucceeded {
+		case implstate.OperationReview:
+			if operation.Counter == implstate.CycleCounterAssignmentReview && result.Status == implstate.ResultSucceeded {
 				return restartAssignmentAwaitingAcceptance, nil, nil
 			}
 			return restartAssignmentImplement, nil, nil
-		case implementationstate.OperationCheck:
-			if operation.Counter == implementationstate.CycleCounterMandatoryChecks && result.Status == implementationstate.ResultSucceeded {
+		case implstate.OperationCheck:
+			if operation.Counter == implstate.CycleCounterMandatoryChecks && result.Status == implstate.ResultSucceeded {
 				return restartAssignmentReview, nil, nil
 			}
 			return restartAssignmentImplement, nil, nil
@@ -618,26 +618,26 @@ func classifyRestartAssignmentAction(run *implementationstate.Run, assignmentID 
 	for index := len(assignment.Operations) - 1; index >= 0; index-- {
 		operation := assignment.Operations[index]
 		result := results[operation.ID]
-		if operation.Kind == implementationstate.OperationAgent && operation.Counter == implementationstate.CycleCounterNone && operation.Episode == "" && operation.BriefID == briefID && result != nil && result.Status == implementationstate.ResultSucceeded && result.State.Digest == run.CurrentState.Digest && len(result.Evidence) >= 2 {
+		if operation.Kind == implstate.OperationAgent && operation.Counter == implstate.CycleCounterNone && operation.Episode == "" && operation.BriefID == briefID && result != nil && result.Status == implstate.ResultSucceeded && result.State.Digest == run.CurrentState.Digest && len(result.Evidence) >= 2 {
 			return restartAssignmentChecks, nil, nil
 		}
 	}
 	return restartAssignmentImplement, nil, nil
 }
 
-func latestSucceededImplementationWithoutResult(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) *implementationstate.Operation {
+func latestSucceededImplementationWithoutResult(run *implstate.Run, assignmentID implstate.AssignmentID) *implstate.Operation {
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Operations) == 0 {
 		return nil
 	}
 	operation := &assignment.Operations[len(assignment.Operations)-1]
-	if operation.Kind != implementationstate.OperationAgent || operation.Counter != implementationstate.CycleCounterNone || operation.Episode != "" || assignmentResultForOperation(run, assignmentID, operation.ID) != nil || len(operation.Attempts) == 0 || operation.Attempts[len(operation.Attempts)-1].Outcome != implementationstate.AttemptSucceeded {
+	if operation.Kind != implstate.OperationAgent || operation.Counter != implstate.CycleCounterNone || operation.Episode != "" || assignmentResultForOperation(run, assignmentID, operation.ID) != nil || len(operation.Attempts) == 0 || operation.Attempts[len(operation.Attempts)-1].Outcome != implstate.AttemptSucceeded {
 		return nil
 	}
 	return operation
 }
 
-func restartImplementerMessage(input RestartContinuationInput, assignment *implementationstate.Assignment) string {
+func restartImplementerMessage(input RestartContinuationInput, assignment *implstate.Assignment) string {
 	message := "Continue the active assignment from the complete durable brief and current workspace. Return the next structured implementation action."
 	if assignment == nil || len(assignment.Results) == 0 {
 		return message
@@ -654,14 +654,14 @@ func restartImplementerMessage(input RestartContinuationInput, assignment *imple
 }
 
 func restartRouteError(ctx context.Context, input RestartContinuationInput, action string, err error) error {
-	if err == nil || input.Run.Status != implementationstate.RunActive || errors.Is(err, ErrUserOperationInterrupted) {
+	if err == nil || input.Run.Status != implstate.RunActive || errors.Is(err, ErrUserOperationInterrupted) {
 		return err
 	}
 	return pauseRestartContinuation(ctx, input, action, err)
 }
 
 func pauseRestartContinuation(ctx context.Context, input RestartContinuationInput, action string, cause error) error {
-	if input.Run == nil || input.StateStore == nil || input.Run.Status != implementationstate.RunActive {
+	if input.Run == nil || input.StateStore == nil || input.Run.Status != implstate.RunActive {
 		return errors.Join(ErrRestartContinuation, cause)
 	}
 	block, err := ExecutionBlockForUserRemediation(action, cause.Error(), []string{"reconstructed restart state and attempted the next durable controller route"}, "inspect the diagnostic and durable run state, repair the reported condition, then explicitly resume or close the run")
@@ -689,49 +689,49 @@ func restartCheckCatalog(selection setting.CheckSelection) []CheckCatalogEntry {
 	return result
 }
 
-func restartAcceptanceEvidence(run *implementationstate.Run, assignmentID implementationstate.AssignmentID) (implementationstate.AcceptanceEvidence, error) {
+func restartAcceptanceEvidence(run *implstate.Run, assignmentID implstate.AssignmentID) (implstate.AcceptanceEvidence, error) {
 	assignment := assignmentByID(run, assignmentID)
-	if assignment == nil || assignment.Status != implementationstate.AssignmentActive || len(assignment.Briefs) == 0 {
-		return implementationstate.AcceptanceEvidence{}, errors.New("assignment is not active with a durable brief")
+	if assignment == nil || assignment.Status != implstate.AssignmentActive || len(assignment.Briefs) == 0 {
+		return implstate.AcceptanceEvidence{}, errors.New("assignment is not active with a durable brief")
 	}
 	briefID := assignment.Briefs[len(assignment.Briefs)-1].ID
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
-	results := make(map[implementationstate.OperationID]implementationstate.OperationResult, len(assignment.Results))
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	results := make(map[implstate.OperationID]implstate.OperationResult, len(assignment.Results))
 	for _, result := range assignment.Results {
 		results[result.OperationID] = result
 	}
-	var review *implementationstate.OperationResult
+	var review *implstate.OperationResult
 	var reviewIndex int
 	for index := len(assignment.Operations) - 1; index >= 0; index-- {
 		operation := assignment.Operations[index]
 		result, ok := results[operation.ID]
-		if ok && operation.Kind == implementationstate.OperationReview && operation.BriefID == briefID && operation.Basis == basis && result.Status == implementationstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis {
+		if ok && operation.Kind == implstate.OperationReview && operation.BriefID == briefID && operation.Basis == basis && result.Status == implstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis {
 			copy := result
 			review, reviewIndex = &copy, index
 			break
 		}
 	}
 	if review == nil {
-		return implementationstate.AcceptanceEvidence{}, errors.New("current successful task review is missing")
+		return implstate.AcceptanceEvidence{}, errors.New("current successful task review is missing")
 	}
-	var checks *implementationstate.OperationResult
+	var checks *implstate.OperationResult
 	for index := reviewIndex - 1; index >= 0; index-- {
 		operation := assignment.Operations[index]
 		result, ok := results[operation.ID]
-		if ok && operation.Kind == implementationstate.OperationCheck && operation.Counter == implementationstate.CycleCounterMandatoryChecks && operation.BriefID == briefID && operation.Basis == basis && result.Status == implementationstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis {
+		if ok && operation.Kind == implstate.OperationCheck && operation.Counter == implstate.CycleCounterMandatoryChecks && operation.BriefID == briefID && operation.Basis == basis && result.Status == implstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis {
 			copy := result
 			checks = &copy
 			break
 		}
 	}
 	if checks == nil {
-		return implementationstate.AcceptanceEvidence{}, errors.New("current successful mandatory checks are missing")
+		return implstate.AcceptanceEvidence{}, errors.New("current successful mandatory checks are missing")
 	}
-	return implementationstate.AcceptanceEvidence{BriefID: briefID, State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{checks.ID}, ReviewResultID: review.ID}, nil
+	return implstate.AcceptanceEvidence{BriefID: briefID, State: run.CurrentState, Basis: basis, CheckResultIDs: []implstate.ResultID{checks.ID}, ReviewResultID: review.ID}, nil
 }
 
-func restartReflectionSnapshot(journal *runstore.Run, result *implementationstate.OperationResult) (git.Snapshot, error) {
-	if journal == nil || result == nil || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) == 0 {
+func restartReflectionSnapshot(journal *runstore.Run, result *implstate.OperationResult) (git.Snapshot, error) {
+	if journal == nil || result == nil || result.Status != implstate.ResultSucceeded || len(result.Evidence) == 0 {
 		return git.Snapshot{}, errors.New("successful reflection workspace evidence is missing")
 	}
 	data, err := journal.Read(result.Evidence[0])
@@ -748,7 +748,7 @@ func restartReflectionSnapshot(journal *runstore.Run, result *implementationstat
 	return snapshot, nil
 }
 
-func restartFinalReviewResponse(journal *runstore.Run, result *implementationstate.OperationResult) (AgentResponse, error) {
+func restartFinalReviewResponse(journal *runstore.Run, result *implstate.OperationResult) (AgentResponse, error) {
 	if journal == nil || result == nil || len(result.Evidence) == 0 {
 		return AgentResponse{}, errors.New("final review response evidence is missing")
 	}
@@ -768,18 +768,18 @@ func restartFinalReviewResponse(journal *runstore.Run, result *implementationsta
 	return receipt.Response, nil
 }
 
-func latestCurrentFinalCheck(run *implementationstate.Run) (*implementationstate.OperationResult, int) {
+func latestCurrentFinalCheck(run *implstate.Run) (*implstate.OperationResult, int) {
 	if run == nil {
 		return nil, -1
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	for index := len(run.RunOperations) - 1; index >= 0; index-- {
 		operation := &run.RunOperations[index]
-		if operation.Kind != implementationstate.OperationCheck || operation.Description != "final required checks" {
+		if operation.Kind != implstate.OperationCheck || operation.Description != "final required checks" {
 			continue
 		}
 		result := finalRunResultForOperation(run, operation.ID)
-		if result != nil && result.Status == implementationstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis && operation.Basis == basis {
+		if result != nil && result.Status == implstate.ResultSucceeded && result.State == run.CurrentState && result.Basis == basis && operation.Basis == basis {
 			return result, index
 		}
 		return nil, index
@@ -787,20 +787,20 @@ func latestCurrentFinalCheck(run *implementationstate.Run) (*implementationstate
 	return nil, -1
 }
 
-func latestFinalReviewAfter(run *implementationstate.Run, after int) (*implementationstate.Operation, *implementationstate.OperationResult) {
+func latestFinalReviewAfter(run *implstate.Run, after int) (*implstate.Operation, *implstate.OperationResult) {
 	if run == nil {
 		return nil, nil
 	}
 	for index := len(run.RunOperations) - 1; index > after; index-- {
 		operation := &run.RunOperations[index]
-		if operation.Kind == implementationstate.OperationReview && operation.Counter == implementationstate.CycleCounterFinalReview && operation.Description == "independent final review" {
+		if operation.Kind == implstate.OperationReview && operation.Counter == implstate.CycleCounterFinalReview && operation.Description == "independent final review" {
 			return operation, finalRunResultForOperation(run, operation.ID)
 		}
 	}
 	return nil, nil
 }
 
-func latestRunOperation(run *implementationstate.Run, description string) *implementationstate.Operation {
+func latestRunOperation(run *implstate.Run, description string) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
@@ -812,11 +812,11 @@ func latestRunOperation(run *implementationstate.Run, description string) *imple
 	return nil
 }
 
-func latestIncompleteRunOperation(run *implementationstate.Run, description string) *implementationstate.Operation {
+func latestIncompleteRunOperation(run *implstate.Run, description string) *implstate.Operation {
 	return latestIncompleteRunOperationAfter(run, description, -1)
 }
 
-func latestIncompleteRunOperationAfter(run *implementationstate.Run, description string, after int) *implementationstate.Operation {
+func latestIncompleteRunOperationAfter(run *implstate.Run, description string, after int) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
@@ -833,11 +833,11 @@ func latestIncompleteRunOperationAfter(run *implementationstate.Run, description
 	return nil
 }
 
-func supersedeStaleRunOperation(ctx context.Context, input RestartContinuationInput, prior *implementationstate.Operation, stem string) (*implementationstate.Operation, error) {
+func supersedeStaleRunOperation(ctx context.Context, input RestartContinuationInput, prior *implstate.Operation, stem string) (*implstate.Operation, error) {
 	if prior == nil || input.Run == nil || input.StateStore == nil {
 		return nil, errors.New("run operation supersession requires state, store, and prior operation")
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
+	basis := implstate.AcceptanceBasis{Specification: input.Run.Identity.Specification, Configuration: input.Run.Identity.Configuration}
 	if prior.Basis == basis {
 		return prior, nil
 	}
@@ -845,12 +845,12 @@ func supersedeStaleRunOperation(ctx context.Context, input RestartContinuationIn
 	if err != nil {
 		return nil, fmt.Errorf("clone run before operation supersession: %w", err)
 	}
-	var candidate implementationstate.Run
+	var candidate implstate.Run
 	if err := json.Unmarshal(encoded, &candidate); err != nil {
 		return nil, fmt.Errorf("clone run before operation supersession: %w", err)
 	}
 	replacementID, _ := nextRestartIDs(&candidate, stem)
-	replacement := implementationstate.Operation{
+	replacement := implstate.Operation{
 		ID: replacementID, Kind: prior.Kind, Basis: basis, Description: prior.Description,
 		Counter: prior.Counter, Episode: prior.Episode, Supersedes: prior.ID,
 		UncountedResumeCheck: prior.UncountedResumeCheck,
@@ -869,41 +869,41 @@ func supersedeStaleRunOperation(ctx context.Context, input RestartContinuationIn
 	return operation, nil
 }
 
-func restartCallID(operation implementationstate.OperationID, existing *implementationstate.Operation) string {
+func restartCallID(operation implstate.OperationID, existing *implstate.Operation) string {
 	if existing != nil {
 		return restartOperationCallID(existing)
 	}
 	return string(operation) + "-call-1"
 }
 
-func latestIncompleteRunAgentOperation(run *implementationstate.Run) *implementationstate.Operation {
+func latestIncompleteRunAgentOperation(run *implstate.Run) *implstate.Operation {
 	if run == nil {
 		return nil
 	}
-	results := make(map[implementationstate.OperationID]bool, len(run.RunResults))
+	results := make(map[implstate.OperationID]bool, len(run.RunResults))
 	for _, result := range run.RunResults {
 		results[result.OperationID] = true
 	}
 	for index := len(run.RunOperations) - 1; index >= 0; index-- {
 		operation := &run.RunOperations[index]
-		if operation.Kind == implementationstate.OperationAgent && !results[operation.ID] {
+		if operation.Kind == implstate.OperationAgent && !results[operation.ID] {
 			return operation
 		}
 	}
 	return nil
 }
 
-func nextRestartIDs(run *implementationstate.Run, stem string) (implementationstate.OperationID, implementationstate.ResultID) {
+func nextRestartIDs(run *implstate.Run, stem string) (implstate.OperationID, implstate.ResultID) {
 	for number := 1; ; number++ {
-		operation := implementationstate.OperationID(fmt.Sprintf("restart-%s-%d", stem, number))
-		result := implementationstate.ResultID(fmt.Sprintf("restart-%s-%d-result", stem, number))
+		operation := implstate.OperationID(fmt.Sprintf("restart-%s-%d", stem, number))
+		result := implstate.ResultID(fmt.Sprintf("restart-%s-%d-result", stem, number))
 		if !restartOperationExists(run, operation) && !restartResultExists(run, result) {
 			return operation, result
 		}
 	}
 }
 
-func restartOperationExists(run *implementationstate.Run, id implementationstate.OperationID) bool {
+func restartOperationExists(run *implstate.Run, id implstate.OperationID) bool {
 	for _, operation := range run.RunOperations {
 		if operation.ID == id {
 			return true
@@ -919,7 +919,7 @@ func restartOperationExists(run *implementationstate.Run, id implementationstate
 	return false
 }
 
-func restartResultExists(run *implementationstate.Run, id implementationstate.ResultID) bool {
+func restartResultExists(run *implstate.Run, id implstate.ResultID) bool {
 	for _, result := range run.RunResults {
 		if result.ID == id {
 			return true
@@ -935,23 +935,23 @@ func restartResultExists(run *implementationstate.Run, id implementationstate.Re
 	return false
 }
 
-func restartOperationCallID(operation *implementationstate.Operation) string {
+func restartOperationCallID(operation *implstate.Operation) string {
 	if operation == nil {
 		return "restart-call-invalid"
 	}
 	number := len(operation.Attempts) + 1
 	if len(operation.Attempts) != 0 {
 		outcome := operation.Attempts[len(operation.Attempts)-1].Outcome
-		if outcome == "" || outcome == implementationstate.AttemptSucceeded {
+		if outcome == "" || outcome == implstate.AttemptSucceeded {
 			number = len(operation.Attempts)
 		}
 	}
 	return fmt.Sprintf("%s-call-%d", operation.ID, number)
 }
 
-func nextRestartAssignmentID(run *implementationstate.Run) implementationstate.AssignmentID {
+func nextRestartAssignmentID(run *implstate.Run) implstate.AssignmentID {
 	for number := len(run.Assignments) + 1; ; number++ {
-		candidate := implementationstate.AssignmentID(fmt.Sprintf("assignment-%d", number))
+		candidate := implstate.AssignmentID(fmt.Sprintf("assignment-%d", number))
 		if assignmentByID(run, candidate) == nil {
 			return candidate
 		}

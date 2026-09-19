@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
 var beforeControllerLockOpenHook func(string)
@@ -157,7 +157,7 @@ func AcquireNewRunController(ctx context.Context, store *runstore.Store, workCop
 
 // FindUnclosedRun is a read-only status operation and deliberately takes no
 // controller lock. Paused runs remain open; closed and succeeded runs do not.
-func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string) (*implementationstate.Run, error) {
+func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string) (*implstate.Run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -172,7 +172,7 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 // identity. Keeping this read-only primitive separate lets normal startup use
 // the Git root it has already resolved, without another Git invocation or a
 // controller lock.
-func findUnclosedRun(ctx context.Context, store *runstore.Store, canonical string) (*implementationstate.Run, error) {
+func findUnclosedRun(ctx context.Context, store *runstore.Store, canonical string) (*implstate.Run, error) {
 	if store == nil {
 		return nil, fmt.Errorf("find unclosed implementation run: nil run store")
 	}
@@ -209,8 +209,8 @@ func findUnclosedRun(ctx context.Context, store *runstore.Store, canonical strin
 	return nil, nil
 }
 
-func isUnclosedStatus(status implementationstate.RunStatus) bool {
-	return status == implementationstate.RunActive || status == implementationstate.RunPaused
+func isUnclosedStatus(status implstate.RunStatus) bool {
+	return status == implstate.RunActive || status == implstate.RunPaused
 }
 
 func lockIdentity(path string) string {

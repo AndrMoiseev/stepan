@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -60,7 +60,7 @@ func TestInvokeControlledAgentCallPublishesReceiptBeforeSucceededAndRecoversIdem
 		t.Fatal(err)
 	}
 	operation = finalRunOperation(call.Run, call.OperationID)
-	if second.Response.Message == nil || *second.Response.Message != "exact accepted commit message" || len(runtime.messages) != 1 || operation == nil || operation.Attempts[0].Outcome != implementationstate.AttemptSucceeded {
+	if second.Response.Message == nil || *second.Response.Message != "exact accepted commit message" || len(runtime.messages) != 1 || operation == nil || operation.Attempts[0].Outcome != implstate.AttemptSucceeded {
 		t.Fatalf("receipt recovery repeated or changed the completed turn: result=%#v messages=%#v operation=%#v", second, runtime.messages, operation)
 	}
 }
@@ -116,10 +116,10 @@ func TestInvokeControlledAgentCallRetriesCrashAndMalformedResponse(t *testing.T)
 	for _, test := range []struct {
 		name         string
 		outputs      []controlledTurn
-		firstOutcome implementationstate.AttemptOutcome
+		firstOutcome implstate.AttemptOutcome
 	}{
-		{"crash", []controlledTurn{{err: agentruntime.ErrRuntimeExited}, {raw: controlledResponse(t, "accepted after crash")}}, implementationstate.AttemptFailed},
-		{"malformed response", []controlledTurn{{raw: json.RawMessage(`{}`)}, {raw: controlledResponse(t, "accepted after repair")}}, implementationstate.AttemptRejected},
+		{"crash", []controlledTurn{{err: agentruntime.ErrRuntimeExited}, {raw: controlledResponse(t, "accepted after crash")}}, implstate.AttemptFailed},
+		{"malformed response", []controlledTurn{{raw: json.RawMessage(`{}`)}, {raw: controlledResponse(t, "accepted after repair")}}, implstate.AttemptRejected},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runtime := &controlledCallRuntime{turns: test.outputs}
@@ -139,7 +139,7 @@ func TestInvokeControlledAgentCallRetriesCrashAndMalformedResponse(t *testing.T)
 				t.Fatal(err)
 			}
 			attempts := recovered.RunOperations[0].Attempts
-			if len(attempts) != 2 || attempts[0].Outcome != test.firstOutcome || attempts[0].Diagnostic == "" || attempts[1].Outcome != implementationstate.AttemptSucceeded {
+			if len(attempts) != 2 || attempts[0].Outcome != test.firstOutcome || attempts[0].Diagnostic == "" || attempts[1].Outcome != implstate.AttemptSucceeded {
 				t.Fatalf("persisted technical outcomes = %#v", attempts)
 			}
 		})
@@ -185,7 +185,7 @@ func TestInvokeControlledAgentCallPersistsTechnicalFailureAndLimitPause(t *testi
 	call.Limits.TechnicalAttempts = 1
 
 	_, err := InvokeControlledAgentCall(context.Background(), call)
-	if !errors.Is(err, implementationstate.ErrLimitExceeded) {
+	if !errors.Is(err, implstate.ErrLimitExceeded) {
 		t.Fatalf("call error = %v, want technical limit", err)
 	}
 	if err := call.StateStore.Close(); err != nil {
@@ -200,11 +200,11 @@ func TestInvokeControlledAgentCallPersistsTechnicalFailureAndLimitPause(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sequence < 3 || recovered.Status != implementationstate.RunPaused || recovered.LimitPause == nil || !recovered.LimitPause.Technical {
+	if sequence < 3 || recovered.Status != implstate.RunPaused || recovered.LimitPause == nil || !recovered.LimitPause.Technical {
 		t.Fatalf("recovered durable boundary = sequence %d, state %#v", sequence, recovered)
 	}
 	attempts := recovered.RunOperations[0].Attempts
-	if len(attempts) != 1 || attempts[0].Outcome != implementationstate.AttemptFailed || !strings.Contains(attempts[0].Diagnostic, agentruntime.ErrRuntimeExited.Error()) {
+	if len(attempts) != 1 || attempts[0].Outcome != implstate.AttemptFailed || !strings.Contains(attempts[0].Diagnostic, agentruntime.ErrRuntimeExited.Error()) {
 		t.Fatalf("recovered technical outcome = %#v", attempts)
 	}
 }
@@ -263,7 +263,7 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 	specification := controlledCallReference(t, journal, "specification")
 	taskList := controlledCallReference(t, journal, "tasks")
 	configuration := controlledCallReference(t, journal, "configuration")
-	model, err := implementationstate.NewRun(implementationstate.RunIdentity{
+	model, err := implstate.NewRun(implstate.RunIdentity{
 		ID:             journal.ID(),
 		Change:         "change",
 		Repository:     repository,
@@ -274,12 +274,12 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 		Specification:  specification,
 		TaskList:       taskList,
 		Configuration:  configuration,
-	}, []implementationstate.Task{{ID: "task", Order: 0, Title: "task"}})
+	}, []implstate.Task{{ID: "task", Order: 0, Title: "task"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	basis := implementationstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
-	if err := model.AddRunOperation(implementationstate.Operation{ID: "agent-operation", Kind: implementationstate.OperationAgent, Counter: implementationstate.CycleCounterNone, Basis: basis}); err != nil {
+	basis := implstate.AcceptanceBasis{Specification: specification, Configuration: configuration}
+	if err := model.AddRunOperation(implstate.Operation{ID: "agent-operation", Kind: implstate.OperationAgent, Counter: implstate.CycleCounterNone, Basis: basis}); err != nil {
 		t.Fatal(err)
 	}
 	expectation := expectationFor(ResponseRoleImplementer, ResponseImplementationReady)
@@ -295,7 +295,7 @@ func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) Control
 	}
 }
 
-func controlledCallReference(t *testing.T, run *runstore.Run, id implementationstate.EvidenceID) implementationstate.EvidenceRef {
+func controlledCallReference(t *testing.T, run *runstore.Run, id implstate.EvidenceID) implstate.EvidenceRef {
 	t.Helper()
 	reference, err := run.Publish(id, []byte(id))
 	if err != nil {
@@ -304,8 +304,8 @@ func controlledCallReference(t *testing.T, run *runstore.Run, id implementations
 	return reference
 }
 
-func controlledCallLimits() implementationstate.CycleLimits {
-	return implementationstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
+func controlledCallLimits() implstate.CycleLimits {
+	return implstate.CycleLimits{AssignmentReview: 3, MandatoryChecks: 3, ChecksRequested: 5, BriefRefinement: 3, Explorer: 10, TechnicalAttempts: 3, FinalReview: 3}
 }
 
 func controlledResponse(t *testing.T, message string) json.RawMessage {

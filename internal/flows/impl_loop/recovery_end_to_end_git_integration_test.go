@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationstate"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -26,17 +26,17 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 	t.Run("agent receipt survives database loss without repeating the turn", func(t *testing.T) {
 		runtime := &controlledCallRuntime{turns: []controlledTurn{{raw: controlledResponse(t, "preserve this accepted work")}}}
 		call := controlledCallFixture(t, runtime)
-		basis := implementationstate.AcceptanceBasis{Specification: call.Run.Identity.Specification, Configuration: call.Run.Identity.Configuration}
-		if err := call.Run.AddRunOperation(implementationstate.Operation{
-			ID: "unrelated-explorer", Kind: implementationstate.OperationAgent, Basis: basis,
-			Counter: implementationstate.CycleCounterExplorer, Episode: "unrelated",
+		basis := implstate.AcceptanceBasis{Specification: call.Run.Identity.Specification, Configuration: call.Run.Identity.Configuration}
+		if err := call.Run.AddRunOperation(implstate.Operation{
+			ID: "unrelated-explorer", Kind: implstate.OperationAgent, Basis: basis,
+			Counter: implstate.CycleCounterExplorer, Episode: "unrelated",
 		}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := call.Run.StartRunAttemptWithLimits("unrelated-explorer", controlledCallLimits()); err != nil {
 			t.Fatal(err)
 		}
-		if err := call.Run.RecordRunAttemptOutcome("unrelated-explorer", implementationstate.AttemptSucceeded, ""); err != nil {
+		if err := call.Run.RecordRunAttemptOutcome("unrelated-explorer", implstate.AttemptSucceeded, ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := call.StateStore.Record(context.Background(), call.Run); err != nil {
@@ -72,7 +72,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 			t.Fatalf("recover agent receipt result=%#v err=%v", result, err)
 		}
 		agent := finalRunOperation(recovered, "agent-operation")
-		if len(runtime.messages) != 1 || agent == nil || len(agent.Attempts) != 1 || agent.Attempts[0].Outcome != implementationstate.AttemptSucceeded {
+		if len(runtime.messages) != 1 || agent == nil || len(agent.Attempts) != 1 || agent.Attempts[0].Outcome != implstate.AttemptSucceeded {
 			t.Fatalf("recovery repeated or lost agent work: messages=%q operation=%#v", runtime.messages, agent)
 		}
 		if recovered.RunExplorerCounters["unrelated"] != 1 {
@@ -104,7 +104,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 		if _, err := Resume(firstContext, input); err != nil {
 			t.Fatalf("interrupted resume = %v", err)
 		}
-		if fixture.run.Status != implementationstate.RunPaused {
+		if fixture.run.Status != implstate.RunPaused {
 			t.Fatalf("interrupted preflight did not pause: %#v", fixture.run)
 		}
 		if _, err := Resume(context.Background(), input); err != nil {
@@ -150,7 +150,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		intent := implementationstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
+		intent := implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: message}
 		if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +188,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 			t.Fatalf("recovery duplicated commit: count=%s", count)
 		}
 		content, err := os.ReadFile(filepath.Join(repository, "implementation.txt"))
-		if err != nil || string(content) != "accepted work survives recovery\n" || recovered.Assignments[0].Status != implementationstate.AssignmentCommitted {
+		if err != nil || string(content) != "accepted work survives recovery\n" || recovered.Assignments[0].Status != implstate.AssignmentCommitted {
 			t.Fatalf("recovery lost allowed Git work: content=%q run=%#v err=%v", content, recovered, err)
 		}
 	})

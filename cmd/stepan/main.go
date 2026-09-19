@@ -23,10 +23,10 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
+	implruntime "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/runtime"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/flows/spec"
-	"github.com/AndrMoiseev/stepan/internal/implementationruntime"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
-	"github.com/AndrMoiseev/stepan/internal/runstore"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -179,7 +179,7 @@ func (console *bootstrapConsole) ConfirmBootstrapConfiguration(ctx context.Conte
 }
 
 func runBootstrapMode(ctx context.Context, root string, config agentConfig, prompt bootstrapPrompter) error {
-	options := implementationruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: setting.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
+	options := implruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: setting.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
 	if config.kind == agentCodex {
 		options.CodexExecutable = config.executable
 	}
@@ -189,7 +189,7 @@ func runBootstrapMode(ctx context.Context, root string, config agentConfig, prom
 	if prompt == nil {
 		return errors.New("bootstrap profile prompt is required")
 	}
-	return impl_loop.RunBootstrapperMode(ctx, impl_loop.BootstrapperModeInput{Repository: root, Factories: implementationruntime.NewFactories(options), Base: agentruntime.ThreadConfig{Workspace: root}, SelectProfile: prompt.SelectBootstrapProfile, ReportReady: prompt.ReportBootstrapReady, ConfirmConfiguration: prompt.ConfirmBootstrapConfiguration})
+	return impl_loop.RunBootstrapperMode(ctx, impl_loop.BootstrapperModeInput{Repository: root, Factories: implruntime.NewFactories(options), Base: agentruntime.ThreadConfig{Workspace: root}, SelectProfile: prompt.SelectBootstrapProfile, ReportReady: prompt.ReportBootstrapReady, ConfirmConfiguration: prompt.ConfirmBootstrapConfiguration})
 }
 
 // discoverImplementationStartup is intentionally before runtime/session
@@ -228,7 +228,7 @@ type implementationStartupComposition struct {
 
 func implementationStartupCompositionForConfig(config agentConfig, root string, nessyAuth func() (string, error)) implementationStartupComposition {
 	envelope := impl_loop.ImplementationEnvelopeSchema()
-	options := implementationruntime.FactoryOptions{
+	options := implruntime.FactoryOptions{
 		Workspace: root, EnvelopeSchema: envelope, NessyAuthToken: nessyAuth, NessyJSONContract: nessyapp.JSONContract,
 	}
 	if config.kind == agentCodex {
@@ -238,7 +238,7 @@ func implementationStartupCompositionForConfig(config agentConfig, root string, 
 		options.ClaudeExecutable = config.executable
 	}
 	return implementationStartupComposition{
-		Factories:                   implementationruntime.NewFactories(options),
+		Factories:                   implruntime.NewFactories(options),
 		EnvelopeSchema:              append([]byte(nil), envelope...),
 		SessionBase:                 agentruntime.ThreadConfig{Workspace: root},
 		ClassifySpecificationChange: classifyImplementationSpecification,
