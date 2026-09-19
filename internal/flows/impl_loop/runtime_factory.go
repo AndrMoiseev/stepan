@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // RuntimeFactory validates the concrete provider configuration before the
@@ -16,8 +16,8 @@ import (
 // provider's construction and credentials outside the flow while preserving a
 // single preflight boundary for every role.
 type RuntimeFactory interface {
-	Preflight(implementationconfig.RuntimeProfile) error
-	Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error)
+	Preflight(setting.RuntimeProfile) error
+	Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error)
 }
 
 // Start constructs a fresh provider runtime for this role using the profile
@@ -41,7 +41,7 @@ func (role PreparedRole) Start(ctx context.Context) (agentruntime.Runtime, error
 // effective implementation configuration.
 type PreparedRole struct {
 	Role    string
-	Profile implementationconfig.RuntimeProfile
+	Profile setting.RuntimeProfile
 	Factory RuntimeFactory
 }
 
@@ -63,7 +63,7 @@ func (prepared PreparedRuntimes) Role(role string) (PreparedRole, bool) {
 // absent from the resolved role plan. Provider-specific validation runs once
 // for each role, so differing model or reasoning settings cannot be hidden by
 // another role sharing the same provider.
-func PrepareRuntimes(configuration implementationconfig.Configuration, factories map[string]RuntimeFactory) (PreparedRuntimes, error) {
+func PrepareRuntimes(configuration setting.Configuration, factories map[string]RuntimeFactory) (PreparedRuntimes, error) {
 	resolved := make([]PreparedRole, 0, len(loopRuntimeRoles))
 	for _, role := range loopRuntimeRoles {
 		profile, err := configuration.ResolveRoleProfile(role)
@@ -88,10 +88,10 @@ func PrepareRuntimes(configuration implementationconfig.Configuration, factories
 }
 
 var loopRuntimeRoles = []string{
-	implementationconfig.RoleOrchestrator,
-	implementationconfig.RoleBriefer,
-	implementationconfig.RoleImplementer,
-	implementationconfig.RoleTaskReviewer,
-	implementationconfig.RoleExplorer,
-	implementationconfig.RoleFinalReviewer,
+	setting.RoleOrchestrator,
+	setting.RoleBriefer,
+	setting.RoleImplementer,
+	setting.RoleTaskReviewer,
+	setting.RoleExplorer,
+	setting.RoleFinalReviewer,
 }

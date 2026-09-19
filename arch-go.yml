@@ -20,7 +20,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
         - '^github\.com/AndrMoiseev/stepan/internal/runstore$'
-        - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
+        - '^github\.com/AndrMoiseev/stepan/internal/setting$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
     shouldNotDependsOn:
       internal:
@@ -38,7 +38,7 @@ dependenciesRules:
   - package: '^github\.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp$'
     shouldOnlyDependsOn:
       internal:
-        - '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
+        - '^github\.com/AndrMoiseev/stepan/internal/setting$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/platformsupport$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
@@ -65,7 +65,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/openspec$'
         - '^github\.com/AndrMoiseev/stepan/internal/runstore$'
         - '^github\.com/AndrMoiseev/stepan/internal/checkexec$'
-        - '^github\.com/AndrMoiseev/stepan/internal/implementationconfig$'
+        - '^github\.com/AndrMoiseev/stepan/internal/setting$'
         - '^github\.com/AndrMoiseev/stepan/internal/implementationstate$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
     shouldNotDependsOn:
@@ -86,7 +86,7 @@ dependenciesRules:
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/(spec|impl_loop)(?:/.+)?$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/implementationconfig$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/setting$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
@@ -107,10 +107,6 @@ dependenciesRules:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/processjob$'
-    shouldNotDependsOn:
-      internal:
-        - '^github\.com/AndrMoiseev/stepan/internal/.+$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/usersettings$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'

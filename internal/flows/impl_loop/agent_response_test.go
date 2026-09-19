@@ -46,7 +46,7 @@ func TestBindAgentResponseNormalizesTransportPlaceholdersAndOwnsBinding(t *testi
 	payload := responsePayloadMap(ResponseChecksRequested)
 	payload["check_names"] = []string{"unit", "lint"}
 	payload["message"] = ""
-	payload["user_implementation"] = ""
+	payload["user_settings"] = ""
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestBindAgentResponseNormalizesTransportPlaceholdersAndOwnsBinding(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Message != nil || response.UserImplementation != nil || !reflect.DeepEqual(response.CheckNames, []string{"unit", "lint"}) {
+	if response.Message != nil || response.UserSettings != nil || !reflect.DeepEqual(response.CheckNames, []string{"unit", "lint"}) {
 		t.Fatalf("transport placeholders were not normalized: %#v", response)
 	}
 	if response.Binding != expectation.Binding {
@@ -189,7 +189,7 @@ func TestBindAgentResponseRejectsUnexpectedSemanticFields(t *testing.T) {
 	}{
 		{"implementation ready check names", ResponseImplementationReady, func(p map[string]any) { p["check_names"] = []string{"unit"} }},
 		{"implementation ready findings", ResponseImplementationReady, func(p map[string]any) { p["findings"] = []string{"unrelated"} }},
-		{"implementation ready configuration proposal", ResponseImplementationReady, func(p map[string]any) { p["project_implementation"] = "{}" }},
+		{"implementation ready configuration proposal", ResponseImplementationReady, func(p map[string]any) { p["project_settings"] = "{}" }},
 		{"exploration result blocked diagnostic", ResponseExplorationResult, func(p map[string]any) { p["diagnostic"] = "unrelated" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -211,8 +211,8 @@ func TestBindAgentResponseRequiresBothBootstrapProposals(t *testing.T) {
 		name   string
 		remove string
 	}{
-		{"missing user proposal", "user_implementation"},
-		{"missing project proposal", "project_implementation"},
+		{"missing user proposal", "user_settings"},
+		{"missing project proposal", "project_settings"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			payload := responsePayloadMap(ResponseConfigurationProposed)
@@ -284,7 +284,7 @@ func responsePayload(t *testing.T, kind ResponseKind) json.RawMessage {
 
 func responsePayloadMap(kind ResponseKind) map[string]any {
 	payload := map[string]any{
-		"kind": string(kind), "message": "", "task_ids": []string{}, "task_payloads": []string{}, "brief": "", "check_names": []string{}, "finding_ids": []string{}, "findings": []string{}, "finding_decisions": []string{}, "finding_reasons": []string{}, "question": "", "context": "", "boundaries": "", "known_facts": []string{}, "unknowns": []string{}, "references": []string{}, "locations": []string{}, "bases": []string{}, "expected_results": []string{}, "options": []string{}, "recommendation": "", "blocked_action": "", "diagnostic": "", "attempts": []string{}, "required_user_action": "", "user_implementation": "", "project_implementation": "", "explanation": "",
+		"kind": string(kind), "message": "", "task_ids": []string{}, "task_payloads": []string{}, "brief": "", "check_names": []string{}, "finding_ids": []string{}, "findings": []string{}, "finding_decisions": []string{}, "finding_reasons": []string{}, "question": "", "context": "", "boundaries": "", "known_facts": []string{}, "unknowns": []string{}, "references": []string{}, "locations": []string{}, "bases": []string{}, "expected_results": []string{}, "options": []string{}, "recommendation": "", "blocked_action": "", "diagnostic": "", "attempts": []string{}, "required_user_action": "", "user_settings": "", "project_settings": "", "explanation": "",
 	}
 	switch kind {
 	case ResponseBriefReady:
@@ -312,7 +312,7 @@ func responsePayloadMap(kind ResponseKind) map[string]any {
 	case ResponseProgressReflected:
 		payload["task_ids"] = []string{"task-1"}
 	case ResponseConfigurationProposed:
-		payload["user_implementation"], payload["project_implementation"], payload["explanation"] = "{\"profiles\":{}}", "{\"checks\":{}}", "detected project checks"
+		payload["user_settings"], payload["project_settings"], payload["explanation"] = "{\"profiles\":{}}", "{\"checks\":{}}", "detected project checks"
 	}
 	return payload
 }

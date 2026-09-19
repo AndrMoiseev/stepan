@@ -11,9 +11,9 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestInvokeControlledAgentCallUsesWorkspaceControlSeam(t *testing.T) {
@@ -412,11 +412,11 @@ type terminatedSessionFactory struct {
 	runtimes []*terminatedSessionRuntime
 }
 
-func (factory *terminatedSessionFactory) Preflight(implementationconfig.RuntimeProfile) error {
+func (factory *terminatedSessionFactory) Preflight(setting.RuntimeProfile) error {
 	return nil
 }
 
-func (factory *terminatedSessionFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *terminatedSessionFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
 	if len(factory.turns) == 0 {

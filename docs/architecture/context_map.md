@@ -24,7 +24,7 @@ flowchart LR
         runtime_factory[internal/implementationruntime]
     end
     subgraph Services[Состояние и операции реализации]
-        config[internal/implementationconfig]
+        config[internal/setting]
         state[internal/implementationstate]
         openspec[internal/openspec]
         checks[internal/checkexec]
@@ -35,7 +35,6 @@ flowchart LR
         git[internal/git]
         platform[internal/platformsupport]
         jobs[internal/processjob]
-        settings[internal/usersettings]
     end
     subgraph TestTools[Тесты и CI]
         conformance[internal/agentruntime/conformance]
@@ -44,11 +43,11 @@ flowchart LR
         testscope_cmd[internal/testscope/cmd]
     end
 
-    stepan --> runtime & claude & codex & nessy & impl & runtime_factory & platform & spec & store & settings
+    stepan --> runtime & claude & codex & nessy & impl & runtime_factory & platform & spec & store & config
     probe_cmd --> probe
     claude --> runtime
     codex --> runtime & platform & jobs
-    nessy --> settings & runtime & platform & jobs
+    nessy --> config & runtime & platform & jobs
     probe --> codex & git
     spec --> runtime & git
     impl --> runtime & git & jobs & openspec & store & checks & config & state
@@ -60,7 +59,7 @@ flowchart LR
     class runtime_factory,conformance,testscope,testscope_cmd unspecified
 ```
 
-`internal/architecture` проверяет правила архитектуры, а не предоставляет production API. Для `internal/agentruntime`, `internal/implementationconfig`, `internal/implementationstate`, `internal/architecture`, `internal/git`, `internal/platformsupport`, `internal/processjob` и `internal/usersettings` конфигурация явно запрещает импорты других внутренних пакетов.
+`internal/architecture` проверяет правила архитектуры, а не предоставляет production API. Для `internal/agentruntime`, `internal/setting`, `internal/implementationstate`, `internal/architecture`, `internal/git`, `internal/platformsupport` и `internal/processjob` конфигурация явно запрещает импорты других внутренних пакетов.
 
 ## Модули
 
@@ -73,9 +72,9 @@ flowchart LR
 | `internal/agentruntime` | Общий контракт агентского runtime. | Интерфейсы runtime и thread, конфигурация доступа, проверка структурированного ответа. | Не владеет транспортом конкретного провайдера. |
 | `internal/agentruntime/claudeapp` | Адаптер Claude CLI. | Создание thread и вызовы через SDK, ограничения инструментов и доступа к файлам. | Реализует контракт `agentruntime`; правила прикладных flow остаются у потребителей. |
 | `internal/agentruntime/codexapp` | Адаптер Codex App Server. | Жизненный цикл процесса, JSON-RPC, thread/turn, approvals и проверка доступа. | Реализует контракт `agentruntime`; состояние feature или implementation run не принадлежит адаптеру. |
-| `internal/agentruntime/nessyapp` | Адаптер Nessy. | ACP-сеансы, отдельные процессы thread, авторизация и контроль доступа. | Реализует контракт `agentruntime`; пользовательские настройки читает `usersettings`, дерево процессов контролирует `processjob`. |
+| `internal/agentruntime/nessyapp` | Адаптер Nessy. | ACP-сеансы, отдельные процессы thread, авторизация и контроль доступа. | Реализует контракт `agentruntime`; токен получает через callback `setting`, дерево процессов контролирует `processjob`. |
 | `internal/implementationruntime` | Сборка runtime для implementation flow. | Создаёт фабрики Codex, Claude и Nessy из профиля роли и параметров процесса. | Связывает адаптеры с `flows/impl_loop`; не управляет ходом реализации. Исходящие импорты не ограничены `arch-go.yml`. |
-| `internal/implementationconfig` | Конфигурация implementation flow. | Читает, объединяет и проверяет настройки, профили, команды проверок и rules file. | Возвращает проверенную конфигурацию; не запускает команды и не хранит состояние run. |
+| `internal/setting` | Общий контракт настроек. | Читает два файла, объединяет профили и настройки flow, проверяет команды и rules file; отдельно выдаёт токен Nessy. | Возвращает эффективные значения без секрета; не запускает команды и не хранит состояние run. |
 | `internal/implementationstate` | Модель состояния implementation run. | Задачи, назначения, попытки, доказательства, статусы и допустимые переходы. | Не обращается к Git, хранилищу или агентам; их результаты передаются через операции модели. |
 | `internal/openspec` | Вход документов OpenSpec change. | Читает полный набор документов и фиксирует версию входа. | Не разбирает задания и не управляет flow. |
 | `internal/checkexec` | Выполнение настроенных проверок. | Запускает команды, ограничивает время, собирает вывод и классифицирует сбои. | Получает уже разрешённую команду; хранение логов и решение о приёмке принадлежат другим модулям. |
@@ -84,7 +83,6 @@ flowchart LR
 | `internal/git` | Контроль состояния Git-репозитория. | Снимки дерева, index и submodules, сравнение изменений, проверка границы записи и точечное восстановление файлов. | Не выбирает политику flow; потребитель задаёт допустимую область изменений. |
 | `internal/platformsupport` | Проверка поддерживаемой платформы. | Валидирует сочетание OS и архитектуры. | Не запускает процессы и не выбирает агентский провайдер. |
 | `internal/processjob` | Управление дочерними процессами. | Удерживает и завершает дерево процессов средствами платформы. | Не знает протоколы Codex, Nessy или команды проверок. |
-| `internal/usersettings` | Чтение пользовательских настроек. | Получает токен Nessy из файла настроек пользователя. | Не создаёт runtime и не меняет настройки. |
 | `internal/agentruntime/conformance` | Общие контрактные проверки адаптеров. | Поставляет тестовые сценарии runtime и политик записи. | Используется тестами; исходящие зависимости не заданы `arch-go.yml`. |
 | `internal/architecture` | Архитектурные тесты. | Проверяет `arch-go.yml` и build tags интеграционных тестов. | Содержит только тестовый код; внутренние импорты запрещены конфигурацией. |
 | `internal/testscope` | Выбор интеграционных наборов для CI. | Классифицирует изменённые пути по Git и process suite. | Не запускает тесты; исходящие зависимости не заданы `arch-go.yml`. |

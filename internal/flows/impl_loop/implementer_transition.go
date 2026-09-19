@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrImplementerTransition = errors.New("invalid implementer response transition")
@@ -33,7 +33,7 @@ type ImplementerTransitionInput struct {
 	Repository     string
 	AssignmentID   implementationstate.AssignmentID
 	BriefID        implementationstate.BriefID
-	Selection      implementationconfig.CheckSelection
+	Selection      setting.CheckSelection
 	Runner         CheckRunner
 	UserControl    *UserRunControl
 	Limits         implementationstate.CycleLimits
@@ -68,7 +68,7 @@ type ImplementerTransitionResult struct {
 // "tests -run One") becomes a technical response retry instead of a command
 // dispatch. The flat response schema already rejects all command/argument
 // fields; this validation additionally binds names to the configured catalog.
-func ValidateImplementerTransitionResponse(selection implementationconfig.CheckSelection, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, response AgentResponse) error {
+func ValidateImplementerTransitionResponse(selection setting.CheckSelection, run *implementationstate.Run, assignmentID implementationstate.AssignmentID, briefID implementationstate.BriefID, response AgentResponse) error {
 	if err := validateImplementerResponseBinding(run, assignmentID, briefID, response); err != nil {
 		return err
 	}

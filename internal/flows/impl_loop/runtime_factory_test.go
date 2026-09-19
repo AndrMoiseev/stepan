@@ -8,16 +8,16 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 type recordingRuntimeFactory struct {
-	profiles       []implementationconfig.RuntimeProfile
+	profiles       []setting.RuntimeProfile
 	err            error
 	reasoningError error
 }
 
-func (factory *recordingRuntimeFactory) Preflight(profile implementationconfig.RuntimeProfile) error {
+func (factory *recordingRuntimeFactory) Preflight(profile setting.RuntimeProfile) error {
 	factory.profiles = append(factory.profiles, profile)
 	if profile.Reasoning != "" && factory.reasoningError != nil {
 		return factory.reasoningError
@@ -25,7 +25,7 @@ func (factory *recordingRuntimeFactory) Preflight(profile implementationconfig.R
 	return factory.err
 }
 
-func (factory *recordingRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *recordingRuntimeFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return nil, factory.err
 }
 
@@ -66,13 +66,13 @@ func TestPrepareRuntimesUsesOnlyConfiguredProviderFactories(t *testing.T) {
 	if len(codex.profiles) != len(loopRuntimeRoles) || len(unusedClaude.profiles) != 0 || len(unusedNessy.profiles) != 0 {
 		t.Fatalf("factory calls codex=%d claude=%d nessy=%d", len(codex.profiles), len(unusedClaude.profiles), len(unusedNessy.profiles))
 	}
-	final, ok := prepared.Role(implementationconfig.RoleFinalReviewer)
+	final, ok := prepared.Role(setting.RoleFinalReviewer)
 	if !ok || final.Profile.Name != "ultra" || final.Profile.Model != "model-ultra" || final.Factory != codex {
 		t.Fatalf("final reviewer binding = %#v, configured=%t", final, ok)
 	}
 }
 
-func runtimeConfiguration(t *testing.T, profiles string) implementationconfig.Configuration {
+func runtimeConfiguration(t *testing.T, profiles string) setting.Configuration {
 	t.Helper()
 	var values map[string]map[string]any
 	if err := json.Unmarshal([]byte(profiles), &values); err != nil {
@@ -90,7 +90,7 @@ func runtimeConfiguration(t *testing.T, profiles string) implementationconfig.Co
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration, err := implementationconfig.Merge(implementationconfig.Sources{User: []byte(`{"profiles":` + string(encoded) + `}`)})
+	configuration, err := setting.Merge(loopTestSources([]byte(`{"profiles":`+string(encoded)+`}`), nil))
 	if err != nil {
 		t.Fatal(err)
 	}

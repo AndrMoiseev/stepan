@@ -11,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // TestDeterministicRecoveryEndToEnd drives the public recovery seams through
@@ -82,7 +82,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 
 	t.Run("resume retries the complete check set without consuming attempts", func(t *testing.T) {
 		fixture := newResumeFixture(t, "")
-		fixture.load = func(string) (configuration implementationconfig.Configuration, err error) {
+		fixture.load = func(string) (configuration setting.Configuration, err error) {
 			return resumeChecksConfiguration(t, `{
 "lint":{"kind":"lint","command":{"program":"lint","args":[]}},
 "test_all":{"kind":"tests","command":{"program":"test_all","args":[]}}}`, `["lint","test_all"]`), nil

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestCommandsForLifecycleShowsOnlyValidCommands(t *testing.T) {
@@ -307,7 +307,7 @@ func TestRunImplementationInteractivePublishesConciseActiveProgressWithoutAgentT
 	ui := &blockedWorkUI{started: started}
 	var current *InteractiveRun
 	controller := ImplementationInteractiveController{
-		Runtime: implementationconfig.Platform{OS: "windows", Architecture: "amd64"},
+		Runtime: setting.Platform{OS: "windows", Architecture: "amd64"},
 		Current: func(context.Context) (*InteractiveRun, error) { return current, nil },
 		Start: func(context.Context, string) (*InteractiveRun, error) {
 			current = &InteractiveRun{Run: run, Control: control}
@@ -391,7 +391,7 @@ func TestRunImplementationInteractiveStopJoinsBlockedResumeBeforeClosing(t *test
 	}
 	loaderStarted := make(chan struct{})
 	releaseLoader := make(chan struct{})
-	fixture.load = func(string) (implementationconfig.Configuration, error) {
+	fixture.load = func(string) (setting.Configuration, error) {
 		close(loaderStarted)
 		<-releaseLoader
 		return configuration, nil

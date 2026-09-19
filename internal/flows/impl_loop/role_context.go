@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrInvalidRoleContext = errors.New("invalid implementation role context")
@@ -32,8 +32,8 @@ type RulesIndex struct {
 // has already passed Configuration.ValidateRulesFile. Paths are relative to
 // repositoryRoot so they can be read from an agent workspace without exposing
 // a machine-specific rules root.
-func BuildRulesIndex(repositoryRoot string, rules implementationconfig.RulesFileValidation) (RulesIndex, error) {
-	if rules == (implementationconfig.RulesFileValidation{}) {
+func BuildRulesIndex(repositoryRoot string, rules setting.RulesFileValidation) (RulesIndex, error) {
+	if rules == (setting.RulesFileValidation{}) {
 		return RulesIndex{}, nil
 	}
 	if !filepath.IsAbs(repositoryRoot) || !filepath.IsAbs(rules.File) || !filepath.IsAbs(rules.Root) {
@@ -93,7 +93,7 @@ func contextRelativePath(root, path string) (string, error) {
 // to request a configured check. The controller retains commands and results.
 type CheckCatalogEntry struct {
 	Name     string
-	Kind     implementationconfig.CheckKind
+	Kind     setting.CheckKind
 	Required bool
 }
 
@@ -234,7 +234,7 @@ func BuildBootstrapperRequest(input BootstrapProjectContext) (string, error) {
 	}
 	renderBootstrapDocuments(&data, "CI configuration (read-only)", input.CI)
 	renderBootstrapDocuments(&data, "Project scripts (read-only)", input.Scripts)
-	fmt.Fprintf(&data, "\n## Existing non-secret user implementation settings\n\n%s\n\n## Existing non-secret project implementation settings\n\n%s\n\nPropose both configuration levels. You have no authority to execute checks or any other command; checks are configuration data only. If more codebase facts are needed, return exploration_requested and let the controller start Explorer.\n", bootstrapContextPlaceholder(input.UserSettings), bootstrapContextPlaceholder(input.ProjectSettings))
+	fmt.Fprintf(&data, "\n## Existing non-secret user settings\n\n%s\n\n## Existing non-secret project settings\n\n%s\n\nPropose user_settings and project_settings as JSON object strings using agentruntime.profiles and flows.impl_loop. Profiles belong only in agentruntime.profiles; role assignments, limits, checks, required_checks, rules_file, and main_branch belong in flows.impl_loop. Never propose credentials or old implementation/nessy sections. You have no authority to execute checks or any other command; checks are configuration data only. If more codebase facts are needed, return exploration_requested and let the controller start Explorer.\n", bootstrapContextPlaceholder(input.UserSettings), bootstrapContextPlaceholder(input.ProjectSettings))
 	return data.String(), nil
 }
 
@@ -572,7 +572,7 @@ func responseKindInstruction(kind ResponseKind) string {
 	case ResponseProgressReflected:
 		return text + "; task_ids is non-empty."
 	case ResponseConfigurationProposed:
-		return text + "; user_implementation, project_implementation, and explanation are non-empty."
+		return text + "; user_settings, project_settings, and explanation are non-empty."
 	default:
 		return text + "."
 	}

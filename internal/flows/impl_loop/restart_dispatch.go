@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrRestartContinuation = errors.New("implementation restart continuation failed")
@@ -33,9 +33,9 @@ type RestartContinuationInput struct {
 	Workspace      WorkspaceControl
 	Runner         CheckRunner
 	UserControl    *UserRunControl
-	Configuration  implementationconfig.Configuration
-	Checks         implementationconfig.CheckSelection
-	Rules          implementationconfig.RulesFileValidation
+	Configuration  setting.Configuration
+	Checks         setting.CheckSelection
+	Rules          setting.RulesFileValidation
 	ProtectedPaths []string
 	CommitControl  CommitControl
 	CommitObserver CommitObserver
@@ -103,7 +103,7 @@ func DispatchRestartContinuation(ctx context.Context, input RestartContinuationI
 	return pauseRestartContinuation(ctx, input, "continue implementation run", errors.New("restart continuation exceeded its defensive transition bound"))
 }
 
-func dispatchRestartStep(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, pkg openspec.Package, rules RulesIndex, catalog []CheckCatalogEntry, limits implementationstate.CycleLimits, limitsConfig implementationconfig.LoopLimits) error {
+func dispatchRestartStep(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, pkg openspec.Package, rules RulesIndex, catalog []CheckCatalogEntry, limits implementationstate.CycleLimits, limitsConfig setting.LoopLimits) error {
 	switch {
 	case input.Run.TaskExtractionPending:
 		return runRestartTaskExtraction(ctx, input, orchestrator, pkg, limits)
@@ -262,7 +262,7 @@ func runRestartAcceptedAssignment(ctx context.Context, input RestartContinuation
 	return restartRouteError(ctx, input, "commit accepted assignment", err)
 }
 
-func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, rules RulesIndex, limits implementationstate.CycleLimits, limitsConfig implementationconfig.LoopLimits) error {
+func runRestartFinalAcceptance(ctx context.Context, input RestartContinuationInput, orchestrator *AgentSession, rules RulesIndex, limits implementationstate.CycleLimits, limitsConfig setting.LoopLimits) error {
 	timeout := time.Duration(limitsConfig.AgentTimeoutSeconds) * time.Second
 	checkResult, checkOperationIndex := latestCurrentFinalCheck(input.Run)
 	if checkResult == nil {
@@ -671,7 +671,7 @@ func pauseRestartContinuation(ctx context.Context, input RestartContinuationInpu
 	return errors.Join(ErrRestartContinuation, cause, err)
 }
 
-func restartCheckCatalog(selection implementationconfig.CheckSelection) []CheckCatalogEntry {
+func restartCheckCatalog(selection setting.CheckSelection) []CheckCatalogEntry {
 	names := make([]string, 0, len(selection.Checks))
 	for name := range selection.Checks {
 		names = append(names, name)

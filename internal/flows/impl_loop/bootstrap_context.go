@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 const bootstrapContextDocumentBytes = 16 * 1024
@@ -21,13 +21,13 @@ var bootstrapSensitiveName = regexp.MustCompile(`(?i)(auth(?:orization)?|token|s
 // BuildBootstrapperProjectContext gathers deterministic, read-only bootstrap
 // material. It never invokes a program. The document allowlist is deliberately
 // small: deeper investigation belongs to an explicit Explorer request.
-func BuildBootstrapperProjectContext(repository string, sources implementationconfig.Sources) (BootstrapProjectContext, error) {
+func BuildBootstrapperProjectContext(repository string, sources setting.Sources) (BootstrapProjectContext, error) {
 	if !filepath.IsAbs(repository) {
 		return BootstrapProjectContext{}, fmt.Errorf("bootstrap project context requires an absolute repository")
 	}
 	context := BootstrapProjectContext{Repository: filepath.Clean(repository)}
-	context.UserSettings = sanitizeBootstrapJSON(sources.User)
-	context.ProjectSettings = sanitizeBootstrapJSON(sources.Project)
+	context.UserSettings = sanitizeBootstrapJSON(bootstrapSourceDocument(sources.UserProfiles, sources.User))
+	context.ProjectSettings = sanitizeBootstrapJSON(bootstrapSourceDocument(sources.ProjectProfiles, sources.Project))
 	for _, name := range []string{"README.md", "go.mod", "package.json", "Makefile", "Taskfile.yml", "Taskfile.yaml", "pyproject.toml", "Cargo.toml"} {
 		path := filepath.Join(repository, name)
 		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
@@ -44,6 +44,18 @@ func BuildBootstrapperProjectContext(repository string, sources implementationco
 		return BootstrapProjectContext{}, err
 	}
 	return context, nil
+}
+
+func bootstrapSourceDocument(profiles, loop json.RawMessage) json.RawMessage {
+	root := make(map[string]any)
+	if len(profiles) > 0 {
+		root["agentruntime"] = map[string]json.RawMessage{"profiles": profiles}
+	}
+	if len(loop) > 0 {
+		root["flows"] = map[string]json.RawMessage{"impl_loop": loop}
+	}
+	encoded, _ := json.Marshal(root)
+	return encoded
 }
 
 func bootstrapDocuments(repository string, candidates []string) ([]BootstrapContextDocument, error) {

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestRunRequestedChecksRunsAdditionalNarrowCheckOnly(t *testing.T) {
@@ -79,7 +79,7 @@ func TestRunRequiredChecksUsesCompleteProjectOrderAfterRequestedSuccess(t *testi
 
 func TestRunRequestedChecksMarksPlatformInapplicableCheckAndRemainderNotRun(t *testing.T) {
 	selection := testCheckSelection([]string{"lint"})
-	selection.Checks["mac_only"] = implementationconfig.SelectedCheck{Name: "mac_only", Kind: implementationconfig.CheckKindTests}
+	selection.Checks["mac_only"] = setting.SelectedCheck{Name: "mac_only", Kind: setting.CheckKindTests}
 	runner := &recordingCheckRunner{}
 
 	set, err := RunRequestedChecks(context.Background(), selection, []string{"mac_only", "lint"}, runner)
@@ -96,7 +96,7 @@ func TestRunRequestedChecksMarksPlatformInapplicableCheckAndRemainderNotRun(t *t
 
 func TestRunRequiredChecksTreatsPlatformInapplicableCheckAsFailure(t *testing.T) {
 	selection := testCheckSelection([]string{"mac_only", "lint"})
-	selection.Checks["mac_only"] = implementationconfig.SelectedCheck{Name: "mac_only", Kind: implementationconfig.CheckKindTests}
+	selection.Checks["mac_only"] = setting.SelectedCheck{Name: "mac_only", Kind: setting.CheckKindTests}
 	runner := &recordingCheckRunner{}
 
 	set, err := RunRequiredChecks(context.Background(), selection, runner)
@@ -140,19 +140,19 @@ func (runner *recordingCheckRunner) RunCheck(_ context.Context, command checkexe
 	return checkexec.Result{ExitCode: 0}, nil
 }
 
-func testCheckSelection(required []string) implementationconfig.CheckSelection {
-	checks := make(map[string]implementationconfig.SelectedCheck, 4)
+func testCheckSelection(required []string) setting.CheckSelection {
+	checks := make(map[string]setting.SelectedCheck, 4)
 	for _, name := range []string{"lint", "test_all", "test_auth", "build"} {
-		checks[name] = implementationconfig.SelectedCheck{
+		checks[name] = setting.SelectedCheck{
 			Name:           name,
-			Kind:           implementationconfig.CheckKindTests,
-			Command:        implementationconfig.CheckCommand{Program: name, Args: []string{"entire configured check"}, Env: map[string]string{"CHECK": name}},
+			Kind:           setting.CheckKindTests,
+			Command:        setting.CheckCommand{Program: name, Args: []string{"entire configured check"}, Env: map[string]string{"CHECK": name}},
 			CWD:            "repository-root",
 			TimeoutSeconds: 600,
 			Available:      true,
 		}
 	}
-	return implementationconfig.CheckSelection{Required: append([]string(nil), required...), Checks: checks}
+	return setting.CheckSelection{Required: append([]string(nil), required...), Checks: checks}
 }
 
 func assertRunOrder(t *testing.T, runner *recordingCheckRunner, want ...string) {

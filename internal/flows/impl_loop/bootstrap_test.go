@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 type bootstrapRuntime struct {
@@ -38,15 +38,15 @@ func (*bootstrapRuntime) Interrupt() error                      { return nil }
 func (runtime *bootstrapRuntime) Close() error                  { runtime.closed++; return nil }
 
 type bootstrapFactory struct {
-	profiles []implementationconfig.RuntimeProfile
+	profiles []setting.RuntimeProfile
 	runtime  *bootstrapRuntime
 }
 
-func (factory *bootstrapFactory) Preflight(profile implementationconfig.RuntimeProfile) error {
+func (factory *bootstrapFactory) Preflight(profile setting.RuntimeProfile) error {
 	factory.profiles = append(factory.profiles, profile)
 	return nil
 }
-func (factory *bootstrapFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *bootstrapFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return factory.runtime, nil
 }
 
@@ -59,9 +59,9 @@ func TestStartBootstrapperUsesDefaultHighProfileInDedicatedReadOnlySession(t *te
 	}
 	session, err := StartBootstrapper(context.Background(), BootstrapperInput{
 		Configuration: configuration, Factories: map[string]RuntimeFactory{"test": factory}, Base: agentruntime.ThreadConfig{Workspace: t.TempDir()}, Start: start,
-		SelectProfile: func(context.Context) (implementationconfig.RuntimeProfile, error) {
+		SelectProfile: func(context.Context) (setting.RuntimeProfile, error) {
 			t.Fatal("configured high profile should not prompt")
-			return implementationconfig.RuntimeProfile{}, nil
+			return setting.RuntimeProfile{}, nil
 		},
 	})
 	if err != nil {
@@ -88,16 +88,16 @@ func TestStartBootstrapperPromptsForTemporaryProfileWhenHighIsAbsent(t *testing.
 	prompts := 0
 	session, err := StartBootstrapper(context.Background(), BootstrapperInput{
 		Configuration: configuration, Factories: map[string]RuntimeFactory{"chosen": factory}, Base: agentruntime.ThreadConfig{Workspace: t.TempDir()}, Start: start,
-		SelectProfile: func(context.Context) (implementationconfig.RuntimeProfile, error) {
+		SelectProfile: func(context.Context) (setting.RuntimeProfile, error) {
 			prompts++
-			return implementationconfig.RuntimeProfile{Provider: "chosen", Model: "selected-model", Reasoning: "selected-reasoning"}, nil
+			return setting.RuntimeProfile{Provider: "chosen", Model: "selected-model", Reasoning: "selected-reasoning"}, nil
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer session.Close()
-	if prompts != 1 || session.Profile != (implementationconfig.RuntimeProfile{Name: "bootstrapper-selected", Provider: "chosen", Model: "selected-model", Reasoning: "selected-reasoning"}) {
+	if prompts != 1 || session.Profile != (setting.RuntimeProfile{Name: "bootstrapper-selected", Provider: "chosen", Model: "selected-model", Reasoning: "selected-reasoning"}) {
 		t.Fatalf("prompt calls=%d profile=%#v", prompts, session.Profile)
 	}
 }
@@ -113,14 +113,14 @@ func TestBuildBootstrapperStartContextBindsOnlyCurrentRepository(t *testing.T) {
 	}
 }
 
-func bootstrapConfiguration(t *testing.T, profiles, roles string) implementationconfig.Configuration {
+func bootstrapConfiguration(t *testing.T, profiles, roles string) setting.Configuration {
 	t.Helper()
 	raw := `{"profiles":` + profiles
 	if roles != "" {
 		raw += `,"roles":` + roles
 	}
 	raw += `}`
-	configuration, err := implementationconfig.Merge(implementationconfig.Sources{User: json.RawMessage(raw)})
+	configuration, err := setting.Merge(loopTestSources(json.RawMessage(raw), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestBuildBootstrapperProjectContextIncludesProjectCIAndScriptsWithoutAuthor
 	writeBootstrapFile(t, repository, "go.mod", "module example.com/project\n")
 	writeBootstrapFile(t, repository, ".github/workflows/test.yml", "name: test\nenv:\n  API_TOKEN: actual-token\n")
 	writeBootstrapFile(t, repository, "scripts/check.ps1", "$env:AUTHORIZATION = 'actual-authorization'\nWrite-Output test\n")
-	context, err := BuildBootstrapperProjectContext(repository, implementationconfig.Sources{
+	context, err := BuildBootstrapperProjectContext(repository, setting.Sources{
 		User:    json.RawMessage(`{"profiles":{"high":{"provider":"test","model":"high"}},"auth_token":"user-token"}`),
 		Project: json.RawMessage(`{"checks":{},"nested":{"password":"project-password"}}`),
 	})
@@ -214,9 +214,9 @@ func TestBootstrapperControllerRejectsChecksRequestedBeforeAnyCommandCanRun(t *t
 func TestBootstrapConfigurationProposalValidatesDiffsAndPreservesUnrelatedSettings(t *testing.T) {
 	directory := t.TempDir()
 	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(directory, "project.json")}
-	writeBootstrapFile(t, directory, "user.json", `{"nessy":{"auth_token":"user-secret"},"unrelated":{"keep":true},"implementation":{"profiles":{"old":{"provider":"test","model":"old"}}}}`)
-	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret","other":{"keep":"yes"},"implementation":{"limits":{"exploration_limit":1}}}`)
-	response := bootstrapConfigurationResponse(t, `{"profiles":{"high":{"provider":"test","model":"high"}},"roles":{"bootstrapper":"high"}}`, validBootstrapProjectImplementation())
+	writeBootstrapFile(t, directory, "user.json", `{"agentruntime":{"nessyapp":{"auth_token":"user-secret"},"profiles":{"old":{"provider":"test","model":"old"}}},"unrelated":{"keep":true}}`)
+	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret","other":{"keep":"yes"},"flows":{"impl_loop":{"limits":{"exploration_limit":1}}}}`)
+	response := bootstrapConfigurationResponse(t, `{"agentruntime":{"profiles":{"high":{"provider":"test","model":"high"}}},"flows":{"impl_loop":{"roles":{"bootstrapper":"high"}}}}`, validBootstrapProjectSettings())
 
 	proposal, err := PrepareBootstrapConfigurationProposal(paths, response)
 	if err != nil {
@@ -230,19 +230,20 @@ func TestBootstrapConfigurationProposalValidatesDiffsAndPreservesUnrelatedSettin
 			t.Fatalf("unsafe bootstrap diff: %s", diff.Diff)
 		}
 	}
+	writeBootstrapFile(t, directory, "user.json", `{"agentruntime":{"nessyapp":{"auth_token":"updated-secret"},"profiles":{"old":{"provider":"test","model":"old"}}},"unrelated":{"keep":true}}`)
 	if err := SaveBootstrapConfigurationProposal(proposal); err != nil {
 		t.Fatal(err)
 	}
-	assertBootstrapSettings(t, paths.User, `{"nessy":{"auth_token":"user-secret"},"unrelated":{"keep":true},"implementation":{"profiles":{"high":{"provider":"test","model":"high"}},"roles":{"bootstrapper":"high"}}}`)
-	assertBootstrapSettings(t, paths.Project, `{"authorization":"project-secret","other":{"keep":"yes"},"implementation":{"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}}`)
+	assertBootstrapSettings(t, paths.User, `{"agentruntime":{"nessyapp":{"auth_token":"updated-secret"},"profiles":{"old":{"provider":"test","model":"old"},"high":{"provider":"test","model":"high"}}},"unrelated":{"keep":true},"flows":{"impl_loop":{"roles":{"bootstrapper":"high"}}}}`)
+	assertBootstrapSettings(t, paths.Project, `{"authorization":"project-secret","other":{"keep":"yes"},"flows":{"impl_loop":{"limits":{"exploration_limit":1},"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}}}`)
 }
 
 func TestBootstrapConfigurationProposalRejectsWithoutWriting(t *testing.T) {
 	directory := t.TempDir()
 	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(directory, "project.json")}
-	writeBootstrapFile(t, directory, "user.json", `{"auth_token":"user-secret","implementation":{"profiles":{"high":{"provider":"test","model":"old"}}}}`)
-	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret","implementation":{}}`)
-	response := bootstrapConfigurationResponse(t, `{"profiles":{"high":{"provider":"test","model":"new"}}}`, `{}`)
+	writeBootstrapFile(t, directory, "user.json", `{"agentruntime":{"nessyapp":{"auth_token":"user-secret"},"profiles":{"high":{"provider":"test","model":"old"}}}}`)
+	writeBootstrapFile(t, directory, "project.json", `{"authorization":"project-secret"}`)
+	response := bootstrapConfigurationResponse(t, `{"agentruntime":{"profiles":{"high":{"provider":"test","model":"new"}}}}`, `{}`)
 	proposal, err := PrepareBootstrapConfigurationProposal(paths, response)
 	if err != nil {
 		t.Fatal(err)
@@ -266,8 +267,8 @@ func TestBootstrapConfigurationProposalRejectsInvalidTypedInputWithoutSecrets(t 
 		project string
 	}{
 		{name: "invalid json", user: `{`, project: `{}`},
-		{name: "project field at user level", user: `{"checks":{}}`, project: `{}`},
-		{name: "malformed profile", user: `{"profiles":{"high":{"provider":"test"}}}`, project: `{}`},
+		{name: "project field at user level", user: `{"flows":{"impl_loop":{"checks":{}}}}`, project: `{}`},
+		{name: "malformed profile", user: `{"agentruntime":{"profiles":{"high":{"provider":"test"}}}}`, project: `{}`},
 		{name: "unknown field", user: `{"auth_token":"proposal-secret"}`, project: `{}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -284,9 +285,9 @@ func TestBootstrapModeSavesOnlyAfterConfirmationAndExitsWithoutImplementation(t 
 	repository := t.TempDir()
 	directory := t.TempDir()
 	paths := BootstrapConfigurationPaths{User: filepath.Join(directory, "user.json"), Project: filepath.Join(repository, ".stepan", "settings.json")}
-	writeBootstrapFile(t, directory, "user.json", `{"auth_token":"user-secret","implementation":{"profiles":{"high":{"provider":"bootstrap","model":"high"}}}}`)
-	writeBootstrapFile(t, repository, ".stepan/settings.json", `{"authorization":"project-secret","implementation":{}}`)
-	runtime := &bootstrapRuntime{turns: []json.RawMessage{bootstrapConfigurationPayload(t, `{"profiles":{"high":{"provider":"bootstrap","model":"new-high"}}}`, validBootstrapProjectImplementation())}}
+	writeBootstrapFile(t, directory, "user.json", `{"agentruntime":{"nessyapp":{"auth_token":"user-secret"},"profiles":{"high":{"provider":"bootstrap","model":"high"}}}}`)
+	writeBootstrapFile(t, repository, ".stepan/settings.json", `{"authorization":"project-secret"}`)
+	runtime := &bootstrapRuntime{turns: []json.RawMessage{bootstrapConfigurationPayload(t, `{"agentruntime":{"profiles":{"high":{"provider":"bootstrap","model":"new-high"}}}}`, validBootstrapProjectSettings())}}
 	presented := 0
 	err := runBootstrapperMode(context.Background(), BootstrapperModeInput{
 		Repository: repository, Factories: map[string]RuntimeFactory{"bootstrap": &bootstrapFactory{runtime: runtime}}, Base: agentruntime.ThreadConfig{Workspace: repository},
@@ -294,7 +295,7 @@ func TestBootstrapModeSavesOnlyAfterConfirmationAndExitsWithoutImplementation(t 
 			presented += len(diffs)
 			return true, nil
 		},
-	}, implementationconfig.Sources{User: json.RawMessage(`{"profiles":{"high":{"provider":"bootstrap","model":"high"}}}`), Project: json.RawMessage(`{}`)}, paths)
+	}, loopTestSources(json.RawMessage(`{"profiles":{"high":{"provider":"bootstrap","model":"high"}}}`), json.RawMessage(`{}`)), paths)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,13 +311,13 @@ func TestBootstrapModeSavesOnlyAfterConfirmationAndExitsWithoutImplementation(t 
 func bootstrapConfigurationResponse(t *testing.T, user, project string) AgentResponse {
 	t.Helper()
 	userCopy, projectCopy, explanation := user, project, "bootstrap configuration"
-	return AgentResponse{Kind: ResponseConfigurationProposed, UserImplementation: &userCopy, ProjectImplementation: &projectCopy, Explanation: &explanation}
+	return AgentResponse{Kind: ResponseConfigurationProposed, UserSettings: &userCopy, ProjectSettings: &projectCopy, Explanation: &explanation}
 }
 
 func bootstrapConfigurationPayload(t *testing.T, user, project string) json.RawMessage {
 	t.Helper()
 	payload := responsePayloadMap(ResponseConfigurationProposed)
-	payload["user_implementation"], payload["project_implementation"] = user, project
+	payload["user_settings"], payload["project_settings"] = user, project
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +325,8 @@ func bootstrapConfigurationPayload(t *testing.T, user, project string) json.RawM
 	return encoded
 }
 
-func validBootstrapProjectImplementation() string {
-	return `{"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}`
+func validBootstrapProjectSettings() string {
+	return `{"flows":{"impl_loop":{"checks":{"unit":{"kind":"tests","command":{"program":"go","args":["test"]}}},"required_checks":["unit"]}}}`
 }
 
 func assertBootstrapSettings(t *testing.T, path, want string) {

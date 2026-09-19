@@ -78,6 +78,6 @@ const usageText = `Usage: stepan [--agent codex|claude|nessy] [--agent-cli-name 
 
 Codex and Claude allow a simple agent CLI name resolved through PATH.
 Nessy always uses nessy from PATH; --agent-cli-name is not supported for Nessy.
-Configure nessy.auth_token in ~/.stepan/settings.json before starting Nessy.
+Configure agentruntime.nessyapp.auth_token in ~/.stepan/settings.json before starting Nessy.
 The configured token replaces NESSY_CLI_DP_AUTH_TOKEN for child processes.
 Example: stepan --agent nessy`

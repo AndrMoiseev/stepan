@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrResumeRequiredChecks = errors.New("invalid resume required checks")
@@ -26,7 +26,7 @@ type ResumeRequiredChecksResult struct {
 // retry merely because the user resumed a paused run.  Nevertheless both the
 // operation and result are durable, so an interrupted command cannot be
 // mistaken for successful current evidence after recovery.
-func runResumeRequiredChecks(ctx context.Context, input ResumeInput, selection implementationconfig.CheckSelection) (ResumeRequiredChecksResult, error) {
+func runResumeRequiredChecks(ctx context.Context, input ResumeInput, selection setting.CheckSelection) (ResumeRequiredChecksResult, error) {
 	if err := validateResumeRequiredChecks(input); err != nil {
 		return ResumeRequiredChecksResult{}, err
 	}

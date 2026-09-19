@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // ResponseRole is the role that owns an immutable response schema. It is
@@ -19,13 +19,13 @@ import (
 type ResponseRole string
 
 const (
-	ResponseRoleOrchestrator  ResponseRole = implementationconfig.RoleOrchestrator
-	ResponseRoleBriefer       ResponseRole = implementationconfig.RoleBriefer
-	ResponseRoleImplementer   ResponseRole = implementationconfig.RoleImplementer
-	ResponseRoleTaskReviewer  ResponseRole = implementationconfig.RoleTaskReviewer
-	ResponseRoleExplorer      ResponseRole = implementationconfig.RoleExplorer
-	ResponseRoleFinalReviewer ResponseRole = implementationconfig.RoleFinalReviewer
-	ResponseRoleBootstrapper  ResponseRole = implementationconfig.RoleBootstrapper
+	ResponseRoleOrchestrator  ResponseRole = setting.RoleOrchestrator
+	ResponseRoleBriefer       ResponseRole = setting.RoleBriefer
+	ResponseRoleImplementer   ResponseRole = setting.RoleImplementer
+	ResponseRoleTaskReviewer  ResponseRole = setting.RoleTaskReviewer
+	ResponseRoleExplorer      ResponseRole = setting.RoleExplorer
+	ResponseRoleFinalReviewer ResponseRole = setting.RoleFinalReviewer
+	ResponseRoleBootstrapper  ResponseRole = setting.RoleBootstrapper
 )
 
 // ResponseState is the controller-owned phase in which a response is read.
@@ -142,33 +142,33 @@ type ResponseExpectation struct {
 type AgentResponse struct {
 	Kind ResponseKind
 
-	Message               *string
-	TaskIDs               []implementationstate.TaskID
-	TaskPayloads          []string
-	Brief                 *string
-	CheckNames            []string
-	FindingIDs            []string
-	Findings              []string
-	FindingDecisions      []string
-	FindingReasons        []string
-	Question              *string
-	Context               *string
-	Boundaries            *string
-	KnownFacts            []string
-	Unknowns              []string
-	References            []string
-	Locations             []string
-	Bases                 []string
-	ExpectedResults       []string
-	Options               []string
-	Recommendation        *string
-	BlockedAction         *string
-	Diagnostic            *string
-	Attempts              []string
-	RequiredUserAction    *string
-	UserImplementation    *string
-	ProjectImplementation *string
-	Explanation           *string
+	Message            *string
+	TaskIDs            []implementationstate.TaskID
+	TaskPayloads       []string
+	Brief              *string
+	CheckNames         []string
+	FindingIDs         []string
+	Findings           []string
+	FindingDecisions   []string
+	FindingReasons     []string
+	Question           *string
+	Context            *string
+	Boundaries         *string
+	KnownFacts         []string
+	Unknowns           []string
+	References         []string
+	Locations          []string
+	Bases              []string
+	ExpectedResults    []string
+	Options            []string
+	Recommendation     *string
+	BlockedAction      *string
+	Diagnostic         *string
+	Attempts           []string
+	RequiredUserAction *string
+	UserSettings       *string
+	ProjectSettings    *string
+	Explanation        *string
 
 	Binding ResponseBinding
 }
@@ -209,34 +209,34 @@ func responseTransportSchema(kinds []ResponseKind) (json.RawMessage, error) {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"kind":                   kindSchema,
-			"message":                map[string]any{"type": "string"},
-			"task_ids":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"task_payloads":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"brief":                  map[string]any{"type": "string"},
-			"check_names":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_ids":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"findings":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_decisions":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_reasons":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"question":               map[string]any{"type": "string"},
-			"context":                map[string]any{"type": "string"},
-			"boundaries":             map[string]any{"type": "string"},
-			"known_facts":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"unknowns":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"references":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"locations":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"bases":                  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"expected_results":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"options":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"recommendation":         map[string]any{"type": "string"},
-			"blocked_action":         map[string]any{"type": "string"},
-			"diagnostic":             map[string]any{"type": "string"},
-			"attempts":               map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"required_user_action":   map[string]any{"type": "string"},
-			"user_implementation":    map[string]any{"type": "string"},
-			"project_implementation": map[string]any{"type": "string"},
-			"explanation":            map[string]any{"type": "string"},
+			"kind":                 kindSchema,
+			"message":              map[string]any{"type": "string"},
+			"task_ids":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"task_payloads":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"brief":                map[string]any{"type": "string"},
+			"check_names":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"finding_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"findings":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"finding_decisions":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"finding_reasons":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"question":             map[string]any{"type": "string"},
+			"context":              map[string]any{"type": "string"},
+			"boundaries":           map[string]any{"type": "string"},
+			"known_facts":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"unknowns":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"references":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"locations":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"bases":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"expected_results":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"options":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"recommendation":       map[string]any{"type": "string"},
+			"blocked_action":       map[string]any{"type": "string"},
+			"diagnostic":           map[string]any{"type": "string"},
+			"attempts":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			"required_user_action": map[string]any{"type": "string"},
+			"user_settings":        map[string]any{"type": "string"},
+			"project_settings":     map[string]any{"type": "string"},
+			"explanation":          map[string]any{"type": "string"},
 		},
 		"required":             responseTransportFields,
 		"additionalProperties": false,
@@ -277,38 +277,38 @@ func BindAgentResponse(expectation ResponseExpectation, raw json.RawMessage) (Ag
 }
 
 type responseTransport struct {
-	Kind                  string   `json:"kind"`
-	Message               string   `json:"message"`
-	TaskIDs               []string `json:"task_ids"`
-	TaskPayloads          []string `json:"task_payloads"`
-	Brief                 string   `json:"brief"`
-	CheckNames            []string `json:"check_names"`
-	FindingIDs            []string `json:"finding_ids"`
-	Findings              []string `json:"findings"`
-	FindingDecisions      []string `json:"finding_decisions"`
-	FindingReasons        []string `json:"finding_reasons"`
-	Question              string   `json:"question"`
-	Context               string   `json:"context"`
-	Boundaries            string   `json:"boundaries"`
-	KnownFacts            []string `json:"known_facts"`
-	Unknowns              []string `json:"unknowns"`
-	References            []string `json:"references"`
-	Locations             []string `json:"locations"`
-	Bases                 []string `json:"bases"`
-	ExpectedResults       []string `json:"expected_results"`
-	Options               []string `json:"options"`
-	Recommendation        string   `json:"recommendation"`
-	BlockedAction         string   `json:"blocked_action"`
-	Diagnostic            string   `json:"diagnostic"`
-	Attempts              []string `json:"attempts"`
-	RequiredUserAction    string   `json:"required_user_action"`
-	UserImplementation    string   `json:"user_implementation"`
-	ProjectImplementation string   `json:"project_implementation"`
-	Explanation           string   `json:"explanation"`
+	Kind               string   `json:"kind"`
+	Message            string   `json:"message"`
+	TaskIDs            []string `json:"task_ids"`
+	TaskPayloads       []string `json:"task_payloads"`
+	Brief              string   `json:"brief"`
+	CheckNames         []string `json:"check_names"`
+	FindingIDs         []string `json:"finding_ids"`
+	Findings           []string `json:"findings"`
+	FindingDecisions   []string `json:"finding_decisions"`
+	FindingReasons     []string `json:"finding_reasons"`
+	Question           string   `json:"question"`
+	Context            string   `json:"context"`
+	Boundaries         string   `json:"boundaries"`
+	KnownFacts         []string `json:"known_facts"`
+	Unknowns           []string `json:"unknowns"`
+	References         []string `json:"references"`
+	Locations          []string `json:"locations"`
+	Bases              []string `json:"bases"`
+	ExpectedResults    []string `json:"expected_results"`
+	Options            []string `json:"options"`
+	Recommendation     string   `json:"recommendation"`
+	BlockedAction      string   `json:"blocked_action"`
+	Diagnostic         string   `json:"diagnostic"`
+	Attempts           []string `json:"attempts"`
+	RequiredUserAction string   `json:"required_user_action"`
+	UserSettings       string   `json:"user_settings"`
+	ProjectSettings    string   `json:"project_settings"`
+	Explanation        string   `json:"explanation"`
 }
 
 var responseTransportFields = []string{
-	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "finding_decisions", "finding_reasons", "question", "context", "boundaries", "known_facts", "unknowns", "references", "locations", "bases", "expected_results", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_implementation", "project_implementation", "explanation",
+	"kind", "message", "task_ids", "task_payloads", "brief", "check_names", "finding_ids", "findings", "finding_decisions", "finding_reasons", "question", "context", "boundaries", "known_facts", "unknowns", "references", "locations", "bases", "expected_results", "options", "recommendation", "blocked_action", "diagnostic", "attempts", "required_user_action", "user_settings", "project_settings", "explanation",
 }
 
 var responseKindsByRole = map[ResponseRole][]ResponseKind{
@@ -485,7 +485,7 @@ func normalizedResponse(kind ResponseKind, input responseTransport, binding Resp
 		Locations: optionalStrings(input.Locations), Bases: optionalStrings(input.Bases), ExpectedResults: optionalStrings(input.ExpectedResults), Options: optionalStrings(input.Options),
 		Recommendation: optionalString(input.Recommendation), BlockedAction: optionalString(input.BlockedAction), Diagnostic: optionalString(input.Diagnostic),
 		Attempts: optionalStrings(input.Attempts), RequiredUserAction: optionalString(input.RequiredUserAction),
-		UserImplementation: optionalString(input.UserImplementation), ProjectImplementation: optionalString(input.ProjectImplementation), Explanation: optionalString(input.Explanation),
+		UserSettings: optionalString(input.UserSettings), ProjectSettings: optionalString(input.ProjectSettings), Explanation: optionalString(input.Explanation),
 		Binding: binding,
 	}
 	if values := optionalStrings(input.TaskIDs); values != nil {
@@ -634,10 +634,10 @@ func validateResponseSemantics(response AgentResponse) error {
 	case ResponseProgressReflected:
 		return requireTaskIDs()
 	case ResponseConfigurationProposed:
-		if err := requireText("user_implementation", response.UserImplementation); err != nil {
+		if err := requireText("user_settings", response.UserSettings); err != nil {
 			return err
 		}
-		if err := requireText("project_implementation", response.ProjectImplementation); err != nil {
+		if err := requireText("project_settings", response.ProjectSettings); err != nil {
 			return err
 		}
 		return requireText("explanation", response.Explanation)
@@ -652,33 +652,33 @@ func validateResponseSemantics(response AgentResponse) error {
 // rather than optional metadata the controller might accidentally ignore.
 func rejectUnexpectedSemanticFields(response AgentResponse) error {
 	present := map[string]bool{
-		"message":                response.Message != nil,
-		"task_ids":               len(response.TaskIDs) != 0,
-		"task_payloads":          len(response.TaskPayloads) != 0,
-		"brief":                  response.Brief != nil,
-		"check_names":            len(response.CheckNames) != 0,
-		"finding_ids":            len(response.FindingIDs) != 0,
-		"findings":               len(response.Findings) != 0,
-		"finding_decisions":      len(response.FindingDecisions) != 0,
-		"finding_reasons":        len(response.FindingReasons) != 0,
-		"question":               response.Question != nil,
-		"context":                response.Context != nil,
-		"boundaries":             response.Boundaries != nil,
-		"known_facts":            len(response.KnownFacts) != 0,
-		"unknowns":               len(response.Unknowns) != 0,
-		"references":             len(response.References) != 0,
-		"locations":              len(response.Locations) != 0,
-		"bases":                  len(response.Bases) != 0,
-		"expected_results":       len(response.ExpectedResults) != 0,
-		"options":                len(response.Options) != 0,
-		"recommendation":         response.Recommendation != nil,
-		"blocked_action":         response.BlockedAction != nil,
-		"diagnostic":             response.Diagnostic != nil,
-		"attempts":               len(response.Attempts) != 0,
-		"required_user_action":   response.RequiredUserAction != nil,
-		"user_implementation":    response.UserImplementation != nil,
-		"project_implementation": response.ProjectImplementation != nil,
-		"explanation":            response.Explanation != nil,
+		"message":              response.Message != nil,
+		"task_ids":             len(response.TaskIDs) != 0,
+		"task_payloads":        len(response.TaskPayloads) != 0,
+		"brief":                response.Brief != nil,
+		"check_names":          len(response.CheckNames) != 0,
+		"finding_ids":          len(response.FindingIDs) != 0,
+		"findings":             len(response.Findings) != 0,
+		"finding_decisions":    len(response.FindingDecisions) != 0,
+		"finding_reasons":      len(response.FindingReasons) != 0,
+		"question":             response.Question != nil,
+		"context":              response.Context != nil,
+		"boundaries":           response.Boundaries != nil,
+		"known_facts":          len(response.KnownFacts) != 0,
+		"unknowns":             len(response.Unknowns) != 0,
+		"references":           len(response.References) != 0,
+		"locations":            len(response.Locations) != 0,
+		"bases":                len(response.Bases) != 0,
+		"expected_results":     len(response.ExpectedResults) != 0,
+		"options":              len(response.Options) != 0,
+		"recommendation":       response.Recommendation != nil,
+		"blocked_action":       response.BlockedAction != nil,
+		"diagnostic":           response.Diagnostic != nil,
+		"attempts":             len(response.Attempts) != 0,
+		"required_user_action": response.RequiredUserAction != nil,
+		"user_settings":        response.UserSettings != nil,
+		"project_settings":     response.ProjectSettings != nil,
+		"explanation":          response.Explanation != nil,
 	}
 	for name, isPresent := range present {
 		if isPresent && !slices.Contains(allowedSemanticFields[response.Kind], name) {
@@ -702,7 +702,7 @@ var allowedSemanticFields = map[ResponseKind][]string{
 	ResponseTasksExtracted:        {"task_ids", "task_payloads"},
 	ResponseTasksAdded:            {"task_ids", "task_payloads"},
 	ResponseProgressReflected:     {"task_ids"},
-	ResponseConfigurationProposed: {"user_implementation", "project_implementation", "explanation"},
+	ResponseConfigurationProposed: {"user_settings", "project_settings", "explanation"},
 }
 
 func optionalString(value string) *string {

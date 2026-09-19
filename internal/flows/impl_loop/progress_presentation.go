@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // ProgressPresentationInput contains only already durable controller facts.
@@ -17,7 +17,7 @@ import (
 // streams are not part of the interactive implementation UI.
 type ProgressPresentationInput struct {
 	Run             *implementationstate.Run
-	Runtime         implementationconfig.Platform
+	Runtime         setting.Platform
 	StartedAt       time.Time
 	Now             time.Time
 	ArtifactPath    func(implementationstate.EvidenceRef) (string, error)
@@ -133,7 +133,7 @@ func formatPublishedCheckResults(references []implementationstate.EvidenceRef, r
 // exposing command environment values. GOOS/GOARCH are the sole exception:
 // they describe a cross-build target, and the wording explicitly prevents a
 // successful cross-build from being represented as target-OS runtime evidence.
-func FormatCheckProgressResult(check CheckSetResult, runtimePlatform implementationconfig.Platform) string {
+func FormatCheckProgressResult(check CheckSetResult, runtimePlatform setting.Platform) string {
 	if strings.TrimSpace(check.Name) == "" {
 		return ""
 	}
@@ -147,7 +147,7 @@ func FormatCheckProgressResult(check CheckSetResult, runtimePlatform implementat
 	return line
 }
 
-func crossBuildTarget(command checkexec.Command, runtimePlatform implementationconfig.Platform) string {
+func crossBuildTarget(command checkexec.Command, runtimePlatform setting.Platform) string {
 	if command.Env == nil {
 		return ""
 	}

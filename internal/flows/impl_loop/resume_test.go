@@ -14,10 +14,10 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestResumeReconcilesPausedRunAndPreservesManualWorkingCopyChanges(t *testing.T) {
@@ -673,7 +673,7 @@ func TestDispatchRestartContinuationResumesInterruptedFinalStages(t *testing.T) 
 
 func TestResumeRunsEntireRequiredSetWithoutConsumingAttempts(t *testing.T) {
 	fixture := newResumeFixture(t, "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) {
+	fixture.load = func(string) (setting.Configuration, error) {
 		return resumeChecksConfiguration(t, `{
 "lint":{"kind":"lint","command":{"program":"lint","args":[]}},
 "test_all":{"kind":"tests","command":{"program":"test_all","args":[]}},
@@ -871,7 +871,7 @@ func TestResumeRefreshesInitialBaselineAfterSameBasisManualStateEdit(t *testing.
 
 func TestResumeInterruptedRequiredCommandRestartsCompleteSetFromFirstCheck(t *testing.T) {
 	fixture := newResumeFixture(t, "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) {
+	fixture.load = func(string) (setting.Configuration, error) {
 		return resumeChecksConfiguration(t, `{
 "lint":{"kind":"lint","command":{"program":"lint","args":[]}},
 "test_all":{"kind":"tests","command":{"program":"test_all","args":[]}}}`, `["lint","test_all"]`), nil
@@ -918,7 +918,7 @@ func TestResumeInterruptedRequiredCommandRestartsCompleteSetFromFirstCheck(t *te
 func TestResumeRequiredCheckFailurePersistsPauseAndDoesNotCreateSessions(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	changed := resumeTestConfiguration(t, "changed-model", "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+	fixture.load = func(string) (setting.Configuration, error) { return changed, nil }
 	owner, err := NewSessionOwner(PreparedRuntimes{}, threadConfigForTest(fixture.repository))
 	if err != nil {
 		t.Fatal(err)
@@ -954,7 +954,7 @@ func TestResumeRequiredCheckFailurePersistsPauseAndDoesNotCreateSessions(t *test
 func TestResumeReloadsChangedConfigurationAndRecreatesSessionOwner(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	changed := resumeTestConfiguration(t, "changed-model", "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+	fixture.load = func(string) (setting.Configuration, error) { return changed, nil }
 	base := fixture.repository
 	old, err := NewSessionOwner(PreparedRuntimes{}, threadConfigForTest(base))
 	if err != nil {
@@ -1018,7 +1018,7 @@ func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
 	}
 	owner := old
 	changed := resumeTestConfiguration(t, "changed-model", "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+	fixture.load = func(string) (setting.Configuration, error) { return changed, nil }
 	input := fixture.input()
 	input.Factories = map[string]RuntimeFactory{"test": factory}
 	input.SessionOwner = &owner
@@ -1056,8 +1056,8 @@ func TestResumeRecreatesStaleProfileOwnerAfterPriorGateFailure(t *testing.T) {
 
 func TestResumeInvalidConfigurationLeavesDurableDiagnosticPause(t *testing.T) {
 	fixture := newResumeFixture(t, "")
-	fixture.load = func(string) (implementationconfig.Configuration, error) {
-		return implementationconfig.Configuration{}, errors.New("invalid implementation JSON")
+	fixture.load = func(string) (setting.Configuration, error) {
+		return setting.Configuration{}, errors.New("invalid implementation JSON")
 	}
 
 	_, err := Resume(context.Background(), fixture.input())
@@ -1398,7 +1398,7 @@ type resumeFixture struct {
 	baseline      implementationstate.EvidenceRef
 	specification implementationstate.EvidenceRef
 	workspace     *resumeWorkspace
-	load          func(string) (implementationconfig.Configuration, error)
+	load          func(string) (setting.Configuration, error)
 	classify      func([]byte, []byte) (SpecificationChange, error)
 }
 
@@ -1462,7 +1462,7 @@ func prepareAcceptedRestartAssignment(t *testing.T, fixture *resumeFixture) {
 	}
 }
 
-func restartTestOwner(t *testing.T, fixture *resumeFixture) (*SessionOwner, implementationconfig.Configuration, implementationconfig.CheckSelection) {
+func restartTestOwner(t *testing.T, fixture *resumeFixture) (*SessionOwner, setting.Configuration, setting.CheckSelection) {
 	t.Helper()
 	configuration := resumeTestConfiguration(t, "initial-model", "")
 	prepared, err := PrepareRuntimes(configuration, map[string]RuntimeFactory{"test": &sessionRuntimeFactory{}})
@@ -1559,7 +1559,7 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = state.Close() })
-	return &resumeFixture{repository: repository, run: run, journal: journal, state: state, baseline: baseline, specification: specRef, workspace: &resumeWorkspace{actual: expected}, load: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}
+	return &resumeFixture{repository: repository, run: run, journal: journal, state: state, baseline: baseline, specification: specRef, workspace: &resumeWorkspace{actual: expected}, load: func(string) (setting.Configuration, error) { return configuration, nil }}
 }
 
 func newPendingExtractionResumeFixture(t *testing.T) *resumeFixture {
@@ -1623,7 +1623,7 @@ func configureAcceptanceRefresh(t *testing.T, fixture *resumeFixture, refresh st
 	switch refresh {
 	case "configuration":
 		changed := resumeTestConfiguration(t, "changed-model", "")
-		fixture.load = func(string) (implementationconfig.Configuration, error) { return changed, nil }
+		fixture.load = func(string) (setting.Configuration, error) { return changed, nil }
 	case "compatible specification":
 		fixture.classify = func([]byte, []byte) (SpecificationChange, error) { return SpecificationChange{}, nil }
 		writeResumeFile(t, filepath.Join(fixture.repository, "openspec", "changes", "change", "proposal.md"), "compatible clarification\n")
@@ -1776,7 +1776,7 @@ func prepareAcceptedReflectionEvidence(t *testing.T, fixture *resumeFixture) {
 	}
 }
 
-func resumeTestConfiguration(t *testing.T, model, rulesFile string) implementationconfig.Configuration {
+func resumeTestConfiguration(t *testing.T, model, rulesFile string) setting.Configuration {
 	t.Helper()
 	profiles := `{"low":{"provider":"test","model":"` + model + `"},"medium":{"provider":"test","model":"` + model + `"},"high":{"provider":"test","model":"` + model + `"},"ultra":{"provider":"test","model":"` + model + `"}}`
 	raw := `{"profiles":` + profiles + `,"checks":{"unit":{"kind":"tests","command":{"program":"unit","args":[]}}},"required_checks":["unit"]`
@@ -1784,17 +1784,17 @@ func resumeTestConfiguration(t *testing.T, model, rulesFile string) implementati
 		raw += `,"rules_file":"` + rulesFile + `"`
 	}
 	raw += `}`
-	configuration, err := implementationconfig.Merge(implementationconfig.Sources{Project: json.RawMessage(raw)})
+	configuration, err := setting.Merge(loopTestSources(nil, json.RawMessage(raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return configuration
 }
 
-func resumeChecksConfiguration(t *testing.T, checks, required string) implementationconfig.Configuration {
+func resumeChecksConfiguration(t *testing.T, checks, required string) setting.Configuration {
 	t.Helper()
 	profiles := `{"low":{"provider":"test","model":"initial-model"},"medium":{"provider":"test","model":"initial-model"},"high":{"provider":"test","model":"initial-model"},"ultra":{"provider":"test","model":"initial-model"}}`
-	configuration, err := implementationconfig.Merge(implementationconfig.Sources{Project: json.RawMessage(`{"profiles":` + profiles + `,"checks":` + checks + `,"required_checks":` + required + `}`)})
+	configuration, err := setting.Merge(loopTestSources(nil, json.RawMessage(`{"profiles":`+profiles+`,"checks":`+checks+`,"required_checks":`+required+`}`)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1802,12 +1802,12 @@ func resumeChecksConfiguration(t *testing.T, checks, required string) implementa
 }
 
 type resumeProfileRuntimeFactory struct {
-	created []implementationconfig.RuntimeProfile
+	created []setting.RuntimeProfile
 }
 
-func (*resumeProfileRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error { return nil }
+func (*resumeProfileRuntimeFactory) Preflight(setting.RuntimeProfile) error { return nil }
 
-func (factory *resumeProfileRuntimeFactory) Create(_ context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *resumeProfileRuntimeFactory) Create(_ context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	factory.created = append(factory.created, profile)
 	return &sessionRuntime{}, nil
 }

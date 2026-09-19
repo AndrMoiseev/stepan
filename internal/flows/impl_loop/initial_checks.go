@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrInitialRequiredChecks = errors.New("invalid initial required checks")
@@ -26,7 +26,7 @@ type InitialRequiredChecks struct {
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
-	Selection  implementationconfig.CheckSelection
+	Selection  setting.CheckSelection
 	Runner     CheckRunner
 	// UserControl owns the complete external-command boundary, including
 	// workspace observation, evidence publication, and durable result writes.

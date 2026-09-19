@@ -78,7 +78,7 @@ func TestParseAgentConfigRejectsExplicitEmptyOrWhitespaceNameForEveryProvider(t 
 }
 
 func TestUsageDocumentsClosedProviderSetWithoutModelSelection(t *testing.T) {
-	if !strings.Contains(usageText, "--agent codex|claude|nessy") || !strings.Contains(usageText, "--agent-cli-name <name>") || !strings.Contains(usageText, "nessy.auth_token") {
+	if !strings.Contains(usageText, "--agent codex|claude|nessy") || !strings.Contains(usageText, "--agent-cli-name <name>") || !strings.Contains(usageText, "agentruntime.nessyapp.auth_token") {
 		t.Fatalf("usage does not document the closed provider set: %s", usageText)
 	}
 	if strings.Contains(usageText, "--model") || strings.Contains(usageText, "--agent-cli ") || strings.Contains(usageText, "absolute") {

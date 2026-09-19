@@ -38,7 +38,7 @@ func isGlobalIntegrationPath(path string) bool {
 	case "go.mod", "go.sum", ".github/workflows/ci.yml", "internal/architecture/architecture_test.go":
 		return true
 	}
-	return strings.HasPrefix(path, "internal/testscope/")
+	return strings.HasPrefix(path, "internal/testscope/") || strings.HasPrefix(path, "internal/setting/")
 }
 
 func isGitIntegrationPath(path string) bool {

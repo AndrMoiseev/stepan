@@ -10,14 +10,14 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *testing.T) {
 	repository := t.TempDir()
 	writeRoleContextFile(t, filepath.Join(repository, "rules", "index.md"), "# entry\nENTRY-RULE-MARKER\n")
 	writeRoleContextFile(t, filepath.Join(repository, "rules", "nested", "testing.md"), "# testing\nNESTED-RULE-MARKER\n")
-	rules, err := BuildRulesIndex(repository, implementationconfig.RulesFileValidation{
+	rules, err := BuildRulesIndex(repository, setting.RulesFileValidation{
 		File: filepath.Join(repository, "rules", "index.md"),
 		Root: filepath.Join(repository, "rules"),
 	})
@@ -30,7 +30,7 @@ func TestTaskRoleStartContextsShareSelfContainedBriefAndProgressiveRules(t *test
 
 	input := TaskRoleStartInput{
 		AssignmentID: "assignment-7", BriefID: "brief-7", Brief: "Implement the observable behavior and preserve compatibility.", Rules: rules,
-		Checks: []CheckCatalogEntry{{Name: "unit", Kind: implementationconfig.CheckKindTests, Required: true}},
+		Checks: []CheckCatalogEntry{{Name: "unit", Kind: setting.CheckKindTests, Required: true}},
 	}
 	executor, err := BuildImplementerStartContext(input)
 	if err != nil {

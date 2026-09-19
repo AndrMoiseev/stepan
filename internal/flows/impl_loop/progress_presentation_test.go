@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestFormatImplementationProgressShowsActiveWorkResultsAndArtifactsWithoutTranscript(t *testing.T) {
@@ -25,7 +25,7 @@ func TestFormatImplementationProgressShowsActiveWorkResultsAndArtifactsWithoutTr
 		}},
 	}
 	got := FormatImplementationProgress(ProgressPresentationInput{
-		Run: run, Runtime: implementationconfig.Platform{OS: "windows", Architecture: "amd64"},
+		Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"},
 		StartedAt: time.Unix(100, 0), Now: time.Unix(107, 0),
 		ArtifactPath: func(reference implementationstate.EvidenceRef) (string, error) {
 			return `C:\runs\files\` + string(reference.ID), nil
@@ -74,19 +74,19 @@ func TestFormatImplementationProgressShowsDiagnosticPauseAndTerminalSummary(t *t
 		Identity: implementationstate.RunIdentity{ID: "run-paused"}, Status: implementationstate.RunPaused,
 		ExecutionBlock: &implementationstate.ExecutionBlock{BlockedAction: "run required checks", Diagnostic: "go is unavailable", Attempts: []string{"checked PATH"}, RequiredUserAction: "install Go"},
 	}
-	paused := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: implementationconfig.Platform{OS: "windows", Architecture: "amd64"}})
+	paused := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"}})
 	if !strings.Contains(paused, "diagnostic pause: run required checks — go is unavailable; required: install Go") {
 		t.Fatalf("diagnostic pause was not rendered: %s", paused)
 	}
 	run.Status = implementationstate.RunSucceeded
-	terminal := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: implementationconfig.Platform{OS: "windows", Architecture: "amd64"}})
+	terminal := FormatImplementationProgress(ProgressPresentationInput{Run: run, Runtime: setting.Platform{OS: "windows", Architecture: "amd64"}})
 	if !strings.Contains(terminal, "final summary: terminal run retained for audit") {
 		t.Fatalf("terminal summary was not rendered: %s", terminal)
 	}
 }
 
 func TestFormatCheckProgressResultSeparatesRuntimePlatformFromCrossBuildTarget(t *testing.T) {
-	host := implementationconfig.Platform{OS: "windows", Architecture: "amd64"}
+	host := setting.Platform{OS: "windows", Architecture: "amd64"}
 	cross := FormatCheckProgressResult(CheckSetResult{Name: "darwin-build", Status: CheckSucceeded, Command: checkexec.Command{Env: map[string]string{"GOOS": "darwin", "GOARCH": "arm64", "TOKEN": "secret"}}}, host)
 	for _, want := range []string{"check darwin-build: succeeded", "cross-build target darwin/arm64", "artifact build only; target runtime not accepted"} {
 		if !strings.Contains(cross, want) {

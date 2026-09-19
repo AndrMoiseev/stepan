@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // BootstrapperInput contains only the setup dependencies for one explicit
@@ -19,11 +19,11 @@ import (
 // bootstrap conversations never belong to an implementation run and must not
 // share an implementation-loop session.
 type BootstrapperInput struct {
-	Configuration implementationconfig.Configuration
+	Configuration setting.Configuration
 	Factories     map[string]RuntimeFactory
 	Base          agentruntime.ThreadConfig
 	Start         RoleStartContext
-	SelectProfile func(context.Context) (implementationconfig.RuntimeProfile, error)
+	SelectProfile func(context.Context) (setting.RuntimeProfile, error)
 }
 
 // BootstrapperProfileSelection is the temporary explicit identity selected by
@@ -51,7 +51,7 @@ type BootstrapperModeInput struct {
 // configured checks: a bootstrap response can only propose configuration,
 // request Explorer, clarify, or report a block.
 func RunBootstrapperMode(ctx context.Context, input BootstrapperModeInput) error {
-	sources, err := implementationconfig.Load(input.Repository)
+	sources, err := setting.Load(input.Repository)
 	if err != nil {
 		return err
 	}
@@ -64,12 +64,12 @@ func RunBootstrapperMode(ctx context.Context, input BootstrapperModeInput) error
 
 // runBootstrapperMode keeps process-specific settings discovery at the outer
 // boundary and makes the proposal lifecycle independently testable.
-func runBootstrapperMode(ctx context.Context, input BootstrapperModeInput, sources implementationconfig.Sources, paths BootstrapConfigurationPaths) error {
+func runBootstrapperMode(ctx context.Context, input BootstrapperModeInput, sources setting.Sources, paths BootstrapConfigurationPaths) error {
 	project, err := BuildBootstrapperProjectContext(input.Repository, sources)
 	if err != nil {
 		return err
 	}
-	configuration, err := implementationconfig.Merge(sources)
+	configuration, err := setting.Merge(sources)
 	if err != nil {
 		return err
 	}
@@ -79,12 +79,12 @@ func runBootstrapperMode(ctx context.Context, input BootstrapperModeInput, sourc
 	}
 	session, err := StartBootstrapper(ctx, BootstrapperInput{
 		Configuration: configuration, Factories: input.Factories, Base: input.Base, Start: start,
-		SelectProfile: func(callCtx context.Context) (implementationconfig.RuntimeProfile, error) {
+		SelectProfile: func(callCtx context.Context) (setting.RuntimeProfile, error) {
 			if input.SelectProfile == nil {
-				return implementationconfig.RuntimeProfile{}, errors.New("bootstrapper profile is not configured; select provider, model, and reasoning")
+				return setting.RuntimeProfile{}, errors.New("bootstrapper profile is not configured; select provider, model, and reasoning")
 			}
 			selected, err := input.SelectProfile(callCtx)
-			return implementationconfig.RuntimeProfile{Provider: selected.Provider, Model: selected.Model, Reasoning: selected.Reasoning}, err
+			return setting.RuntimeProfile{Provider: selected.Provider, Model: selected.Model, Reasoning: selected.Reasoning}, err
 		},
 	})
 	if err != nil {
@@ -114,10 +114,10 @@ func runBootstrapperMode(ctx context.Context, input BootstrapperModeInput, sourc
 // mode ends. Later bootstrap tasks send the controller-built request through
 // RunTurn; the setup path here never starts a check or an implementation run.
 type BootstrapperSession struct {
-	Profile       implementationconfig.RuntimeProfile
+	Profile       setting.RuntimeProfile
 	runtime       agentruntime.Runtime
 	thread        agentruntime.Thread
-	configuration implementationconfig.Configuration
+	configuration setting.Configuration
 	factories     map[string]RuntimeFactory
 	base          agentruntime.ThreadConfig
 }
@@ -169,28 +169,28 @@ func StartBootstrapper(ctx context.Context, input BootstrapperInput) (*Bootstrap
 	return &BootstrapperSession{Profile: profile, runtime: runtime, thread: thread, configuration: input.Configuration, factories: input.Factories, base: input.Base.Clone()}, nil
 }
 
-func bootstrapperProfile(ctx context.Context, input BootstrapperInput) (implementationconfig.RuntimeProfile, error) {
+func bootstrapperProfile(ctx context.Context, input BootstrapperInput) (setting.RuntimeProfile, error) {
 	_, configured, err := input.Configuration.BootstrapProfile()
 	if err != nil {
-		return implementationconfig.RuntimeProfile{}, err
+		return setting.RuntimeProfile{}, err
 	}
 	if configured {
-		profile, err := input.Configuration.ResolveRoleProfile(implementationconfig.RoleBootstrapper)
+		profile, err := input.Configuration.ResolveRoleProfile(setting.RoleBootstrapper)
 		if err != nil {
-			return implementationconfig.RuntimeProfile{}, err
+			return setting.RuntimeProfile{}, err
 		}
 		return profile, nil
 	}
 	if input.SelectProfile == nil {
-		return implementationconfig.RuntimeProfile{}, errors.New("bootstrapper profile is not configured; select provider, model, and reasoning")
+		return setting.RuntimeProfile{}, errors.New("bootstrapper profile is not configured; select provider, model, and reasoning")
 	}
 	profile, err := input.SelectProfile(ctx)
 	if err != nil {
-		return implementationconfig.RuntimeProfile{}, fmt.Errorf("select bootstrapper profile: %w", err)
+		return setting.RuntimeProfile{}, fmt.Errorf("select bootstrapper profile: %w", err)
 	}
 	profile.Name = "bootstrapper-selected"
 	if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
-		return implementationconfig.RuntimeProfile{}, errors.New("bootstrapper selection requires provider and model")
+		return setting.RuntimeProfile{}, errors.New("bootstrapper selection requires provider and model")
 	}
 	return profile, nil
 }
@@ -209,7 +209,7 @@ func (session *BootstrapperSession) startExplorer(ctx context.Context, start Rol
 	if session == nil || session.runtime == nil {
 		return nil, errors.New("bootstrapper session is closed")
 	}
-	profile, err := session.configuration.ResolveRoleProfile(implementationconfig.RoleExplorer)
+	profile, err := session.configuration.ResolveRoleProfile(setting.RoleExplorer)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Explorer profile: %w", err)
 	}
@@ -251,7 +251,7 @@ type BootstrapperController struct {
 // NewBootstrapperController derives the configured Explorer cap. It accepts
 // no runner or command dependency by design, which makes autonomous checking
 // impossible at this boundary.
-func NewBootstrapperController(session *BootstrapperSession, configuration implementationconfig.Configuration, project BootstrapProjectContext) *BootstrapperController {
+func NewBootstrapperController(session *BootstrapperSession, configuration setting.Configuration, project BootstrapProjectContext) *BootstrapperController {
 	project = sanitizedBootstrapProjectContext(project)
 	limits, err := configuration.ResolveLimits()
 	return &BootstrapperController{session: session, context: project, limit: limits.ExplorationLimit, initErr: err}

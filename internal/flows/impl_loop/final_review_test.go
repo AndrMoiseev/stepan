@@ -9,9 +9,9 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestFinalAcceptanceRequiresCurrentChecksAndPositiveIndependentReview(t *testing.T) {
@@ -282,8 +282,8 @@ func TestFinalReviewPausesBeforeAReviewerCanApproveAnInterveningEdit(t *testing.
 
 type finalExplorerFactory struct{ runtime *finalExplorerRuntime }
 
-func (factory finalExplorerFactory) Preflight(implementationconfig.RuntimeProfile) error { return nil }
-func (factory finalExplorerFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory finalExplorerFactory) Preflight(setting.RuntimeProfile) error { return nil }
+func (factory finalExplorerFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return factory.runtime, nil
 }
 

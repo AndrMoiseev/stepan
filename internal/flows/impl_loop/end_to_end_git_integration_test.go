@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // TestDeterministicImplementationLoopEndToEnd exercises the public controller
@@ -228,7 +228,7 @@ func e2eAssignmentExpectation(run *implementationstate.Run, assignmentID impleme
 	return ResponseExpectation{Role: ResponseRoleImplementer, State: ResponseStateImplementing, Scope: ResponseScopeAssignment, Binding: ResponseBinding{CallID: callID, RunID: run.Identity.ID, AssignmentID: assignmentID, BriefID: briefID, Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 }
 
-func e2eRunImplementer(t *testing.T, ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, checks implementationconfig.CheckSelection, runner CheckRunner, assignmentID implementationstate.AssignmentID, _ implementationstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
+func e2eRunImplementer(t *testing.T, ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, checks setting.CheckSelection, runner CheckRunner, assignmentID implementationstate.AssignmentID, _ implementationstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
 	t.Helper()
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {

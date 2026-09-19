@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // InteractiveCommand names an implementation-flow command entered at the
@@ -191,7 +191,7 @@ type ImplementationInteractiveController struct {
 	Continue func(context.Context, *InteractiveRun) error
 	// Runtime is the platform of the process running Stepan. It is never a
 	// cross-compilation target and is presented as such in status output.
-	Runtime implementationconfig.Platform
+	Runtime setting.Platform
 }
 
 // Menu derives selectable commands from the latest durable run snapshot.
@@ -331,11 +331,11 @@ func statusMessage(run *implementationstate.Run) string {
 	return fmt.Sprintf("implementation run %s is %s", run.Identity.ID, run.Status)
 }
 
-func (controller ImplementationInteractiveController) runtimePlatform() implementationconfig.Platform {
+func (controller ImplementationInteractiveController) runtimePlatform() setting.Platform {
 	if controller.Runtime.OS != "" && controller.Runtime.Architecture != "" {
 		return controller.Runtime
 	}
-	return implementationconfig.HostPlatform()
+	return setting.HostPlatform()
 }
 
 func (run *InteractiveRun) artifactPath(reference implementationstate.EvidenceRef) (string, error) {

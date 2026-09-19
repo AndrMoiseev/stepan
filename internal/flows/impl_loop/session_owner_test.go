@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestSessionOwnerScopesSessionsAndContinuesAfterExplorer(t *testing.T) {
@@ -165,7 +165,7 @@ func newSessionOwnerForTest(t *testing.T, factory RuntimeFactory) *SessionOwner 
 	t.Helper()
 	roles := make(map[string]PreparedRole, len(loopRuntimeRoles))
 	for _, role := range loopRuntimeRoles {
-		roles[role] = PreparedRole{Role: role, Profile: implementationconfig.RuntimeProfile{Name: role}, Factory: factory}
+		roles[role] = PreparedRole{Role: role, Profile: setting.RuntimeProfile{Name: role}, Factory: factory}
 	}
 	owner, err := NewSessionOwner(PreparedRuntimes{roles: roles}, agentruntime.ThreadConfig{Workspace: t.TempDir()})
 	if err != nil {
@@ -195,11 +195,11 @@ type sessionRuntimeFactory struct {
 	responses      map[ResponseRole]map[string]any
 }
 
-func (factory *sessionRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error {
+func (factory *sessionRuntimeFactory) Preflight(setting.RuntimeProfile) error {
 	return nil
 }
 
-func (factory *sessionRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *sessionRuntimeFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	runtime := &sessionRuntime{closeThreadErr: factory.closeThreadErr, responses: factory.responses}
 	factory.mu.Lock()
 	factory.runtimes = append(factory.runtimes, runtime)

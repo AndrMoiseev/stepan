@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestRefineBriefUsesExistingBrieferAndPublishesCurrentCodeRevision(t *testing.T) {
@@ -508,9 +508,9 @@ func acceptForBriefRefinement(t *testing.T, run *implementationstate.Run, assign
 
 type briefRefinementRuntimeFactory struct{ runtime agentruntime.Runtime }
 
-func (factory *briefRefinementRuntimeFactory) Preflight(implementationconfig.RuntimeProfile) error {
+func (factory *briefRefinementRuntimeFactory) Preflight(setting.RuntimeProfile) error {
 	return nil
 }
-func (factory *briefRefinementRuntimeFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory *briefRefinementRuntimeFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return factory.runtime, nil
 }

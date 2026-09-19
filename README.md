@@ -17,7 +17,7 @@ implementation loop. Его настройка, правила подготов�
 stepan bootstrap
 ```
 
-`bootstrap` предлагает только изменения раздела `implementation` в
+`bootstrap` предлагает изменения `agentruntime.profiles` и `flows.impl_loop` в
 пользовательском и проектном JSON-файлах, показывает безопасный diff и сохраняет
 его лишь после явного подтверждения. Он не запускает реализацию автоматически.
 Режимы `bootstrap` и `/feature` различны: обычный запуск без сохранённого
@@ -58,8 +58,10 @@ Nessy запускается только командой `nessy` из `PATH`. 
 
 ```json
 {
-  "nessy": {
-    "auth_token": "replace-with-your-token"
+  "agentruntime": {
+    "nessyapp": {
+      "auth_token": "replace-with-your-token"
+    }
   }
 }
 ```

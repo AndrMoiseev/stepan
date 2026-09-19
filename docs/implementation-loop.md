@@ -52,7 +52,7 @@ Bootstrapper получает контекст проекта, CI, скрипт�
 профиль `bootstrapper` (по умолчанию `high`) ещё не определён, терминал попросит
 provider, model и, при необходимости, reasoning для одной bootstrap-сессии.
 
-Bootstrapper предлагает оба раздела `implementation`: пользовательский
+Bootstrapper предлагает настройки двух файлов: пользовательский
 `~/.stepan/settings.json` (на Windows `%USERPROFILE%\.stepan\settings.json`)
 и проектный `.stepan/settings.json`. Stepan валидирует предложенную структуру,
 показывает diff каждого изменяемого файла и записывает его только после `y` или
@@ -60,15 +60,15 @@ Bootstrapper предлагает оба раздела `implementation`: пол
 включаться в предложение или diff. После сохранения bootstrap завершается: он не
 создаёт и не продолжает implementation run.
 
-Для Nessy токен по-прежнему задаёт пользователь в верхнеуровневом
-`nessy.auth_token` домашнего settings-файла; подробности есть в
-[разделе Nessy README](../README.md#nessy). Не помещайте токены, cookies или
-другие credentials в `implementation`.
+Для Nessy токен задаётся в `agentruntime.nessyapp.auth_token` домашнего
+settings-файла; подробности есть в [разделе Nessy README](../README.md#nessy).
+Не помещайте токены и другие credentials в предложения bootstrap.
 
 ## JSON-конфигурация
 
-Stepan читает ровно раздел `implementation` из обоих settings-файлов. Профили,
-назначения ролей и отдельные пределы могут быть заданы на обоих уровнях; проект
+Stepan читает `agentruntime.profiles` и `flows.impl_loop` из обоих settings-файлов.
+Старые верхнеуровневые разделы `implementation` и `nessy` вызывают ошибку;
+обновите файл вручную. Профили, назначения ролей и отдельные пределы могут быть заданы на обоих уровнях; проект
 имеет приоритет. Проектный профиль полностью заменяет одноимённый пользовательский,
 а значение `null` удаляет унаследованный профиль. Поля `checks`,
 `required_checks`, `rules_file` и `main_branch` допустимы только в проектном
@@ -84,15 +84,19 @@ Stepan читает ровно раздел `implementation` из обоих set
 <!-- implementation-config-user-example:start -->
 ```json
 {
-  "implementation": {
+  "agentruntime": {
     "profiles": {
       "low": { "provider": "codex", "model": "example-low-model" },
       "medium": { "provider": "codex", "model": "example-medium-model" },
       "high": { "provider": "codex", "model": "example-high-model" },
       "ultra": { "provider": "codex", "model": "example-ultra-model" }
-    },
-    "limits": {
-      "agent_timeout_seconds": 1800
+    }
+  },
+  "flows": {
+    "impl_loop": {
+      "limits": {
+        "agent_timeout_seconds": 1800
+      }
     }
   }
 }
@@ -107,7 +111,8 @@ Stepan читает ровно раздел `implementation` из обоих set
 <!-- implementation-config-project-example:start -->
 ```json
 {
-  "implementation": {
+  "flows": {
+    "impl_loop": {
     "roles": {
       "orchestrator": "medium",
       "briefer": "high",
@@ -145,6 +150,7 @@ Stepan читает ровно раздел `implementation` из обоих set
       }
     },
     "required_checks": ["unit"]
+    }
   }
 }
 ```

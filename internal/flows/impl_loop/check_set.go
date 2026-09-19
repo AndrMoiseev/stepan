@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var (
@@ -132,7 +132,7 @@ type CheckLifecycleReporter interface {
 // runs exactly the supplied configured names in exactly that order. It accepts
 // additional checks as well as required checks and intentionally does not sort
 // or deduplicate names.
-func RunRequestedChecks(ctx context.Context, selection implementationconfig.CheckSelection, names []string, runner CheckRunner) (CheckSet, error) {
+func RunRequestedChecks(ctx context.Context, selection setting.CheckSelection, names []string, runner CheckRunner) (CheckSet, error) {
 	return RunRequestedChecksWithReporter(ctx, selection, names, runner, nil)
 }
 
@@ -140,7 +140,7 @@ func RunRequestedChecks(ctx context.Context, selection implementationconfig.Chec
 // as RunRequestedChecks and additionally persists/presents every check that
 // starts. A reporter error is returned after the command result is retained;
 // callers must not create a durable state event that claims that result.
-func RunRequestedChecksWithReporter(ctx context.Context, selection implementationconfig.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
+func RunRequestedChecksWithReporter(ctx context.Context, selection setting.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	for _, name := range names {
 		if _, ok := selection.Checks[name]; !ok {
 			return CheckSet{Kind: CheckSetRequested}, fmt.Errorf("%w %q", ErrUnknownCheck, name)
@@ -152,13 +152,13 @@ func RunRequestedChecksWithReporter(ctx context.Context, selection implementatio
 // RunRequiredChecks runs every configured required check in project order. It
 // never reuses a prior requested result and it does not accept caller-selected
 // names, filters, parameters, or commands.
-func RunRequiredChecks(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner) (CheckSet, error) {
+func RunRequiredChecks(ctx context.Context, selection setting.CheckSelection, runner CheckRunner) (CheckSet, error) {
 	return RunRequiredChecksWithReporter(ctx, selection, runner, nil)
 }
 
 // RunRequiredChecksWithReporter has the same behavior as RunRequiredChecks
 // while publishing a report for every command that starts.
-func RunRequiredChecksWithReporter(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
+func RunRequiredChecksWithReporter(ctx context.Context, selection setting.CheckSelection, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	for _, name := range selection.Required {
 		if _, ok := selection.Checks[name]; !ok {
 			return CheckSet{Kind: CheckSetRequired}, fmt.Errorf("%w %q", ErrUnknownCheck, name)
@@ -167,7 +167,7 @@ func RunRequiredChecksWithReporter(ctx context.Context, selection implementation
 	return runCheckSet(ctx, CheckSetRequired, selection, append([]string(nil), selection.Required...), runner, reporter)
 }
 
-func runCheckSet(ctx context.Context, kind CheckSetKind, selection implementationconfig.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
+func runCheckSet(ctx context.Context, kind CheckSetKind, selection setting.CheckSelection, names []string, runner CheckRunner, reporter CheckResultReporter) (CheckSet, error) {
 	if runner == nil {
 		return CheckSet{Kind: kind}, fmt.Errorf("%w: check runner is required", ErrInvalidCheckSet)
 	}
@@ -230,7 +230,7 @@ func markNotRun(results []CheckSetResult) {
 	}
 }
 
-func checkCommand(check implementationconfig.SelectedCheck) checkexec.Command {
+func checkCommand(check setting.SelectedCheck) checkexec.Command {
 	return checkexec.Command{
 		Program: check.Command.Program,
 		Args:    append([]string(nil), check.Command.Args...),

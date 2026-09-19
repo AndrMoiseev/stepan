@@ -14,7 +14,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	implloop "github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // FactoryOptions supplies the process-wide values that are independent from a
@@ -67,30 +67,30 @@ func newFactories(options FactoryOptions, factoryStarters starters) map[string]i
 	}
 	return map[string]implloop.RuntimeFactory{
 		"codex": providerFactory{
-			preflight: func(profile implementationconfig.RuntimeProfile) error {
+			preflight: func(profile setting.RuntimeProfile) error {
 				return codexapp.ValidateRuntimeConfig(codexConfig(options, profile))
 			},
-			create: func(_ context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+			create: func(_ context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
 				return factoryStarters.codex(codexConfig(options, profile))
 			},
 		},
 		"claude": providerFactory{
-			preflight: func(profile implementationconfig.RuntimeProfile) error {
+			preflight: func(profile setting.RuntimeProfile) error {
 				return claudeapp.ValidateRuntimeConfig(claudeConfig(options, profile))
 			},
-			create: func(ctx context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+			create: func(ctx context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
 				return factoryStarters.claude(ctx, claudeConfig(options, profile))
 			},
 		},
 		"nessy": providerFactory{
-			preflight: func(profile implementationconfig.RuntimeProfile) error {
+			preflight: func(profile setting.RuntimeProfile) error {
 				config, err := nessyConfig(options, profile)
 				if err != nil {
 					return err
 				}
 				return nessyapp.ValidateRuntimeConfig(config)
 			},
-			create: func(_ context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+			create: func(_ context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
 				config, err := nessyConfig(options, profile)
 				if err != nil {
 					return nil, err
@@ -102,33 +102,33 @@ func newFactories(options FactoryOptions, factoryStarters starters) map[string]i
 }
 
 type providerFactory struct {
-	preflight func(implementationconfig.RuntimeProfile) error
-	create    func(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error)
+	preflight func(setting.RuntimeProfile) error
+	create    func(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error)
 }
 
-func (factory providerFactory) Preflight(profile implementationconfig.RuntimeProfile) error {
+func (factory providerFactory) Preflight(profile setting.RuntimeProfile) error {
 	if factory.preflight == nil {
 		return errors.New("runtime preflight is unavailable")
 	}
 	return factory.preflight(profile)
 }
 
-func (factory providerFactory) Create(ctx context.Context, profile implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (factory providerFactory) Create(ctx context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	if factory.create == nil {
 		return nil, errors.New("runtime creation is unavailable")
 	}
 	return factory.create(ctx, profile)
 }
 
-func codexConfig(options FactoryOptions, profile implementationconfig.RuntimeProfile) codexapp.RuntimeConfig {
+func codexConfig(options FactoryOptions, profile setting.RuntimeProfile) codexapp.RuntimeConfig {
 	return codexapp.RuntimeConfig{Executable: options.CodexExecutable, Workspace: options.Workspace, Model: profile.Model, Reasoning: profile.Reasoning}
 }
 
-func claudeConfig(options FactoryOptions, profile implementationconfig.RuntimeProfile) claudeapp.Config {
+func claudeConfig(options FactoryOptions, profile setting.RuntimeProfile) claudeapp.Config {
 	return claudeapp.Config{Executable: options.ClaudeExecutable, Workspace: options.Workspace, EnvelopeSchema: append(json.RawMessage(nil), options.EnvelopeSchema...), Model: profile.Model, Reasoning: profile.Reasoning}
 }
 
-func nessyConfig(options FactoryOptions, profile implementationconfig.RuntimeProfile) (nessyapp.Config, error) {
+func nessyConfig(options FactoryOptions, profile setting.RuntimeProfile) (nessyapp.Config, error) {
 	if options.NessyAuthToken == nil {
 		return nessyapp.Config{}, errors.New("Nessy authentication loader is required")
 	}

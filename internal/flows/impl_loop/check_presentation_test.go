@@ -11,9 +11,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestBoundedCheckDiagnosticsPreservesUnicodeEdgesAndSmallOutput(t *testing.T) {
@@ -252,8 +252,8 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 	}
 }
 
-func implementationCheck(repository, name string) implementationconfig.SelectedCheck {
-	return implementationconfig.SelectedCheck{Name: name, Kind: implementationconfig.CheckKindTests, Command: implementationconfig.CheckCommand{Program: name, Args: []string{"all"}}, CWD: repository, TimeoutSeconds: 600, Available: true}
+func implementationCheck(repository, name string) setting.SelectedCheck {
+	return setting.SelectedCheck{Name: name, Kind: setting.CheckKindTests, Command: setting.CheckCommand{Program: name, Args: []string{"all"}}, CWD: repository, TimeoutSeconds: 600, Available: true}
 }
 
 func assertCheckEvidenceCanBeRecordedWithoutOutput(t *testing.T, run *runstore.Run, report CheckPresentation, stdout, stderr []byte) {

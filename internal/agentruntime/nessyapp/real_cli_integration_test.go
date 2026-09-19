@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/usersettings"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 const (
@@ -117,10 +117,10 @@ func TestNessyRealCLIConformance(t *testing.T) {
 		result.FailureClass = "executable_not_found"
 		t.Fatalf("explicit executable name is unavailable in PATH")
 	}
-	token, err := usersettings.NessyAuthToken()
+	token, err := setting.NessyAuthToken()
 	if err != nil {
 		result.FailureClass = "configuration"
-		t.Fatal("configure nessy.auth_token in ~/.stepan/settings.json")
+		t.Fatal("configure agentruntime.nessyapp.auth_token in ~/.stepan/settings.json")
 	}
 	t.Setenv("NESSY_CLI_DP_AUTH_TOKEN", "acceptance-conflicting-environment-value")
 	fixture := makeRealCLIFixture(t, name, resolved)

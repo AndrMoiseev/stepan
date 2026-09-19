@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var ErrFinalAcceptanceRoute = errors.New("invalid final acceptance route")
@@ -33,7 +33,7 @@ type FinalRequiredChecks struct {
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
 	Repository     string
-	Selection      implementationconfig.CheckSelection
+	Selection      setting.CheckSelection
 	Runner         CheckRunner
 	UserControl    *UserRunControl
 	MaxCycles      int

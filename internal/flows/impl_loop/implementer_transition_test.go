@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestImplementerChecksRequestedReturnsConfiguredResultsToContinuation(t *testing.T) {
@@ -176,7 +176,7 @@ type implementerTransitionFixture struct {
 	journal    *runstore.Run
 	repository string
 	runner     *recordingCheckRunner
-	selection  implementationconfig.CheckSelection
+	selection  setting.CheckSelection
 }
 
 func newImplementerTransitionFixture(t *testing.T) implementerTransitionFixture {

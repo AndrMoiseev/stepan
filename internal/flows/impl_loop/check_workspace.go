@@ -10,9 +10,9 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var (
@@ -291,7 +291,7 @@ type RequiredCheckConvergence struct {
 // that own durable mandatory-attempt accounting use this primitive so each
 // restarted set can reserve its own attempt; RunRequiredChecksUntilStable
 // below composes the same primitive for callers that only need convergence.
-func RunOneRequiredCheckCycle(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner, reporter *WorkspaceCheckReporter, number int) (RequiredCheckCycle, error) {
+func RunOneRequiredCheckCycle(ctx context.Context, selection setting.CheckSelection, runner CheckRunner, reporter *WorkspaceCheckReporter, number int) (RequiredCheckCycle, error) {
 	if reporter == nil || reporter.Observer == nil {
 		return RequiredCheckCycle{}, errors.New("required check convergence requires a workspace reporter")
 	}
@@ -310,7 +310,7 @@ func RunOneRequiredCheckCycle(ctx context.Context, selection implementationconfi
 // RunRequiredChecksUntilStable runs complete required sets until a set leaves
 // the workspace unchanged. maxCycles is the controller's approved required
 // check-attempt bound; it is never treated as an unbounded generator retry.
-func RunRequiredChecksUntilStable(ctx context.Context, selection implementationconfig.CheckSelection, runner CheckRunner, reporter *WorkspaceCheckReporter, maxCycles int) (RequiredCheckConvergence, error) {
+func RunRequiredChecksUntilStable(ctx context.Context, selection setting.CheckSelection, runner CheckRunner, reporter *WorkspaceCheckReporter, maxCycles int) (RequiredCheckConvergence, error) {
 	if reporter == nil || reporter.Observer == nil {
 		return RequiredCheckConvergence{}, errors.New("required check convergence requires a workspace reporter")
 	}

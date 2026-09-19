@@ -11,7 +11,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 type inertRuntime struct{}
@@ -31,7 +31,7 @@ func TestProductionFactoriesRejectMissingUsedCLI(t *testing.T) {
 		Workspace:       t.TempDir(),
 		CodexExecutable: "definitely-missing-stepan-codex-cli",
 	})
-	err := factories["codex"].Preflight(implementationconfig.RuntimeProfile{Name: "medium", Provider: "codex", Model: "gpt"})
+	err := factories["codex"].Preflight(setting.RuntimeProfile{Name: "medium", Provider: "codex", Model: "gpt"})
 	if err == nil || !strings.Contains(err.Error(), "resolve executable") {
 		t.Fatalf("missing Codex CLI preflight = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestProductionFactoriesRejectUnsupportedNessyReasoning(t *testing.T) {
 		Workspace:      t.TempDir(),
 		NessyAuthToken: func() (string, error) { return "test-token", nil },
 	})
-	err := factories["nessy"].Preflight(implementationconfig.RuntimeProfile{Name: "low", Provider: "nessy", Model: "qwen", Reasoning: "high"})
+	err := factories["nessy"].Preflight(setting.RuntimeProfile{Name: "low", Provider: "nessy", Model: "qwen", Reasoning: "high"})
 	if err == nil || !strings.Contains(err.Error(), "does not support configured reasoning") {
 		t.Fatalf("Nessy reasoning preflight = %v", err)
 	}
@@ -73,7 +73,7 @@ func TestProductionFactoriesPassProfileModelAndReasoningToStarters(t *testing.T)
 		},
 	})
 
-	profiles := []implementationconfig.RuntimeProfile{
+	profiles := []setting.RuntimeProfile{
 		{Name: "medium", Provider: "codex", Model: "gpt", Reasoning: "high"},
 		{Name: "high", Provider: "claude", Model: "sonnet", Reasoning: "max"},
 		{Name: "low", Provider: "nessy", Model: "qwen"},

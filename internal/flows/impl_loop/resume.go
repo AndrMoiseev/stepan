@@ -13,10 +13,10 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 var (
@@ -51,7 +51,7 @@ type ResumeInput struct {
 	Factories map[string]RuntimeFactory
 	// ConfigurationLoader is an optional deterministic seam for callers that
 	// own settings discovery. The default reloads both standard settings files.
-	ConfigurationLoader func(string) (implementationconfig.Configuration, error)
+	ConfigurationLoader func(string) (setting.Configuration, error)
 	// ClassifySpecificationChange is the controller's deterministic product
 	// decision for a changed complete specification. It must distinguish an
 	// update compatible with this run from one that requires fresh scope.
@@ -77,9 +77,9 @@ type SpecificationChange struct {
 // ResumeResult describes the reconciled inputs. Manual changes are observed
 // and retained; no resume path resets, checks out, or overwrites the worktree.
 type ResumeResult struct {
-	Configuration         implementationconfig.Configuration
-	Checks                implementationconfig.CheckSelection
-	Rules                 implementationconfig.RulesFileValidation
+	Configuration         setting.Configuration
+	Checks                setting.CheckSelection
+	Rules                 setting.RulesFileValidation
 	Prepared              PreparedRuntimes
 	WorkspaceChanged      bool
 	ConfigurationChanged  bool
@@ -308,49 +308,49 @@ func resumeCandidate(run *implementationstate.Run) (*implementationstate.Run, er
 	return event.State, nil
 }
 
-func loadResumeConfiguration(input ResumeInput) (implementationconfig.Configuration, implementationconfig.CheckSelection, implementationconfig.RulesFileValidation, PreparedRuntimes, error) {
-	var configuration implementationconfig.Configuration
+func loadResumeConfiguration(input ResumeInput) (setting.Configuration, setting.CheckSelection, setting.RulesFileValidation, PreparedRuntimes, error) {
+	var configuration setting.Configuration
 	var err error
 	if input.ConfigurationLoader != nil {
 		configuration, err = input.ConfigurationLoader(input.Repository)
 	} else {
-		sources, loadErr := implementationconfig.Load(input.Repository)
+		sources, loadErr := setting.Load(input.Repository)
 		if loadErr == nil {
-			configuration, loadErr = implementationconfig.Merge(sources)
+			configuration, loadErr = setting.Merge(sources)
 		}
 		err = loadErr
 	}
 	if err != nil {
-		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 	}
 	if err := configuration.ValidateLoopRoles(); err != nil {
-		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 	}
 	for _, role := range []string{
-		implementationconfig.RoleOrchestrator,
-		implementationconfig.RoleBriefer,
-		implementationconfig.RoleImplementer,
-		implementationconfig.RoleTaskReviewer,
-		implementationconfig.RoleExplorer,
-		implementationconfig.RoleFinalReviewer,
+		setting.RoleOrchestrator,
+		setting.RoleBriefer,
+		setting.RoleImplementer,
+		setting.RoleTaskReviewer,
+		setting.RoleExplorer,
+		setting.RoleFinalReviewer,
 	} {
 		if _, err := configuration.ResolveRoleProfile(role); err != nil {
-			return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+			return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 		}
 	}
 	checks, err := configuration.SelectHostChecks()
 	if err != nil {
-		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 	}
 	rules, err := configuration.ValidateRulesFile(input.Repository)
 	if err != nil {
-		return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+		return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 	}
 	prepared := PreparedRuntimes{}
 	if input.Factories != nil {
 		prepared, err = PrepareRuntimes(configuration, input.Factories)
 		if err != nil {
-			return implementationconfig.Configuration{}, implementationconfig.CheckSelection{}, implementationconfig.RulesFileValidation{}, PreparedRuntimes{}, err
+			return setting.Configuration{}, setting.CheckSelection{}, setting.RulesFileValidation{}, PreparedRuntimes{}, err
 		}
 	}
 	return configuration, checks, rules, prepared, nil
@@ -360,7 +360,7 @@ type resumeWorkspaceComparer interface {
 	Compare(context.Context, string, git.Snapshot, git.Snapshot) ([]string, error)
 }
 
-func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after git.Snapshot, rules implementationconfig.RulesFileValidation) bool {
+func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after git.Snapshot, rules setting.RulesFileValidation) bool {
 	if rules.DocumentPaths == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.SubmodulesHash != after.SubmodulesHash {
 		return false
 	}
@@ -428,7 +428,7 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual git.S
 	return false
 }
 
-func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules implementationconfig.RulesFileValidation) (bool, git.Snapshot) {
+func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules setting.RulesFileValidation) (bool, git.Snapshot) {
 	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
 		// A hook refusal may stage the pending tree. The second delta below is
 		// still constrained by its durable reflection snapshot.
@@ -504,7 +504,7 @@ func resumeSpecification(pkg openspec.Package) ([]byte, error) {
 	return json.Marshal(documents)
 }
 
-func canonicalResumeConfiguration(configuration implementationconfig.Configuration) ([]byte, error) {
+func canonicalResumeConfiguration(configuration setting.Configuration) ([]byte, error) {
 	raw, err := json.Marshal(configuration)
 	if err != nil {
 		return nil, err

@@ -13,10 +13,10 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing.T) {
@@ -101,7 +101,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if err := os.Remove(filepath.Join(repository, ".git", "hooks", "pre-commit")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Resume(context.Background(), ResumeInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, Workspace: workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }), ConfigurationLoader: func(string) (implementationconfig.Configuration, error) { return configuration, nil }}); err != nil {
+	if _, err := Resume(context.Background(), ResumeInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, Workspace: workspace, Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) { return checkexec.Result{}, nil }), ConfigurationLoader: func(string) (setting.Configuration, error) { return configuration, nil }}); err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit {

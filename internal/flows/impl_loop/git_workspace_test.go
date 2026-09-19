@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
@@ -45,7 +45,7 @@ func TestValidateNewStartFallsBackToLocalOriginHEAD(t *testing.T) {
 	gitFixture(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 	switchToBranch(t, repository, "implementation")
 
-	workspace, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{})
+	workspace, err := ValidateNewStart(context.Background(), repository, setting.Configuration{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestValidateNewStartRejectsUnknownMainBranchWithConfigurationGuidance(t *te
 				test.setup(t, repository)
 			}
 
-			_, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{})
+			_, err := ValidateNewStart(context.Background(), repository, setting.Configuration{})
 			if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 				t.Fatalf("error = %v", err)
 			}
@@ -84,7 +84,7 @@ func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *te
 	t.Parallel()
 	for _, test := range []struct {
 		name          string
-		configuration implementationconfig.Configuration
+		configuration setting.Configuration
 		setup         func(*testing.T, string)
 	}{
 		{name: "configured", configuration: configurationWithMain("main")},
@@ -156,7 +156,7 @@ func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
 	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`} {
-		_, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{MainBranch: json.RawMessage(mainBranch)})
+		_, err := ValidateNewStart(context.Background(), repository, setting.Configuration{MainBranch: json.RawMessage(mainBranch)})
 		if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 			t.Fatalf("main_branch %s error = %v", mainBranch, err)
 		}
@@ -306,9 +306,9 @@ func inspectWorkspace(t *testing.T, repository string) workspaceInspection {
 	}
 }
 
-func configurationWithMain(branch string) implementationconfig.Configuration {
+func configurationWithMain(branch string) setting.Configuration {
 	encoded, _ := json.Marshal(branch)
-	return implementationconfig.Configuration{MainBranch: encoded}
+	return setting.Configuration{MainBranch: encoded}
 }
 
 func newGitWorkspaceWithSubmodule(t *testing.T) (string, string) {

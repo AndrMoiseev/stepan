@@ -7,7 +7,7 @@ Go и Nessy. Не сохранять токен, полный environment или
 ## Подготовка
 
 Нужны Go 1.26.5, Git, Nessy в PATH и действующий токен, вручную записанный в
-`~/.stepan/settings.json` в строковое поле `nessy.auth_token`. Пример без
+`~/.stepan/settings.json` в строковое поле `agentruntime.nessyapp.auth_token`. Пример без
 действительного секрета находится в README. Для macOS требуется физический
 Apple Silicon Mac; cross-build проверяет только компиляцию.
 

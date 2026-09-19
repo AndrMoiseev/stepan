@@ -27,7 +27,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/implementationruntime"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
-	"github.com/AndrMoiseev/stepan/internal/usersettings"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func main() {
@@ -70,14 +70,23 @@ func run(ctx context.Context, args []string) int {
 		return 2
 	}
 	if startup != nil {
-		composition := implementationStartupCompositionForConfig(config, root, usersettings.NessyAuthToken)
+		composition := implementationStartupCompositionForConfig(config, root, setting.NessyAuthToken)
 		if err := runImplementationStartupInteractive(ctx, root, store, startup, newImplementationConsoleUI(), composition); err != nil && !errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 		return 0
 	}
-	factory, err := configuredRuntimeFactory(config, root, usersettings.NessyAuthToken, defaultRuntimeStarters())
+	sources, err := setting.Load(root)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read settings:", err)
+		return 2
+	}
+	if _, err := setting.Merge(sources); err != nil {
+		fmt.Fprintln(os.Stderr, "resolve settings:", err)
+		return 2
+	}
+	factory, err := configuredRuntimeFactory(config, root, setting.NessyAuthToken, defaultRuntimeStarters())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start Stepan:", err)
 		return 2
@@ -170,7 +179,7 @@ func (console *bootstrapConsole) ConfirmBootstrapConfiguration(ctx context.Conte
 }
 
 func runBootstrapMode(ctx context.Context, root string, config agentConfig, prompt bootstrapPrompter) error {
-	options := implementationruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: usersettings.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
+	options := implementationruntime.FactoryOptions{Workspace: root, EnvelopeSchema: impl_loop.ImplementationEnvelopeSchema(), NessyAuthToken: setting.NessyAuthToken, NessyJSONContract: nessyapp.JSONContract}
 	if config.kind == agentCodex {
 		options.CodexExecutable = config.executable
 	}

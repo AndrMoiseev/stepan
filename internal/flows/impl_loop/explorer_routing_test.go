@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 func TestRouteExplorerReturnsResultToSourceAndPreservesEpisodeCounter(t *testing.T) {
@@ -253,8 +253,8 @@ type explorerRoutingFactory struct {
 	created int
 }
 
-func (f *explorerRoutingFactory) Preflight(implementationconfig.RuntimeProfile) error { return nil }
-func (f *explorerRoutingFactory) Create(context.Context, implementationconfig.RuntimeProfile) (agentruntime.Runtime, error) {
+func (f *explorerRoutingFactory) Preflight(setting.RuntimeProfile) error { return nil }
+func (f *explorerRoutingFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	f.created++
 	return f.runtime, nil
 }

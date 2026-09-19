@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/AndrMoiseev/stepan/internal/git"
-	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
+	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
 // WorkspaceControl is the semantic seam between implementation orchestration
@@ -25,7 +25,7 @@ type WorkspaceControl interface {
 type RepositoryControl interface {
 	WorkspaceControl
 	FindRoot(context.Context, string) (string, error)
-	ValidateNewStart(context.Context, string, implementationconfig.Configuration) (GitWorkspace, error)
+	ValidateNewStart(context.Context, string, setting.Configuration) (GitWorkspace, error)
 }
 
 // GitWorkspaceControl is the production adapter backed by the git
@@ -67,7 +67,7 @@ func (GitWorkspaceControl) FindRoot(ctx context.Context, start string) (string, 
 	return gitFindRoot(ctx, start)
 }
 
-func (control GitWorkspaceControl) ValidateNewStart(ctx context.Context, start string, configuration implementationconfig.Configuration) (GitWorkspace, error) {
+func (control GitWorkspaceControl) ValidateNewStart(ctx context.Context, start string, configuration setting.Configuration) (GitWorkspace, error) {
 	return gitValidateNewStart(ctx, control, start, configuration)
 }
 
