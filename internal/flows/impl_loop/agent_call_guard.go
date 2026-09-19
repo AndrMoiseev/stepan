@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -71,7 +71,7 @@ const (
 // separately because a call can both fail and leave prohibited file edits.
 type AgentCallOutcome struct {
 	Disposition     CallDisposition
-	Snapshot        gitsnapshot.Snapshot
+	Snapshot        git.Snapshot
 	InvocationError error
 	Diagnostic      string
 	ViolationPaths  []string

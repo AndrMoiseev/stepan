@@ -46,7 +46,7 @@ func isGitIntegrationPath(path string) bool {
 		return true
 	}
 	for _, prefix := range []string{
-		"internal/gitsnapshot/",
+		"internal/git/",
 		"internal/codexprobe/",
 		"internal/flows/spec/",
 	} {

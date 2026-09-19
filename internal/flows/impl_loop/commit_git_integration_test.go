@@ -12,7 +12,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
@@ -114,12 +114,12 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if err != nil || result.Commit.CommitID == "" {
 		t.Fatalf("retry commit result=%#v err=%v", result, err)
 	}
-	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("commit count=%s, want exactly one retry commit", count)
 	}
 }
 
-func recordResumeReflectionEvidence(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, reflection gitsnapshot.Snapshot) {
+func recordResumeReflectionEvidence(t *testing.T, run *implementationstate.Run, stateStore *runstore.StateStore, journal *runstore.Run, reflection git.Snapshot) {
 	t.Helper()
 	basis := implementationstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	if err := run.AddRunOperation(implementationstate.Operation{ID: "reflect-progress", Kind: implementationstate.OperationAgent, Basis: basis, Description: "reflect accepted task progress in tasks.md"}); err != nil {
@@ -228,11 +228,11 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if commits := strings.Fields(git(t, repository, "rev-list", "--count", "HEAD")); len(commits) != 1 || commits[0] != "2" {
+	if commits := strings.Fields(gitFixture(t, repository, "rev-list", "--count", "HEAD")); len(commits) != 1 || commits[0] != "2" {
 		t.Fatalf("commit count = %q, want one new commit", commits)
 	}
 	for _, path := range []string{"implementation.txt", "openspec/changes/change/tasks.md"} {
-		if got := git(t, repository, "show", "--format=", "--name-only", "HEAD", "--", path); strings.TrimSpace(got) != path {
+		if got := gitFixture(t, repository, "show", "--format=", "--name-only", "HEAD", "--", path); strings.TrimSpace(got) != path {
 			t.Fatalf("commit does not include %q: %q", path, got)
 		}
 	}
@@ -240,7 +240,7 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	if err != nil || !strings.Contains(string(contents), "[x]") {
 		t.Fatalf("informational mark = %q, error = %v", contents, err)
 	}
-	if result.Commit.CommitID != strings.TrimSpace(git(t, repository, "rev-parse", "HEAD")) {
+	if result.Commit.CommitID != strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD")) {
 		t.Fatalf("committed state did not retain actual HEAD: %#v", result.Commit)
 	}
 }
@@ -288,7 +288,7 @@ func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(
 	}
 	control := &commitControlFake{observation: &CommitObservation{
 		CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
+		Worktree: git.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
 	}}
 
 	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
@@ -335,7 +335,7 @@ func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitl
 			}
 			control := &commitControlFake{observation: &CommitObservation{
 				CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: intent.Message,
-				Worktree: gitsnapshot.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
+				Worktree: git.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
 			}}
 
 			_, err = CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
@@ -374,10 +374,10 @@ func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.
 	if persistErr != nil || persisted.Status != implementationstate.RunPaused || persisted.Assignments[0].Status != implementationstate.AssignmentAcceptedAwaitingCommit || !strings.Contains(persisted.PauseReason, "hook rejected") {
 		t.Fatalf("hook refusal pause was not durable: run=%#v error=%v", persisted, persistErr)
 	}
-	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "1" {
+	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "1" {
 		t.Fatalf("hook refusal created or rewrote commits: count=%s", count)
 	}
-	if status := git(t, repository, "status", "--porcelain=v1"); !strings.Contains(status, "implementation.txt") {
+	if status := gitFixture(t, repository, "status", "--porcelain=v1"); !strings.Contains(status, "implementation.txt") {
 		t.Fatalf("hook refusal reset accepted work: %q", status)
 	}
 }
@@ -403,9 +403,9 @@ func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *te
 	}
 	// This models the crash window: Git succeeds after the durable intent, but
 	// before CommitAssignment can write the completed machine state.
-	git(t, repository, "add", "--all")
-	git(t, repository, "commit", "--quiet", "-m", message)
-	created := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	gitFixture(t, repository, "add", "--all")
+	gitFixture(t, repository, "commit", "--quiet", "-m", message)
+	created := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
 	if err := stateStore.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -428,7 +428,7 @@ func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *te
 	if recovered.Assignments[0].Status != implementationstate.AssignmentCommitted || recovered.LeafStatus["A"] != implementationstate.TaskComplete {
 		t.Fatalf("recovered run did not complete exactly the committed assignment: %#v", recovered)
 	}
-	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("reconciliation created another commit: count=%s", count)
 	}
 }
@@ -447,11 +447,11 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
 		t.Fatalf("hook content change error=%v result=%#v", err, first)
 	}
-	firstCommit := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	firstCommit := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
 	if run.Status != implementationstate.RunActive || run.Assignments[0].Status != implementationstate.AssignmentActive || run.LeafStatus["A"] != implementationstate.TaskPending || run.Assignments[0].Commit != nil || len(run.Assignments[0].AcceptanceHistory) != 1 {
 		t.Fatalf("hook-modified commit was incorrectly completed or paused: %#v", run)
 	}
-	if got := git(t, repository, "show", "HEAD:hook.txt"); got != "hook content\n" {
+	if got := gitFixture(t, repository, "show", "HEAD:hook.txt"); got != "hook content\n" {
 		t.Fatalf("hook-created commit content = %q", got)
 	}
 
@@ -464,10 +464,10 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 	if err != nil || second.Commit.CommitID == "" {
 		t.Fatalf("corrective commit error=%v result=%#v", err, second)
 	}
-	if second.Commit.ParentCommit != firstCommit || strings.TrimSpace(git(t, repository, "rev-parse", "HEAD^")) != firstCommit {
+	if second.Commit.ParentCommit != firstCommit || strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD^")) != firstCommit {
 		t.Fatalf("corrective commit rewrote hook-created commit: first=%s second=%#v", firstCommit, second.Commit)
 	}
-	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "3" {
+	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "3" {
 		t.Fatalf("commit count=%s, want initial plus hook and corrective commits", count)
 	}
 }
@@ -484,7 +484,7 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
 		t.Fatalf("hook content change error=%v result=%#v", err, first)
 	}
-	firstCommit := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	firstCommit := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
 	if err := stateStore.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 	if control.calls != 0 {
 		t.Fatalf("reused hook commit invoked a second Git commit %d times", control.calls)
 	}
-	if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+	if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 		t.Fatalf("unchanged reacceptance created a corrective commit: count=%s", count)
 	}
 	if run.Assignments[0].Status != implementationstate.AssignmentCommitted || run.LeafStatus["A"] != implementationstate.TaskComplete {

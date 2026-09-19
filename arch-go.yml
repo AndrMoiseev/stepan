@@ -46,12 +46,12 @@ dependenciesRules:
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/spec$'
     shouldNotDependsOn:
       internal:
@@ -60,7 +60,7 @@ dependenciesRules:
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
         - '^github\.com/AndrMoiseev/stepan/internal/openspec$'
         - '^github\.com/AndrMoiseev/stepan/internal/runstore$'
@@ -74,12 +74,12 @@ dependenciesRules:
   - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|checkexec)$'
     shouldOnlyDependsOn:
       internal:
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/runstore$'
     shouldOnlyDependsOn:
       internal:
-        - '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
         - '^github\.com/AndrMoiseev/stepan/internal/implementationstate$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|runstore|checkexec)$'
@@ -98,7 +98,7 @@ dependenciesRules:
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/gitsnapshot$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/git$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'

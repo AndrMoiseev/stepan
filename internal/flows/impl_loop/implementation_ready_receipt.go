@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -19,7 +19,7 @@ func implementationReadyReceiptIDs(operationID implementationstate.OperationID) 
 
 // persistImplementationReadyReceipt links the shared controlled-call receipt
 // into the implementation state before mandatory checks begin.
-func persistImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, response AgentResponse, snapshot gitsnapshot.Snapshot) error {
+func persistImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implementationstate.AssignmentID, operationID implementationstate.OperationID, response AgentResponse, snapshot git.Snapshot) error {
 	if response.Kind != ResponseImplementationReady || response.Message == nil || strings.TrimSpace(*response.Message) == "" {
 		return errors.New("validated implementation_ready response with a commit message is required")
 	}

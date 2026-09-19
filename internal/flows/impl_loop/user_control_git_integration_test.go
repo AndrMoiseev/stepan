@@ -15,11 +15,11 @@ import (
 
 func TestUserPauseAndClosePreserveCommittedAndUncommittedGitWork(t *testing.T) {
 	repository := newGitWorkspace(t)
-	git(t, repository, "checkout", "-b", "implementation")
+	gitFixture(t, repository, "checkout", "-b", "implementation")
 	writeGitWorkspaceFile(t, filepath.Join(repository, "committed.txt"), "committed work\n")
-	git(t, repository, "add", "--", "committed.txt")
-	git(t, repository, "commit", "--quiet", "-m", "preserved commit")
-	head := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+	gitFixture(t, repository, "add", "--", "committed.txt")
+	gitFixture(t, repository, "commit", "--quiet", "-m", "preserved commit")
+	head := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
 	workingPath := filepath.Join(repository, "uncommitted.txt")
 	writeGitWorkspaceFile(t, workingPath, "allowed unfinished work\n")
 
@@ -44,14 +44,14 @@ func TestUserPauseAndClosePreserveCommittedAndUncommittedGitWork(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD")); got != head {
+	if got := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD")); got != head {
 		t.Fatalf("pause/close rewrote committed work: HEAD=%s, want %s", got, head)
 	}
 	contents, err := os.ReadFile(workingPath)
 	if err != nil || string(contents) != "allowed unfinished work\n" {
 		t.Fatalf("pause/close removed uncommitted work: %q, %v", contents, err)
 	}
-	if status := git(t, repository, "status", "--porcelain=v1"); !strings.Contains(status, "?? uncommitted.txt") {
+	if status := gitFixture(t, repository, "status", "--porcelain=v1"); !strings.Contains(status, "?? uncommitted.txt") {
 		t.Fatalf("uncommitted work was not retained: %q", status)
 	}
 	persisted, _, err := runstore.ReadJournalCurrent(journal)

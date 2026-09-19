@@ -13,12 +13,12 @@ import (
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
 	repository := t.TempDir()
-	git(t, repository, "init", "--quiet", "--initial-branch=main")
-	git(t, repository, "config", "user.name", "Stepan Tests")
-	git(t, repository, "config", "user.email", "stepan-tests@example.invalid")
+	gitFixture(t, repository, "init", "--quiet", "--initial-branch=main")
+	gitFixture(t, repository, "config", "user.name", "Stepan Tests")
+	gitFixture(t, repository, "config", "user.email", "stepan-tests@example.invalid")
 	writeGitWorkspaceFile(t, filepath.Join(repository, "tracked.txt"), "initial\n")
-	git(t, repository, "add", "--", "tracked.txt")
-	git(t, repository, "commit", "--quiet", "-m", "initial")
+	gitFixture(t, repository, "add", "--", "tracked.txt")
+	gitFixture(t, repository, "commit", "--quiet", "-m", "initial")
 	return repository
 }
 
@@ -32,7 +32,7 @@ func writeGitWorkspaceFile(t *testing.T, path, contents string) {
 	}
 }
 
-func git(t *testing.T, repository string, arguments ...string) string {
+func gitFixture(t *testing.T, repository string, arguments ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", repository}, arguments...)...)
 	output, err := command.CombinedOutput()

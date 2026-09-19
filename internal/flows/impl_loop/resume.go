@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
@@ -167,7 +167,7 @@ func Resume(ctx context.Context, input ResumeInput) (ResumeResult, error) {
 	var refreshedPendingCommit implementationstate.AssignmentID
 	var refreshedPendingTree string
 	if workspaceChanged {
-		if !errors.Is(workspaceErr, gitsnapshot.ErrRepositoryDiverged) {
+		if !errors.Is(workspaceErr, git.ErrRepositoryDiverged) {
 			return ResumeResult{}, persistResumeBlock(ctx, input, candidate, "verify working-copy fingerprint", workspaceErr)
 		}
 		actual, captureErr := workspace.Capture(ctx, input.Repository)
@@ -357,10 +357,10 @@ func loadResumeConfiguration(input ResumeInput) (implementationconfig.Configurat
 }
 
 type resumeWorkspaceComparer interface {
-	Compare(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) ([]string, error)
+	Compare(context.Context, string, git.Snapshot, git.Snapshot) ([]string, error)
 }
 
-func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after gitsnapshot.Snapshot, rules implementationconfig.RulesFileValidation) bool {
+func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after git.Snapshot, rules implementationconfig.RulesFileValidation) bool {
 	if rules.DocumentPaths == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.SubmodulesHash != after.SubmodulesHash {
 		return false
 	}
@@ -390,7 +390,7 @@ func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, r
 	return true
 }
 
-func verifyResumeGitControl(expected, actual gitsnapshot.Snapshot) error {
+func verifyResumeGitControl(expected, actual git.Snapshot) error {
 	if actual.HeadRef == "" {
 		return errors.New("working copy is detached from its implementation branch")
 	}
@@ -409,7 +409,7 @@ func verifyResumeGitControl(expected, actual gitsnapshot.Snapshot) error {
 	return nil
 }
 
-func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsnapshot.Snapshot) bool {
+func pendingCommitWorkspace(run *implementationstate.Run, expected, actual git.Snapshot) bool {
 	// git add --all happens before a hook can reject the commit. The index may
 	// therefore differ from the pre-staging snapshot, but the synthetic tree is
 	// still the exact durable intent and a retry stages that same tree again.
@@ -428,21 +428,21 @@ func pendingCommitWorkspace(run *implementationstate.Run, expected, actual gitsn
 	return false
 }
 
-func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual gitsnapshot.Snapshot, rules implementationconfig.RulesFileValidation) (bool, gitsnapshot.Snapshot) {
+func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implementationstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules implementationconfig.RulesFileValidation) (bool, git.Snapshot) {
 	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
 		// A hook refusal may stage the pending tree. The second delta below is
 		// still constrained by its durable reflection snapshot.
 		if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.SubmodulesHash != expected.SubmodulesHash {
-			return false, gitsnapshot.Snapshot{}
+			return false, git.Snapshot{}
 		}
 	}
 	tasksPath, err := selectedChangeTasksPath(run.Identity.Change)
 	if err != nil {
-		return false, gitsnapshot.Snapshot{}
+		return false, git.Snapshot{}
 	}
 	comparer, ok := workspace.(resumeWorkspaceComparer)
 	if !ok {
-		return false, gitsnapshot.Snapshot{}
+		return false, git.Snapshot{}
 	}
 	for _, operation := range run.RunOperations {
 		if operation.Kind != implementationstate.OperationAgent || operation.Description != "reflect accepted task progress in tasks.md" {
@@ -456,7 +456,7 @@ func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceCo
 			if err != nil {
 				continue
 			}
-			var reflected gitsnapshot.Snapshot
+			var reflected git.Snapshot
 			if json.Unmarshal(data, &reflected) != nil || !sameResumeGitControl(reflected, expected) {
 				continue
 			}
@@ -469,10 +469,10 @@ func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceCo
 			}
 		}
 	}
-	return false, gitsnapshot.Snapshot{}
+	return false, git.Snapshot{}
 }
 
-func pendingCommitForReflection(run *implementationstate.Run, reflection gitsnapshot.Snapshot) implementationstate.AssignmentID {
+func pendingCommitForReflection(run *implementationstate.Run, reflection git.Snapshot) implementationstate.AssignmentID {
 	if run == nil {
 		return ""
 	}
@@ -487,11 +487,11 @@ func pendingCommitForReflection(run *implementationstate.Run, reflection gitsnap
 	return ""
 }
 
-func sameResumeGitSnapshot(left, right gitsnapshot.Snapshot) bool {
+func sameResumeGitSnapshot(left, right git.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
-func sameResumeGitControl(left, right gitsnapshot.Snapshot) bool {
+func sameResumeGitControl(left, right git.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.IndexHash == right.IndexHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
@@ -524,17 +524,17 @@ func referencePayloadChanged(journal *runstore.Run, reference implementationstat
 	return !bytes.Equal(previous, current), nil
 }
 
-func savedWorkspaceSnapshot(journal *runstore.Run, reference implementationstate.EvidenceRef) (gitsnapshot.Snapshot, error) {
+func savedWorkspaceSnapshot(journal *runstore.Run, reference implementationstate.EvidenceRef) (git.Snapshot, error) {
 	data, err := journal.Read(reference)
 	if err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
-	var snapshot gitsnapshot.Snapshot
+	var snapshot git.Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("decode workspace fingerprint: %w", err)
+		return git.Snapshot{}, fmt.Errorf("decode workspace fingerprint: %w", err)
 	}
 	if snapshot.HeadOID == "" || snapshot.TreeOID == "" || snapshot.IndexHash == "" || snapshot.StatusHash == "" || snapshot.SubmodulesHash == "" {
-		return gitsnapshot.Snapshot{}, errors.New("saved workspace fingerprint is incomplete")
+		return git.Snapshot{}, errors.New("saved workspace fingerprint is incomplete")
 	}
 	return snapshot, nil
 }

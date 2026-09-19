@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -159,7 +159,7 @@ func finalRunResultForOperation(run *implementationstate.Run, operationID implem
 	return nil
 }
 
-func publishReflectionWorkspace(journal *runstore.Run, resultID implementationstate.ResultID, snapshot gitsnapshot.Snapshot) (implementationstate.EvidenceRef, error) {
+func publishReflectionWorkspace(journal *runstore.Run, resultID implementationstate.ResultID, snapshot git.Snapshot) (implementationstate.EvidenceRef, error) {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return implementationstate.EvidenceRef{}, err

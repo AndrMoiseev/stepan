@@ -52,7 +52,7 @@
 
 ## TASK-4.3-007 — closing content race in a pre-dirty tracked file
 
-- Origin: task 4.3 final task rereview; affected location: `internal/gitsnapshot/snapshot.go`, `captureLocal` and `verifyLocalState`.
+- Origin: task 4.3 final task rereview; affected location: `internal/git/snapshot.go`, `captureLocal` and `verifyLocalState`.
 - Status: `open`.
 - Potential problem: if a tracked file is already dirty with content A and changes to B after the second-pass temporary-index `git add -A`, the captured tree may still describe A while HEAD, symbolic ref, raw index and porcelain status remain unchanged. `EnsureUnchanged` can then accept the snapshot and attribute B to the next operation.
 - Evidence: the reviewer identified a deterministic injected interleaving; no evidence established that this race is likely in typical supported operation.
@@ -493,7 +493,7 @@
 - Evidence: index-only or submodule-only hook changes are not part of the committed-state invariant.
 - Expected impact: uncommon hook behavior could complete against stale acceptance.
 - Classification: technical debt because ordinary content-changing/refusing hooks are handled and these specialized hook mutations are not established as typical supported use.
-- Possible follow-up: centralize the committed-state invariant in `gitsnapshot` and add tagged index/submodule hook fixtures.
+- Possible follow-up: centralize the committed-state invariant in `internal/git` and add tagged index/submodule hook fixtures.
 
 ## TD-10.3-001 — reconciliation transitions mutate live state before durability
 

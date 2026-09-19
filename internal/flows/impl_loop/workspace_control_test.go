@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
 // filesystemWorkspaceControl is the fast test adapter at the WorkspaceControl
@@ -32,7 +32,7 @@ type ensureErrorWorkspaceControl struct {
 	err error
 }
 
-func (w ensureErrorWorkspaceControl) EnsureUnchanged(context.Context, string, gitsnapshot.Snapshot) error {
+func (w ensureErrorWorkspaceControl) EnsureUnchanged(context.Context, string, git.Snapshot) error {
 	return w.err
 }
 
@@ -54,78 +54,78 @@ func newFilesystemWorkspace(t *testing.T) string {
 	return repository
 }
 
-func (w *filesystemWorkspaceControl) Capture(_ context.Context, repository string) (gitsnapshot.Snapshot, error) {
+func (w *filesystemWorkspaceControl) Capture(_ context.Context, repository string) (git.Snapshot, error) {
 	files, err := captureFilesystemWorkspace(repository)
 	if err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
 	digest := filesystemWorkspaceDigest(files)
 	w.mu.Lock()
 	w.states[digest] = cloneFilesystemWorkspace(files)
 	w.mu.Unlock()
-	return gitsnapshot.Snapshot{HeadOID: "test-head", HeadRef: "refs/heads/test", TreeOID: digest, IndexHash: "test-index", StatusHash: digest, SubmodulesHash: "test-submodules"}, nil
+	return git.Snapshot{HeadOID: "test-head", HeadRef: "refs/heads/test", TreeOID: digest, IndexHash: "test-index", StatusHash: digest, SubmodulesHash: "test-submodules"}, nil
 }
 
-func (w *filesystemWorkspaceControl) Diff(_ context.Context, _ string, before, after gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+func (w *filesystemWorkspaceControl) Diff(_ context.Context, _ string, before, after git.Snapshot) (git.Difference, error) {
 	w.mu.Lock()
 	left, leftOK := w.states[before.TreeOID]
 	right, rightOK := w.states[after.TreeOID]
 	w.mu.Unlock()
 	if !leftOK || !rightOK {
-		return gitsnapshot.Difference{}, fmt.Errorf("filesystem workspace snapshot is unknown")
+		return git.Difference{}, fmt.Errorf("filesystem workspace snapshot is unknown")
 	}
 	paths := changedFilesystemPaths(left, right)
-	return gitsnapshot.Difference{
+	return git.Difference{
 		Paths: paths, HeadChanged: before.HeadOID != after.HeadOID, HeadRefChanged: before.HeadRef != after.HeadRef,
 		IndexChanged: before.IndexHash != after.IndexHash, StatusChanged: before.StatusHash != after.StatusHash,
 		SubmodulesChanged: before.SubmodulesHash != after.SubmodulesHash,
 	}, nil
 }
 
-func (w *filesystemWorkspaceControl) RestorePaths(ctx context.Context, repository string, before, current gitsnapshot.Snapshot, paths []string) (gitsnapshot.Snapshot, error) {
+func (w *filesystemWorkspaceControl) RestorePaths(ctx context.Context, repository string, before, current git.Snapshot, paths []string) (git.Snapshot, error) {
 	actual, err := w.Capture(ctx, repository)
 	if err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
 	if actual.TreeOID != current.TreeOID {
-		return gitsnapshot.Snapshot{}, gitsnapshot.ErrRepositoryDiverged
+		return git.Snapshot{}, git.ErrRepositoryDiverged
 	}
 	w.mu.Lock()
 	original, ok := w.states[before.TreeOID]
 	w.mu.Unlock()
 	if !ok {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("filesystem workspace snapshot is unknown")
+		return git.Snapshot{}, fmt.Errorf("filesystem workspace snapshot is unknown")
 	}
 	for _, path := range paths {
 		clean := filepath.Clean(filepath.FromSlash(path))
 		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return gitsnapshot.Snapshot{}, fmt.Errorf("unsafe filesystem workspace path %q", path)
+			return git.Snapshot{}, fmt.Errorf("unsafe filesystem workspace path %q", path)
 		}
 		target := filepath.Join(repository, clean)
 		file, exists := original[filepath.ToSlash(clean)]
 		if !exists {
 			if err := os.Remove(target); err != nil && !os.IsNotExist(err) {
-				return gitsnapshot.Snapshot{}, err
+				return git.Snapshot{}, err
 			}
 			continue
 		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-			return gitsnapshot.Snapshot{}, err
+			return git.Snapshot{}, err
 		}
 		if err := os.WriteFile(target, file.contents, file.mode.Perm()); err != nil {
-			return gitsnapshot.Snapshot{}, err
+			return git.Snapshot{}, err
 		}
 	}
 	return w.Capture(ctx, repository)
 }
 
-func (w *filesystemWorkspaceControl) EnsureUnchanged(ctx context.Context, repository string, expected gitsnapshot.Snapshot) error {
+func (w *filesystemWorkspaceControl) EnsureUnchanged(ctx context.Context, repository string, expected git.Snapshot) error {
 	actual, err := w.Capture(ctx, repository)
 	if err != nil {
 		return err
 	}
 	if actual.TreeOID != expected.TreeOID {
-		return gitsnapshot.ErrRepositoryDiverged
+		return git.ErrRepositoryDiverged
 	}
 	return nil
 }

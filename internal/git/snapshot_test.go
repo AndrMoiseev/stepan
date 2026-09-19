@@ -1,6 +1,6 @@
 //go:build git_integration
 
-package gitsnapshot
+package git
 
 import (
 	"bytes"

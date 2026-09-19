@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -30,8 +30,8 @@ var (
 // at the state handed to the executor and accumulates code, generated files,
 // and check side effects. Paths are repository-relative and sorted.
 type AssignmentDiff struct {
-	Baseline gitsnapshot.Snapshot
-	Current  gitsnapshot.Snapshot
+	Baseline git.Snapshot
+	Current  git.Snapshot
 	Paths    []string
 }
 
@@ -47,7 +47,7 @@ type WorkspaceCheckObserver struct {
 	journal        *runstore.Run
 	protectedPaths []string
 	diff           AssignmentDiff
-	before         gitsnapshot.Snapshot
+	before         git.Snapshot
 	pending        bool
 	// candidateChanged is the mutation produced by the most recently observed
 	// command after any protected paths have been restored. mutationGeneration
@@ -89,7 +89,7 @@ func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace Workspa
 }
 
 // AssignmentDiff returns a copy of the current candidate diff. It includes
-// untracked generated files because gitsnapshot captures the synthetic tree.
+// untracked generated files because git captures the synthetic tree.
 func (o *WorkspaceCheckObserver) AssignmentDiff() AssignmentDiff {
 	if o == nil {
 		return AssignmentDiff{}

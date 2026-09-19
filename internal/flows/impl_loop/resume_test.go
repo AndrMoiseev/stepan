@@ -13,7 +13,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
@@ -280,8 +280,8 @@ func TestDispatchRestartContinuationRetriesSafePendingCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, configuration, checks := restartTestOwner(t, fixture)
-	observer := &restartCommitObserver{observation: CommitObservation{CommitID: "head", Tree: "old-head-tree", Worktree: gitsnapshot.Snapshot{HeadOID: "head", TreeOID: "informational-reflection-tree"}}}
-	control := &commitControlFake{observation: &CommitObservation{CommitID: "restart-commit", ParentCommit: "head", Tree: "informational-reflection-tree", Worktree: gitsnapshot.Snapshot{HeadOID: "restart-commit", TreeOID: "informational-reflection-tree"}}}
+	observer := &restartCommitObserver{observation: CommitObservation{CommitID: "head", Tree: "old-head-tree", Worktree: git.Snapshot{HeadOID: "head", TreeOID: "informational-reflection-tree"}}}
+	control := &commitControlFake{observation: &CommitObservation{CommitID: "restart-commit", ParentCommit: "head", Tree: "informational-reflection-tree", Worktree: git.Snapshot{HeadOID: "restart-commit", TreeOID: "informational-reflection-tree"}}}
 	control.onCommit = func(message string) { control.observation.Message = message }
 	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
 		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
@@ -1296,14 +1296,14 @@ func TestResumeRulesClassificationUsesExactValidatedMarkdownDocuments(t *testing
 func TestResumePausesForChangedGitControlButPreservesUnstagedEdits(t *testing.T) {
 	for _, test := range []struct {
 		name      string
-		change    func(*gitsnapshot.Snapshot)
+		change    func(*git.Snapshot)
 		wantError bool
 	}{
-		{name: "changed branch", change: func(s *gitsnapshot.Snapshot) { s.HeadRef = "refs/heads/other" }, wantError: true},
-		{name: "detached head", change: func(s *gitsnapshot.Snapshot) { s.HeadRef = "" }, wantError: true},
-		{name: "unrelated commit", change: func(s *gitsnapshot.Snapshot) { s.HeadOID = "other-head" }, wantError: true},
-		{name: "staged index", change: func(s *gitsnapshot.Snapshot) { s.IndexHash = "other-index" }, wantError: true},
-		{name: "unstaged edit", change: func(s *gitsnapshot.Snapshot) { s.TreeOID, s.StatusHash = "manual-tree", "manual-status" }},
+		{name: "changed branch", change: func(s *git.Snapshot) { s.HeadRef = "refs/heads/other" }, wantError: true},
+		{name: "detached head", change: func(s *git.Snapshot) { s.HeadRef = "" }, wantError: true},
+		{name: "unrelated commit", change: func(s *git.Snapshot) { s.HeadOID = "other-head" }, wantError: true},
+		{name: "staged index", change: func(s *git.Snapshot) { s.IndexHash = "other-index" }, wantError: true},
+		{name: "unstaged edit", change: func(s *git.Snapshot) { s.TreeOID, s.StatusHash = "manual-tree", "manual-status" }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newResumeFixture(t, "")
@@ -1345,7 +1345,7 @@ func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T
 	prepareAcceptedReflectionEvidence(t, fixture)
 	fixture.workspace.actual.TreeOID = "reflected-tasks-and-rules-tree"
 	fixture.workspace.actual.StatusHash = "reflected-tasks-and-rules-status"
-	fixture.workspace.compare = func(before, after gitsnapshot.Snapshot) []string {
+	fixture.workspace.compare = func(before, after git.Snapshot) []string {
 		switch {
 		case before.TreeOID == "expected-tree" && after.TreeOID == "reflected-tasks-tree":
 			return []string{"openspec/changes/change/tasks.md"}
@@ -1368,11 +1368,11 @@ func TestResumePreservesAcceptedReflectionBeforePendingCommitIntent(t *testing.T
 func TestResumeCheckGeneratedChangeInvalidatesAcceptedState(t *testing.T) {
 	fixture := newResumeFixture(t, "")
 	preparePendingCommitReflection(t, fixture)
-	fixture.workspace.diff = func(before, after gitsnapshot.Snapshot) gitsnapshot.Difference {
+	fixture.workspace.diff = func(before, after git.Snapshot) git.Difference {
 		if before.TreeOID != after.TreeOID || before.StatusHash != after.StatusHash {
-			return gitsnapshot.Difference{Paths: []string{"generated.go"}}
+			return git.Difference{Paths: []string{"generated.go"}}
 		}
-		return gitsnapshot.Difference{}
+		return git.Difference{}
 	}
 	input := fixture.input()
 	input.Runner = CheckRunnerFunc(func(_ context.Context, _ checkexec.Command) (checkexec.Result, error) {
@@ -1812,8 +1812,8 @@ func (factory *resumeProfileRuntimeFactory) Create(_ context.Context, profile im
 	return &sessionRuntime{}, nil
 }
 
-func resumeSnapshot(tree, status string) gitsnapshot.Snapshot {
-	return gitsnapshot.Snapshot{HeadOID: "head", HeadRef: "refs/heads/feature", TreeOID: tree, IndexHash: "index", StatusHash: status, SubmodulesHash: "submodules"}
+func resumeSnapshot(tree, status string) git.Snapshot {
+	return git.Snapshot{HeadOID: "head", HeadRef: "refs/heads/feature", TreeOID: tree, IndexHash: "index", StatusHash: status, SubmodulesHash: "submodules"}
 }
 
 func threadConfigForTest(workspace string) agentruntime.ThreadConfig {
@@ -1831,10 +1831,10 @@ func writeResumeFile(t *testing.T, path, contents string) {
 }
 
 type resumeWorkspace struct {
-	actual   gitsnapshot.Snapshot
+	actual   git.Snapshot
 	paths    []string
-	compare  func(before, after gitsnapshot.Snapshot) []string
-	diff     func(before, after gitsnapshot.Snapshot) gitsnapshot.Difference
+	compare  func(before, after git.Snapshot) []string
+	diff     func(before, after git.Snapshot) git.Difference
 	restores int
 }
 
@@ -1850,37 +1850,37 @@ func (control restartCommitControl) Commit(_ context.Context, _ string, message 
 	}
 	return CommitObservation{
 		CommitID: "restart-commit", ParentCommit: control.parent, Tree: control.tree, Message: message,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "restart-commit", TreeOID: control.tree},
+		Worktree: git.Snapshot{HeadOID: "restart-commit", TreeOID: control.tree},
 	}, nil
 }
 
-func (workspace *resumeWorkspace) Capture(context.Context, string) (gitsnapshot.Snapshot, error) {
+func (workspace *resumeWorkspace) Capture(context.Context, string) (git.Snapshot, error) {
 	return workspace.actual, nil
 }
-func (workspace *resumeWorkspace) EnsureUnchanged(_ context.Context, _ string, expected gitsnapshot.Snapshot) error {
+func (workspace *resumeWorkspace) EnsureUnchanged(_ context.Context, _ string, expected git.Snapshot) error {
 	if sameResumeSnapshot(workspace.actual, expected) {
 		return nil
 	}
-	return gitsnapshot.ErrRepositoryDiverged
+	return git.ErrRepositoryDiverged
 }
 
-func sameResumeSnapshot(left, right gitsnapshot.Snapshot) bool {
+func sameResumeSnapshot(left, right git.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
 
-func (workspace *resumeWorkspace) Compare(_ context.Context, _ string, before, after gitsnapshot.Snapshot) ([]string, error) {
+func (workspace *resumeWorkspace) Compare(_ context.Context, _ string, before, after git.Snapshot) ([]string, error) {
 	if workspace.compare != nil {
 		return append([]string(nil), workspace.compare(before, after)...), nil
 	}
 	return append([]string(nil), workspace.paths...), nil
 }
-func (workspace *resumeWorkspace) Diff(_ context.Context, _ string, before, after gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+func (workspace *resumeWorkspace) Diff(_ context.Context, _ string, before, after git.Snapshot) (git.Difference, error) {
 	if workspace.diff != nil {
 		return workspace.diff(before, after), nil
 	}
-	return gitsnapshot.Difference{}, nil
+	return git.Difference{}, nil
 }
-func (workspace *resumeWorkspace) RestorePaths(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot, []string) (gitsnapshot.Snapshot, error) {
+func (workspace *resumeWorkspace) RestorePaths(context.Context, string, git.Snapshot, git.Snapshot, []string) (git.Snapshot, error) {
 	workspace.restores++
 	return workspace.actual, nil
 }

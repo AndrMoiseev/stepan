@@ -41,8 +41,8 @@ func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
 func TestValidateNewStartFallsBackToLocalOriginHEAD(t *testing.T) {
 	t.Parallel()
 	repository := newGitWorkspace(t)
-	git(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
-	git(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+	gitFixture(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+	gitFixture(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 	switchToBranch(t, repository, "implementation")
 
 	workspace, err := ValidateNewStart(context.Background(), repository, implementationconfig.Configuration{})
@@ -62,7 +62,7 @@ func TestValidateNewStartRejectsUnknownMainBranchWithConfigurationGuidance(t *te
 	}{
 		{name: "missing origin HEAD"},
 		{name: "dangling origin HEAD", setup: func(t *testing.T, repository string) {
-			git(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/missing")
+			gitFixture(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/missing")
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,8 +89,8 @@ func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *te
 	}{
 		{name: "configured", configuration: configurationWithMain("main")},
 		{name: "origin HEAD", setup: func(t *testing.T, repository string) {
-			git(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
-			git(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+			gitFixture(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+			gitFixture(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -109,7 +109,7 @@ func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *te
 func TestValidateNewStartRejectsDetachedHEAD(t *testing.T) {
 	t.Parallel()
 	repository := newGitWorkspace(t)
-	git(t, repository, "checkout", "--detach", "--quiet", "HEAD")
+	gitFixture(t, repository, "checkout", "--detach", "--quiet", "HEAD")
 
 	_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 	if !errors.Is(err, ErrDetachedHEAD) {
@@ -128,7 +128,7 @@ func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *t
 		}},
 		{name: "staged", mutate: func(t *testing.T, repository string) {
 			writeGitWorkspaceFile(t, filepath.Join(repository, "staged.txt"), "staged\n")
-			git(t, repository, "add", "--", "staged.txt")
+			gitFixture(t, repository, "add", "--", "staged.txt")
 		}},
 		{name: "untracked", mutate: func(t *testing.T, repository string) {
 			writeGitWorkspaceFile(t, filepath.Join(repository, "untracked.txt"), "untracked\n")
@@ -167,7 +167,7 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 	t.Parallel()
 	t.Run("local branch wins over tag", func(t *testing.T) {
 		repository := newGitWorkspace(t)
-		git(t, repository, "tag", "main")
+		gitFixture(t, repository, "tag", "main")
 
 		_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 		if !errors.Is(err, ErrMainBranch) {
@@ -177,9 +177,9 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 
 	t.Run("tag alone does not invalidate configured branch name", func(t *testing.T) {
 		repository := newGitWorkspace(t)
-		git(t, repository, "tag", "main")
+		gitFixture(t, repository, "tag", "main")
 		switchToBranch(t, repository, "implementation")
-		git(t, repository, "branch", "--delete", "main")
+		gitFixture(t, repository, "branch", "--delete", "main")
 
 		workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 		if err != nil || workspace.MainBranch != "main" {
@@ -200,10 +200,10 @@ func TestValidateNewStartAcceptsConfiguredMainBranchWithoutLocalRef(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			repository := newGitWorkspace(t)
 			if test.remoteRef {
-				git(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+				gitFixture(t, repository, "update-ref", "refs/remotes/origin/main", "HEAD")
 			}
 			switchToBranch(t, repository, "implementation")
-			git(t, repository, "branch", "--delete", "main")
+			gitFixture(t, repository, "branch", "--delete", "main")
 
 			workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 			if err != nil {
@@ -234,8 +234,8 @@ func TestValidateNewStartIgnoresRepositorySelectingGitEnvironment(t *testing.T) 
 			switchToBranch(t, target, "implementation")
 			alternate := newGitWorkspace(t)
 			writeGitWorkspaceFile(t, filepath.Join(alternate, "tracked.txt"), "dirty alternative\n")
-			alternateGit := strings.TrimSpace(git(t, alternate, "rev-parse", "--absolute-git-dir"))
-			targetIndex := strings.TrimSpace(git(t, target, "rev-parse", "--git-path", "index"))
+			alternateGit := strings.TrimSpace(gitFixture(t, alternate, "rev-parse", "--absolute-git-dir"))
+			targetIndex := strings.TrimSpace(gitFixture(t, target, "rev-parse", "--git-path", "index"))
 			if !filepath.IsAbs(targetIndex) {
 				targetIndex = filepath.Join(target, targetIndex)
 			}
@@ -276,9 +276,9 @@ func TestValidateNewStartDoesNotHonorConfiguredSubmoduleIgnores(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository, submodule := newGitWorkspaceWithSubmodule(t)
-			git(t, repository, "config", "submodule.module.ignore", test.ignore)
+			gitFixture(t, repository, "config", "submodule.module.ignore", test.ignore)
 			test.mutate(t, submodule)
-			if ignored := git(t, repository, "status", "--porcelain=v1"); ignored != "" {
+			if ignored := gitFixture(t, repository, "status", "--porcelain=v1"); ignored != "" {
 				t.Fatalf("fixture is not ignored by policy %q: %q", test.ignore, ignored)
 			}
 
@@ -298,11 +298,11 @@ type workspaceInspection struct {
 func inspectWorkspace(t *testing.T, repository string) workspaceInspection {
 	t.Helper()
 	return workspaceInspection{
-		head:      git(t, repository, "rev-parse", "HEAD"),
-		branch:    git(t, repository, "symbolic-ref", "--short", "HEAD"),
-		status:    git(t, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
-		worktrees: git(t, repository, "worktree", "list", "--porcelain"),
-		branches:  strings.Fields(git(t, repository, "for-each-ref", "--format=%(refname:short)", "refs/heads")),
+		head:      gitFixture(t, repository, "rev-parse", "HEAD"),
+		branch:    gitFixture(t, repository, "symbolic-ref", "--short", "HEAD"),
+		status:    gitFixture(t, repository, "status", "--porcelain=v1", "-z", "--untracked-files=all"),
+		worktrees: gitFixture(t, repository, "worktree", "list", "--porcelain"),
+		branches:  strings.Fields(gitFixture(t, repository, "for-each-ref", "--format=%(refname:short)", "refs/heads")),
 	}
 }
 
@@ -315,17 +315,17 @@ func newGitWorkspaceWithSubmodule(t *testing.T) (string, string) {
 	t.Helper()
 	repository := newGitWorkspace(t)
 	submodule := filepath.Join(repository, "modules", "module")
-	git(t, repository, "init", "--quiet", "--initial-branch=main", submodule)
-	git(t, submodule, "config", "user.name", "Stepan Tests")
-	git(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
+	gitFixture(t, repository, "init", "--quiet", "--initial-branch=main", submodule)
+	gitFixture(t, submodule, "config", "user.name", "Stepan Tests")
+	gitFixture(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
 	writeGitWorkspaceFile(t, filepath.Join(submodule, "tracked.txt"), "initial\n")
-	git(t, submodule, "add", "--", "tracked.txt")
-	git(t, submodule, "commit", "--quiet", "-m", "initial")
-	head := strings.TrimSpace(git(t, submodule, "rev-parse", "HEAD"))
+	gitFixture(t, submodule, "add", "--", "tracked.txt")
+	gitFixture(t, submodule, "commit", "--quiet", "-m", "initial")
+	head := strings.TrimSpace(gitFixture(t, submodule, "rev-parse", "HEAD"))
 	writeGitWorkspaceFile(t, filepath.Join(repository, ".gitmodules"), "[submodule \"module\"]\n\tpath = modules/module\n\turl = ./module\n")
-	git(t, repository, "add", "--", ".gitmodules")
-	git(t, repository, "update-index", "--add", "--cacheinfo", "160000,"+head+",modules/module")
-	git(t, repository, "commit", "--quiet", "-m", "add module")
+	gitFixture(t, repository, "add", "--", ".gitmodules")
+	gitFixture(t, repository, "update-index", "--add", "--cacheinfo", "160000,"+head+",modules/module")
+	gitFixture(t, repository, "commit", "--quiet", "-m", "add module")
 	switchToBranch(t, repository, "implementation")
 	return repository, submodule
 }
@@ -338,13 +338,13 @@ func dirtySubmoduleContent(t *testing.T, submodule string) {
 func advanceSubmoduleCommit(t *testing.T, submodule string) {
 	t.Helper()
 	writeGitWorkspaceFile(t, filepath.Join(submodule, "tracked.txt"), "next commit\n")
-	git(t, submodule, "config", "user.name", "Stepan Tests")
-	git(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
-	git(t, submodule, "add", "--", "tracked.txt")
-	git(t, submodule, "commit", "--quiet", "-m", "next")
+	gitFixture(t, submodule, "config", "user.name", "Stepan Tests")
+	gitFixture(t, submodule, "config", "user.email", "stepan-tests@example.invalid")
+	gitFixture(t, submodule, "add", "--", "tracked.txt")
+	gitFixture(t, submodule, "commit", "--quiet", "-m", "next")
 }
 
 func switchToBranch(t *testing.T, repository, branch string) {
 	t.Helper()
-	git(t, repository, "switch", "--quiet", "-c", branch)
+	gitFixture(t, repository, "switch", "--quiet", "-c", branch)
 }

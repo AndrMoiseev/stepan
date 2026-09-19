@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -62,7 +62,7 @@ type ExplorerRouteResult struct {
 	// SourceContinuationSnapshot is the controller observation made after the
 	// continued source turn. Run-scoped routes use it to keep a final review
 	// bound to the exact state accepted by its required checks.
-	SourceContinuationSnapshot gitsnapshot.Snapshot
+	SourceContinuationSnapshot git.Snapshot
 	Paused                     bool
 	PauseReason                string
 }

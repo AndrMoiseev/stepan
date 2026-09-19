@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -17,7 +17,7 @@ func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
 	intent := persistPendingCommit(t, run, stateStore)
 	observer := &commitObserverFake{observation: CommitObservation{
 		CommitID: intent.ParentCommit,
-		Worktree: gitsnapshot.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
+		Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
 	}}
 
 	reconciled, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -49,7 +49,7 @@ func TestReconcilePendingCommitDoesNotReturnRetryWhileRunIsInactive(t *testing.T
 				t.Fatal(err)
 			}
 			observer := &commitObserverFake{observation: CommitObservation{
-				CommitID: intent.ParentCommit, Worktree: gitsnapshot.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
+				CommitID: intent.ParentCommit, Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
 			}}
 
 			result, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -69,7 +69,7 @@ func TestReconcilePendingCommitAdoptsMatchingCommitOnlyOnce(t *testing.T) {
 	intent := persistPendingCommit(t, run, stateStore)
 	observer := &commitObserverFake{observation: CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
 
 	first, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -100,7 +100,7 @@ func TestReconcilePendingCommitPausesWhenGitFactsAreAmbiguous(t *testing.T) {
 	intent := persistPendingCommit(t, run, stateStore)
 	observer := &commitObserverFake{observation: CommitObservation{
 		CommitID: "unknown-commit", ParentCommit: intent.ParentCommit, Tree: "unexpected-tree", Message: intent.Message,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "unknown-commit", TreeOID: "unexpected-tree"},
+		Worktree: git.Snapshot{HeadOID: "unknown-commit", TreeOID: "unexpected-tree"},
 	}}
 
 	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -128,7 +128,7 @@ func TestReconcilePendingCommitPausesWhenExactGitFactsLackRequiredTrailer(t *tes
 	}
 	observer := &commitObserverFake{observation: CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
 
 	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
@@ -151,7 +151,7 @@ func TestReconcilePendingCommitRestoresCallerStateWhenAccountingCannotBePersiste
 	}
 	observer := &commitObserverFake{observation: CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
-		Worktree: gitsnapshot.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
 
 	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{

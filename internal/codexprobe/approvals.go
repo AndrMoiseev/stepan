@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/codexapp"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
 type RunStatus string
@@ -332,7 +332,7 @@ func candidateSnapshotID(workspace string) (*string, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	snapshot, err := gitsnapshot.Capture(context.Background(), workspace)
+	snapshot, err := git.Capture(context.Background(), workspace)
 	if err != nil {
 		return nil, err
 	}

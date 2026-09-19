@@ -22,7 +22,7 @@ import (
 func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitWorkspace(t)
-	git(t, repository, "checkout", "--quiet", "-b", "implementation")
+	gitFixture(t, repository, "checkout", "--quiet", "-b", "implementation")
 	writeResumeGitSpecification(t, repository)
 
 	gitWorkspace := GitWorkspaceControl{}
@@ -189,16 +189,16 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	if journalData, readErr := os.ReadFile(state.JournalPath()); readErr != nil || !strings.Contains(string(journalData), "final-review-2-result") {
 		t.Fatalf("JSONL journal lacks final evidence: error=%v data=%q", readErr, journalData)
 	}
-	if branch := strings.TrimSpace(git(t, repository, "branch", "--show-current")); branch != "implementation" {
+	if branch := strings.TrimSpace(gitFixture(t, repository, "branch", "--show-current")); branch != "implementation" {
 		t.Fatalf("final branch=%q, want implementation", branch)
 	}
-	if commits := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); commits != "3" {
+	if commits := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); commits != "3" {
 		t.Fatalf("commit count=%q, want initial plus two verified local commits", commits)
 	}
-	if status := strings.TrimSpace(git(t, repository, "status", "--porcelain")); status != "" {
+	if status := strings.TrimSpace(gitFixture(t, repository, "status", "--porcelain")); status != "" {
 		t.Fatalf("final working copy is dirty: %q", status)
 	}
-	if remotes := strings.TrimSpace(git(t, repository, "remote")); remotes != "" {
+	if remotes := strings.TrimSpace(gitFixture(t, repository, "remote")); remotes != "" {
 		t.Fatalf("test repository unexpectedly has a remote: %q", remotes)
 	}
 	config, err := os.ReadFile(filepath.Join(repository, ".git", "config"))

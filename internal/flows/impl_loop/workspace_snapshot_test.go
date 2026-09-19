@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -49,7 +49,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := newSnapshotRepository(t)
-			expected, err := gitsnapshot.Capture(context.Background(), repository)
+			expected, err := git.Capture(context.Background(), repository)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -58,7 +58,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 				t.Fatalf("unchanged workspace rejected: %v", err)
 			}
 			test.change(t, repository)
-			if err := CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run); !errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
+			if err := CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run); !errors.Is(err, git.ErrRepositoryDiverged) {
 				t.Fatalf("error = %v", err)
 			}
 			if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
@@ -71,7 +71,7 @@ func TestCheckWorkspaceBeforeOperationPausesOnUnexpectedChange(t *testing.T) {
 func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing.T) {
 	t.Parallel()
 	repository := newSnapshotRepository(t)
-	expected, err := gitsnapshot.Capture(context.Background(), repository)
+	expected, err := git.Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestCheckWorkspaceBeforeOperationPausesWhenIndexCannotBeVerified(t *testing
 	}
 	run := &implementationstate.Run{Status: implementationstate.RunActive}
 	err = CheckWorkspaceBeforeOperation(context.Background(), repository, expected, run)
-	if err == nil || errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
+	if err == nil || errors.Is(err, git.ErrRepositoryDiverged) {
 		t.Fatalf("error = %v, want meaningful verification failure", err)
 	}
 	if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {
@@ -97,10 +97,10 @@ func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
 	run := &implementationstate.Run{Status: implementationstate.RunActive}
 	workspace := ensureErrorWorkspaceControl{
 		WorkspaceControl: &unchangedWorkspaceControl{},
-		err:              &gitsnapshot.SubmoduleCycleError{Root: "cycle"},
+		err:              &git.SubmoduleCycleError{Root: "cycle"},
 	}
-	err := CheckWorkspaceBeforeOperationWithControl(context.Background(), workspace, t.TempDir(), gitsnapshot.Snapshot{}, run)
-	if !errors.Is(err, gitsnapshot.ErrSubmoduleCycle) {
+	err := CheckWorkspaceBeforeOperationWithControl(context.Background(), workspace, t.TempDir(), git.Snapshot{}, run)
+	if !errors.Is(err, git.ErrSubmoduleCycle) {
 		t.Fatalf("error = %v", err)
 	}
 	if run.Status != implementationstate.RunPaused || run.PauseReason != unexpectedWorkspaceChangePauseReason {

@@ -160,9 +160,9 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 		// Model a crash after local Git accepts the commit but before its result
 		// reaches SQLite.  Drop the projection as well: recovery must replay
 		// JSONL and adopt this exact commit, not create a second one.
-		git(t, repository, "add", "--all")
-		git(t, repository, "commit", "--quiet", "-m", message)
-		created := strings.TrimSpace(git(t, repository, "rev-parse", "HEAD"))
+		gitFixture(t, repository, "add", "--all")
+		gitFixture(t, repository, "commit", "--quiet", "-m", message)
+		created := strings.TrimSpace(gitFixture(t, repository, "rev-parse", "HEAD"))
 		if err := state.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -184,7 +184,7 @@ func TestDeterministicRecoveryEndToEnd(t *testing.T) {
 		if err != nil || !result.Adopted || result.Commit.CommitID != created {
 			t.Fatalf("recover committed boundary result=%#v err=%v", result, err)
 		}
-		if count := strings.TrimSpace(git(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
+		if count := strings.TrimSpace(gitFixture(t, repository, "rev-list", "--count", "HEAD")); count != "2" {
 			t.Fatalf("recovery duplicated commit: count=%s", count)
 		}
 		content, err := os.ReadFile(filepath.Join(repository, "implementation.txt"))

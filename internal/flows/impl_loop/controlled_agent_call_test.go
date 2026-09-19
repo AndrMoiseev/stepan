@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -73,34 +73,34 @@ type unchangedWorkspaceControl struct {
 
 type scriptedWorkspaceControl struct {
 	unchangedWorkspaceControl
-	differences []gitsnapshot.Difference
+	differences []git.Difference
 }
 
-func (w *scriptedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+func (w *scriptedWorkspaceControl) Diff(context.Context, string, git.Snapshot, git.Snapshot) (git.Difference, error) {
 	w.diffs++
 	if len(w.differences) == 0 {
-		return gitsnapshot.Difference{}, nil
+		return git.Difference{}, nil
 	}
 	difference := w.differences[0]
 	w.differences = w.differences[1:]
 	return difference, nil
 }
 
-func (w *unchangedWorkspaceControl) Capture(context.Context, string) (gitsnapshot.Snapshot, error) {
+func (w *unchangedWorkspaceControl) Capture(context.Context, string) (git.Snapshot, error) {
 	w.captures++
-	return gitsnapshot.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
+	return git.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
 }
 
-func (w *unchangedWorkspaceControl) Diff(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot) (gitsnapshot.Difference, error) {
+func (w *unchangedWorkspaceControl) Diff(context.Context, string, git.Snapshot, git.Snapshot) (git.Difference, error) {
 	w.diffs++
-	return gitsnapshot.Difference{}, nil
+	return git.Difference{}, nil
 }
 
-func (*unchangedWorkspaceControl) RestorePaths(context.Context, string, gitsnapshot.Snapshot, gitsnapshot.Snapshot, []string) (gitsnapshot.Snapshot, error) {
-	return gitsnapshot.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
+func (*unchangedWorkspaceControl) RestorePaths(context.Context, string, git.Snapshot, git.Snapshot, []string) (git.Snapshot, error) {
+	return git.Snapshot{HeadOID: "unchanged", HeadRef: "refs/heads/feature", TreeOID: "unchanged", IndexHash: "unchanged", StatusHash: "unchanged", SubmodulesHash: "unchanged"}, nil
 }
 
-func (*unchangedWorkspaceControl) EnsureUnchanged(context.Context, string, gitsnapshot.Snapshot) error {
+func (*unchangedWorkspaceControl) EnsureUnchanged(context.Context, string, git.Snapshot) error {
 	return nil
 }
 

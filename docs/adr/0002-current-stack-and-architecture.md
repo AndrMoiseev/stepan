@@ -50,7 +50,7 @@ flowchart LR
     ImplementationFlow --> Contract
     Contract --> App[internal/agentruntime/codexapp]
     Contract --> Claude[internal/agentruntime/claudeapp]
-    FeatureFlow --> Git[internal/gitsnapshot]
+    FeatureFlow --> Git[internal/git]
     ImplementationFlow --> Git
     App --> Job[internal/processjob]
     Probe[internal/codexprobe] --> App
@@ -84,8 +84,9 @@ flow нет.
   schema, read-only workspace, один внешний artifact root и lifecycle.
 - `internal/agentruntime/claudeapp` — Claude SDK adapter с exact tool allowlist и
   thread-scoped filesystem permission callback; не управляет деревом процессов.
-- `internal/gitsnapshot` — неизменяющий настоящий index снимок Git-дерева,
-  сравнение до/после turn и проверка write boundary.
+- `internal/git` — наблюдение за состоянием Git-репозитория без изменения
+  настоящего index, сравнение до/после turn, проверка write boundary и
+  точечное восстановление файлов рабочей копии.
 - `internal/codexprobe` — диагностический App Server flow, replay artifacts и
   durable approval manager с Git candidate snapshot.
 - `internal/processjob` — завершение всего дерева дочерних процессов.
@@ -192,7 +193,7 @@ baseline.
 - [`internal/flows/impl_loop`](../../internal/flows/impl_loop/)
 - [`internal/agentruntime/codexapp`](../../internal/agentruntime/codexapp/)
 - [`internal/codexprobe`](../../internal/codexprobe/)
-- [`internal/gitsnapshot`](../../internal/gitsnapshot/)
+- [`internal/git`](../../internal/git/)
 - [`internal/processjob`](../../internal/processjob/)
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0003](0003-macos-process-containment.md)

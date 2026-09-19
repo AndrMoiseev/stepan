@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
@@ -730,20 +730,20 @@ func restartAcceptanceEvidence(run *implementationstate.Run, assignmentID implem
 	return implementationstate.AcceptanceEvidence{BriefID: briefID, State: run.CurrentState, Basis: basis, CheckResultIDs: []implementationstate.ResultID{checks.ID}, ReviewResultID: review.ID}, nil
 }
 
-func restartReflectionSnapshot(journal *runstore.Run, result *implementationstate.OperationResult) (gitsnapshot.Snapshot, error) {
+func restartReflectionSnapshot(journal *runstore.Run, result *implementationstate.OperationResult) (git.Snapshot, error) {
 	if journal == nil || result == nil || result.Status != implementationstate.ResultSucceeded || len(result.Evidence) == 0 {
-		return gitsnapshot.Snapshot{}, errors.New("successful reflection workspace evidence is missing")
+		return git.Snapshot{}, errors.New("successful reflection workspace evidence is missing")
 	}
 	data, err := journal.Read(result.Evidence[0])
 	if err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
-	var snapshot gitsnapshot.Snapshot
+	var snapshot git.Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
 	if strings.TrimSpace(snapshot.HeadOID) == "" || strings.TrimSpace(snapshot.TreeOID) == "" {
-		return gitsnapshot.Snapshot{}, errors.New("reflection workspace lacks Git parent or tree")
+		return git.Snapshot{}, errors.New("reflection workspace lacks Git parent or tree")
 	}
 	return snapshot, nil
 }

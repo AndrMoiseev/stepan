@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -48,7 +48,7 @@ type CommitObservation struct {
 	// Worktree is captured after Git has completed the commit and all normal
 	// hooks. It is required to distinguish a matching commit from a hook that
 	// left additional or differently staged work behind.
-	Worktree gitsnapshot.Snapshot
+	Worktree git.Snapshot
 }
 
 // CommitControl is the narrow mutation seam for one assignment commit. The
@@ -69,7 +69,7 @@ var _ CommitControl = GitCommitControl{}
 // CommitPreparationFromSnapshot derives the commit's expected parent and tree
 // from a snapshot the controller has already captured. It performs no Git or
 // filesystem action, preserving the durable-before-mutation boundary.
-func CommitPreparationFromSnapshot(snapshot gitsnapshot.Snapshot) (CommitPreparation, error) {
+func CommitPreparationFromSnapshot(snapshot git.Snapshot) (CommitPreparation, error) {
 	preparation := CommitPreparation{ParentCommit: strings.TrimSpace(snapshot.HeadOID), Tree: strings.TrimSpace(snapshot.TreeOID)}
 	if preparation.ParentCommit == "" || preparation.Tree == "" {
 		return CommitPreparation{}, fmt.Errorf("%w: captured snapshot lacks parent or tree", ErrAssignmentCommit)
@@ -100,7 +100,7 @@ func (GitCommitControl) Commit(ctx context.Context, repository, message string) 
 	if err != nil {
 		return CommitObservation{}, err
 	}
-	worktree, err := gitsnapshot.Capture(ctx, repository)
+	worktree, err := git.Capture(ctx, repository)
 	if err != nil {
 		return CommitObservation{}, fmt.Errorf("capture working copy after commit: %w", err)
 	}

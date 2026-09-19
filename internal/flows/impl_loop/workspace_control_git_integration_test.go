@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
 func TestGitWorkspaceControlContract(t *testing.T) {
@@ -34,7 +34,7 @@ func TestGitWorkspaceControlContract(t *testing.T) {
 	if err != nil || len(difference.Paths) != 1 || difference.Paths[0] != "generated.go" {
 		t.Fatalf("difference = %#v, error %v", difference, err)
 	}
-	if err := workspace.EnsureUnchanged(ctx, repository, before); !errors.Is(err, gitsnapshot.ErrRepositoryDiverged) {
+	if err := workspace.EnsureUnchanged(ctx, repository, before); !errors.Is(err, git.ErrRepositoryDiverged) {
 		t.Fatalf("changed workspace verification = %v", err)
 	}
 	restored, err := workspace.RestorePaths(ctx, repository, before, after, []string{"generated.go"})

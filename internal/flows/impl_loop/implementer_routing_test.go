@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/checkexec"
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 )
 
@@ -299,7 +299,7 @@ func TestRouteImplementerChecksRestartsAfterLateRequiredCheckMutatesWorkspace(t 
 	})
 	firstTransition := fixture.input("required-mutating", "required-mutating-result")
 	firstTransition.Runner = runner
-	firstTransition.Workspace = &scriptedWorkspaceControl{differences: []gitsnapshot.Difference{{Paths: []string{"generated.go"}}, {Paths: []string{"generated.go"}}}}
+	firstTransition.Workspace = &scriptedWorkspaceControl{differences: []git.Difference{{Paths: []string{"generated.go"}}, {Paths: []string{"generated.go"}}}}
 	secondTransition := fixture.input("required-stable", "required-stable-result")
 	secondTransition.Runner = runner
 

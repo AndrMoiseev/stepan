@@ -8,7 +8,7 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -76,7 +76,7 @@ type ControlledAgentCallResult struct {
 	Session *AgentSession
 	// Snapshot is the post-call Git fingerprint that must be checked before
 	// the next controller operation.
-	Snapshot gitsnapshot.Snapshot
+	Snapshot git.Snapshot
 	Attempts uint64
 }
 
@@ -229,7 +229,7 @@ func controlledAgentSuccessReceiptIDs(operationID implementationstate.OperationI
 	return implementationstate.EvidenceID(stem + "-receipt"), implementationstate.EvidenceID(stem + "-workspace")
 }
 
-func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID, response AgentResponse, snapshot gitsnapshot.Snapshot) (implementationstate.EvidenceRef, implementationstate.EvidenceRef, error) {
+func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID, response AgentResponse, snapshot git.Snapshot) (implementationstate.EvidenceRef, implementationstate.EvidenceRef, error) {
 	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
 	workspaceData, err := json.Marshal(snapshot)
 	if err != nil {
@@ -250,34 +250,34 @@ func publishControlledAgentSuccessReceipt(journal *runstore.Run, operationID imp
 	return receiptRef, workspaceRef, nil
 }
 
-func readControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID) (AgentResponse, gitsnapshot.Snapshot, implementationstate.EvidenceRef, implementationstate.EvidenceRef, bool, error) {
+func readControlledAgentSuccessReceipt(journal *runstore.Run, operationID implementationstate.OperationID) (AgentResponse, git.Snapshot, implementationstate.EvidenceRef, implementationstate.EvidenceRef, bool, error) {
 	receiptID, workspaceID := controlledAgentSuccessReceiptIDs(operationID)
 	receiptRef, receiptErr := journal.PublishedReference(receiptID)
 	workspaceRef, workspaceErr := journal.PublishedReference(workspaceID)
 	if errors.Is(receiptErr, runstore.ErrReferenceUnavailable) && errors.Is(workspaceErr, runstore.ErrReferenceUnavailable) {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, false, nil
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, false, nil
 	}
 	if receiptErr != nil || workspaceErr != nil {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("accepted agent turn receipt is incomplete: receipt=%v workspace=%v", receiptErr, workspaceErr)
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("accepted agent turn receipt is incomplete: receipt=%v workspace=%v", receiptErr, workspaceErr)
 	}
 	data, err := journal.Read(receiptRef)
 	if err != nil {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
 	}
 	var receipt controlledAgentSuccessReceipt
 	if err := json.Unmarshal(data, &receipt); err != nil {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn receipt: %w", err)
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn receipt: %w", err)
 	}
 	if receipt.Workspace != workspaceRef {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, errors.New("accepted agent turn receipt references another workspace")
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, errors.New("accepted agent turn receipt references another workspace")
 	}
 	workspaceData, err := journal.Read(workspaceRef)
 	if err != nil {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, err
 	}
-	var snapshot gitsnapshot.Snapshot
+	var snapshot git.Snapshot
 	if err := json.Unmarshal(workspaceData, &snapshot); err != nil {
-		return AgentResponse{}, gitsnapshot.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn workspace: %w", err)
+		return AgentResponse{}, git.Snapshot{}, implementationstate.EvidenceRef{}, implementationstate.EvidenceRef{}, true, fmt.Errorf("decode accepted agent turn workspace: %w", err)
 	}
 	return receipt.Response, snapshot, receiptRef, workspaceRef, true, nil
 }

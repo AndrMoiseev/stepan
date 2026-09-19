@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationconfig"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
@@ -481,30 +481,30 @@ func CompleteFinalAcceptance(ctx context.Context, run *implementationstate.Run, 
 	return nil
 }
 
-func ensureFinalCheckedWorkspace(ctx context.Context, input FinalReviewInput) (gitsnapshot.Snapshot, error) {
+func ensureFinalCheckedWorkspace(ctx context.Context, input FinalReviewInput) (git.Snapshot, error) {
 	return ensureFinalCheckedWorkspaceForCompletion(ctx, input.Run, input.StateStore, input.Journal, input.Workspace, input.Repository, input.CheckResult)
 }
 
-func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, resultID implementationstate.ResultID) (gitsnapshot.Snapshot, error) {
+func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implementationstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, resultID implementationstate.ResultID) (git.Snapshot, error) {
 	expected, err := finalCheckedSnapshot(run, journal, resultID)
 	if err != nil {
-		return gitsnapshot.Snapshot{}, err
+		return git.Snapshot{}, err
 	}
 	if err := effectiveWorkspaceControl(workspace).EnsureUnchanged(ctx, repository, expected); err != nil {
 		if run.Status == implementationstate.RunActive {
 			if pauseErr := run.Pause(unexpectedWorkspaceChangePauseReason); pauseErr != nil {
-				return gitsnapshot.Snapshot{}, fmt.Errorf("%w: pause changed final workspace: %v", ErrFinalAcceptanceRoute, pauseErr)
+				return git.Snapshot{}, fmt.Errorf("%w: pause changed final workspace: %v", ErrFinalAcceptanceRoute, pauseErr)
 			}
 			if _, recordErr := state.Record(context.WithoutCancel(ctx), run); recordErr != nil {
-				return gitsnapshot.Snapshot{}, fmt.Errorf("%w: persist changed final workspace: %v", ErrFinalAcceptanceRoute, recordErr)
+				return git.Snapshot{}, fmt.Errorf("%w: persist changed final workspace: %v", ErrFinalAcceptanceRoute, recordErr)
 			}
 		}
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: final checked workspace changed: %v", ErrFinalAcceptanceRoute, err)
+		return git.Snapshot{}, fmt.Errorf("%w: final checked workspace changed: %v", ErrFinalAcceptanceRoute, err)
 	}
 	return expected, nil
 }
 
-func ensureFinalCheckedWorkspaceAfterCall(ctx context.Context, input FinalReviewInput, expected, observed gitsnapshot.Snapshot) error {
+func ensureFinalCheckedWorkspaceAfterCall(ctx context.Context, input FinalReviewInput, expected, observed git.Snapshot) error {
 	if !sameFinalCheckedSnapshot(expected, observed) {
 		return pauseFinalWorkspaceChanged(ctx, input, "final reviewer call ended on a different checked state")
 	}
@@ -524,33 +524,33 @@ func pauseFinalWorkspaceChanged(ctx context.Context, input FinalReviewInput, rea
 	return fmt.Errorf("%w: %s", ErrFinalAcceptanceRoute, reason)
 }
 
-func finalCheckedSnapshot(run *implementationstate.Run, journal *runstore.Run, resultID implementationstate.ResultID) (gitsnapshot.Snapshot, error) {
+func finalCheckedSnapshot(run *implementationstate.Run, journal *runstore.Run, resultID implementationstate.ResultID) (git.Snapshot, error) {
 	if run == nil || journal == nil || !currentSuccessfulFinalChecks(run, resultID) {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: current successful final checks are required", ErrFinalAcceptanceRoute)
+		return git.Snapshot{}, fmt.Errorf("%w: current successful final checks are required", ErrFinalAcceptanceRoute)
 	}
 	result := finalRunResult(run, resultID)
 	if result == nil || result.State != run.CurrentState {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: final check state is not current", ErrFinalAcceptanceRoute)
+		return git.Snapshot{}, fmt.Errorf("%w: final check state is not current", ErrFinalAcceptanceRoute)
 	}
 	if err := journal.VerifyReference(result.State); err != nil {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: verify final checked state: %v", ErrFinalAcceptanceRoute, err)
+		return git.Snapshot{}, fmt.Errorf("%w: verify final checked state: %v", ErrFinalAcceptanceRoute, err)
 	}
 	data, err := journal.Read(result.State)
 	if err != nil {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: read final checked state: %v", ErrFinalAcceptanceRoute, err)
+		return git.Snapshot{}, fmt.Errorf("%w: read final checked state: %v", ErrFinalAcceptanceRoute, err)
 	}
-	var snapshot gitsnapshot.Snapshot
+	var snapshot git.Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil || !validFinalCheckedSnapshot(snapshot) {
-		return gitsnapshot.Snapshot{}, fmt.Errorf("%w: decode final checked state: %v", ErrFinalAcceptanceRoute, err)
+		return git.Snapshot{}, fmt.Errorf("%w: decode final checked state: %v", ErrFinalAcceptanceRoute, err)
 	}
 	return snapshot, nil
 }
 
-func validFinalCheckedSnapshot(snapshot gitsnapshot.Snapshot) bool {
+func validFinalCheckedSnapshot(snapshot git.Snapshot) bool {
 	return strings.TrimSpace(snapshot.HeadOID) != "" && strings.TrimSpace(snapshot.TreeOID) != "" && strings.TrimSpace(snapshot.IndexHash) != "" && strings.TrimSpace(snapshot.StatusHash) != "" && strings.TrimSpace(snapshot.SubmodulesHash) != ""
 }
 
-func sameFinalCheckedSnapshot(left, right gitsnapshot.Snapshot) bool {
+func sameFinalCheckedSnapshot(left, right git.Snapshot) bool {
 	return left.HeadOID == right.HeadOID && left.HeadRef == right.HeadRef && left.TreeOID == right.TreeOID && left.IndexHash == right.IndexHash && left.StatusHash == right.StatusHash && left.SubmodulesHash == right.SubmodulesHash
 }
 

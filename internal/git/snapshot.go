@@ -1,4 +1,7 @@
-package gitsnapshot
+// Package git observes repository state, compares changes, checks write
+// boundaries, and restores selected working-tree paths without touching the
+// real index.
+package git
 
 import (
 	"bytes"

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/AndrMoiseev/stepan/internal/gitsnapshot"
+	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/implementationstate"
 	"github.com/AndrMoiseev/stepan/internal/runstore"
 )
@@ -56,7 +56,7 @@ func (GitCommitObserver) Observe(ctx context.Context, repository string) (Commit
 	if err != nil {
 		return CommitObservation{}, err
 	}
-	worktree, err := gitsnapshot.Capture(ctx, repository)
+	worktree, err := git.Capture(ctx, repository)
 	if err != nil {
 		return CommitObservation{}, fmt.Errorf("capture working copy: %w", err)
 	}
