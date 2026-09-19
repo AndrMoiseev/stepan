@@ -2,62 +2,38 @@
 
 Модуль на этой карте — один каталог с Go-пакетом в `cmd/` или `internal/`. Включены также пакеты тестовой и CI-инфраструктуры. Стрелка `A → B` означает, что `arch-go.yml` **разрешает** модулю `A` импортировать внутренний модуль `B`; она не утверждает, что импорт сейчас присутствует в исходниках. Внешние библиотеки на схеме не показаны.
 
-Для модулей без правила `shouldOnlyDependsOn` конфигурация не задаёт перечень допустимых исходящих зависимостей. Такие узлы отмечены пунктирной рамкой и оставлены без исходящих стрелок. Узлы с правилом `shouldNotDependsOn` на все внутренние пакеты также не имеют исходящих стрелок, но их запрет определён явно.
+Для модулей без правила `shouldOnlyDependsOn` конфигурация не задаёт перечень допустимых исходящих зависимостей. В таблице ниже такие модули отмечены как «Исходящие правила не заданы». Для модулей с запретом всех внутренних импортов указано «Нет: внутренние импорты запрещены».
 
 ## Разрешённые внутренние зависимости
 
-```mermaid
-flowchart LR
-    subgraph Entry[Исполняемые пакеты]
-        stepan[cmd/stepan]
-        probe_cmd[cmd/codex-appserver-probe]
-    end
-    subgraph Flows[Прикладные процессы]
-        spec[internal/flows/spec]
-        impl[internal/flows/impl_loop]
-    end
-    subgraph Runtime[Агентские runtime и сборка]
-        runtime[internal/agentruntime]
-        claude[internal/agentruntime/claudeapp]
-        codex[internal/agentruntime/codexapp]
-        nessy[internal/agentruntime/nessyapp]
-        runtime_factory[internal/flows/impl_loop/runtime]
-    end
-    subgraph Services[Состояние и операции реализации]
-        config[internal/setting]
-        state[internal/flows/impl_loop/state]
-        openspec[internal/openspec]
-        checks[internal/checkexec]
-        store[internal/flows/impl_loop/store]
-        probe[internal/codexprobe]
-    end
-    subgraph Infrastructure[Общая инфраструктура]
-        git[internal/git]
-        platform[internal/platformsupport]
-        jobs[internal/processjob]
-    end
-    subgraph TestTools[Тесты и CI]
-        conformance[internal/agentruntime/conformance]
-        architecture[internal/architecture]
-        testscope[internal/testscope]
-        testscope_cmd[internal/testscope/cmd]
-    end
+![Обзор разрешённых зависимостей модулей](archify/module-dependencies.svg)
 
-    stepan --> runtime & claude & codex & nessy & impl & runtime_factory & platform & spec & store & config
-    probe_cmd --> probe
-    claude --> runtime
-    codex --> runtime & platform & jobs
-    nessy --> config & runtime & platform & jobs
-    probe --> codex & git
-    spec --> runtime & git
-    impl --> runtime & git & jobs & openspec & store & checks & config & state
-    openspec --> git & jobs
-    checks --> git & jobs
-    store --> git & jobs & state
+[Открыть интерактивную схему](archify/module_dependencies.html). В IntelliJ IDEA после перехода к HTML-файлу нажмите `Alt+F2`, чтобы открыть его в браузере. Схема показывает ключевые связи и группирует адаптеры агентов. `openspec` и вложенный `flows/impl_loop/checkexec` показаны отдельно. Полный перечень разрешённых целей приведён ниже; пути целей указаны относительно `internal/`.
 
-    classDef unspecified stroke-dasharray: 5 5
-    class runtime_factory,conformance,testscope,testscope_cmd unspecified
-```
+| Модуль | Разрешённые внутренние цели по `arch-go.yml` |
+|---|---|
+| `cmd/stepan` | `agentruntime`, `agentruntime/claudeapp`, `agentruntime/codexapp`, `agentruntime/nessyapp`, `flows/spec`, `flows/impl_loop`, `flows/impl_loop/runtime`, `flows/impl_loop/store`, `platformsupport`, `setting` |
+| `cmd/codex-appserver-probe` | `codexprobe` |
+| `internal/flows/spec` | `agentruntime`, `git` |
+| `internal/flows/impl_loop` | `agentruntime`, `git`, `processjob`, `openspec`, `flows/impl_loop/store`, `flows/impl_loop/checkexec`, `setting`, `flows/impl_loop/state` |
+| `internal/agentruntime` | Нет: внутренние импорты запрещены |
+| `internal/agentruntime/claudeapp` | `agentruntime` |
+| `internal/agentruntime/codexapp` | `agentruntime`, `platformsupport`, `processjob` |
+| `internal/agentruntime/nessyapp` | `setting`, `agentruntime`, `platformsupport`, `processjob` |
+| `internal/flows/impl_loop/runtime` | Исходящие правила не заданы |
+| `internal/setting` | Нет: внутренние импорты запрещены |
+| `internal/flows/impl_loop/state` | Нет: внутренние импорты запрещены |
+| `internal/openspec` | `git`, `processjob` |
+| `internal/flows/impl_loop/checkexec` | `processjob` |
+| `internal/flows/impl_loop/store` | `git`, `processjob`, `flows/impl_loop/state` |
+| `internal/codexprobe` | `agentruntime/codexapp`, `git` |
+| `internal/git` | Нет: внутренние импорты запрещены |
+| `internal/platformsupport` | Нет: внутренние импорты запрещены |
+| `internal/processjob` | Нет: внутренние импорты запрещены |
+| `internal/agentruntime/conformance` | Исходящие правила не заданы |
+| `internal/architecture` | Нет: внутренние импорты запрещены |
+| `internal/testscope` | Исходящие правила не заданы |
+| `internal/testscope/cmd` | Исходящие правила не заданы |
 
 `internal/architecture` проверяет правила архитектуры, а не предоставляет production API. Для `internal/agentruntime`, `internal/setting`, `internal/flows/impl_loop/state`, `internal/architecture`, `internal/git`, `internal/platformsupport` и `internal/processjob` конфигурация явно запрещает импорты других внутренних пакетов. `flows/impl_loop/store` вправе импортировать вложенный `state` как модель сохраняемых данных; остальные пакеты flow для него закрыты.
 
@@ -77,7 +53,7 @@ flowchart LR
 | `internal/setting` | Общий контракт настроек. | Читает два файла, объединяет профили и настройки flow, проверяет команды и rules file; отдельно выдаёт токен Nessy. | Возвращает эффективные значения без секрета; не запускает команды и не хранит состояние run. |
 | `internal/flows/impl_loop/state` | Модель состояния implementation run. | Задачи, назначения, попытки, доказательства, статусы и допустимые переходы. | Не обращается к Git, хранилищу или агентам; их результаты передаются через операции модели. |
 | `internal/openspec` | Вход документов OpenSpec change. | Читает полный набор документов и фиксирует версию входа. | Не разбирает задания и не управляет flow. |
-| `internal/checkexec` | Выполнение настроенных проверок. | Запускает команды, ограничивает время, собирает вывод и классифицирует сбои. | Получает уже разрешённую команду; хранение логов и решение о приёмке принадлежат другим модулям. |
+| `internal/flows/impl_loop/checkexec` | Выполнение настроенных проверок implementation flow. | Запускает команды, ограничивает время, собирает вывод и классифицирует сбои. | Получает уже разрешённую команду; хранение логов и решение о приёмке принадлежат пакету flow. |
 | `internal/flows/impl_loop/store` | Долговременное хранение implementation run. | Раскладка файлов run, неизменяемые артефакты, JSONL-журнал и SQLite-проекция. | Сохраняет и восстанавливает данные; решение о следующем шаге принимает `flows/impl_loop`. |
 | `internal/codexprobe` | Диагностика Codex App Server. | Прогон probe, replay, управление ожидающими approval и Git-снимками кандидата. | Обслуживает отдельную диагностическую программу; пользовательский flow не строится на probe. |
 | `internal/git` | Контроль состояния Git-репозитория. | Снимки дерева, index и submodules, сравнение изменений, проверка границы записи и точечное восстановление файлов. | Не выбирает политику flow; потребитель задаёт допустимую область изменений. |
@@ -88,4 +64,4 @@ flowchart LR
 | `internal/testscope` | Выбор интеграционных наборов для CI. | Классифицирует изменённые пути по Git и process suite. | Не запускает тесты; исходящие зависимости не заданы `arch-go.yml`. |
 | `internal/testscope/cmd` | CLI для CI-классификатора. | Принимает событие и список файлов, печатает выбранные наборы. | Передаёт классификацию `internal/testscope`; исходящие зависимости не заданы `arch-go.yml`. |
 
-Источник правил зависимостей: [`arch-go.yml`](../../arch-go.yml). Назначение и границы сверены с текущими Go-пакетами; при изменении кода и правил эту карту нужно обновить.
+Источник правил зависимостей: [`arch-go.yml`](../../../arch-go.yml). Назначение и границы сверены с текущими Go-пакетами; при изменении кода и правил эту карту нужно обновить.

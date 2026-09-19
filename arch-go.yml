@@ -64,17 +64,21 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
         - '^github\.com/AndrMoiseev/stepan/internal/openspec$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/store$'
-        - '^github\.com/AndrMoiseev/stepan/internal/checkexec$'
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec$'
         - '^github\.com/AndrMoiseev/stepan/internal/setting$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/state$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/spec(?:/.+)?$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|checkexec)$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/openspec$'
     shouldOnlyDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/git$'
+        - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec$'
+    shouldOnlyDependsOn:
+      internal:
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/store$'
     shouldOnlyDependsOn:
@@ -82,7 +86,7 @@ dependenciesRules:
         - '^github\.com/AndrMoiseev/stepan/internal/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
         - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/state$'
-  - package: '^github\.com/AndrMoiseev/stepan/internal/(openspec|checkexec)$'
+  - package: '^github\.com/AndrMoiseev/stepan/internal/openspec$'
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/(spec|impl_loop)(?:/.+)?$'

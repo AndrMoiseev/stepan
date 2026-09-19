@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )

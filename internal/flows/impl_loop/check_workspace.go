@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AndrMoiseev/stepan/internal/checkexec"
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 	"github.com/AndrMoiseev/stepan/internal/git"

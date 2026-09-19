@@ -13,6 +13,7 @@ func TestClassifyPullRequestChanges(t *testing.T) {
 		{name: "Git wiring", paths: []string{"internal/flows/impl_loop/workspace_control.go"}, want: Scope{Git: true}},
 		{name: "process adapter", paths: []string{"internal/agentruntime/codexapp/runtime.go"}, want: Scope{Process: true}},
 		{name: "implementation runtime wiring", paths: []string{"internal/flows/impl_loop/runtime/factories.go"}, want: Scope{Process: true}},
+		{name: "implementation check executor", paths: []string{"internal/flows/impl_loop/checkexec/checkexec.go"}, want: Scope{Process: true}},
 		{name: "implementation run store", paths: []string{"internal/flows/impl_loop/store/state.go"}, want: Scope{Process: true}},
 		{name: "composition root", paths: []string{"cmd/stepan/main.go"}, want: Scope{Git: true, Process: true}},
 		{name: "shared settings", paths: []string{"internal/setting/settings.go"}, want: Scope{Git: true, Process: true}},

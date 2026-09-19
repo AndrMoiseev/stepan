@@ -82,7 +82,7 @@ func isProcessIntegrationPath(path string) bool {
 		"internal/agentruntime/codexapp/",
 		"internal/agentruntime/claudeapp/",
 		"internal/agentruntime/nessyapp/",
-		"internal/checkexec/",
+		"internal/flows/impl_loop/checkexec/",
 		"internal/flows/impl_loop/runtime/",
 		"internal/processjob/",
 		"internal/flows/impl_loop/store/",

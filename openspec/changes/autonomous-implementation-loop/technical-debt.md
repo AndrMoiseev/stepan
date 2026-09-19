@@ -72,7 +72,7 @@
 
 ## TASK-5.1-001 — failed-command output lacks a dedicated assertion
 
-- Origin: task 5.1 initial review; affected location: `internal/checkexec/checkexec_test.go`.
+- Origin: task 5.1 initial review; affected location: `internal/flows/impl_loop/checkexec/checkexec_test.go`.
 - Status: `open`.
 - Potential problem: the non-zero-exit fixture verifies exit code 23 but emits no stdout or stderr, so a future regression discarding or swapping failed-command output would not be caught.
 - Evidence: production `Run` copies both buffers before returning the wrapped process error; successful execution covers stdout indirectly, but failed stdout/stderr are not asserted.
@@ -82,7 +82,7 @@
 
 ## TASK-5.2-002 — pre-canceled context can still launch a command
 
-- Origin: task 5.2 initial review; affected location: `internal/checkexec/checkexec.go`.
+- Origin: task 5.2 initial review; affected location: `internal/flows/impl_loop/checkexec/checkexec.go`.
 - Status: `open`.
 - Potential problem: `RunContext` checks the context only after starting and assigning the process, so an already-canceled or expired context can permit brief command side effects.
 - Evidence: the start path precedes the select on `runContext.Done`; Windows assignment resumes the suspended process before cancellation is observed.
@@ -92,7 +92,7 @@
 
 ## TASK-5.2-003 — supervisor failure has inconsistent result/error classification
 
-- Origin: task 5.2 initial review; affected location: `internal/checkexec/checkexec.go`.
+- Origin: task 5.2 initial review; affected location: `internal/flows/impl_loop/checkexec/checkexec.go`.
 - Status: `open`.
 - Potential problem: after cancellation, a `job.Close` error returns `ErrInfrastructure` while `Result.Failure` remains timeout or canceled.
 - Evidence: supervisor-close failure overrides the returned error classification after the result was populated from the initiating context; no injectable regression covers this path.
@@ -322,7 +322,7 @@
 
 ## TD-9.1-001 — transition result exposes raw check data beyond the bounded agent presentation
 
-- Origin: task 9.1 initial review; affected locations: `internal/flows/impl_loop/implementer_transition.go` (`ImplementerTransitionResult`), `internal/flows/impl_loop/check_set.go`, and `internal/checkexec` result types.
+- Origin: task 9.1 initial review; affected locations: `internal/flows/impl_loop/implementer_transition.go` (`ImplementerTransitionResult`), `internal/flows/impl_loop/check_set.go`, and `internal/flows/impl_loop/checkexec` result types.
 - Status: `open`.
 - Potential problem: `ImplementerTransitionResult.Set` exposes command environment and complete stdout/stderr through raw check results even though the transition describes its output as bounded agent feedback.
 - Evidence: the exported result includes the full `CheckSet`; safe JSON evidence omits those fields, but a future formatter could consume the raw values directly.
