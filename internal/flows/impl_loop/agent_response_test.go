@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sort"
 	"testing"
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
@@ -17,15 +18,60 @@ func TestResponseSchemasAreFlatAndBindEveryAllowedKind(t *testing.T) {
 				t.Fatal(err)
 			}
 			var decoded struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-				Required   []string                   `json:"required"`
-				OneOf      json.RawMessage            `json:"oneOf"`
+				Type                 string                     `json:"type"`
+				Properties           map[string]json.RawMessage `json:"properties"`
+				Required             []string                   `json:"required"`
+				AdditionalProperties *bool                      `json:"additionalProperties"`
+				OneOf                json.RawMessage            `json:"oneOf"`
 			}
 			if err := json.Unmarshal(schema, &decoded); err != nil {
 				t.Fatal(err)
 			}
-			if decoded.OneOf != nil || len(decoded.Properties) != len(responseTransportFields) || !reflect.DeepEqual(decoded.Required, responseTransportFields) {
+			if decoded.Type != "object" || decoded.OneOf != nil || decoded.AdditionalProperties == nil || *decoded.AdditionalProperties || len(decoded.Properties) != len(responseTransportFields) || !reflect.DeepEqual(decoded.Required, responseTransportFields) {
 				t.Fatalf("schema is not the required flat schema: %s", schema)
+			}
+			properties := make([]string, 0, len(decoded.Properties))
+			for name := range decoded.Properties {
+				properties = append(properties, name)
+			}
+			sort.Strings(properties)
+			required := append([]string(nil), decoded.Required...)
+			sort.Strings(required)
+			if !reflect.DeepEqual(properties, required) {
+				t.Fatalf("schema properties and required fields differ: %s", schema)
+			}
+			transportType := reflect.TypeFor[responseTransport]()
+			if transportType.NumField() != len(decoded.Properties) {
+				t.Fatalf("transport has %d fields, schema has %d", transportType.NumField(), len(decoded.Properties))
+			}
+			for index := range transportType.NumField() {
+				field := transportType.Field(index)
+				name := field.Tag.Get("json")
+				var property struct {
+					Type  string `json:"type"`
+					Items struct {
+						Type string `json:"type"`
+					} `json:"items"`
+				}
+				if err := json.Unmarshal(decoded.Properties[name], &property); err != nil {
+					t.Fatalf("decode schema for %s: %v", name, err)
+				}
+				if field.Type.Kind() == reflect.Slice {
+					if property.Type != "array" || property.Items.Type != "string" {
+						t.Fatalf("schema for %s does not match string slice", name)
+					}
+				} else if field.Type.Kind() != reflect.String || property.Type != "string" {
+					t.Fatalf("schema for %s does not match string", name)
+				}
+			}
+			var kindSchema struct {
+				Enum []ResponseKind `json:"enum"`
+			}
+			if err := json.Unmarshal(decoded.Properties["kind"], &kindSchema); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(kindSchema.Enum, kinds) {
+				t.Fatalf("schema kinds = %v, want %v", kindSchema.Enum, kinds)
 			}
 			for _, kind := range kinds {
 				raw := responsePayload(t, kind)

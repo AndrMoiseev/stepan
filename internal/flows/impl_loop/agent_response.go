@@ -2,6 +2,7 @@ package impl_loop
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -197,49 +198,28 @@ func ImplementationEnvelopeSchema() json.RawMessage {
 	return schema
 }
 
+//go:embed response_schema.json
+var embeddedResponseSchema []byte
+
 func responseTransportSchema(kinds []ResponseKind) (json.RawMessage, error) {
-	kindSchema := map[string]any{"type": "string"}
+	var schema map[string]any
+	if err := json.Unmarshal(embeddedResponseSchema, &schema); err != nil {
+		return nil, fmt.Errorf("decode embedded response schema: %w", err)
+	}
 	if len(kinds) != 0 {
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("embedded response schema has no properties object")
+		}
+		kindSchema, ok := properties["kind"].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("embedded response schema has no kind object")
+		}
 		enum := make([]string, len(kinds))
 		for index, kind := range kinds {
 			enum[index] = string(kind)
 		}
 		kindSchema["enum"] = enum
-	}
-	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"kind":                 kindSchema,
-			"message":              map[string]any{"type": "string"},
-			"task_ids":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"task_payloads":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"brief":                map[string]any{"type": "string"},
-			"check_names":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_ids":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"findings":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_decisions":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"finding_reasons":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"question":             map[string]any{"type": "string"},
-			"context":              map[string]any{"type": "string"},
-			"boundaries":           map[string]any{"type": "string"},
-			"known_facts":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"unknowns":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"references":           map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"locations":            map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"bases":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"expected_results":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"options":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"recommendation":       map[string]any{"type": "string"},
-			"blocked_action":       map[string]any{"type": "string"},
-			"diagnostic":           map[string]any{"type": "string"},
-			"attempts":             map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"required_user_action": map[string]any{"type": "string"},
-			"user_settings":        map[string]any{"type": "string"},
-			"project_settings":     map[string]any{"type": "string"},
-			"explanation":          map[string]any{"type": "string"},
-		},
-		"required":             responseTransportFields,
-		"additionalProperties": false,
 	}
 	encoded, err := json.Marshal(schema)
 	if err != nil {

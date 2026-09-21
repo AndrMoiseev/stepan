@@ -79,6 +79,30 @@ Stepan. Предварительный интерактивный вход, об
 Проверка установленного Nessy описана в
 [плане приёмки](docs/changes/features/nessy-adapter-auth/manual-test-plan.md).
 
+## Локальные проверки
+
+Для проверки workflow установите закреплённую версию actionlint:
+
+```text
+go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+```
+
+Убедитесь, что каталог `go env GOPATH`/`bin` находится в `PATH`. После этого из
+корня репозитория с Go 1.26.5 и GNU Make доступны команды:
+
+| Команда | Проверка |
+| --- | --- |
+| `make test` | Быстрые изолированные тесты |
+| `make test-git` | Тесты с настоящим Git |
+| `make test-process` | Тесты управления процессами и fake CLI |
+| `make test-all` | Оба интеграционных набора вместе с обычными тестами |
+| `make lint-go` | `go vet ./...` |
+| `make lint-actions` | Закреплённый `actionlint` для workflow |
+| `make lint` | Обе проверки линтерами |
+
+`make` без аргументов показывает доступные цели. Исходные команды и правила
+запуска тестов описаны в [AGENTS.md](AGENTS.md).
+
 ## CI artifacts
 
 CI всегда запускает быстрые изолированные тесты. Git-интеграции и тесты
