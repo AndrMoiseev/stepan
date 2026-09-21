@@ -163,7 +163,7 @@ func (r *FSFeatureRepository) loadLockedCore(featureID string, recoverPhase bool
 			return FeatureSnapshot{}, fmt.Errorf("%w: %s", ErrRepositoryBlocked, phaseRecovery.Diagnostics[0].Message)
 		}
 		if phaseRecovery.Completed {
-			info, err = os.Lstat(target.Directory)
+			_, err = os.Lstat(target.Directory)
 			if err != nil {
 				return FeatureSnapshot{}, fmt.Errorf("load feature %s after recovery: %w", featureID, err)
 			}

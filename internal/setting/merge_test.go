@@ -132,7 +132,7 @@ func TestMergeProjectOverridesDefaultRole(t *testing.T) {
 }
 
 func TestValidateLoopRolesRequiresAllLoopProfilesButNotBootstrapper(t *testing.T) {
-	configuration, err := Merge(sources(t, `{
+	_, err := Merge(sources(t, `{
   "profiles":{"low":{},"medium":{},"high":{},"ultra":{}},
   "roles":{"bootstrapper":"missing"}
 }`, ``))
@@ -140,7 +140,7 @@ func TestValidateLoopRolesRequiresAllLoopProfilesButNotBootstrapper(t *testing.T
 		t.Fatalf("explicit bootstrapper assignment must still resolve: %v", err)
 	}
 
-	configuration, err = Merge(sources(t, `{"profiles":{"low":{},"medium":{},"high":{},"ultra":{}}}`, ``))
+	configuration, err := Merge(sources(t, `{"profiles":{"low":{},"medium":{},"high":{},"ultra":{}}}`, ``))
 	if err != nil {
 		t.Fatal(err)
 	}

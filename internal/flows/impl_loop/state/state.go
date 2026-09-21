@@ -365,10 +365,7 @@ func (o Operation) valid() bool {
 			return false
 		}
 	}
-	if o.TechnicalAttemptStart > uint64(len(o.Attempts)) {
-		return false
-	}
-	return true
+	return o.TechnicalAttemptStart <= uint64(len(o.Attempts))
 }
 
 type ResultStatus string

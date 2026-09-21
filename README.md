@@ -96,12 +96,16 @@ go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 | `make test-git` | Тесты с настоящим Git |
 | `make test-process` | Тесты управления процессами и fake CLI |
 | `make test-all` | Оба интеграционных набора вместе с обычными тестами |
-| `make lint-go` | `go vet ./...` |
+| `make lint-go` | `go vet ./...` и `go tool staticcheck ./...` |
 | `make lint-actions` | Закреплённый `actionlint` для workflow |
-| `make lint` | Обе проверки линтерами |
+| `make lint` | Все проверки линтерами |
 
 `make` без аргументов показывает доступные цели. Исходные команды и правила
 запуска тестов описаны в [AGENTS.md](AGENTS.md).
+
+Staticcheck 2026.2.1 закреплён как tool dependency в `go.mod`; `go tool`
+загрузит его при первом запуске. В `staticcheck.conf` пока отключены проверки
+`ST1005` и `U1000` для существующих диагностик.
 
 ## CI artifacts
 

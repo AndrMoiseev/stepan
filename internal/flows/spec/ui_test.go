@@ -174,7 +174,7 @@ func TestProgressDiagnosticsAppearBeforeCommandTable(t *testing.T) {
 	}
 	text := output.String()
 	for _, diagnostic := range []string{"invalid heading", "needs attention"} {
-		if strings.Index(text, diagnostic) < 0 || strings.Index(text, diagnostic) > strings.Index(text, "КОМАНДЫ") {
+		if !strings.Contains(text, diagnostic) || strings.Index(text, diagnostic) > strings.Index(text, "КОМАНДЫ") {
 			t.Fatalf("diagnostic is not before command table: %q", text)
 		}
 	}

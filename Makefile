@@ -21,6 +21,7 @@ lint: lint-go lint-actions
 
 lint-go:
 	go vet ./...
+	go tool staticcheck ./...
 
 lint-actions:
 	actionlint

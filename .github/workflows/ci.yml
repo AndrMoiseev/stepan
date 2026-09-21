@@ -117,6 +117,9 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+      - name: Staticcheck
+        run: go tool staticcheck ./...
+
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.binary }}" ./cmd/stepan
 
