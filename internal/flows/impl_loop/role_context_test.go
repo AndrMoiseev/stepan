@@ -138,6 +138,8 @@ func TestRoleInstructionsDescribeFlatTransportAndRoleSpecificSemantics(t *testin
 		required []string
 	}{
 		{ResponseRoleImplementer, []string{"`implementation_ready`: populate `message`", "`checks_requested`: populate `check_names`", "`clarification_required`: populate `question`, `context`, `boundaries`, `references`"}},
+		{ResponseRoleBriefer, []string{"Assignment brief format", "without YAML frontmatter", "`assignment_id`, `version`, and `task_ids`"}},
+		{ResponseRoleFinalReviewer, []string{"Implementation review result format", "have equal lengths", "expected_results"}},
 		{ResponseRoleTaskReviewer, []string{"`review_passed`: populate `message`, `references`", "`changes_requested`: populate `finding_ids`, `findings`, `finding_decisions`, `finding_reasons`, `locations`, `bases`, `expected_results`", "have equal lengths"}},
 		{ResponseRoleOrchestrator, []string{"`tasks_extracted`: populate `task_ids`, `task_payloads`", "`tasks_added`: populate `task_ids`, `task_payloads`", "`progress_reflected`: populate `task_ids`", "`clarification_required`: populate `question`, `context`, `boundaries`, `references`"}},
 	}

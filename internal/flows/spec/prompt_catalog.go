@@ -45,16 +45,18 @@ const (
 	promptRolePlanAuthor   PromptID = "roles/plan-author"
 	promptRolePlanReviewer PromptID = "roles/plan-reviewer"
 
-	promptProjectContext PromptID = "capabilities/common/project-context"
-	promptBrainstorming  PromptID = "capabilities/common/brainstorming"
-	promptIntentAuthor   PromptID = "capabilities/intent/author"
-	promptIntentDocument PromptID = "capabilities/intent/document"
-	promptSpecAuthor     PromptID = "capabilities/spec/author"
-	promptSpecReview     PromptID = "capabilities/spec/review"
-	promptSpecDocument   PromptID = "capabilities/spec/document"
-	promptPlanAuthor     PromptID = "capabilities/plan/author"
-	promptPlanReview     PromptID = "capabilities/plan/review"
-	promptPlanDocument   PromptID = "capabilities/plan/document"
+	promptProjectContext     PromptID = "capabilities/common/project-context"
+	promptBrainstorming      PromptID = "capabilities/common/brainstorming"
+	promptIntentAuthor       PromptID = "capabilities/intent/author"
+	promptIntentDocument     PromptID = "capabilities/intent/document"
+	promptSpecAuthor         PromptID = "capabilities/spec/author"
+	promptSpecReview         PromptID = "capabilities/spec/review"
+	promptSpecReviewDocument PromptID = "capabilities/spec/review-document"
+	promptSpecDocument       PromptID = "capabilities/spec/document"
+	promptPlanAuthor         PromptID = "capabilities/plan/author"
+	promptPlanReview         PromptID = "capabilities/plan/review"
+	promptPlanReviewDocument PromptID = "capabilities/plan/review-document"
+	promptPlanDocument       PromptID = "capabilities/plan/document"
 )
 
 // PromptCatalog is the control-plane seam for prompt resolution. Callers ask
@@ -98,6 +100,7 @@ var rolePromptCompositions = map[Role]rolePromptComposition{
 		capabilities: []PromptID{
 			promptProjectContext,
 			promptSpecReview,
+			promptSpecReviewDocument,
 			promptSpecDocument,
 		},
 	},
@@ -117,6 +120,7 @@ var rolePromptCompositions = map[Role]rolePromptComposition{
 		capabilities: []PromptID{
 			promptProjectContext,
 			promptPlanReview,
+			promptPlanReviewDocument,
 			promptPlanDocument,
 		},
 	},

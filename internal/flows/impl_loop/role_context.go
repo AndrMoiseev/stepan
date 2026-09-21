@@ -534,15 +534,13 @@ func responseKindInstruction(kind ResponseKind) string {
 	text := "populate " + quotedFields(fields)
 	switch kind {
 	case ResponseBriefReady:
-		return text + "; task_ids is non-empty and brief is non-empty."
+		return text + ". See the assignment brief format."
 	case ResponseImplementationReady:
 		return text + "; message is non-empty."
 	case ResponseChecksRequested:
 		return text + "; check_names is a non-empty list of configured names."
-	case ResponseReviewPassed:
-		return text + "; message and references are non-empty."
-	case ResponseChangesRequested:
-		return text + "; every finding array is non-empty and finding_ids, findings, finding_decisions, finding_reasons, locations, bases, and expected_results have equal lengths. For each prior finding, use resolved or retained with a concrete reviewer reason; use open only for a new finding."
+	case ResponseReviewPassed, ResponseChangesRequested:
+		return text + ". See the implementation review result format."
 	case ResponseReviewDisputed:
 		return text + "; finding_ids has exactly one item; message and references are non-empty."
 	case ResponseExplorationRequested:

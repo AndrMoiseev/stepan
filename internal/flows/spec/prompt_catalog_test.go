@@ -15,9 +15,9 @@ func TestEmbeddedPromptCatalogComposesEveryRoleInControlPlaneOrder(t *testing.T)
 	}{
 		{RoleIntentAuthor, []PromptID{promptSystemIntentAuthor, promptRoleIntentAuthor, promptProjectContext, promptBrainstorming, promptIntentAuthor, promptIntentDocument}},
 		{RoleSpecAuthor, []PromptID{promptSystemSpecAuthor, promptRoleSpecAuthor, promptProjectContext, promptBrainstorming, promptSpecAuthor, promptSpecDocument}},
-		{RoleSpecReviewer, []PromptID{promptSystemSpecReviewer, promptRoleSpecReviewer, promptProjectContext, promptSpecReview, promptSpecDocument}},
+		{RoleSpecReviewer, []PromptID{promptSystemSpecReviewer, promptRoleSpecReviewer, promptProjectContext, promptSpecReview, promptSpecReviewDocument, promptSpecDocument}},
 		{RolePlanAuthor, []PromptID{promptSystemPlanAuthor, promptRolePlanAuthor, promptProjectContext, promptBrainstorming, promptPlanAuthor, promptPlanDocument}},
-		{RolePlanReviewer, []PromptID{promptSystemPlanReviewer, promptRolePlanReviewer, promptProjectContext, promptPlanReview, promptPlanDocument}},
+		{RolePlanReviewer, []PromptID{promptSystemPlanReviewer, promptRolePlanReviewer, promptProjectContext, promptPlanReview, promptPlanReviewDocument, promptPlanDocument}},
 	}
 
 	catalog := NewEmbeddedPromptCatalog()
