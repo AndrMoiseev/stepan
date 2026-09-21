@@ -50,6 +50,8 @@ func TestProductionFactoriesRejectUnsupportedNessyReasoning(t *testing.T) {
 }
 
 func TestProductionFactoriesPassProfileModelAndReasoningToStarters(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var codexSeen codexapp.RuntimeConfig
 	var claudeSeen claudeapp.Config
 	var nessySeen nessyapp.Config
@@ -60,7 +62,10 @@ func TestProductionFactoriesPassProfileModelAndReasoningToStarters(t *testing.T)
 		ClaudeExecutable: "claude-test",
 		NessyAuthToken:   func() (string, error) { return "test-token", nil },
 	}, starters{
-		codex: func(config codexapp.RuntimeConfig) (agentruntime.Runtime, error) {
+		codex: func(startContext context.Context, config codexapp.RuntimeConfig) (agentruntime.Runtime, error) {
+			if startContext != ctx {
+				t.Fatal("Codex starter lost caller context")
+			}
 			codexSeen = config
 			return inertRuntime{}, nil
 		},
@@ -80,7 +85,7 @@ func TestProductionFactoriesPassProfileModelAndReasoningToStarters(t *testing.T)
 		{Name: "low", Provider: "nessy", Model: "qwen"},
 	}
 	for _, profile := range profiles {
-		if _, err := factories[profile.Provider].Create(context.Background(), profile); err != nil {
+		if _, err := factories[profile.Provider].Create(ctx, profile); err != nil {
 			t.Fatalf("create %s runtime: %v", profile.Provider, err)
 		}
 	}

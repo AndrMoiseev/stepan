@@ -68,7 +68,10 @@ func RefineBrief(ctx context.Context, input BriefRefinementInput) (BriefRefineme
 	if err := validateBriefRefinementInput(input); err != nil {
 		return BriefRefinementResult{}, err
 	}
-	if recovered, ok, err := recoveredBriefRefinement(input); err != nil || ok {
+	if err := ctx.Err(); err != nil {
+		return BriefRefinementResult{}, err
+	}
+	if recovered, ok, err := recoveredBriefRefinement(ctx, input); err != nil || ok {
 		return recovered, err
 	}
 	brief, err := currentAssignmentBrief(input.Journal, input.Run, input.AssignmentID)
@@ -260,7 +263,7 @@ func publishBriefRefinementResponse(journal *runstore.Run, resultID implstate.Re
 	return journal.Publish(implstate.EvidenceID(string(resultID)+"-response"), data)
 }
 
-func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult, bool, error) {
+func recoveredBriefRefinement(ctx context.Context, input BriefRefinementInput) (BriefRefinementResult, bool, error) {
 	result := assignmentResultForOperation(input.Run, input.AssignmentID, input.OperationID)
 	if result == nil {
 		// Publishing an accepted answer precedes recording its result. If the
@@ -285,11 +288,11 @@ func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult
 		if operation == nil {
 			return BriefRefinementResult{}, true, fmt.Errorf("%w: published response has no refinement operation", ErrBriefRefinement)
 		}
-		recovered, err := persistBriefRefinementOutcome(context.Background(), input, operation.BriefID, input.OperationID, input.ResultID, response)
+		recovered, err := persistBriefRefinementOutcome(ctx, input, operation.BriefID, input.OperationID, input.ResultID, response)
 		if err != nil || response.Kind != ResponseExplorationRequested {
 			return recovered, true, err
 		}
-		return recoverBriefRefinementExplorer(input, response)
+		return recoverBriefRefinementExplorer(ctx, input, response)
 	}
 	if result.ID != input.ResultID {
 		return BriefRefinementResult{}, true, fmt.Errorf("%w: refinement operation already has another result", ErrBriefRefinement)
@@ -297,7 +300,7 @@ func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult
 	if response, err := durableBriefRefinementResponse(input, *result); err != nil {
 		return BriefRefinementResult{}, true, err
 	} else if response.Kind == ResponseExplorationRequested {
-		return recoverBriefRefinementExplorer(input, response)
+		return recoverBriefRefinementExplorer(ctx, input, response)
 	}
 	recovered, err := recoveredBriefRefinementResult(input, *result)
 	return recovered, true, err
@@ -306,17 +309,17 @@ func recoveredBriefRefinement(input BriefRefinementInput) (BriefRefinementResult
 // recoverBriefRefinementExplorer resumes a durable source request instead of
 // asking the briefer to repeat it. It is used both after a fully recorded
 // request and after the narrower publication-before-state-event boundary.
-func recoverBriefRefinementExplorer(input BriefRefinementInput, request AgentResponse) (BriefRefinementResult, bool, error) {
+func recoverBriefRefinementExplorer(ctx context.Context, input BriefRefinementInput, request AgentResponse) (BriefRefinementResult, bool, error) {
 	brief, err := currentAssignmentBrief(input.Journal, input.Run, input.AssignmentID)
 	if err != nil {
 		return BriefRefinementResult{}, true, err
 	}
-	session, err := recoveryBrieferSession(context.Background(), input, brief, input.Request, request)
+	session, err := recoveryBrieferSession(ctx, input, brief, input.Request, request)
 	if err != nil {
 		return BriefRefinementResult{}, true, err
 	}
 	expectation := briefRefinementCall(input, session, input.OperationID, request.Binding, "").Expectation
-	recovered, err := continueBriefRefinementExplorer(context.Background(), input, brief, session, expectation, request, 0)
+	recovered, err := continueBriefRefinementExplorer(ctx, input, brief, session, expectation, request, 0)
 	return recovered, true, err
 }
 

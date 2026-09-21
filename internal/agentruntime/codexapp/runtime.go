@@ -1,6 +1,7 @@
 package codexapp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ var (
 )
 
 const interruptGracePeriod = 3 * time.Second
+
+const startupTimeout = 30 * time.Second
 
 // Runtime owns one Process and Connection. A failed or closed Runtime is never
 // restarted; create a new one so thread IDs cannot leak across processes.
@@ -41,15 +44,47 @@ func StartRuntime(executable, workspace string) (*Runtime, error) {
 // StartRuntimeWithConfig starts a Codex App Server with an explicit model and
 // reasoning selection for one runtime.
 func StartRuntimeWithConfig(config RuntimeConfig) (*Runtime, error) {
+	return StartRuntimeWithConfigContext(context.Background(), config)
+}
+
+// StartRuntimeWithConfigContext bounds startup by the caller's cancellation and
+// a startup timeout. Once returned, the runtime owns its independent lifecycle.
+func StartRuntimeWithConfigContext(ctx context.Context, config RuntimeConfig) (*Runtime, error) {
+	return startRuntimeWithConfig(ctx, config, startupTimeout)
+}
+
+func startRuntimeWithConfig(ctx context.Context, config RuntimeConfig, timeout time.Duration) (*Runtime, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("start Codex runtime: %w", err)
+	}
 	process := NewProcessWithConfig(config)
 	if err := process.Start(); err != nil {
 		_ = process.Close()
 		return nil, err
 	}
+	// Closing the process also closes the pipes, interrupting both a blocked
+	// handshake write and a pending response read. Join the callback before
+	// returning so cancellation cannot close a successfully returned runtime.
+	cancelDone := make(chan struct{})
+	var cancelErr error
+	stopCancellation := context.AfterFunc(ctx, func() {
+		cancelErr = process.Close()
+		close(cancelDone)
+	})
 	connection, err := NewConnection(NewTransport(process.Stdout(), process.Stdin()), Handler{})
+	if !stopCancellation() {
+		<-cancelDone
+	}
+	if contextErr := ctx.Err(); contextErr != nil {
+		if connection != nil {
+			_ = connection.Close()
+		}
+		return nil, errors.Join(fmt.Errorf("initialize Codex runtime: %w", contextErr), cancelErr, process.Close())
+	}
 	if err != nil {
-		_ = process.Close()
-		return nil, err
+		return nil, errors.Join(err, process.Close())
 	}
 	runtime := &Runtime{process: process, connection: connection, workspace: config.Workspace, grace: interruptGracePeriod, closed: make(chan struct{})}
 	go func() {

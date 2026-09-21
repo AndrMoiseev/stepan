@@ -554,15 +554,15 @@ func runtimeFactory(config agentConfig, root string, token string) func(context.
 }
 
 type runtimeStarters struct {
-	codex  func(string, string) (agentruntime.Runtime, error)
+	codex  func(context.Context, string, string) (agentruntime.Runtime, error)
 	claude func(context.Context, claudeapp.Config) (agentruntime.Runtime, error)
 	nessy  func(nessyapp.Config) (agentruntime.Runtime, error)
 }
 
 func defaultRuntimeStarters() runtimeStarters {
 	return runtimeStarters{
-		codex: func(executable, workspace string) (agentruntime.Runtime, error) {
-			return codexapp.StartRuntime(executable, workspace)
+		codex: func(ctx context.Context, executable, workspace string) (agentruntime.Runtime, error) {
+			return codexapp.StartRuntimeWithConfigContext(ctx, codexapp.RuntimeConfig{Executable: executable, Workspace: workspace})
 		},
 		claude: func(ctx context.Context, config claudeapp.Config) (agentruntime.Runtime, error) {
 			return claudeapp.StartRuntime(ctx, config)
@@ -593,8 +593,8 @@ func runtimeFactoryWithStarters(config agentConfig, root string, starters runtim
 			})
 		}
 	case agentCodex:
-		return func(context.Context) (agentruntime.Runtime, error) {
-			return starters.codex(config.executable, root)
+		return func(ctx context.Context) (agentruntime.Runtime, error) {
+			return starters.codex(ctx, config.executable, root)
 		}
 	default:
 		return func(context.Context) (agentruntime.Runtime, error) {

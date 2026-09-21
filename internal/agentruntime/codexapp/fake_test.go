@@ -30,6 +30,19 @@ func TestMain(main *testing.M) {
 
 func runFake(scenario string) int {
 	switch scenario {
+	case "initialize-silent":
+		transport := NewTransport(os.Stdin, os.Stdout)
+		request, err := transport.Read()
+		if err != nil || request.Method != "initialize" {
+			return 80
+		}
+		if err := os.WriteFile(os.Getenv("STEPAN_INITIALIZE_READY"), []byte("ready"), 0o600); err != nil {
+			return 81
+		}
+		// Bound the broken implementation's wait too, so regression failures
+		// cannot leave a fake CLI alive indefinitely.
+		time.Sleep(4 * time.Second)
+		return 0
 	case "correlation":
 		transport := NewTransport(os.Stdin, os.Stdout)
 		first, err := transport.Read()

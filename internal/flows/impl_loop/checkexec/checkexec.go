@@ -141,11 +141,12 @@ func RunContext(ctx context.Context, command Command) (Result, error) {
 		return resultFrom(child, stdout.Bytes(), stderr.Bytes(), FailureInfrastructure), checkError(command, FailureInfrastructure, ErrInfrastructure, fmt.Errorf("assign process supervisor: %w", err))
 	}
 
-	runContext, stopTimeout := context.WithCancel(ctx)
+	runContext := ctx
 	if command.Timeout > 0 {
+		var stopTimeout context.CancelFunc
 		runContext, stopTimeout = context.WithTimeout(ctx, command.Timeout)
+		defer stopTimeout()
 	}
-	defer stopTimeout()
 
 	wait := waitForCommand(child, stdoutDone, stderrDone)
 

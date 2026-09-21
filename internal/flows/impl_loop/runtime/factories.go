@@ -36,15 +36,15 @@ func NewFactories(options FactoryOptions) map[string]implloop.RuntimeFactory {
 }
 
 type starters struct {
-	codex  func(codexapp.RuntimeConfig) (agentruntime.Runtime, error)
+	codex  func(context.Context, codexapp.RuntimeConfig) (agentruntime.Runtime, error)
 	claude func(context.Context, claudeapp.Config) (agentruntime.Runtime, error)
 	nessy  func(nessyapp.Config) (agentruntime.Runtime, error)
 }
 
 func defaultStarters() starters {
 	return starters{
-		codex: func(config codexapp.RuntimeConfig) (agentruntime.Runtime, error) {
-			return codexapp.StartRuntimeWithConfig(config)
+		codex: func(ctx context.Context, config codexapp.RuntimeConfig) (agentruntime.Runtime, error) {
+			return codexapp.StartRuntimeWithConfigContext(ctx, config)
 		},
 		claude: func(ctx context.Context, config claudeapp.Config) (agentruntime.Runtime, error) {
 			return claudeapp.StartRuntime(ctx, config)
@@ -70,8 +70,8 @@ func newFactories(options FactoryOptions, factoryStarters starters) map[string]i
 			preflight: func(profile setting.RuntimeProfile) error {
 				return codexapp.ValidateRuntimeConfig(codexConfig(options, profile))
 			},
-			create: func(_ context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
-				return factoryStarters.codex(codexConfig(options, profile))
+			create: func(ctx context.Context, profile setting.RuntimeProfile) (agentruntime.Runtime, error) {
+				return factoryStarters.codex(ctx, codexConfig(options, profile))
 			},
 		},
 		"claude": providerFactory{

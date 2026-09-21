@@ -109,7 +109,7 @@ func TestNessyCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing
 			var captured nessyapp.Config
 			nessyStarts, otherStarts := 0, 0
 			starters := runtimeStarters{
-				codex: func(string, string) (agentruntime.Runtime, error) {
+				codex: func(context.Context, string, string) (agentruntime.Runtime, error) {
 					otherStarts++
 					return nil, errors.New("unexpected Codex fallback")
 				},
@@ -180,7 +180,10 @@ func TestNessyCompositionUsesOnlySelectedPATHNameAndEphemeralIdentity(t *testing
 func TestRuntimeFactoryRejectsUnknownKindWithoutProviderFallback(t *testing.T) {
 	starts := 0
 	starters := runtimeStarters{
-		codex: func(string, string) (agentruntime.Runtime, error) { starts++; return &compositionRuntime{}, nil },
+		codex: func(context.Context, string, string) (agentruntime.Runtime, error) {
+			starts++
+			return &compositionRuntime{}, nil
+		},
 		claude: func(context.Context, claudeapp.Config) (agentruntime.Runtime, error) {
 			starts++
 			return &compositionRuntime{}, nil
@@ -228,12 +231,17 @@ func TestNessyStartupFailureIsClassifiedBeforeDurableFlow(t *testing.T) {
 }
 
 func TestRuntimeFactoryPreservesCodexAndClaudeComposition(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	root := t.TempDir()
 	marker := &compositionRuntime{}
 	var codexExecutable, codexWorkspace string
 	var claudeConfig claudeapp.Config
 	starters := runtimeStarters{
-		codex: func(executable, workspace string) (agentruntime.Runtime, error) {
+		codex: func(startContext context.Context, executable, workspace string) (agentruntime.Runtime, error) {
+			if startContext != ctx {
+				t.Fatal("Codex starter lost caller context")
+			}
 			codexExecutable, codexWorkspace = executable, workspace
 			return marker, nil
 		},
@@ -246,7 +254,7 @@ func TestRuntimeFactoryPreservesCodexAndClaudeComposition(t *testing.T) {
 		},
 	}
 
-	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentCodex, executable: "codex"}, root, starters, "")(context.Background())
+	runtime, err := runtimeFactoryWithStarters(agentConfig{kind: agentCodex, executable: "codex"}, root, starters, "")(ctx)
 	if err != nil || runtime != marker || codexExecutable != "codex" || codexWorkspace != root {
 		t.Fatalf("Codex composition = %#v, %v, executable=%q workspace=%q", runtime, err, codexExecutable, codexWorkspace)
 	}
