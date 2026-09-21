@@ -1,0 +1,3 @@
+The review must contain the complete current set of findings, not only new findings. Use `PLAN-F-*` headings with three-digit default padding. Preserve an existing finding's ID, severity, original problem, location, and traces. A materially different problem receives a new ID and the old finding becomes `superseded` with `Superseded-by`.
+
+Every finding records `Severity`, `Status`, `Problem`, `Location`, `Recommendation`, `Decision`, `Decided-by`, and `Rationale`. Add `Traces` when the finding concerns specific document elements; omit `Traces` for a whole-document issue. Use severity `blocker`, `major`, or `minor`, and status `open`, `resolved`, `dismissed`, or `superseded`. A resolved finding also records `Resolution`.
