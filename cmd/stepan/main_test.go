@@ -16,7 +16,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
-	"github.com/AndrMoiseev/stepan/internal/flows/spec"
+	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 )
 
 func TestPreflightRejectsUnsupportedPlatformBeforeHandles(t *testing.T) {

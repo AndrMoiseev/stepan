@@ -38,8 +38,10 @@ type Envelope struct {
 	Decisions []Decision `json:"decisions"`
 }
 
-const featureIDSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"}},"required":["feature_id"],"additionalProperties":false}`
-const decisionSchema = `{"type":"object","properties":{"author":{"enum":["user","agent"]},"decision":{"type":"string","minLength":1},"rationale":{"type":"string","minLength":1},"alternatives":{"type":"array","items":{"type":"string"}},"supersedes":{"type":"array","items":{"type":"integer","minimum":1}}},"required":["author","decision","rationale","alternatives","supersedes"],"additionalProperties":false}`
+const (
+	featureIDSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"feature_id":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"}},"required":["feature_id"],"additionalProperties":false}`
+	decisionSchema  = `{"type":"object","properties":{"author":{"enum":["user","agent"]},"decision":{"type":"string","minLength":1},"rationale":{"type":"string","minLength":1},"alternatives":{"type":"array","items":{"type":"string"}},"supersedes":{"type":"array","items":{"type":"integer","minimum":1}}},"required":["author","decision","rationale","alternatives","supersedes"],"additionalProperties":false}`
+)
 
 // Codex App Server rejects union keywords in response schemas. The flat schema
 // requires every transport property; DecodeEnvelope applies kind-specific
@@ -71,6 +73,7 @@ func DecodeFeatureID(data []byte) (FeatureIDResult, error) {
 	}
 	return FeatureIDResult(value), nil
 }
+
 func DecodeEnvelope(data []byte) (Envelope, error) {
 	var raw struct {
 		Kind      Kind        `json:"kind"`
@@ -109,6 +112,7 @@ func DecodeEnvelope(data []byte) (Envelope, error) {
 	}
 	return value, nil
 }
+
 func decodeExact(data []byte, value any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -120,6 +124,7 @@ func decodeExact(data []byte, value any) error {
 	}
 	return nil
 }
+
 func validateDecision(value Decision) error {
 	if value.Author != DecisionUser && value.Author != DecisionAgent {
 		return fmt.Errorf("invalid author %q", value.Author)

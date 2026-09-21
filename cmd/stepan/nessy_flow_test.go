@@ -14,7 +14,7 @@ import (
 	"testing"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
-	"github.com/AndrMoiseev/stepan/internal/flows/spec"
+	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 )
 
 func TestMain(main *testing.M) {

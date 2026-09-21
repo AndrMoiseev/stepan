@@ -24,6 +24,7 @@ func withinPath(root, value string) bool {
 	r, err := filepath.Rel(root, value)
 	return err == nil && r != ".." && !strings.HasPrefix(r, ".."+string(filepath.Separator))
 }
+
 func removeArtifact(root string) error {
 	if root == "" {
 		return nil
@@ -241,15 +242,19 @@ type reviewEngineBinding struct {
 func (b reviewEngineBinding) Start(request StartReviewRequest) (ReviewResult, error) {
 	return b.reviewer.Start(request)
 }
+
 func (b reviewEngineBinding) Submit(message string) (ReviewResult, error) {
 	return b.reviewer.Submit(message)
 }
+
 func (b reviewEngineBinding) Apply() (ReviewResult, error) {
 	return b.reviewer.ApplyPendingMaterial(b.author)
 }
+
 func (b reviewEngineBinding) Decide(decision MaterialFindingDecision) (ReviewResult, error) {
 	return b.reviewer.DecideMaterial(decision, b.author)
 }
+
 func (b reviewEngineBinding) DecideFingerprint(action ReviewFingerprintAction) (ReviewResult, error) {
 	return b.reviewer.DecideFingerprint(action)
 }
@@ -420,36 +425,47 @@ func (c *FeatureController) Execute(command ControllerCommand) (Progress, error)
 func (c *FeatureController) AuthorMessage(message string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerAuthorMessage, Message: message})
 }
+
 func (c *FeatureController) RevisionDecision(action RevisionAction, scope string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerRevisionDecision, RevisionAction: action, ReworkScope: scope})
 }
+
 func (c *FeatureController) StartReview(provider, model, runtimeContext string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerStartReview, Provider: provider, Model: model, RuntimeContext: runtimeContext})
 }
+
 func (c *FeatureController) ReviewMessage(message string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerReviewMessage, Message: message})
 }
+
 func (c *FeatureController) ApplyReview() (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerApplyReview})
 }
+
 func (c *FeatureController) ReviewDecision(decision MaterialFindingDecision) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerReviewDecision, ReviewDecision: decision})
 }
+
 func (c *FeatureController) ReviewFingerprintDecision(action ReviewFingerprintAction) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerFingerprintChoice, FingerprintAction: action})
 }
+
 func (c *FeatureController) Approve(runtimeContext string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerApprove, RuntimeContext: runtimeContext})
 }
+
 func (c *FeatureController) ReviseSpec(runtimeContext string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerReviseSpec, RuntimeContext: runtimeContext})
 }
+
 func (c *FeatureController) ClassifyIntentRevision(classification IntentRevisionClassification, newFeatureID, runtimeContext string) (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerClassifyIntent, IntentRevision: classification, NewFeatureID: newFeatureID, RuntimeContext: runtimeContext})
 }
+
 func (c *FeatureController) Status() (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerStatus})
 }
+
 func (c *FeatureController) Close() (Progress, error) {
 	return c.Execute(ControllerCommand{Kind: ControllerClose})
 }

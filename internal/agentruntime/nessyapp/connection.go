@@ -730,6 +730,7 @@ type connectionError struct{ cause error }
 func (err connectionError) Error() string {
 	return fmt.Sprintf("%s: %v", ErrConnectionClosed, err.cause)
 }
+
 func (err connectionError) Unwrap() []error {
 	return []error{ErrConnectionClosed, err.cause}
 }

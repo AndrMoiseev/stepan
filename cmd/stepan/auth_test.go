@@ -6,13 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/AndrMoiseev/stepan/internal/agentruntime"
-	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	"github.com/AndrMoiseev/stepan/internal/agentruntime/nessyapp"
 )
 
 func TestNessyCredentialsDoNotReachFlowArtifacts(t *testing.T) {

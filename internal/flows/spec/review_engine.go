@@ -300,8 +300,10 @@ func (e *ReviewEngine) decideMaterial(decisions []MaterialFindingDecision, autho
 		if requested.Decision == DecisionDismiss {
 			label = "dismiss"
 		}
-		decision := Decision{Author: DecisionUser, Decision: label + " review finding " + requested.FindingID.String(),
-			Rationale: strings.TrimSpace(requested.Rationale), Alternatives: []string{}, Supersedes: []int{}}
+		decision := Decision{
+			Author: DecisionUser, Decision: label + " review finding " + requested.FindingID.String(),
+			Rationale: strings.TrimSpace(requested.Rationale), Alternatives: []string{}, Supersedes: []int{},
+		}
 		feature, err := e.repository.RecordDecision(e.run.request.FeatureID, e.run.request.Stage, e.run.role, decision)
 		if err != nil {
 			return ReviewResult{}, fmt.Errorf("record material review decision: %w", err)

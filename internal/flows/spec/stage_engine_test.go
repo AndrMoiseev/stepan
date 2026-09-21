@@ -406,42 +406,55 @@ func (r *stageRepositoryStub) Load(string) (FeatureSnapshot, error) { return r.f
 func (r *stageRepositoryStub) InspectAuthorDraft(DraftArtifactRequest) (DraftInspection, error) {
 	return DraftInspection{}, fmt.Errorf("unexpected InspectAuthorDraft")
 }
+
 func (r *stageRepositoryStub) PublishAuthorDraft(DraftArtifactRequest) (DraftPublication, error) {
 	return DraftPublication{}, fmt.Errorf("unexpected PublishAuthorDraft")
 }
+
 func (r *stageRepositoryStub) PublishReview(ReviewArtifactRequest) (ReviewPublication, error) {
 	return ReviewPublication{}, fmt.Errorf("unexpected PublishReview")
 }
+
 func (r *stageRepositoryStub) RecordDecision(string, Stage, Role, Decision) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *stageRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *stageRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *stageRepositoryStub) DiscardPending(_ string, _ Stage, artifactRoot string) (FeatureSnapshot, error) {
 	return r.feature, removeArtifact(artifactRoot)
 }
+
 func (r *stageRepositoryStub) Approve(ApproveStageRequest) (PhaseCommitResult, error) {
 	return PhaseCommitResult{}, fmt.Errorf("unexpected Approve")
 }
+
 func (r *stageRepositoryStub) ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error) {
 	return PhaseCommitResult{}, fmt.Errorf("unexpected ReviseIntent")
 }
+
 func (r *stageRepositoryStub) InspectExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	return ExternalRevisionResult{}, fmt.Errorf("unexpected InspectExternalRevision")
 }
+
 func (r *stageRepositoryStub) AcceptExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	return ExternalRevisionResult{}, fmt.Errorf("unexpected AcceptExternalRevision")
 }
+
 func (r *stageRepositoryStub) SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error) {
 	return SupersessionResult{}, fmt.Errorf("unexpected SupersedeIntent")
 }
+
 func (r *stageRepositoryStub) InspectChanges(string) (ChangeInspection, error) {
 	return ChangeInspection{}, nil
 }
+
 func (r *stageRepositoryStub) Recover(string) (RecoveryResult, error) {
 	return RecoveryResult{}, nil
 }

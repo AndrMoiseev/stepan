@@ -1191,12 +1191,14 @@ func stateWriterLock(path string) (*sync.Mutex, error) {
 	return actual.(*sync.Mutex), nil
 }
 
-var beforeProjectionCommitHook func(implstate.Event) error
-var beforeJournalAppendHook func()
-var beforeJournalSyncHook func() error
-var afterJournalSyncHook func() error
-var beforeProjectionTransactionHook func(implstate.Event) error
-var afterProjectionTransactionHook func(implstate.Event) error
-var publishReplacementProjection = replaceProjectionFile
-var beforeRecoveryReplayHook func() error
-var syncReplacementDirectory = syncDirectory
+var (
+	beforeProjectionCommitHook      func(implstate.Event) error
+	beforeJournalAppendHook         func()
+	beforeJournalSyncHook           func() error
+	afterJournalSyncHook            func() error
+	beforeProjectionTransactionHook func(implstate.Event) error
+	afterProjectionTransactionHook  func(implstate.Event) error
+	publishReplacementProjection    = replaceProjectionFile
+	beforeRecoveryReplayHook        func() error
+	syncReplacementDirectory        = syncDirectory
+)

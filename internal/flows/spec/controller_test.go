@@ -227,62 +227,77 @@ func newControllerRepositoryStub(feature FeatureSnapshot) *controllerRepositoryS
 func (r *controllerRepositoryStub) Create(CreateFeatureRequest) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *controllerRepositoryStub) Load(string) (FeatureSnapshot, error) {
 	r.loads++
 	return featureClone(r.feature), nil
 }
+
 func (r *controllerRepositoryStub) Approve(request ApproveStageRequest) (PhaseCommitResult, error) {
 	r.approvals++
 	return r.approve(request)
 }
+
 func (r *controllerRepositoryStub) InspectExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	if r.inspectExternal != nil {
 		return r.inspectExternal(request)
 	}
 	return ExternalRevisionResult{}, errors.New("unexpected InspectExternalRevision")
 }
+
 func (r *controllerRepositoryStub) AcceptExternalRevision(request ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	if r.acceptExternal != nil {
 		return r.acceptExternal(request)
 	}
 	return ExternalRevisionResult{}, errors.New("unexpected AcceptExternalRevision")
 }
+
 func (r *controllerRepositoryStub) InspectAuthorDraft(DraftArtifactRequest) (DraftInspection, error) {
 	return DraftInspection{}, errors.New("unexpected InspectAuthorDraft")
 }
+
 func (r *controllerRepositoryStub) PublishAuthorDraft(DraftArtifactRequest) (DraftPublication, error) {
 	return DraftPublication{}, errors.New("unexpected PublishAuthorDraft")
 }
+
 func (r *controllerRepositoryStub) PublishReview(ReviewArtifactRequest) (ReviewPublication, error) {
 	return ReviewPublication{}, errors.New("unexpected PublishReview")
 }
+
 func (r *controllerRepositoryStub) RecordDecision(string, Stage, Role, Decision) (FeatureSnapshot, error) {
 	return FeatureSnapshot{}, errors.New("unexpected RecordDecision")
 }
+
 func (r *controllerRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
 	return FeatureSnapshot{}, errors.New("unexpected RecordActivity")
 }
+
 func (r *controllerRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *controllerRepositoryStub) DiscardPending(string, Stage, string) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *controllerRepositoryStub) ReviseIntent(request ReviseIntentRequest) (PhaseCommitResult, error) {
 	if r.reviseIntent != nil {
 		return r.reviseIntent(request)
 	}
 	return PhaseCommitResult{}, errors.New("unexpected ReviseIntent")
 }
+
 func (r *controllerRepositoryStub) SupersedeIntent(request SupersedeIntentRequest) (SupersessionResult, error) {
 	if r.supersedeIntent != nil {
 		return r.supersedeIntent(request)
 	}
 	return SupersessionResult{}, errors.New("unexpected SupersedeIntent")
 }
+
 func (r *controllerRepositoryStub) InspectChanges(string) (ChangeInspection, error) {
 	return r.feature.Changes, nil
 }
+
 func (r *controllerRepositoryStub) Recover(string) (RecoveryResult, error) {
 	return RecoveryResult{}, nil
 }
@@ -307,33 +322,40 @@ func (a *controllerAuthorStub) Start(request StartStageRequest) (StagePolicy, er
 	a.starts = append(a.starts, request.Stage)
 	return policy, nil
 }
+
 func (a *controllerAuthorStub) SubmitBrief(message string) (StageResult, error) {
 	return a.Submit(message)
 }
+
 func (a *controllerAuthorStub) BeginStageDialogue() (StageResult, error) {
 	return StageResult{Stage: a.policy.Stage, Outcome: StageAuthorMessage}, nil
 }
+
 func (a *controllerAuthorStub) ResumeStageDialogue() (StageResult, error) {
 	return StageResult{Stage: a.policy.Stage, Outcome: StageAuthorMessage}, nil
 }
+
 func (a *controllerAuthorStub) Submit(message string) (StageResult, error) {
 	if a.submit != nil {
 		return a.submit(message)
 	}
 	return StageResult{}, errors.New("unexpected Submit")
 }
+
 func (a *controllerAuthorStub) Decide(action RevisionAction, scope string) (StageResult, error) {
 	if a.decide != nil {
 		return a.decide(action, scope)
 	}
 	return StageResult{}, errors.New("unexpected Decide")
 }
+
 func (a *controllerAuthorStub) ReReadCurrentDocument() (StageResult, error) {
 	if a.reread != nil {
 		return a.reread()
 	}
 	return StageResult{}, errors.New("unexpected ReReadCurrentDocument")
 }
+
 func (a *controllerAuthorStub) Close() error {
 	a.closes++
 	a.active = false
@@ -346,15 +368,19 @@ type controllerReviewStub struct{ closes int }
 func (r *controllerReviewStub) Start(StartReviewRequest) (ReviewResult, error) {
 	return ReviewResult{}, errors.New("unexpected Start")
 }
+
 func (r *controllerReviewStub) Submit(string) (ReviewResult, error) {
 	return ReviewResult{}, errors.New("unexpected Submit")
 }
+
 func (r *controllerReviewStub) Apply() (ReviewResult, error) {
 	return ReviewResult{}, errors.New("unexpected Apply")
 }
+
 func (r *controllerReviewStub) Decide(MaterialFindingDecision) (ReviewResult, error) {
 	return ReviewResult{}, errors.New("unexpected Decide")
 }
+
 func (r *controllerReviewStub) DecideFingerprint(ReviewFingerprintAction) (ReviewResult, error) {
 	return ReviewResult{}, errors.New("unexpected DecideFingerprint")
 }

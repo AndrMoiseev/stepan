@@ -45,6 +45,7 @@ func NewUI() *UI {
 	}
 	return &UI{input: bufio.NewReader(os.Stdin), output: output, activityInterval: 120 * time.Millisecond, color: color}
 }
+
 func (u *UI) ReportError(err error) {
 	if errors.Is(err, ErrRepositoryDirty) {
 		u.sayStyled(ansiRed, "Нельзя начать feature flow: в Git есть незакоммиченные изменения. Закоммитьте или временно уберите их, затем повторите /feature.")

@@ -207,7 +207,8 @@ func newFailedFinalFindingTasksFixture(t *testing.T) (implementerTransitionFixtu
 
 func completeFinalFindingAssignment(t *testing.T, run *implstate.Run, journal interface {
 	Publish(implstate.EvidenceID, []byte) (implstate.EvidenceRef, error)
-}) {
+},
+) {
 	t.Helper()
 	basis := implstate.AcceptanceBasis{Specification: run.Identity.Specification, Configuration: run.Identity.Configuration}
 	brief, err := journal.Publish("final-fix-brief", []byte("correct the final finding"))

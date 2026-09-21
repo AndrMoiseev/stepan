@@ -16,9 +16,11 @@ import (
 	"strings"
 )
 
-var ErrRepositoryDiverged = errors.New("REPOSITORY_DIVERGED")
-var ErrOutsideBoundary = errors.New("changes outside allowed root")
-var ErrSubmoduleCycle = errors.New("submodule worktree cycle")
+var (
+	ErrRepositoryDiverged = errors.New("REPOSITORY_DIVERGED")
+	ErrOutsideBoundary    = errors.New("changes outside allowed root")
+	ErrSubmoduleCycle     = errors.New("submodule worktree cycle")
+)
 
 // SubmoduleCycleError reports a repeated canonical repository root while a
 // populated submodule hierarchy is being fingerprinted.

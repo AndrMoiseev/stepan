@@ -498,43 +498,56 @@ func (r *reviewRepositoryStub) Load(string) (FeatureSnapshot, error) { return r.
 func (r *reviewRepositoryStub) InspectAuthorDraft(DraftArtifactRequest) (DraftInspection, error) {
 	return DraftInspection{}, fmt.Errorf("unexpected InspectAuthorDraft")
 }
+
 func (r *reviewRepositoryStub) PublishAuthorDraft(DraftArtifactRequest) (DraftPublication, error) {
 	return DraftPublication{}, fmt.Errorf("unexpected PublishAuthorDraft")
 }
+
 func (r *reviewRepositoryStub) PublishReview(request ReviewArtifactRequest) (ReviewPublication, error) {
 	r.publications = append(r.publications, request)
 	return ReviewPublication{}, fmt.Errorf("unexpected PublishReview")
 }
+
 func (r *reviewRepositoryStub) RecordDecision(string, Stage, Role, Decision) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *reviewRepositoryStub) RecordActivity(string, MemLogEntry) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *reviewRepositoryStub) Checkpoint(CheckpointRequest) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *reviewRepositoryStub) DiscardPending(string, Stage, string) (FeatureSnapshot, error) {
 	return r.feature, nil
 }
+
 func (r *reviewRepositoryStub) Approve(ApproveStageRequest) (PhaseCommitResult, error) {
 	return PhaseCommitResult{}, fmt.Errorf("unexpected Approve")
 }
+
 func (r *reviewRepositoryStub) ReviseIntent(ReviseIntentRequest) (PhaseCommitResult, error) {
 	return PhaseCommitResult{}, fmt.Errorf("unexpected ReviseIntent")
 }
+
 func (r *reviewRepositoryStub) InspectExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	return ExternalRevisionResult{}, fmt.Errorf("unexpected InspectExternalRevision")
 }
+
 func (r *reviewRepositoryStub) AcceptExternalRevision(ExternalRevisionRequest) (ExternalRevisionResult, error) {
 	return ExternalRevisionResult{}, fmt.Errorf("unexpected AcceptExternalRevision")
 }
+
 func (r *reviewRepositoryStub) SupersedeIntent(SupersedeIntentRequest) (SupersessionResult, error) {
 	return SupersessionResult{}, fmt.Errorf("unexpected SupersedeIntent")
 }
+
 func (r *reviewRepositoryStub) InspectChanges(string) (ChangeInspection, error) {
 	return ChangeInspection{}, nil
 }
+
 func (r *reviewRepositoryStub) Recover(string) (RecoveryResult, error) {
 	return RecoveryResult{}, nil
 }

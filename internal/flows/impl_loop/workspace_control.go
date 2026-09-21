@@ -32,8 +32,10 @@ type RepositoryControl interface {
 // module and real Git working-copy semantics.
 type GitWorkspaceControl struct{}
 
-var _ WorkspaceControl = GitWorkspaceControl{}
-var _ RepositoryControl = GitWorkspaceControl{}
+var (
+	_ WorkspaceControl  = GitWorkspaceControl{}
+	_ RepositoryControl = GitWorkspaceControl{}
+)
 
 func (GitWorkspaceControl) Capture(ctx context.Context, repository string) (git.Snapshot, error) {
 	return git.Capture(ctx, repository)

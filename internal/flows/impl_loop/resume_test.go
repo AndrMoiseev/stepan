@@ -1857,6 +1857,7 @@ func (control restartCommitControl) Commit(_ context.Context, _ string, message 
 func (workspace *resumeWorkspace) Capture(context.Context, string) (git.Snapshot, error) {
 	return workspace.actual, nil
 }
+
 func (workspace *resumeWorkspace) EnsureUnchanged(_ context.Context, _ string, expected git.Snapshot) error {
 	if sameResumeSnapshot(workspace.actual, expected) {
 		return nil
@@ -1874,16 +1875,19 @@ func (workspace *resumeWorkspace) Compare(_ context.Context, _ string, before, a
 	}
 	return append([]string(nil), workspace.paths...), nil
 }
+
 func (workspace *resumeWorkspace) Diff(_ context.Context, _ string, before, after git.Snapshot) (git.Difference, error) {
 	if workspace.diff != nil {
 		return workspace.diff(before, after), nil
 	}
 	return git.Difference{}, nil
 }
+
 func (workspace *resumeWorkspace) RestorePaths(context.Context, string, git.Snapshot, git.Snapshot, []string) (git.Snapshot, error) {
 	workspace.restores++
 	return workspace.actual, nil
 }
+
 func (workspace *resumeWorkspace) AssignmentDiff(context.Context, string, string) (string, error) {
 	return "No assignment changes.", nil
 }

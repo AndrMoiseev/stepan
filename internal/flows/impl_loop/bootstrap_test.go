@@ -24,6 +24,7 @@ func (runtime *bootstrapRuntime) StartThread(config agentruntime.ThreadConfig) (
 	runtime.configs = append(runtime.configs, config.Clone())
 	return len(runtime.configs), nil
 }
+
 func (runtime *bootstrapRuntime) RunTurn(_ agentruntime.Thread, message string) (json.RawMessage, error) {
 	runtime.messages = append(runtime.messages, message)
 	if len(runtime.turns) == 0 {
@@ -46,6 +47,7 @@ func (factory *bootstrapFactory) Preflight(profile setting.RuntimeProfile) error
 	factory.profiles = append(factory.profiles, profile)
 	return nil
 }
+
 func (factory *bootstrapFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return factory.runtime, nil
 }

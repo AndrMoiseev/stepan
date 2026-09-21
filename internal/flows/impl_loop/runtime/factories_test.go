@@ -19,6 +19,7 @@ type inertRuntime struct{}
 func (inertRuntime) StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	return nil, errors.New("not used")
 }
+
 func (inertRuntime) RunTurn(agentruntime.Thread, string) (json.RawMessage, error) {
 	return nil, errors.New("not used")
 }

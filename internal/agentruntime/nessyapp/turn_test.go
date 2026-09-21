@@ -147,8 +147,10 @@ func TestTurnRunnerClonesBootstrapSchemaAndSessionContext(t *testing.T) {
 	first, firstID := readSessionPromptMessage(t, server)
 	firstText := first.Prompt[0].Text
 	encodedWorkspace, _ := json.Marshal(runner.context.Workspace)
-	for _, expected := range []string{role, string(originalSchema), string(encodedWorkspace), "first user request", "readableRoots", "writableRoots",
-		"For write_file and edit, use an absolute target inside writableRoots"} {
+	for _, expected := range []string{
+		role, string(originalSchema), string(encodedWorkspace), "first user request", "readableRoots", "writableRoots",
+		"For write_file and edit, use an absolute target inside writableRoots",
+	} {
 		if !strings.Contains(firstText, expected) {
 			t.Fatalf("first prompt lacks %q:\n%s", expected, firstText)
 		}

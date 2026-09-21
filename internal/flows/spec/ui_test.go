@@ -87,39 +87,51 @@ func TestFlowPromptRendersOnlyProgressCommandsInControllerOrder(t *testing.T) {
 	}{
 		{
 			name: "drafting",
-			progress: Progress{FeatureID: "feature", CurrentStage: StageIntent, StageStatus: StageDrafting, ReviewStatus: ReviewNotStarted,
-				CommandHints: []CommandHint{{Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true},
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StageIntent, StageStatus: StageDrafting, ReviewStatus: ReviewNotStarted,
+				CommandHints: []CommandHint{{Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true,
+			},
 			wantCommand: []string{"/status", "/exit"}, wantText: "Обычный текст: разрешён.",
 		},
 		{
 			name: "pending revision",
-			progress: Progress{FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewNotStarted,
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewNotStarted,
 				CommandHints: []CommandHint{{Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}},
-				Revision:     []RevisionAction{RevisionApply, RevisionReject, RevisionRework}},
+				Revision:     []RevisionAction{RevisionApply, RevisionReject, RevisionRework},
+			},
 			wantCommand: []string{"/status", "/exit"}, wantText: "Обычный текст: недоступен.",
 		},
 		{
 			name: "published spec",
-			progress: Progress{FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewNotStarted,
-				CommandHints: []CommandHint{{Command: "/review", Description: "Review."}, {Command: "/approve", Description: "Approve."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true},
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewNotStarted,
+				CommandHints: []CommandHint{{Command: "/review", Description: "Review."}, {Command: "/approve", Description: "Approve."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true,
+			},
 			wantCommand: []string{"/review", "/approve", "/status", "/exit"}, wantText: "Обычный текст: разрешён.",
 		},
 		{
 			name: "awaiting review decisions",
-			progress: Progress{FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewAwaitingDecisions,
-				CommandHints: []CommandHint{{Command: "/apply", Description: "Apply findings."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true},
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StageSpec, StageStatus: StagePublished, ReviewStatus: ReviewAwaitingDecisions,
+				CommandHints: []CommandHint{{Command: "/apply", Description: "Apply findings."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true,
+			},
 			wantCommand: []string{"/apply", "/status", "/exit"}, wantText: "Обычный текст: разрешён.",
 		},
 		{
 			name: "escalated review",
-			progress: Progress{FeatureID: "feature", CurrentStage: StagePlan, StageStatus: StagePublished, ReviewStatus: ReviewEscalated,
-				CommandHints: []CommandHint{{Command: "/review", Description: "Review."}, {Command: "/revise-spec", Description: "Revise spec."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true},
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StagePlan, StageStatus: StagePublished, ReviewStatus: ReviewEscalated,
+				CommandHints: []CommandHint{{Command: "/review", Description: "Review."}, {Command: "/revise-spec", Description: "Revise spec."}, {Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}, TextAllowed: true,
+			},
 			wantCommand: []string{"/review", "/revise-spec", "/status", "/exit"}, wantText: "Обычный текст: разрешён.",
 		},
 		{
 			name: "committed plan",
-			progress: Progress{FeatureID: "feature", CurrentStage: StagePlan, StageStatus: StageCommitted, ReviewStatus: ReviewCompleted,
-				CommandHints: []CommandHint{{Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}}},
+			progress: Progress{
+				FeatureID: "feature", CurrentStage: StagePlan, StageStatus: StageCommitted, ReviewStatus: ReviewCompleted,
+				CommandHints: []CommandHint{{Command: "/status", Description: "Show status."}, {Command: "/exit", Description: "Close."}},
+			},
 			wantCommand: []string{"/status", "/exit"}, wantText: "Обычный текст: недоступен.",
 		},
 	}
@@ -410,14 +422,17 @@ func (c *planningControllerStub) PreflightFeature() error { return c.preflightEr
 func (c *planningControllerStub) DiscoverResumable() ([]ResumableFlow, error) {
 	return append([]ResumableFlow(nil), c.flows...), nil
 }
+
 func (c *planningControllerStub) Resume(featureID string) (Progress, error) {
 	c.resumed = append(c.resumed, featureID)
 	return activeInteractiveProgress(), nil
 }
+
 func (c *planningControllerStub) Submit(input string) (Progress, error) {
 	c.submitted = append(c.submitted, input)
 	return activeInteractiveProgress(), nil
 }
+
 func (c *planningControllerStub) Close() (Progress, error) {
 	c.closes++
 	return Progress{Event: ControllerSessionClosed}, nil
@@ -447,13 +462,16 @@ func (u *planningUIStub) MainPrompt() (MainCommand, error) {
 	}
 	return MainCommand{Action: MainActionFeature, Brief: "brief", NeedBrief: u.needBrief}, nil
 }
+
 func (u *planningUIStub) ReadFeatureBrief() (string, error) {
 	u.briefCalls++
 	return "brief", nil
 }
+
 func (u *planningUIStub) ResumePrompt([]ResumableFlow) (string, error) {
 	return "", fmt.Errorf("unexpected resume prompt")
 }
+
 func (u *planningUIStub) FlowPrompt(context.Context, Progress) (string, error) {
 	u.flowCalls++
 	if u.exitAfterInput && u.flowCalls > 1 {

@@ -295,6 +295,7 @@ type finalExplorerRuntime struct {
 func (*finalExplorerRuntime) StartThread(agentruntime.ThreadConfig) (agentruntime.Thread, error) {
 	return "explorer", nil
 }
+
 func (runtime *finalExplorerRuntime) RunTurn(_ agentruntime.Thread, message string) (json.RawMessage, error) {
 	if len(runtime.turns) == 0 {
 		return nil, errors.New("unexpected Explorer turn")

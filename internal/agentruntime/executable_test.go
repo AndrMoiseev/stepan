@@ -18,7 +18,7 @@ func TestExecutableNameValidationAndValueSemantics(t *testing.T) {
 			t.Errorf("invalid executable name %q error = %v", value, err)
 		}
 	}
-	if _, err := (ExecutableName("dir/agent")).Resolve(); err == nil {
+	if _, err := ExecutableName("dir/agent").Resolve(); err == nil {
 		t.Fatal("unvalidated ExecutableName resolved")
 	}
 }

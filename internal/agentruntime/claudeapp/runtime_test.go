@@ -17,7 +17,7 @@ import (
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
-	"github.com/AndrMoiseev/stepan/internal/flows/spec"
+	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 	claudecode "github.com/severity1/claude-agent-sdk-go"
 )
 
@@ -861,12 +861,14 @@ func (client *fakeClient) Connect(context.Context, ...claudecode.StreamMessage) 
 	}
 	return client.connectErr
 }
+
 func (client *fakeClient) Disconnect() error {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	client.disconnects++
 	return client.disconnectErr
 }
+
 func (client *fakeClient) QueryWithSession(ctx context.Context, prompt string, session string) error {
 	client.mu.Lock()
 	client.sessions = append(client.sessions, session)
@@ -923,11 +925,13 @@ func (client *fakeClient) sessionCount() int {
 	defer client.mu.Unlock()
 	return len(client.sessions)
 }
+
 func (client *fakeClient) ReceiveResponse(context.Context) claudecode.MessageIterator {
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	return &fakeIterator{responses: client.responses, received: client.received}
 }
+
 func (client *fakeClient) Interrupt(context.Context) error {
 	client.mu.Lock()
 	defer client.mu.Unlock()

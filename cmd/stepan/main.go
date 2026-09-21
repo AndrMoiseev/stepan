@@ -25,7 +25,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
 	implruntime "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/runtime"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
-	"github.com/AndrMoiseev/stepan/internal/flows/spec"
+	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
@@ -454,9 +454,11 @@ type implementationConsoleUI struct {
 func newImplementationConsoleUI() *implementationConsoleUI {
 	return newImplementationConsoleUIWithIO(os.Stdin, os.Stdout, os.Stderr)
 }
+
 func newImplementationConsoleUIWithIO(input io.Reader, output, errorOutput io.Writer) *implementationConsoleUI {
 	return &implementationConsoleUI{input: bufio.NewReader(input), output: output, errors: errorOutput, lines: make(chan consoleLine, 1)}
 }
+
 func (u *implementationConsoleUI) startPump() {
 	u.once.Do(func() {
 		go func() {
@@ -470,6 +472,7 @@ func (u *implementationConsoleUI) startPump() {
 		}()
 	})
 }
+
 func (u *implementationConsoleUI) Prompt(ctx context.Context, menu impl_loop.CommandMenu) (string, error) {
 	for _, command := range menu.Commands {
 		fmt.Fprintf(u.output, "%s — %s\n", command.Command, command.Description)
@@ -486,11 +489,13 @@ func (u *implementationConsoleUI) Prompt(ctx context.Context, menu impl_loop.Com
 		return line.value, nil
 	}
 }
+
 func (u *implementationConsoleUI) Report(message string) {
 	if message != "" {
 		fmt.Fprintln(u.output, message)
 	}
 }
+
 func (u *implementationConsoleUI) ReportError(err error) {
 	fmt.Fprintln(u.errors, "implementation:", err)
 }

@@ -20,11 +20,13 @@ import (
 
 type Outcome string
 
-type Message = codexapp.Message
-type MessageKind = codexapp.MessageKind
-type Transport = codexapp.Transport
-type ID = codexapp.ID
-type Platform = codexapp.Platform
+type (
+	Message     = codexapp.Message
+	MessageKind = codexapp.MessageKind
+	Transport   = codexapp.Transport
+	ID          = codexapp.ID
+	Platform    = codexapp.Platform
+)
 
 const (
 	Request      = codexapp.Request
@@ -32,10 +34,12 @@ const (
 	Notification = codexapp.Notification
 )
 
-var NewTransport = codexapp.NewTransport
-var IntID = codexapp.IntID
-var StringID = codexapp.StringID
-var ErrDuplicateResponse = codexapp.ErrDuplicateResponse
+var (
+	NewTransport         = codexapp.NewTransport
+	IntID                = codexapp.IntID
+	StringID             = codexapp.StringID
+	ErrDuplicateResponse = codexapp.ErrDuplicateResponse
+)
 
 const (
 	Pass Outcome = "PASS"

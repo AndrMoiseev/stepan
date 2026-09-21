@@ -511,6 +511,7 @@ type briefRefinementRuntimeFactory struct{ runtime agentruntime.Runtime }
 func (factory *briefRefinementRuntimeFactory) Preflight(setting.RuntimeProfile) error {
 	return nil
 }
+
 func (factory *briefRefinementRuntimeFactory) Create(context.Context, setting.RuntimeProfile) (agentruntime.Runtime, error) {
 	return factory.runtime, nil
 }

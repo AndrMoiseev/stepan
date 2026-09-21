@@ -34,10 +34,12 @@ const (
 	DecisionByOperator DecisionSource = "operator"
 )
 
-type AccessPolicy = codexapp.AccessPolicy
-type ApprovalKind = codexapp.ApprovalKind
-type ApprovalDecision = codexapp.ApprovalDecision
-type CommandForm = codexapp.CommandForm
+type (
+	AccessPolicy     = codexapp.AccessPolicy
+	ApprovalKind     = codexapp.ApprovalKind
+	ApprovalDecision = codexapp.ApprovalDecision
+	CommandForm      = codexapp.CommandForm
+)
 
 const (
 	CommandApproval       = codexapp.CommandApproval
