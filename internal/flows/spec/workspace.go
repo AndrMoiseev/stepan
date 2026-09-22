@@ -15,8 +15,6 @@ var specIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$`)
 
 const featuresDirectoryPath = "docs/changes/features"
 
-func displayFeaturesDirectory() string { return featuresDirectoryPath }
-
 // PrepareFeaturesDirectory returns the common write root for the first agent
 // turn. It is created up front because some agent runtimes require a writable
 // root to already exist before a turn begins.
@@ -33,18 +31,6 @@ func PrepareFeaturesDirectory(root string) (string, error) {
 		return "", err
 	}
 	return directory, nil
-}
-
-func featureEntries(directory string) (map[string]struct{}, error) {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		result[entry.Name()] = struct{}{}
-	}
-	return result, nil
 }
 
 func FindGitRoot(ctx context.Context, start string) (string, error) {

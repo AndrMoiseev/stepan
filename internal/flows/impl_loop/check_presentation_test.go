@@ -42,7 +42,7 @@ func TestBoundedCheckDiagnosticsPreservesUnicodeEdgesAndSmallOutput(t *testing.T
 
 func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
 
 func TestRunRequestedChecksWithReporterAttachesPresentationAndMeasuresDuration(t *testing.T) {
 	repository := newFilesystemWorkspace(t)
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			repository := newFilesystemWorkspace(t)
-			store, err := runstore.New(t.TempDir())
+			store, err := runstore.NewTransient(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}

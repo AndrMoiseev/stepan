@@ -32,7 +32,7 @@ func TestPublishProjectionGroupQuarantinesSidecarsAfterUnixRenameSyncFailure(t *
 	}
 	injected := errors.New("directory sync after rename")
 	syncReplacementDirectory = func(string) error { return injected }
-	err := publishProjectionGroup(temporary, target)
+	err := publishProjectionGroup(temporary, target, durableStorage)
 	var replacementErr *projectionReplacementError
 	if !errors.As(err, &replacementErr) || !replacementErr.mainReplaced || !errors.Is(err, injected) {
 		t.Fatalf("publishProjectionGroup() error = %v, want post-rename sync failure", err)

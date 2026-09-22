@@ -13,8 +13,6 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
-const executionBlockedPauseReason = "execution_blocked: cannot safely attribute or restore agent file changes"
-
 // AgentRole names a role whose workspace writes are observed by the
 // controller. The policy, rather than this name, defines writable paths so
 // future roles do not accidentally inherit executor authority.

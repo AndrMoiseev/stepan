@@ -9,9 +9,9 @@ import (
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
-func mustControllerStore(t *testing.T, root string) *runstore.Store {
+func mustTransientControllerStore(t *testing.T, root string) *runstore.Store {
 	t.Helper()
-	store, err := runstore.New(root)
+	store, err := runstore.NewTransient(root)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,7 @@ func ResolveExecutable() (string, error) {
 	name := defaultExecutable
 	executableName, err := agentruntime.ParseExecutableName(name)
 	if err != nil {
-		return "", fmt.Errorf("Nessy executable: %w", err)
+		return "", fmt.Errorf("nessy executable: %w", err)
 	}
 	resolved, err := executableName.Resolve()
 	if err != nil {
@@ -62,7 +62,7 @@ func canonicalGitRoot(path string) (string, error) {
 	command.Env = withoutGitContext(os.Environ())
 	output, err := command.Output()
 	if err != nil {
-		return "", fmt.Errorf("Nessy workspace is not a Git root: %w", err)
+		return "", fmt.Errorf("nessy workspace is not a Git root: %w", err)
 	}
 	reported := strings.TrimSpace(string(output))
 	reportedRoot, err := canonicalDirectory(reported, "reported Git root")
@@ -78,7 +78,7 @@ func canonicalGitRoot(path string) (string, error) {
 		return "", fmt.Errorf("stat reported Git root: %w", err)
 	}
 	if !os.SameFile(rootInfo, reportedInfo) {
-		return "", errors.New("Nessy workspace must be the Git root, not a nested directory")
+		return "", errors.New("nessy workspace must be the Git root, not a nested directory")
 	}
 	return root, nil
 }
@@ -185,7 +185,7 @@ func canonicalTargetWithin(cwd, root, supplied string) (string, error) {
 
 func validateDistinctRoots(workspace, artifact string) error {
 	if pathWithin(workspace, artifact) || pathWithin(artifact, workspace) {
-		return errors.New("Nessy artifact root must not overlap the Git workspace")
+		return errors.New("nessy artifact root must not overlap the Git workspace")
 	}
 	return nil
 }

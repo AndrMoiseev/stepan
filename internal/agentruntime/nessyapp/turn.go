@@ -23,7 +23,7 @@ type turnRunner struct {
 
 func newTurnRunner(connection *Connection, config agentruntime.ThreadConfig) (*turnRunner, error) {
 	if connection == nil {
-		return nil, errors.New("Nessy connection is required")
+		return nil, errors.New("nessy connection is required")
 	}
 	config = config.Clone()
 	config.BootstrapInstructions = strings.Clone(config.BootstrapInstructions)
@@ -81,7 +81,7 @@ func (runner *turnRunner) run(prompt string) (json.RawMessage, error) {
 	}
 	for attempt := 0; attempt < agentruntime.DefaultRetryLimit; attempt++ {
 		if containsCredential([]byte(nextPrompt), runner.connection.transport.decoder.authToken) {
-			return nil, errors.New("Nessy prompt contains configured credentials")
+			return nil, errors.New("nessy prompt contains configured credentials")
 		}
 		assembler := newResponseAssembler()
 		var terminal promptResponse
@@ -94,10 +94,10 @@ func (runner *turnRunner) run(prompt string) (json.RawMessage, error) {
 				return agentruntime.ErrTurnInterrupted
 			}
 			if terminal.StopReason != "end_turn" {
-				return fmt.Errorf("Nessy turn stopped before a final response: %s", safeStopReason(terminal.StopReason))
+				return fmt.Errorf("nessy turn stopped before a final response: %s", safeStopReason(terminal.StopReason))
 			}
 			if containsCredential(assembler.output(), runner.connection.transport.decoder.authToken) {
-				return errors.New("Nessy response contains configured credentials")
+				return errors.New("nessy response contains configured credentials")
 			}
 			var candidateErr error
 			output, candidateErr = validateCandidate(runner.schema, assembler.output())

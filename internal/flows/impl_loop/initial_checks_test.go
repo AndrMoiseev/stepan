@@ -194,7 +194,7 @@ func TestInitialRequiredChecksRejectsAnythingButExtractedInitialBaseline(t *test
 func newInitialCheckRun(t *testing.T) (*implstate.Run, *runstore.StateStore, *runstore.Run, string) {
 	t.Helper()
 	repository := newFilesystemWorkspace(t)
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

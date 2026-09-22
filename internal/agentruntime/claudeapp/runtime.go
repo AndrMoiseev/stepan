@@ -94,7 +94,7 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 	runtime.client = factory(lifecycle, claudeOptions(validated, schema, runtime.canUseTool, stderr.Add)...)
 	if runtime.client == nil {
 		cancel()
-		return nil, errors.New("Claude client factory returned nil")
+		return nil, errors.New("claude client factory returned nil")
 	}
 	connectStarted := time.Now()
 	if err := runtime.client.Connect(lifecycle); err != nil {
@@ -111,7 +111,7 @@ func startRuntime(ctx context.Context, config Config, factory clientFactory) (*R
 	if runtime.responses == nil {
 		cancel()
 		_ = runtime.client.Disconnect()
-		return nil, errors.New("Claude response iterator is nil")
+		return nil, errors.New("claude response iterator is nil")
 	}
 	runtime.receiverDone = make(chan struct{})
 	go runtime.receiveResponses()
@@ -218,10 +218,10 @@ func (runtime *Runtime) RunTurn(handle agentruntime.Thread, prompt string) (json
 	}
 	output, err = projectTransportOutput(output, runtime.transportProperties, item.config.OutputSchema)
 	if err != nil {
-		return nil, fmt.Errorf("Claude structured output: %w", err)
+		return nil, fmt.Errorf("claude structured output: %w", err)
 	}
 	if err := agentruntime.ValidateOutput(item.config.OutputSchema, output); err != nil {
-		return nil, fmt.Errorf("Claude structured output: %w", err)
+		return nil, fmt.Errorf("claude structured output: %w", err)
 	}
 	return output, nil
 }
@@ -342,7 +342,7 @@ func (runtime *Runtime) receiveResponses() {
 			return
 		}
 		if message == nil {
-			runtime.failResponse(errors.New("Claude response stream returned nil message"))
+			runtime.failResponse(errors.New("claude response stream returned nil message"))
 			return
 		}
 		result, ok := message.(*claudecode.ResultMessage)
@@ -360,7 +360,7 @@ func (runtime *Runtime) receiveResult(result *claudecode.ResultMessage) {
 	if query == nil || query.terminal || result.SessionID == "" {
 		runtime.unhealthy = true
 		if query != nil && !query.terminal {
-			query.err = errors.New("Claude terminal result has no provider session")
+			query.err = errors.New("claude terminal result has no provider session")
 			close(query.done)
 		}
 		return
@@ -368,11 +368,11 @@ func (runtime *Runtime) receiveResult(result *claudecode.ResultMessage) {
 	if result.IsError {
 		query.err = describeTerminalResultError(result)
 	} else if result.StructuredOutput == nil {
-		query.err = errors.New("Claude terminal result has no structured output")
+		query.err = errors.New("claude terminal result has no structured output")
 	} else {
 		data, err := json.Marshal(result.StructuredOutput)
 		if err != nil {
-			query.err = fmt.Errorf("marshal Claude structured output: %w", err)
+			query.err = fmt.Errorf("marshal claude structured output: %w", err)
 		} else {
 			query.output, query.err = decodeJSONObject(data)
 		}
@@ -408,7 +408,7 @@ func (runtime *Runtime) runtimeError(action string, err error) error {
 	if errors.Is(err, agentruntime.ErrRuntimeClosed) {
 		return fmt.Errorf("%s: %w", action, agentruntime.ErrRuntimeClosed)
 	}
-	return fmt.Errorf("Claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
+	return fmt.Errorf("claude CLI %s: %w: %v", action, agentruntime.ErrRuntimeExited, err)
 }
 
 func (runtime *Runtime) canUseTool(_ context.Context, name string, input map[string]any, _ claudecode.ToolPermissionContext) (claudecode.PermissionResult, error) {
@@ -481,34 +481,6 @@ func toolPath(name string, input map[string]any) (string, error) {
 		return "", fmt.Errorf("tool %s requires string %s", name, field)
 	}
 	return value, nil
-}
-
-func collectStructuredOutput(ctx context.Context, iterator claudecode.MessageIterator) (json.RawMessage, error) {
-	if iterator == nil {
-		return nil, errors.New("Claude response iterator is nil")
-	}
-	defer iterator.Close()
-	for {
-		message, err := iterator.Next(ctx)
-		if err != nil {
-			return nil, err
-		}
-		result, ok := message.(*claudecode.ResultMessage)
-		if !ok {
-			continue
-		}
-		if result.IsError {
-			return nil, describeTerminalResultError(result)
-		}
-		if result.StructuredOutput == nil {
-			return nil, errors.New("Claude terminal result has no structured output")
-		}
-		data, err := json.Marshal(result.StructuredOutput)
-		if err != nil {
-			return nil, fmt.Errorf("marshal Claude structured output: %w", err)
-		}
-		return decodeJSONObject(data)
-	}
 }
 
 func decodeJSONObject(data []byte) (json.RawMessage, error) {

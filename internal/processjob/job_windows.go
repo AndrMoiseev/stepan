@@ -156,7 +156,7 @@ func (j *Job) Close() error {
 
 func windowsCallError(err error) error {
 	if err == nil || errors.Is(err, syscall.Errno(0)) {
-		return errors.New("Windows API call failed")
+		return errors.New("windows API call failed")
 	}
 	return err
 }

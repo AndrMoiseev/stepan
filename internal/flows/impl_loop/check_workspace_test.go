@@ -79,7 +79,7 @@ func TestWorkspaceCheckRestoresProtectedMutationAndRejectsResult(t *testing.T) {
 	if err := os.WriteFile(protected, []byte("before\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +128,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 			if err := os.WriteFile(protected, []byte("before\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			store, err := runstore.New(t.TempDir())
+			store, err := runstore.NewTransient(t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -291,7 +291,7 @@ func acceptedTestRun(accepted implstate.EvidenceRef) *implstate.Run {
 
 func newWorkspaceCheckReporter(t *testing.T, repository string, model *implstate.Run, journal *runstore.Run, protected ...string) (*WorkspaceCheckObserver, *WorkspaceCheckReporter, *runstore.Run) {
 	t.Helper()
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

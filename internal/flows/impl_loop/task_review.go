@@ -304,10 +304,6 @@ func gitAssignmentDiff(ctx context.Context, repository, base string) (string, er
 	return string(output), nil
 }
 
-func assignmentDiff(ctx context.Context, repository, base string) (string, error) {
-	return GitWorkspaceControl{}.AssignmentDiff(ctx, repository, base)
-}
-
 // untrackedAssignmentDiff adds every non-ignored untracked file to the
 // controller-built review packet. git diff <base> cannot see those files, but
 // generated output and newly introduced sources are part of an assignment's

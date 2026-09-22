@@ -104,8 +104,8 @@ go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 запуска тестов описаны в [AGENTS.md](AGENTS.md).
 
 Staticcheck 2026.2.1 закреплён как tool dependency в `go.mod`; `go tool`
-загрузит его при первом запуске. В `staticcheck.conf` пока отключены проверки
-`ST1005` и `U1000` для существующих диагностик.
+загрузит его при первом запуске. Проект использует стандартный набор проверок
+Staticcheck без дополнительных исключений.
 
 ## CI artifacts
 

@@ -18,10 +18,6 @@ type runtimeAttempt struct {
 	err    error
 }
 
-// appRuntime is kept as a local test-facing name while the implementation
-// depends on the provider-neutral runtime contract.
-type appRuntime = agentruntime.Runtime
-
 // Session lazily owns the single App Server used by one interactive process.
 type Session struct {
 	start func(context.Context) (agentruntime.Runtime, error)

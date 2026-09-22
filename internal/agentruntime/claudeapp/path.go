@@ -78,21 +78,6 @@ func canonicalTarget(cwd, supplied string) (string, error) {
 	}
 }
 
-// resolveWorkspacePath resolves supplied relative paths from the canonical
-// workspace and rejects lexical and link-based escapes. The returned absolute
-// path is consequently the same path the CLI uses with WithCwd(workspace).
-func resolveWorkspacePath(workspace, supplied string) (string, error) {
-	canonicalWorkspace, err := canonicalDirectory(workspace)
-	if err != nil {
-		return "", err
-	}
-	candidate, err := canonicalTarget(canonicalWorkspace, supplied)
-	if err != nil || !pathWithin(canonicalWorkspace, candidate) {
-		return "", fmt.Errorf("path is outside workspace or escapes through a link")
-	}
-	return candidate, nil
-}
-
 // resolveAllowedPath resolves a tool path against the workspace (the SDK cwd)
 // and permits the one separately configured artifact root. It deliberately
 // does not treat the system temp parent as allowed.
@@ -108,11 +93,4 @@ func resolveAllowedPath(workspace, artifactRoot, supplied string) (string, error
 		return "", fmt.Errorf("path is outside allowed roots")
 	}
 	return candidate, nil
-}
-
-func pathWithinRoot(root, candidate string) error {
-	if !pathWithin(root, candidate) {
-		return fmt.Errorf("path is outside allowed root")
-	}
-	return nil
 }

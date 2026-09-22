@@ -8,7 +8,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
+
+func mustControllerStore(t *testing.T, root string) *runstore.Store {
+	t.Helper()
+	store, err := runstore.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
 
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()

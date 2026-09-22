@@ -193,7 +193,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	}
 	observed, err := control.Commit(ctx, input.Repository, intent.Message)
 	if err != nil {
-		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("Git commit was refused or failed: %w", err))
+		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, fmt.Errorf("git commit was refused or failed: %w", err))
 	}
 	if canReacceptChangedCommit(intent, observed) {
 		return reconcileChangedCommit(ctx, input, intent, observed)

@@ -56,10 +56,10 @@ func ValidateRuntimeConfig(config Config) error {
 		return err
 	}
 	if strings.TrimSpace(config.JSONContract) == "" {
-		return errors.New("Nessy JSON contract is required")
+		return errors.New("nessy JSON contract is required")
 	}
 	if config.Reasoning != "" {
-		return errors.New("Nessy does not support configured reasoning")
+		return errors.New("nessy does not support configured reasoning")
 	}
 	if _, err := ResolveExecutable(); err != nil {
 		return err

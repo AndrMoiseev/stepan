@@ -20,7 +20,7 @@ func TestAssignmentDiffIncludesUntrackedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "generated_assignment.go"), []byte("package generated\n\nconst Included = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	diff, err := assignmentDiff(context.Background(), repository, strings.TrimSpace(string(baseOutput)))
+	diff, err := (GitWorkspaceControl{}).AssignmentDiff(context.Background(), repository, strings.TrimSpace(string(baseOutput)))
 	if err != nil {
 		t.Fatal(err)
 	}

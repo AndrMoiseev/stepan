@@ -897,19 +897,6 @@ func rewriteFindingDecision(data []byte, requested MaterialFindingDecision) ([]b
 	return []byte(strings.Join(lines, "\n")), nil
 }
 
-func conciseOpenFindings(findings []FindingSnapshot) string {
-	open := openFixFindings(findings)
-	if len(open) == 0 {
-		return "Automatic review rework exhausted without a verified resolution."
-	}
-	var result strings.Builder
-	result.WriteString("Automatic review rework exhausted; unresolved findings:")
-	for _, finding := range open {
-		fmt.Fprintf(&result, "\n- %s: %s", finding.ID, finding.Problem)
-	}
-	return result.String()
-}
-
 func cloneFindingSnapshots(values []FindingSnapshot) []FindingSnapshot {
 	result := make([]FindingSnapshot, len(values))
 	for i, value := range values {

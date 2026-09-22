@@ -13,6 +13,8 @@ import (
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
 )
 
+const executionBlockedPauseReason = "execution_blocked: cannot safely attribute or restore agent file changes"
+
 func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *testing.T) {
 	t.Parallel()
 	repository := newSnapshotRepository(t)

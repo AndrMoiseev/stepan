@@ -92,11 +92,11 @@ func describeTerminalResultError(result *claudecode.ResultMessage) error {
 		details = append(details, "result="+quoteDiagnosticText(*result.Result))
 	}
 	if len(details) == 0 {
-		return errors.New("Claude terminal result reports an error without details")
+		return errors.New("claude terminal result reports an error without details")
 	}
 	diagnostic := fmt.Sprintf("Claude terminal result reports an error: %s", strings.Join(details, "; "))
 	if terminalResultReportsMissingAuthentication(result) {
-		return fmt.Errorf("Claude CLI authentication failed: verify credentials in the user settings (for example ~/.claude/settings.json) or complete CLI login; %s", diagnostic)
+		return fmt.Errorf("claude CLI authentication failed: verify credentials in the user settings (for example ~/.claude/settings.json) or complete CLI login; %s", diagnostic)
 	}
 	return errors.New(diagnostic)
 }

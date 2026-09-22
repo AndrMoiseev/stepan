@@ -242,7 +242,7 @@ func validateCodexSchema(raw json.RawMessage) error {
 		return errors.New("output schema must be a JSON object")
 	}
 	if err := validateCodexSchemaNode(schema); err != nil {
-		return fmt.Errorf("Codex output schema: %w", err)
+		return fmt.Errorf("codex output schema: %w", err)
 	}
 	return nil
 }

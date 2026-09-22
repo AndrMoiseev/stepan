@@ -40,7 +40,7 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 	}
 	executableName, err := agentruntime.ParseExecutableName(name)
 	if err != nil {
-		return Config{}, nil, fmt.Errorf("Claude executable: %w", err)
+		return Config{}, nil, fmt.Errorf("claude executable: %w", err)
 	}
 	executable, err := executableName.Resolve()
 	if err != nil {
@@ -51,19 +51,19 @@ func validateConfig(config Config) (Config, map[string]any, error) {
 		return Config{}, nil, fmt.Errorf("canonicalize Claude workspace: %w", err)
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
-		return Config{}, nil, fmt.Errorf("Claude workspace is not a Git root: %w", err)
+		return Config{}, nil, fmt.Errorf("claude workspace is not a Git root: %w", err)
 	}
 	var schema map[string]any
 	decoder := json.NewDecoder(bytes.NewReader(config.EnvelopeSchema))
 	decoder.UseNumber()
 	if err := decoder.Decode(&schema); err != nil || schema == nil {
-		return Config{}, nil, errors.New("Claude envelope schema must be a JSON object")
+		return Config{}, nil, errors.New("claude envelope schema must be a JSON object")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return Config{}, nil, errors.New("Claude envelope schema has trailing JSON")
+		return Config{}, nil, errors.New("claude envelope schema has trailing JSON")
 	}
 	if err := normalizeTransportSchema(schema); err != nil {
-		return Config{}, nil, fmt.Errorf("Claude envelope transport schema: %w", err)
+		return Config{}, nil, fmt.Errorf("claude envelope transport schema: %w", err)
 	}
 	config.Executable = executable
 	config.Workspace = workspace

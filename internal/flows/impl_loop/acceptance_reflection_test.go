@@ -113,7 +113,7 @@ func TestValidateAcceptanceReflectionInputAllowsOnlySelectedChangeTasksPath(t *t
 
 func acceptanceReflectionFixture(t *testing.T, repository string) (*implstate.Run, *runstore.StateStore, *runstore.Run) {
 	t.Helper()
-	store := mustControllerStore(t, t.TempDir())
+	store := mustTransientControllerStore(t, t.TempDir())
 	journal, err := store.Create("acceptance-reflection")
 	if err != nil {
 		t.Fatal(err)

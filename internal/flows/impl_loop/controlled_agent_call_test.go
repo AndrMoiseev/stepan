@@ -245,7 +245,7 @@ func TestInvokeControlledAgentCallRecreatesTerminatedSessionForRetry(t *testing.
 
 func controlledCallFixture(t *testing.T, runtime *controlledCallRuntime) ControlledAgentCall {
 	t.Helper()
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,10 +6,33 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
+
+func writeInitialOpenSpecPackage(t *testing.T, repository, change string) {
+	t.Helper()
+	for name, contents := range map[string]string{
+		filepath.Join("openspec", "changes", change, "proposal.md"): "proposal\n",
+		filepath.Join("openspec", "changes", change, "design.md"):   "design\n",
+		filepath.Join("openspec", "changes", change, "tasks.md"):    "- [ ] source task\n",
+		filepath.Join("openspec", "specs", ".gitkeep"):              "",
+	} {
+		path := filepath.Join(repository, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changeSpecs := filepath.Join(repository, "openspec", "changes", change, "specs")
+	if err := os.MkdirAll(changeSpecs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestBeginNewChangeRejectsPreviouslyClosedRunAndLoadsOnlyFreshChange(t *testing.T) {
 	store := mustControllerStore(t, t.TempDir())

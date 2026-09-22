@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && process_integration
 
 package checkexec
 

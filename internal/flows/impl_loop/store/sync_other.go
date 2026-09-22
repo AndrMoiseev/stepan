@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 )
 
+var syncReplacementDirectory = syncDirectory
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {
@@ -25,6 +27,10 @@ func publishFinalFile(temporary, target string) error {
 	return syncDirectory(filepath.Dir(target))
 }
 
+func publishFinalFileTransient(temporary, target string) error {
+	return os.Link(temporary, target)
+}
+
 // replaceProjectionFile publishes a complete replacement only after its
 // SQLite handle is closed and synced. rename(2) keeps the former projection
 // available until the replacement is ready, then the directory sync persists
@@ -35,6 +41,13 @@ func replaceProjectionFile(temporary, target string) error {
 	}
 	if err := syncReplacementDirectory(filepath.Dir(target)); err != nil {
 		return &projectionReplacementError{err: err, mainReplaced: true}
+	}
+	return nil
+}
+
+func replaceProjectionFileTransient(temporary, target string) error {
+	if err := os.Rename(temporary, target); err != nil {
+		return &projectionReplacementError{err: err}
 	}
 	return nil
 }

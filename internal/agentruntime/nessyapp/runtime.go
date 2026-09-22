@@ -16,7 +16,7 @@ const interruptGracePeriod = 3 * time.Second
 
 // The non-zero-sized token makes pointer identity stable even under the Go
 // implementation's permitted coalescing of zero-sized allocations.
-type runtimeIdentity struct{ token byte }
+type runtimeIdentity [1]byte
 
 // threadHandle contains only process-local ownership data. ACP process,
 // session, and request identities never cross the adapter boundary.

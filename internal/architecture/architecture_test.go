@@ -2,6 +2,7 @@ package architecture
 
 import (
 	"bytes"
+	"go/ast"
 	"go/build"
 	"go/parser"
 	"go/token"
@@ -123,6 +124,76 @@ func TestExternalProcessTestsDeclareIntegrationSuite(t *testing.T) {
 	sort.Strings(unclassified)
 	if len(unclassified) != 0 {
 		t.Fatalf("tests importing os/exec must declare an integration build tag:\n%s", strings.Join(unclassified, "\n"))
+	}
+}
+
+func TestTransientRunStoreIsUsedOnlyByTests(t *testing.T) {
+	root := filepath.Join("..", "..")
+	storeImport := modulePath + "/internal/flows/impl_loop/store"
+	var productionCallers []string
+	for _, sourceRoot := range []string{"cmd", "internal"} {
+		err := filepath.WalkDir(filepath.Join(root, sourceRoot), func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				return nil
+			}
+			parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				return err
+			}
+			aliases := make(map[string]struct{})
+			for _, imported := range parsed.Imports {
+				name, err := strconv.Unquote(imported.Path.Value)
+				if err != nil {
+					return err
+				}
+				if name != storeImport {
+					continue
+				}
+				alias := "store"
+				if imported.Name != nil {
+					alias = imported.Name.Name
+				}
+				aliases[alias] = struct{}{}
+			}
+			called := false
+			ast.Inspect(parsed, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "NewTransient" {
+					return true
+				}
+				identifier, ok := selector.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				if _, ok := aliases[identifier.Name]; ok {
+					called = true
+					return false
+				}
+				return true
+			})
+			if called {
+				relative, err := filepath.Rel(root, path)
+				if err != nil {
+					return err
+				}
+				productionCallers = append(productionCallers, filepath.ToSlash(relative))
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(productionCallers)
+	if len(productionCallers) != 0 {
+		t.Fatalf("runstore.NewTransient is test-only; production callers:\n%s", strings.Join(productionCallers, "\n"))
 	}
 }
 

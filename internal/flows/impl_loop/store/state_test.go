@@ -18,6 +18,19 @@ import (
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 )
 
+func (s *StateStore) apply(ctx context.Context, data []byte) error {
+	return s.applyCanonical(ctx, data, true)
+}
+
+func appendJournal(path string, data []byte) error {
+	return appendJournalResult(path, data, durableStorage).err
+}
+
+func journalLastSequence(path string) (uint64, error) {
+	journal, err := scanJournal(path, nil)
+	return journal.lastSequence, err
+}
+
 func TestStateStoreRecordsSequentialJournalAndReopensCurrentProjection(t *testing.T) {
 	run := newStoredRun(t)
 	state, err := OpenState(run)
@@ -904,7 +917,7 @@ func TestStateStoreKeepsExistingProjectionUntilReplacementPublishes(t *testing.T
 		t.Fatal("OpenState() error = nil, want replacement publication failure")
 	}
 
-	db, err := openProjection(state.DatabasePath())
+	db, err := openProjection(state.DatabasePath(), durableStorage)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +961,7 @@ func TestPublishProjectionGroupRestoresSidecarsWhenMainPublicationFails(t *testi
 		}
 	}
 	publishReplacementProjection = func(string, string) error { return errors.New("main replacement failed") }
-	if err := publishProjectionGroup(temporary, target); err == nil {
+	if err := publishProjectionGroup(temporary, target, durableStorage); err == nil {
 		t.Fatal("publishProjectionGroup() error = nil, want publication failure")
 	}
 	if previous, err := os.ReadFile(target); err != nil || !bytes.Equal(previous, []byte("previous")) {
@@ -1610,7 +1623,7 @@ func TestStateStoreHotJournalHelper(t *testing.T) {
 	if path == "" {
 		return
 	}
-	db, err := openProjection(path)
+	db, err := openProjection(path, durableStorage)
 	if err != nil {
 		t.Fatal(err)
 	}

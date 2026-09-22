@@ -61,8 +61,65 @@ var (
 // explicit root so callers and tests do not need to use the user's home
 // directory. Production callers normally use DefaultRoot(os.UserHomeDir()).
 type Store struct {
-	root string
-	runs string
+	root       string
+	runs       string
+	durability durabilityMode
+}
+
+type durabilityMode uint8
+
+const (
+	durableStorage durabilityMode = iota
+	transientStorage
+)
+
+func (d durabilityMode) syncFile(file *os.File) error {
+	if d == transientStorage {
+		return nil
+	}
+	return file.Sync()
+}
+
+func (d durabilityMode) syncDirectory(path string) error {
+	if d == transientStorage {
+		return nil
+	}
+	return syncDirectory(path)
+}
+
+func (d durabilityMode) publishFinalFile(temporary, target string) error {
+	if d == transientStorage {
+		return publishFinalFileTransient(temporary, target)
+	}
+	return finalizePublication(temporary, target)
+}
+
+func (d durabilityMode) sqliteSynchronous() string {
+	if d == transientStorage {
+		return "OFF"
+	}
+	return "FULL"
+}
+
+func (d durabilityMode) sqliteJournalMode() string {
+	if d == transientStorage {
+		return "MEMORY"
+	}
+	return "DELETE"
+}
+
+func (d durabilityMode) syncProjectionFile(path string) error {
+	if d == transientStorage {
+		return nil
+	}
+	return syncProjectionFile(path)
+}
+
+func (d durabilityMode) replaceProjectionFile(temporary, target string) error {
+	if d == transientStorage {
+		return replaceProjectionFileTransient(temporary, target)
+	}
+	return publishReplacementProjection(temporary, target)
 }
 
 // RunIDs returns the identifiers of all durable run directories. It does not
@@ -125,20 +182,32 @@ func OpenExisting(root string) (*Store, error) {
 	if err := requireDirectory(absolute); err != nil {
 		return nil, err
 	}
-	runs, err := childDirectory(absolute, RunsDirectoryName, false)
+	runs, err := childDirectory(absolute, RunsDirectoryName, false, durableStorage)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, ErrStoreNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &Store{root: absolute, runs: runs}, nil
+	return &Store{root: absolute, runs: runs, durability: durableStorage}, nil
 }
 
 // New creates the Stepan data root and its runs directory when absent. It
 // rejects a final root or runs directory that is a symlink, so artifact paths
 // cannot escape through store-owned path components.
 func New(root string) (*Store, error) {
+	return newStore(root, durableStorage)
+}
+
+// NewTransient creates a filesystem-backed store without storage flushes.
+// It preserves publication, integrity, transaction, and reopen behavior but
+// does not promise survival across power loss. Ordinary orchestration tests
+// use it; production and durability contract tests use New.
+func NewTransient(root string) (*Store, error) {
+	return newStore(root, transientStorage)
+}
+
+func newStore(root string, durability durabilityMode) (*Store, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, fmt.Errorf("%w: empty root", ErrUnsafePath)
 	}
@@ -152,11 +221,11 @@ func New(root string) (*Store, error) {
 	if err := requireDirectory(absolute); err != nil {
 		return nil, err
 	}
-	runs, err := childDirectory(absolute, RunsDirectoryName, true)
+	runs, err := childDirectory(absolute, RunsDirectoryName, true, durability)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{root: absolute, runs: runs}, nil
+	return &Store{root: absolute, runs: runs, durability: durability}, nil
 }
 
 // Root reports the absolute Stepan data root supplied to New.
@@ -191,15 +260,15 @@ func (s *Store) Create(id implstate.RunID) (*Run, error) {
 	if err := requireDirectory(s.runs); err != nil {
 		return nil, err
 	}
-	directory, err := childDirectory(s.runs, name, true)
+	directory, err := childDirectory(s.runs, name, true, s.durability)
 	if err != nil {
 		return nil, err
 	}
-	files, err := childDirectory(directory, FilesDirectoryName, true)
+	files, err := childDirectory(directory, FilesDirectoryName, true, s.durability)
 	if err != nil {
 		return nil, err
 	}
-	return &Run{id: id, directory: directory, files: files}, nil
+	return &Run{id: id, directory: directory, files: files, durability: s.durability}, nil
 }
 
 // Open returns an existing complete run layout without creating it.
@@ -217,30 +286,31 @@ func (s *Store) Open(id implstate.RunID) (*Run, error) {
 	if err := requireDirectory(s.runs); err != nil {
 		return nil, err
 	}
-	directory, err := childDirectory(s.runs, name, false)
+	directory, err := childDirectory(s.runs, name, false, s.durability)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	files, err := childDirectory(directory, FilesDirectoryName, false)
+	files, err := childDirectory(directory, FilesDirectoryName, false, s.durability)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s has no files directory", ErrRunNotFound, id)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return &Run{id: id, directory: directory, files: files}, nil
+	return &Run{id: id, directory: directory, files: files, durability: s.durability}, nil
 }
 
 // Run is a single immutable-related-file namespace. Its directory is
 // <root>/runs/<run-id>; Path and FilesPath make the fixed layout observable to
 // the later journal and SQLite layers without accepting caller-provided paths.
 type Run struct {
-	id        implstate.RunID
-	directory string
-	files     string
+	id         implstate.RunID
+	directory  string
+	files      string
+	durability durabilityMode
 }
 
 func (r *Run) ID() implstate.RunID { return r.id }
@@ -259,8 +329,9 @@ func (r *Run) FilesPath() string {
 	return r.files
 }
 
-// Publish stores data durably before returning a reference to it. The evidence
-// ID remains immutable: publishing a different payload under it is rejected.
+// Publish stores data according to the store's durability mode before returning
+// a reference to it. The evidence ID remains immutable: publishing a different
+// payload under it is rejected.
 func (r *Run) Publish(id implstate.EvidenceID, data []byte) (implstate.EvidenceRef, error) {
 	return r.PublishReader(id, bytes.NewReader(data))
 }
@@ -295,7 +366,7 @@ func (r *Run) PublishReader(id implstate.EvidenceID, source io.Reader) (implstat
 		temporary.Close()
 		return implstate.EvidenceRef{}, fmt.Errorf("write artifact: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := r.durability.syncFile(temporary); err != nil {
 		temporary.Close()
 		return implstate.EvidenceRef{}, fmt.Errorf("sync artifact: %w", err)
 	}
@@ -376,7 +447,7 @@ func (r *Run) PublishedReference(id implstate.EvidenceID) (implstate.EvidenceRef
 
 // ArtifactPath returns the absolute path of a published immutable artifact.
 // The complete reference is verified before exposing the path, so callers can
-// present only durable run-local files to agents or users. Consumers that need
+// present only published run-local files to agents or users. Consumers that need
 // bytes must still use Read, which verifies the file digest through one handle.
 func (r *Run) ArtifactPath(reference implstate.EvidenceRef) (string, error) {
 	if err := r.VerifyReference(reference); err != nil {
@@ -392,7 +463,7 @@ func (r *Run) publishTemporary(temporary, target, digest string) error {
 
 	marker := r.markerPath(target)
 	if _, failed := failedPublications.Load(target); failed {
-		if err := removeUnpublished(target, marker, r.files); err != nil {
+		if err := removeUnpublished(target, marker, r.files, r.durability); err != nil {
 			return fmt.Errorf("clear failed artifact publication: %w", err)
 		}
 		failedPublications.Delete(target)
@@ -401,7 +472,7 @@ func (r *Run) publishTemporary(temporary, target, digest string) error {
 		// A duplicate publisher still waits for a directory barrier. This makes
 		// it impossible for a loser to return while the winning publication is
 		// still awaiting its final durability step.
-		if err := syncDirectory(r.files); err != nil {
+		if err := r.durability.syncDirectory(r.files); err != nil {
 			return fmt.Errorf("sync published artifact directory: %w", err)
 		}
 		return nil
@@ -415,14 +486,14 @@ func (r *Run) publishTemporary(temporary, target, digest string) error {
 	// A data file without a durable marker came from an interrupted or failed
 	// publication and cannot be referenced. Remove it before retrying so a
 	// later successful call always has its own final publication barrier.
-	if err := removeUnpublished(target, marker, r.files); err != nil {
+	if err := removeUnpublished(target, marker, r.files, r.durability); err != nil {
 		return err
 	}
-	if err := finalizePublication(temporary, target); err != nil {
-		return discardFailedPublication(target, marker, r.files, fmt.Errorf("publish artifact: %w", err))
+	if err := r.durability.publishFinalFile(temporary, target); err != nil {
+		return discardFailedPublication(target, marker, r.files, r.durability, fmt.Errorf("publish artifact: %w", err))
 	}
-	if err := publishMarker(r.files, marker, digest); err != nil {
-		return discardFailedPublication(target, marker, r.files, err)
+	if err := publishMarker(r.files, marker, digest, r.durability); err != nil {
+		return discardFailedPublication(target, marker, r.files, r.durability, err)
 	}
 	return nil
 }
@@ -459,7 +530,7 @@ func (r *Run) verifyReferenceMarker(reference implstate.EvidenceRef) error {
 
 func (r *Run) markerPath(target string) string { return target + ".published" }
 
-func publishMarker(directory, marker, digest string) error {
+func publishMarker(directory, marker, digest string, durability durabilityMode) error {
 	temporary, err := os.CreateTemp(directory, ".publish-marker-*")
 	if err != nil {
 		return fmt.Errorf("create publication marker: %w", err)
@@ -470,14 +541,14 @@ func publishMarker(directory, marker, digest string) error {
 		temporary.Close()
 		return fmt.Errorf("write publication marker: %w", err)
 	}
-	if err := temporary.Sync(); err != nil {
+	if err := durability.syncFile(temporary); err != nil {
 		temporary.Close()
 		return fmt.Errorf("sync publication marker: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
 		return fmt.Errorf("close publication marker: %w", err)
 	}
-	if err := finalizePublication(temporaryName, marker); err != nil {
+	if err := durability.publishFinalFile(temporaryName, marker); err != nil {
 		return fmt.Errorf("publish artifact marker: %w", err)
 	}
 	return nil
@@ -503,7 +574,7 @@ func verifyMarker(path, digest string) error {
 	})
 }
 
-func removeUnpublished(target, marker, directory string) error {
+func removeUnpublished(target, marker, directory string, durability durabilityMode) error {
 	removed := false
 	for _, path := range []string{target, marker} {
 		info, err := os.Lstat(path)
@@ -522,7 +593,7 @@ func removeUnpublished(target, marker, directory string) error {
 		removed = true
 	}
 	if removed {
-		if err := syncDirectory(directory); err != nil {
+		if err := durability.syncDirectory(directory); err != nil {
 			return fmt.Errorf("sync unpublished artifact removal: %w", err)
 		}
 	}
@@ -535,9 +606,9 @@ func artifactLock(path string) *sync.Mutex {
 	return actual.(*sync.Mutex)
 }
 
-func discardFailedPublication(target, marker, directory string, publicationErr error) error {
+func discardFailedPublication(target, marker, directory string, durability durabilityMode, publicationErr error) error {
 	failedPublications.Store(target, struct{}{})
-	if err := removeUnpublished(target, marker, directory); err != nil {
+	if err := removeUnpublished(target, marker, directory, durability); err != nil {
 		return errors.Join(publicationErr, fmt.Errorf("clear failed publication: %w", err))
 	}
 	failedPublications.Delete(target)
@@ -568,7 +639,7 @@ func validReference(reference implstate.EvidenceRef) error {
 	return nil
 }
 
-func childDirectory(parent, name string, create bool) (string, error) {
+func childDirectory(parent, name string, create bool, durability durabilityMode) (string, error) {
 	path := filepath.Join(parent, name)
 	info, err := os.Lstat(path)
 	created := false
@@ -587,7 +658,7 @@ func childDirectory(parent, name string, create bool) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrUnsafePath, path)
 	}
 	if created {
-		if err := syncDirectory(parent); err != nil {
+		if err := durability.syncDirectory(parent); err != nil {
 			return "", fmt.Errorf("sync run store directory: %w", err)
 		}
 	}

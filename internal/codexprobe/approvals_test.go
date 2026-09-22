@@ -192,10 +192,6 @@ func runApprovalGit(t *testing.T, repository string, args ...string) string {
 	return string(output)
 }
 
-func ptr(value string) *string { return &value }
-
-func ptrBool(value bool) *bool { return &value }
-
 func observeApprovalPath(t *testing.T, manager *approvalManager, threadID, turnID, itemID, path string) {
 	t.Helper()
 	message := Message{Method: "item/started", Params: mustJSON(t, map[string]any{

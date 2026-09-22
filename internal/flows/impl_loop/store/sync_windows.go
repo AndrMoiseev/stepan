@@ -23,6 +23,18 @@ func publishFinalFile(temporary, target string) error {
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_WRITE_THROUGH)
 }
 
+func publishFinalFileTransient(temporary, target string) error {
+	from, err := windows.UTF16PtrFromString(temporary)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, 0)
+}
+
 // replaceProjectionFile uses the Windows replacement operation only after the
 // rebuilt SQLite file is closed and synced. MOVEFILE_WRITE_THROUGH leaves the
 // old projection in place until Windows accepts the ready replacement.
@@ -36,6 +48,18 @@ func replaceProjectionFile(temporary, target string) error {
 		return err
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+}
+
+func replaceProjectionFileTransient(temporary, target string) error {
+	from, err := windows.UTF16PtrFromString(temporary)
+	if err != nil {
+		return err
+	}
+	to, err := windows.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING)
 }
 
 // SQLite closes the replacement after FULL synchronous commits. Reopening an

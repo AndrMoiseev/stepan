@@ -1515,7 +1515,7 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := runstore.New(filepath.Join(t.TempDir(), "stepan"))
+	store, err := runstore.NewTransient(filepath.Join(t.TempDir(), "stepan"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1565,7 +1565,7 @@ func newResumeFixture(t *testing.T, rulesFile string) *resumeFixture {
 func newPendingExtractionResumeFixture(t *testing.T) *resumeFixture {
 	t.Helper()
 	base := newResumeFixture(t, "")
-	store, err := runstore.New(filepath.Join(t.TempDir(), "stepan-pending"))
+	store, err := runstore.NewTransient(filepath.Join(t.TempDir(), "stepan-pending"))
 	if err != nil {
 		t.Fatal(err)
 	}

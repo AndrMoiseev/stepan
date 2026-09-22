@@ -223,47 +223,6 @@ Rationale:
 `, "", 1)
 }
 
-func resolvedMixedReview() string {
-	return `# Review
-
-## SPEC-F-001 — Contract issue
-
-Severity: major
-Status: resolved
-Problem: The document violates a deterministic rule.
-Location: whole document
-Recommendation: Repair the structure.
-Resolution: The contract is now satisfied.
-Decision: fix
-Decided-by: reviewer
-Rationale: The document contract requires this correction.
-
-## SPEC-F-002 — First material issue
-
-Severity: major
-Status: resolved
-Problem: The first behavior is unclear.
-Location: whole document
-Recommendation: Clarify the first behavior.
-Resolution: The first behavior is now explicit.
-Decision: fix
-Decided-by: user
-Rationale: User accepted the pending recommendation with /apply.
-
-## SPEC-F-003 — Second material issue
-
-Severity: minor
-Status: resolved
-Problem: The second behavior is unclear.
-Location: whole document
-Recommendation: Clarify the second behavior.
-Resolution: The second behavior is now explicit.
-Decision: fix
-Decided-by: user
-Rationale: User accepted the pending recommendation with /apply.
-`
-}
-
 func openFixedReview(includeSecond bool) string {
 	result := `# Review
 
@@ -293,34 +252,4 @@ Rationale: User accepted the pending recommendation with /apply.
 `
 	}
 	return result
-}
-
-func openFixedReviewWithNewPending() string {
-	return openFixedReview(false) + `
-## SPEC-F-002 — New material issue
-
-Severity: minor
-Status: open
-Problem: Recheck found a new material ambiguity.
-Location: whole document
-Recommendation: Clarify the new ambiguity.
-Decision: pending
-Decided-by: none
-Rationale:
-`
-}
-
-func contractReviewWithNewPending() string {
-	return contractSpecReview("SPEC-F-001") + `
-## SPEC-F-002 — Persistence tradeoff
-
-Severity: major
-Status: open
-Problem: The persistence tradeoff requires a user decision.
-Location: whole document
-Recommendation: Choose the required persistence behavior.
-Decision: pending
-Decided-by: none
-Rationale:
-`
 }

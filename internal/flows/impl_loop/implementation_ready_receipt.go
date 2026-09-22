@@ -33,31 +33,6 @@ func persistImplementationReadyReceipt(ctx context.Context, input RestartContinu
 	return recordImplementationReadyReceipt(ctx, input, assignmentID, operationID, responseRef, workspaceRef)
 }
 
-// recoverPublishedImplementationReady completes the publication-before-event
-// boundary. A partial publication is ambiguous and must be paused by the
-// caller; it is never permission to issue a second semantic request.
-func recoverPublishedImplementationReady(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, operationID implstate.OperationID) (bool, error) {
-	resultID, _, _ := implementationReadyReceiptIDs(operationID)
-	if result := assignmentResultForOperation(input.Run, assignmentID, operationID); result != nil {
-		if result.ID != resultID {
-			return true, fmt.Errorf("implementation operation %s has an unexpected result %s", operationID, result.ID)
-		}
-		_, err := implementationReadyResponse(input.Journal, input.Run, assignmentID, *result)
-		return true, err
-	}
-	_, _, responseRef, workspaceRef, found, err := readControlledAgentSuccessReceipt(input.Journal, operationID)
-	if err != nil {
-		return true, err
-	}
-	if !found {
-		return false, nil
-	}
-	if err := recordImplementationReadyReceipt(ctx, input, assignmentID, operationID, responseRef, workspaceRef); err != nil {
-		return true, err
-	}
-	return true, nil
-}
-
 func recordImplementationReadyReceipt(ctx context.Context, input RestartContinuationInput, assignmentID implstate.AssignmentID, operationID implstate.OperationID, responseRef, workspaceRef implstate.EvidenceRef) error {
 	operation := assignmentOperation(input.Run, assignmentID, operationID)
 	if operation == nil || operation.Kind != implstate.OperationAgent || operation.Counter != implstate.CycleCounterNone || operation.BriefID == "" {

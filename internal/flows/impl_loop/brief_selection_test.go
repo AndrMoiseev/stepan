@@ -284,7 +284,7 @@ func newBriefSelectionFixture(t *testing.T) (*implstate.Run, *runstore.StateStor
 // allowing related controller cases to share one lightweight workspace fixture.
 func newBriefSelectionFixtureInRepository(t *testing.T, repository string) (*implstate.Run, *runstore.StateStore, *runstore.Run, string, ResponseExpectation) {
 	t.Helper()
-	store, err := runstore.New(t.TempDir())
+	store, err := runstore.NewTransient(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -92,7 +90,7 @@ func TestOrchestratorInstructionsSpecifyFormalTaskPayload(t *testing.T) {
 }
 
 func TestInitialExtractionPersistsPreDispatchAndCompletionBoundaries(t *testing.T) {
-	store := mustControllerStore(t, t.TempDir())
+	store := mustTransientControllerStore(t, t.TempDir())
 	journal, err := store.Create("extract-run")
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +133,7 @@ func TestInitialExtractionPersistsPreDispatchAndCompletionBoundaries(t *testing.
 }
 
 func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
-	store := mustControllerStore(t, t.TempDir())
+	store := mustTransientControllerStore(t, t.TempDir())
 	journal, err := store.Create("controlled-extract")
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +180,7 @@ func TestExecuteInitialTaskExtractionUsesControlledFakeTurn(t *testing.T) {
 }
 
 func TestExecuteInitialTaskExtractionPausesForExecutionBlockedWithoutImportingTasks(t *testing.T) {
-	store := mustControllerStore(t, t.TempDir())
+	store := mustTransientControllerStore(t, t.TempDir())
 	journal, err := store.Create("blocked-extract")
 	if err != nil {
 		t.Fatal(err)
@@ -221,26 +219,4 @@ func extractedRunIdentity() implstate.RunIdentity {
 
 func boundExtraction(identity implstate.RunIdentity) ResponseBinding {
 	return ResponseBinding{CallID: "extract", RunID: identity.ID, Specification: identity.Specification, Configuration: identity.Configuration, TaskList: identity.TaskList}
-}
-
-func writeInitialOpenSpecPackage(t *testing.T, repository, change string) {
-	t.Helper()
-	for name, contents := range map[string]string{
-		filepath.Join("openspec", "changes", change, "proposal.md"): "proposal\n",
-		filepath.Join("openspec", "changes", change, "design.md"):   "design\n",
-		filepath.Join("openspec", "changes", change, "tasks.md"):    "- [ ] source task\n",
-		filepath.Join("openspec", "specs", ".gitkeep"):              "",
-	} {
-		path := filepath.Join(repository, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	changeSpecs := filepath.Join(repository, "openspec", "changes", change, "specs")
-	if err := os.MkdirAll(changeSpecs, 0o700); err != nil {
-		t.Fatal(err)
-	}
 }

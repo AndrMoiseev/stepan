@@ -51,6 +51,7 @@ type StateStore struct {
 	db           *sql.DB
 	run          *Run
 	writer       *sync.Mutex
+	durability   durabilityMode
 
 	mu      sync.Mutex
 	pending *pendingEvent
@@ -60,7 +61,7 @@ type pendingEvent struct {
 	data []byte
 }
 
-// OpenState opens the durable state layers for an existing run layout. JSONL
+// OpenState opens the state layers for an existing run layout. JSONL
 // is authoritative: an absent, invalid, or stale projection is rebuilt from
 // complete journal records before the handle is returned.
 func OpenState(run *Run) (*StateStore, error) {
@@ -81,13 +82,13 @@ func OpenState(run *Run) (*StateStore, error) {
 	if err := requireRegularOrAbsent(journalPath); err != nil {
 		return nil, err
 	}
-	store := &StateStore{journalPath: journalPath, databasePath: filepath.Join(run.directory, StateDatabaseFileName), run: run, writer: writer}
+	store := &StateStore{journalPath: journalPath, databasePath: filepath.Join(run.directory, StateDatabaseFileName), run: run, writer: writer, durability: run.durability}
 	journal, err := store.validateJournal()
 	if err != nil {
 		return nil, err
 	}
 	if journal.discardTail {
-		if err := discardJournalTail(journalPath, journal.validBytes); err != nil {
+		if err := discardJournalTail(journalPath, journal.validBytes, store.durability); err != nil {
 			return nil, err
 		}
 	}
@@ -96,7 +97,7 @@ func OpenState(run *Run) (*StateStore, error) {
 		return nil, err
 	}
 
-	if db, current, err := openCurrentProjection(store.databasePath, store.journalPath); err == nil && current {
+	if db, current, err := openCurrentProjection(store.databasePath, store.journalPath, store.durability); err == nil && current {
 		store.db = db
 		return store, nil
 	} else if db != nil {
@@ -105,7 +106,7 @@ func OpenState(run *Run) (*StateStore, error) {
 	if err := rebuildProjection(context.Background(), store, journal); err != nil {
 		return nil, err
 	}
-	db, err := openProjection(store.databasePath)
+	db, err := openProjection(store.databasePath, store.durability)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +145,10 @@ func (s *StateStore) Close() error {
 	return s.db.Close()
 }
 
-// Record writes one new event to JSONL and synchronizes it before applying the
-// event to SQLite. If projection fails after the journal is durable, retrying
-// Record with the same state applies that exact event without a second line.
+// Record writes one new event to JSONL and crosses the store's configured
+// publication boundary before applying the event to SQLite. If projection
+// then fails, retrying Record with the same state applies that exact event
+// without a second line.
 func (s *StateStore) Record(ctx context.Context, state *implstate.Run) (implstate.Event, error) {
 	if s == nil || s.db == nil || s.writer == nil {
 		return implstate.Event{}, fmt.Errorf("%w: nil state store", ErrUnsafePath)
@@ -175,7 +177,7 @@ func (s *StateStore) Record(ctx context.Context, state *implstate.Run) (implstat
 	if err != nil {
 		return implstate.Event{}, err
 	}
-	journal := appendJournalResult(s.journalPath, data)
+	journal := appendJournalResult(s.journalPath, data, s.durability)
 	if !journal.durable {
 		return implstate.Event{}, journal.err
 	}
@@ -500,8 +502,6 @@ func JournalStates(run *Run) ([]implstate.Event, error) {
 
 func (s *StateStore) initialize(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
-		PRAGMA journal_mode = DELETE;
-		PRAGMA synchronous = FULL;
 		CREATE TABLE IF NOT EXISTS applied_events (
 			sequence INTEGER PRIMARY KEY,
 			event_json BLOB NOT NULL
@@ -520,13 +520,13 @@ func (s *StateStore) initialize(ctx context.Context) error {
 // openCurrentProjection leaves a usable database open only when it is a
 // byte-for-byte projection of the accepted journal. Any failure is recoverable
 // from that journal, so callers rebuild instead of trusting a partial view.
-func openCurrentProjection(path, journalPath string) (*sql.DB, bool, error) {
+func openCurrentProjection(path, journalPath string, durability durabilityMode) (*sql.DB, bool, error) {
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	} else if err != nil {
 		return nil, false, err
 	}
-	db, err := openProjection(path)
+	db, err := openProjection(path, durability)
 	if err != nil {
 		return nil, false, err
 	}
@@ -537,13 +537,21 @@ func openCurrentProjection(path, journalPath string) (*sql.DB, bool, error) {
 	return db, true, nil
 }
 
-func openProjection(path string) (*sql.DB, error) {
+func openProjection(path string, durability durabilityMode) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open state projection: %w", err)
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
+	if _, err := db.Exec("PRAGMA journal_mode = " + durability.sqliteJournalMode()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure state projection journal: %w", err)
+	}
+	if _, err := db.Exec("PRAGMA synchronous = " + durability.sqliteSynchronous()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("configure state projection synchronization: %w", err)
+	}
 	return db, nil
 }
 
@@ -624,11 +632,11 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 		}
 	}()
 
-	db, err := openProjection(temporaryPath)
+	db, err := openProjection(temporaryPath, store.durability)
 	if err != nil {
 		return err
 	}
-	replacement := &StateStore{journalPath: store.journalPath, databasePath: temporaryPath, db: db, run: store.run}
+	replacement := &StateStore{journalPath: store.journalPath, databasePath: temporaryPath, db: db, run: store.run, durability: store.durability}
 	if err := replacement.initialize(ctx); err != nil {
 		_ = db.Close()
 		return err
@@ -656,7 +664,7 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 	if err := db.Close(); err != nil {
 		return fmt.Errorf("close replacement state projection: %w", err)
 	}
-	if err := syncProjectionFile(temporaryPath); err != nil {
+	if err := store.durability.syncProjectionFile(temporaryPath); err != nil {
 		return fmt.Errorf("sync replacement state projection: %w", err)
 	}
 	for _, sidecar := range projectionSidecars(temporaryPath) {
@@ -667,10 +675,10 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 			return fmt.Errorf("inspect replacement SQLite sidecar %s: %w", filepath.Base(sidecar), err)
 		}
 	}
-	if err := publishProjectionGroup(temporaryPath, store.databasePath); err != nil {
+	if err := publishProjectionGroup(temporaryPath, store.databasePath, store.durability); err != nil {
 		return fmt.Errorf("publish replacement state projection: %w", err)
 	}
-	published, err := openProjection(store.databasePath)
+	published, err := openProjection(store.databasePath, store.durability)
 	if err != nil {
 		return fmt.Errorf("reopen published state projection: %w", err)
 	}
@@ -687,12 +695,12 @@ func rebuildProjection(ctx context.Context, store *StateStore, journal journalCo
 // paired with a newly rebuilt main database. The replacement is fully built,
 // closed, and synced before this touches an old sidecar, so a publication
 // failure before the final replacement keeps the prior main projection.
-func publishProjectionGroup(temporary, target string) error {
-	backups, err := moveProjectionSidecarsAside(temporary, target)
+func publishProjectionGroup(temporary, target string, durability durabilityMode) error {
+	backups, err := moveProjectionSidecarsAside(temporary, target, durability)
 	if err != nil {
 		return err
 	}
-	if err := publishReplacementProjection(temporary, target); err != nil {
+	if err := durability.replaceProjectionFile(temporary, target); err != nil {
 		var replacementErr *projectionReplacementError
 		if errors.As(err, &replacementErr) && replacementErr.mainReplaced {
 			// The new main database already has its final name. Restoring a
@@ -700,12 +708,12 @@ func publishProjectionGroup(temporary, target string) error {
 			// projection, so leave the backups quarantined for explicit repair.
 			return err
 		}
-		return errors.Join(err, restoreProjectionSidecars(backups))
+		return errors.Join(err, restoreProjectionSidecars(backups, durability))
 	}
 	for _, backup := range backups {
 		_ = os.Remove(backup.backup)
 	}
-	if err := syncDirectory(filepath.Dir(target)); err != nil {
+	if err := durability.syncDirectory(filepath.Dir(target)); err != nil {
 		return fmt.Errorf("sync SQLite sidecar cleanup: %w", err)
 	}
 	return nil
@@ -731,39 +739,39 @@ type projectionSidecarBackup struct {
 	backup   string
 }
 
-func moveProjectionSidecarsAside(temporary, target string) ([]projectionSidecarBackup, error) {
+func moveProjectionSidecarsAside(temporary, target string, durability durabilityMode) ([]projectionSidecarBackup, error) {
 	var backups []projectionSidecarBackup
 	for _, sidecar := range projectionSidecars(target) {
 		if err := requireRegularOrAbsent(sidecar); err != nil {
-			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+			return nil, errors.Join(err, restoreProjectionSidecars(backups, durability))
 		}
 		if _, err := os.Lstat(sidecar); errors.Is(err, os.ErrNotExist) {
 			continue
 		} else if err != nil {
-			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+			return nil, errors.Join(err, restoreProjectionSidecars(backups, durability))
 		}
 		backup := temporary + ".previous-" + filepath.Base(sidecar)
 		if err := requireRegularOrAbsent(backup); err != nil {
-			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+			return nil, errors.Join(err, restoreProjectionSidecars(backups, durability))
 		}
 		if _, err := os.Lstat(backup); !errors.Is(err, os.ErrNotExist) {
 			if err == nil {
 				err = fmt.Errorf("replacement SQLite sidecar backup already exists: %s", filepath.Base(backup))
 			}
-			return nil, errors.Join(err, restoreProjectionSidecars(backups))
+			return nil, errors.Join(err, restoreProjectionSidecars(backups, durability))
 		}
 		if err := os.Rename(sidecar, backup); err != nil {
-			return nil, errors.Join(fmt.Errorf("move stale SQLite sidecar %s aside: %w", filepath.Base(sidecar), err), restoreProjectionSidecars(backups))
+			return nil, errors.Join(fmt.Errorf("move stale SQLite sidecar %s aside: %w", filepath.Base(sidecar), err), restoreProjectionSidecars(backups, durability))
 		}
 		backups = append(backups, projectionSidecarBackup{original: sidecar, backup: backup})
 	}
-	if err := syncDirectory(filepath.Dir(target)); err != nil {
-		return nil, errors.Join(fmt.Errorf("sync SQLite sidecar isolation: %w", err), restoreProjectionSidecars(backups))
+	if err := durability.syncDirectory(filepath.Dir(target)); err != nil {
+		return nil, errors.Join(fmt.Errorf("sync SQLite sidecar isolation: %w", err), restoreProjectionSidecars(backups, durability))
 	}
 	return backups, nil
 }
 
-func restoreProjectionSidecars(backups []projectionSidecarBackup) error {
+func restoreProjectionSidecars(backups []projectionSidecarBackup, durability durabilityMode) error {
 	var err error
 	for index := len(backups) - 1; index >= 0; index-- {
 		backup := backups[index]
@@ -772,13 +780,9 @@ func restoreProjectionSidecars(backups []projectionSidecarBackup) error {
 		}
 	}
 	if len(backups) != 0 {
-		err = errors.Join(err, syncDirectory(filepath.Dir(backups[0].original)))
+		err = errors.Join(err, durability.syncDirectory(filepath.Dir(backups[0].original)))
 	}
 	return err
-}
-
-func (s *StateStore) apply(ctx context.Context, data []byte) (err error) {
-	return s.applyCanonical(ctx, data, true)
 }
 
 func (s *StateStore) applyCanonical(ctx context.Context, data []byte, verifyReferences bool) (err error) {
@@ -908,20 +912,16 @@ func eventWithError(data []byte, operationErr error) (implstate.Event, error) {
 	return event, operationErr
 }
 
-// journalAppendResult distinguishes a definite pre-durability failure from a
-// failure after the exact event bytes reached durable storage. The latter must
-// remain pending: blindly treating it as absent could repeat an external
-// action after a crash.
+// journalAppendResult distinguishes a failure before the configured publication
+// boundary from a failure after the exact event bytes crossed it. For durable
+// stores the latter must remain pending: blindly treating it as absent could
+// repeat an external action after a crash.
 type journalAppendResult struct {
 	durable bool
 	err     error
 }
 
-func appendJournal(path string, data []byte) error {
-	return appendJournalResult(path, data).err
-}
-
-func appendJournalResult(path string, data []byte) journalAppendResult {
+func appendJournalResult(path string, data []byte, durability durabilityMode) journalAppendResult {
 	if err := requireRegularOrAbsent(path); err != nil {
 		return journalAppendResult{err: err}
 	}
@@ -942,14 +942,14 @@ func appendJournalResult(path string, data []byte) journalAppendResult {
 			return journalAppendResult{err: err}
 		}
 	}
-	if err := file.Sync(); err != nil {
+	if err := durability.syncFile(file); err != nil {
 		file.Close()
 		return journalAppendResult{err: fmt.Errorf("sync event journal: %w", err)}
 	}
 	if err := file.Close(); err != nil {
 		return journalAppendResult{durable: true, err: fmt.Errorf("close event journal: %w", err)}
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
+	if err := durability.syncDirectory(filepath.Dir(path)); err != nil {
 		return journalAppendResult{durable: true, err: fmt.Errorf("sync event journal directory: %w", err)}
 	}
 	if afterJournalSyncHook != nil {
@@ -958,11 +958,6 @@ func appendJournalResult(path string, data []byte) journalAppendResult {
 		}
 	}
 	return journalAppendResult{durable: true}
-}
-
-func journalLastSequence(path string) (uint64, error) {
-	journal, err := scanJournal(path, nil)
-	return journal.lastSequence, err
 }
 
 // journalContents contains only the bounded metadata needed to continue a
@@ -1022,7 +1017,7 @@ func scanJournal(path string, callback func(offset int64, data []byte, event imp
 	}
 }
 
-func discardJournalTail(path string, validBytes int64) error {
+func discardJournalTail(path string, validBytes int64, durability durabilityMode) error {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("open incomplete event journal tail: %w", err)
@@ -1031,14 +1026,14 @@ func discardJournalTail(path string, validBytes int64) error {
 		file.Close()
 		return fmt.Errorf("discard incomplete event journal tail: %w", err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := durability.syncFile(file); err != nil {
 		file.Close()
 		return fmt.Errorf("sync shortened event journal: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close shortened event journal: %w", err)
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
+	if err := durability.syncDirectory(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("sync shortened event journal directory: %w", err)
 	}
 	return nil
@@ -1064,7 +1059,7 @@ func (s *StateStore) refreshCleanSequence(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	if journal.discardTail {
-		if err := discardJournalTail(s.journalPath, journal.validBytes); err != nil {
+		if err := discardJournalTail(s.journalPath, journal.validBytes, s.durability); err != nil {
 			return 0, err
 		}
 	}
@@ -1200,5 +1195,4 @@ var (
 	afterProjectionTransactionHook  func(implstate.Event) error
 	publishReplacementProjection    = replaceProjectionFile
 	beforeRecoveryReplayHook        func() error
-	syncReplacementDirectory        = syncDirectory
 )

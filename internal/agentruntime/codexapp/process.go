@@ -155,13 +155,13 @@ func (process *Process) Start() error {
 	process.mu.Lock()
 	defer process.mu.Unlock()
 	if process.closed {
-		return errors.New("App Server process is closed")
+		return errors.New("app server process is closed")
 	}
 	if process.started || process.startErr != nil {
 		if process.startErr != nil {
 			return process.startErr
 		}
-		return errors.New("App Server process already started")
+		return errors.New("app server process already started")
 	}
 
 	config := RuntimeConfig{Executable: process.executable, Workspace: process.workspace, Model: process.model, Reasoning: process.reasoning}
@@ -279,7 +279,7 @@ func (process *Process) Wait() error {
 	started, command := process.started, process.command
 	process.mu.Unlock()
 	if !started {
-		return errors.New("App Server process is not started")
+		return errors.New("app server process is not started")
 	}
 	process.waitOnce.Do(func() {
 		var stderrErr error

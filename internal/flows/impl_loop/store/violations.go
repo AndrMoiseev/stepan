@@ -68,7 +68,7 @@ func (r *Run) AppendViolation(record ViolationRecord) error {
 	if _, err := file.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("append violation journal: %w", err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := r.durability.syncFile(file); err != nil {
 		return fmt.Errorf("sync violation journal: %w", err)
 	}
 	return nil

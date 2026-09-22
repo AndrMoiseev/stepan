@@ -93,10 +93,6 @@ func validateMemLogEntry(entry MemLogEntry, stored bool) error {
 
 const memLogHeaderPrefix = "# Feature memory log\n\nFeature: "
 
-func newMemLog(featureID, brief string, at time.Time) ([]byte, []MemLogEntry, error) {
-	return newMemLogBoundToState(featureID, brief, at, "")
-}
-
 func newMemLogBoundToState(featureID, brief string, at time.Time, stateHash string) ([]byte, []MemLogEntry, error) {
 	if strings.TrimSpace(featureID) == "" {
 		return nil, nil, fmt.Errorf("%w: feature ID is required", ErrInvalidDomainValue)

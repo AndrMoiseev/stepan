@@ -19,6 +19,10 @@ import (
 	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 )
 
+func runtimeFactory(config agentConfig, root string, token string) func(context.Context) (agentruntime.Runtime, error) {
+	return runtimeFactoryWithStarters(config, root, defaultRuntimeStarters(), token)
+}
+
 func TestPreflightRejectsUnsupportedPlatformBeforeHandles(t *testing.T) {
 	err := preflight("linux", "amd64", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "require windows/amd64") {

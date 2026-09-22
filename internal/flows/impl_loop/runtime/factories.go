@@ -130,7 +130,7 @@ func claudeConfig(options FactoryOptions, profile setting.RuntimeProfile) claude
 
 func nessyConfig(options FactoryOptions, profile setting.RuntimeProfile) (nessyapp.Config, error) {
 	if options.NessyAuthToken == nil {
-		return nessyapp.Config{}, errors.New("Nessy authentication loader is required")
+		return nessyapp.Config{}, errors.New("nessy authentication loader is required")
 	}
 	token, err := options.NessyAuthToken()
 	if err != nil {

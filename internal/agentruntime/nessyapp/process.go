@@ -67,10 +67,6 @@ func NewProcess(config Config, artifactRoot string) *Process {
 	return newProcessWithWorkspaceWrite(config, artifactRoot, false, defaultDependencies())
 }
 
-func newProcess(config Config, artifactRoot string, deps processDependencies) *Process {
-	return newProcessWithWorkspaceWrite(config, artifactRoot, false, deps)
-}
-
 // newThreadProcess binds the workspace-write permission to one contained
 // process. It is intentionally not exported: ThreadConfig is the public
 // authority, and callers must not grant a process wider access later.
@@ -110,13 +106,13 @@ func (process *Process) Start() error {
 	process.mu.Lock()
 	defer process.mu.Unlock()
 	if process.closed {
-		return errors.New("Nessy process is closed")
+		return errors.New("nessy process is closed")
 	}
 	if process.started || process.startErr != nil {
 		if process.startErr != nil {
 			return process.startErr
 		}
-		return errors.New("Nessy process is already started")
+		return errors.New("nessy process is already started")
 	}
 
 	executable, workspace, artifact, owned, err := process.preflight()
@@ -221,7 +217,7 @@ func (process *Process) preflight() (executable, workspace, artifact string, own
 		return cleanup(fmt.Errorf("inspect read-only transport root: %w", err))
 	}
 	if len(entries) != 0 {
-		return cleanup(errors.New("Nessy read-only transport root must be empty"))
+		return cleanup(errors.New("nessy read-only transport root must be empty"))
 	}
 	if err = validateDistinctRoots(workspace, artifact); err != nil {
 		return cleanup(err)
@@ -379,7 +375,7 @@ func (process *Process) Wait() error {
 	started, command := process.started, process.command
 	process.mu.Unlock()
 	if !started {
-		return errors.New("Nessy process is not started")
+		return errors.New("nessy process is not started")
 	}
 	process.waitOnce.Do(func() {
 		commandErr := command.Wait()
@@ -391,7 +387,7 @@ func (process *Process) Wait() error {
 			process.mu.Unlock()
 		}
 		if commandErr != nil {
-			process.waitErr = fmt.Errorf("Nessy process exited: %w%s", commandErr, process.diagnosticSuffix())
+			process.waitErr = fmt.Errorf("nessy process exited: %w%s", commandErr, process.diagnosticSuffix())
 		}
 		process.waitErr = errors.Join(process.waitErr, containmentErr)
 		close(process.waitDone)

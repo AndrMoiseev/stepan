@@ -549,10 +549,6 @@ func runtimeIdentity(config agentConfig) specflow.RuntimeIdentity {
 	return specflow.RuntimeIdentity{Provider: string(config.kind), Model: "default"}
 }
 
-func runtimeFactory(config agentConfig, root string, token string) func(context.Context) (agentruntime.Runtime, error) {
-	return runtimeFactoryWithStarters(config, root, defaultRuntimeStarters(), token)
-}
-
 type runtimeStarters struct {
 	codex  func(context.Context, string, string) (agentruntime.Runtime, error)
 	claude func(context.Context, claudeapp.Config) (agentruntime.Runtime, error)

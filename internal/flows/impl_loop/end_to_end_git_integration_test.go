@@ -104,7 +104,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	// The first executor asks for an additional narrow check, then reports an
 	// implementation which the task reviewer rejects.  Its continuation makes
 	// the repair and produces fresh mandatory acceptance evidence.
-	sourceReady := e2eRunImplementer(t, ctx, run, state, journal, repository, workspace, checks, runner, "source-assignment", "source", []controlledTurn{
+	e2eRunImplementer(t, ctx, run, state, journal, repository, workspace, checks, runner, "source-assignment", "source", []controlledTurn{
 		{raw: e2ePayload(t, ResponseChecksRequested, func(payload map[string]any) { payload["check_names"] = []string{"test_auth"} }), before: func() {
 			writeGitWorkspaceFile(t, filepath.Join(repository, "feature.txt"), "source implementation missing final validation\n")
 		}},
@@ -115,7 +115,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	if firstReview.Response.Kind != ResponseChangesRequested || len(run.OpenTaskReviewFindings("source-assignment")) != 1 {
 		t.Fatalf("first task review = %#v", firstReview)
 	}
-	sourceReady = e2eRunImplementer(t, ctx, run, state, journal, repository, workspace, checks, runner, "source-assignment", "source", []controlledTurn{{raw: e2ePayload(t, ResponseImplementationReady, func(payload map[string]any) { payload["message"] = "fix source review finding" }), before: func() {
+	sourceReady := e2eRunImplementer(t, ctx, run, state, journal, repository, workspace, checks, runner, "source-assignment", "source", []controlledTurn{{raw: e2ePayload(t, ResponseImplementationReady, func(payload map[string]any) { payload["message"] = "fix source review finding" }), before: func() {
 		writeGitWorkspaceFile(t, filepath.Join(repository, "feature.txt"), "source implementation with validation\n")
 	}}}, false)
 	secondReview := e2eTaskReview(t, ctx, run, state, journal, repository, workspace, "source-assignment", "source-review-2", "source-review-2-result", "source-review-2-call", ResponseReviewPassed)

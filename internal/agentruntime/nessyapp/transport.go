@@ -50,7 +50,7 @@ func (decoder *lineDecoder) decode() (message, error) {
 		return message{}, fmt.Errorf("%w: empty line", errInvalidNDJSON)
 	}
 	if containsCredential(line, decoder.authToken) {
-		return message{}, errors.New("Nessy response contains configured credentials")
+		return message{}, errors.New("nessy response contains configured credentials")
 	}
 	return parseMessage(line)
 }

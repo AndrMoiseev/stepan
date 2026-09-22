@@ -202,22 +202,6 @@ func validateProgressReflectionResponse(run *implstate.Run, response AgentRespon
 	return nil
 }
 
-func reflectionOperationExists(run *implstate.Run, id implstate.OperationID) bool {
-	for _, operation := range run.RunOperations {
-		if operation.ID == id {
-			return true
-		}
-	}
-	for _, assignment := range run.Assignments {
-		for _, operation := range assignment.Operations {
-			if operation.ID == id {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func renderAcceptedProgressReflection(run *implstate.Run, assignmentID implstate.AssignmentID, tasksPath string) string {
 	var taskIDs []string
 	for _, assignment := range run.Assignments {
