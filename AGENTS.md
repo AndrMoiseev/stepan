@@ -55,20 +55,24 @@ go test ./...
 Контракты с настоящим Git запускаются отдельно:
 
 ```powershell
-go test -parallel=4 -tags=git_integration ./...
+go test -count=1 -parallel=4 -tags=git_integration ./...
 ```
 
 Тесты управления дочерними процессами и fake CLI запускаются отдельно:
 
 ```powershell
-go test -tags=process_integration ./...
+go test -count=1 -tags=process_integration ./...
 ```
 
 Полная локальная проверка выполняет оба интеграционных набора:
 
 ```powershell
-go test -parallel=4 '-tags=git_integration,process_integration' ./...
+go test -count=1 -parallel=4 '-tags=git_integration,process_integration' ./...
 ```
+
+Для интеграционных наборов сохраняйте `-count=1`: обработка большого журнала
+файловых обращений для кеша результатов Go может надолго задерживать завершение
+команды после тестов. Кеш сборки этот флаг сохраняет.
 
 Файлы тестов, импортирующие `os/exec`, обязаны иметь build tag
 `git_integration`, `process_integration` или специальный ручной tag вроде
