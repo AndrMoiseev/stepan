@@ -14,6 +14,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/setting"
@@ -31,7 +32,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := GitWorkspaceControl{}
+	workspace := gitworkspace.Control{}
 	baseline, err := workspace.Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +214,7 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	// In the real flow this is the already-captured post-orchestrator snapshot
 	// returned by the controlled call. The commit step only derives facts from
 	// it and does no Git work until after StateStore.Record.
-	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +252,7 @@ func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(
 	defer stateStore.Close()
 	acceptCommitFixture(t, stateStore, run)
 
-	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +308,7 @@ func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitl
 			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
 			defer stateStore.Close()
 			acceptCommitFixture(t, stateStore, run)
-			snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+			snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -545,7 +546,7 @@ func (control *failOnCallCommitControl) Commit(context.Context, string, string) 
 
 func captureCommitPreparation(t *testing.T, repository string) CommitPreparation {
 	t.Helper()
-	snapshot, err := (GitWorkspaceControl{}).Capture(context.Background(), repository)
+	snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
 	}

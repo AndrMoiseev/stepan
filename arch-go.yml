@@ -4,6 +4,10 @@ threshold:
   compliance: 100
   coverage: 100
 dependenciesRules:
+  - package: '^github\.com/AndrMoiseev/stepan/.+$'
+    shouldNotDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs$'
   - package: '^github\.com/AndrMoiseev/stepan/cmd/codex-appserver-probe$'
     shouldOnlyDependsOn:
       internal:
@@ -11,6 +15,7 @@ dependenciesRules:
   - package: '^github\.com/AndrMoiseev/stepan/cmd/stepan$'
     shouldOnlyDependsOn:
       internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/claudeapp$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime/codexapp$'
@@ -59,6 +64,8 @@ dependenciesRules:
   - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop$'
     shouldOnlyDependsOn:
       internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git$'
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace$'
         - '^github\.com/AndrMoiseev/stepan/internal/agentruntime$'
         - '^github\.com/AndrMoiseev/stepan/internal/git$'
         - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
@@ -119,3 +126,22 @@ dependenciesRules:
     shouldNotDependsOn:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/.+$'
+
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
+        - '^github\.com/AndrMoiseev/stepan/internal/setting$'
+
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'
+        - '^github\.com/AndrMoiseev/stepan/internal/setting$'
+
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace$'
+        - '^github\.com/AndrMoiseev/stepan/internal/git$'

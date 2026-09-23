@@ -15,6 +15,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 )
 
 var ErrFinalFindingTasks = errors.New("invalid final finding task route")
@@ -27,7 +28,7 @@ type FinalFindingTasksInput struct {
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
-	Workspace  WorkspaceControl
+	Workspace  workcopy.Control
 	Session    *AgentSession
 
 	Review    FinalReviewResult

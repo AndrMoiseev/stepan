@@ -10,6 +10,8 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -80,10 +82,10 @@ type AgentCallOutcome struct {
 // a broad Git reset. The caller owns durable technical-attempt reservation and
 // retries when Disposition is CallRetry.
 func ObserveAgentCall(ctx context.Context, repository string, policy AgentCallPolicy, run *implstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
-	return observeAgentCall(ctx, GitWorkspaceControl{}, repository, policy, run, journal, invoke)
+	return observeAgentCall(ctx, gitworkspace.Control{}, repository, policy, run, journal, invoke)
 }
 
-func observeAgentCall(ctx context.Context, workspace WorkspaceControl, repository string, policy AgentCallPolicy, run *implstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
+func observeAgentCall(ctx context.Context, workspace workcopy.Control, repository string, policy AgentCallPolicy, run *implstate.Run, journal *runstore.Run, invoke func() error) (AgentCallOutcome, error) {
 	if run == nil || journal == nil || invoke == nil {
 		return AgentCallOutcome{}, errors.New("observe agent call requires run, violation journal, and invocation")
 	}

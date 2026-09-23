@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -16,13 +18,13 @@ const unexpectedWorkspaceChangePauseReason = "unexpected working copy change bet
 // caller remains responsible for durably recording the mutated run before
 // dispatching more work.
 func CheckWorkspaceBeforeOperation(ctx context.Context, repository string, expected git.Snapshot, run *implstate.Run) error {
-	return CheckWorkspaceBeforeOperationWithControl(ctx, GitWorkspaceControl{}, repository, expected, run)
+	return CheckWorkspaceBeforeOperationWithControl(ctx, gitworkspace.Control{}, repository, expected, run)
 }
 
 // CheckWorkspaceBeforeOperationWithControl verifies the accepted state through
 // the workspace seam. It lets orchestration tests exercise pause behavior
 // without starting Git for cases that do not test Git itself.
-func CheckWorkspaceBeforeOperationWithControl(ctx context.Context, workspace WorkspaceControl, repository string, expected git.Snapshot, run *implstate.Run) error {
+func CheckWorkspaceBeforeOperationWithControl(ctx context.Context, workspace workcopy.Control, repository string, expected git.Snapshot, run *implstate.Run) error {
 	if run == nil {
 		return errors.New("implementation run is required")
 	}

@@ -11,6 +11,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
@@ -29,7 +30,7 @@ var recordFinalExplorerState = func(ctx context.Context, state *runstore.StateSt
 // the final reviewer, and it never waits for a manual check.
 type FinalRequiredChecks struct {
 	Run            *implstate.Run
-	Workspace      WorkspaceControl
+	Workspace      workcopy.Control
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
 	Repository     string
@@ -190,7 +191,7 @@ func publishFinalCheckEvidence(journal *runstore.Run, id implstate.ResultID, con
 // reviewer session receives its deliberately independent context.
 type FinalReviewInput struct {
 	Owner       *SessionOwner
-	Workspace   WorkspaceControl
+	Workspace   workcopy.Control
 	Run         *implstate.Run
 	StateStore  *runstore.StateStore
 	Journal     *runstore.Run
@@ -248,7 +249,7 @@ func StartFinalReview(ctx context.Context, input FinalReviewInput) (FinalReviewR
 		return FinalReviewResult{}, fmt.Errorf("%w: read complete specification: %v", ErrFinalAcceptanceRoute, err)
 	}
 	diffBase := input.Run.Identity.BaselineCommit
-	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, diffBase)
+	diff, err := workspaceAssignmentDiff(ctx, input.Workspace, input.Repository, diffBase)
 	if err != nil {
 		return FinalReviewResult{}, fmt.Errorf("%w: capture aggregate final diff: %v", ErrFinalAcceptanceRoute, err)
 	}
@@ -462,7 +463,7 @@ func finalReviewExplorerAt(value *FinalReviewExplorer, episode int) *FinalReview
 // CompleteFinalAcceptance is the terminal controller route. It rereads the
 // durable checked-state snapshot immediately before success, so a reviewer
 // cannot approve a working copy that changed after final checks.
-func CompleteFinalAcceptance(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, checks implstate.ResultID, review FinalReviewResult) error {
+func CompleteFinalAcceptance(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace workcopy.Control, repository string, checks implstate.ResultID, review FinalReviewResult) error {
 	if run == nil || state == nil || journal == nil || strings.TrimSpace(repository) == "" || review.Response.Kind != ResponseReviewPassed || review.ResultID == "" || !currentSuccessfulFinalChecks(run, checks) {
 		return fmt.Errorf("%w: successful final review and durable state are required", ErrFinalAcceptanceRoute)
 	}
@@ -485,7 +486,7 @@ func ensureFinalCheckedWorkspace(ctx context.Context, input FinalReviewInput) (g
 	return ensureFinalCheckedWorkspaceForCompletion(ctx, input.Run, input.StateStore, input.Journal, input.Workspace, input.Repository, input.CheckResult)
 }
 
-func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace WorkspaceControl, repository string, resultID implstate.ResultID) (git.Snapshot, error) {
+func ensureFinalCheckedWorkspaceForCompletion(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, workspace workcopy.Control, repository string, resultID implstate.ResultID) (git.Snapshot, error) {
 	expected, err := finalCheckedSnapshot(run, journal, resultID)
 	if err != nil {
 		return git.Snapshot{}, err

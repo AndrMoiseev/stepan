@@ -10,6 +10,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 )
 
 var ErrBriefRefinement = errors.New("invalid assignment brief refinement")
@@ -22,7 +23,7 @@ var recordBriefRefinementState = func(ctx context.Context, store *runstore.State
 
 type BriefRefinementInput struct {
 	Owner         *SessionOwner
-	Workspace     WorkspaceControl
+	Workspace     workcopy.Control
 	Run           *implstate.Run
 	StateStore    *runstore.StateStore
 	Journal       *runstore.Run
@@ -95,7 +96,7 @@ func RefineBrief(ctx context.Context, input BriefRefinementInput) (BriefRefineme
 	if err := prepareBriefRefinementOperation(ctx, input, brief.ID); err != nil {
 		return BriefRefinementResult{}, err
 	}
-	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
+	diff, err := workspaceAssignmentDiff(ctx, input.Workspace, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
 	if err != nil {
 		return BriefRefinementResult{}, err
 	}
@@ -584,7 +585,7 @@ func buildBriefRefinementRecoveryStartContext(ctx context.Context, input BriefRe
 	if err != nil {
 		return BrieferStartContext{}, err
 	}
-	diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
+	diff, err := workspaceAssignmentDiff(ctx, input.Workspace, input.Repository, assignmentDiffBase(input.Run, input.AssignmentID))
 	if err != nil {
 		return BrieferStartContext{}, err
 	}

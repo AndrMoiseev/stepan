@@ -12,6 +12,8 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -25,7 +27,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	gitFixture(t, repository, "checkout", "--quiet", "-b", "implementation")
 	writeResumeGitSpecification(t, repository)
 
-	gitWorkspace := GitWorkspaceControl{}
+	gitWorkspace := gitworkspace.Control{}
 	baseline, err := gitWorkspace.Capture(ctx, repository)
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +35,7 @@ func TestDeterministicImplementationLoopEndToEnd(t *testing.T) {
 	// Agent and check runtimes are deliberately in-process fakes.  Their
 	// workspace seam is deterministic as well; the local commit boundary below
 	// still observes and mutates the disposable real Git repository.
-	var workspace WorkspaceControl = &unchangedWorkspaceControl{}
+	var workspace workcopy.Control = &unchangedWorkspaceControl{}
 	store := mustControllerStore(t, t.TempDir())
 	journal, err := store.Create("deterministic-e2e")
 	if err != nil {
@@ -228,7 +230,7 @@ func e2eAssignmentExpectation(run *implstate.Run, assignmentID implstate.Assignm
 	return ResponseExpectation{Role: ResponseRoleImplementer, State: ResponseStateImplementing, Scope: ResponseScopeAssignment, Binding: ResponseBinding{CallID: callID, RunID: run.Identity.ID, AssignmentID: assignmentID, BriefID: briefID, Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 }
 
-func e2eRunImplementer(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, checks setting.CheckSelection, runner CheckRunner, assignmentID implstate.AssignmentID, _ implstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
+func e2eRunImplementer(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace workcopy.Control, checks setting.CheckSelection, runner CheckRunner, assignmentID implstate.AssignmentID, _ implstate.TaskID, turns []controlledTurn, requestFirst bool) AgentResponse {
 	t.Helper()
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
@@ -275,7 +277,7 @@ func e2eRunImplementer(t *testing.T, ctx context.Context, run *implstate.Run, st
 	return result.Response
 }
 
-func e2eTaskReview(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implstate.AssignmentID, operationID implstate.OperationID, resultID implstate.ResultID, callID string, kind ResponseKind) TaskReviewResult {
+func e2eTaskReview(t *testing.T, ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace workcopy.Control, assignmentID implstate.AssignmentID, operationID implstate.OperationID, resultID implstate.ResultID, callID string, kind ResponseKind) TaskReviewResult {
 	t.Helper()
 	runtime := &explorerRoutingRuntime{turns: []controlledTurn{{raw: e2ePayload(t, kind, nil)}}}
 	owner := newSessionOwnerForTest(t, &explorerRoutingFactory{runtime: runtime})
@@ -287,7 +289,7 @@ func e2eTaskReview(t *testing.T, ctx context.Context, run *implstate.Run, state 
 	return result
 }
 
-func e2eAcceptAndCommit(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace WorkspaceControl, assignmentID implstate.AssignmentID, ready AgentResponse, reviewResult implstate.ResultID, reflectionOperation implstate.OperationID, reflectionResult implstate.ResultID, reflectionCall string, commitOperation implstate.OperationID, reflect func()) (CommitAcceptedAssignmentResult, error) {
+func e2eAcceptAndCommit(ctx context.Context, run *implstate.Run, state *runstore.StateStore, journal *runstore.Run, repository string, workspace workcopy.Control, assignmentID implstate.AssignmentID, ready AgentResponse, reviewResult implstate.ResultID, reflectionOperation implstate.OperationID, reflectionResult implstate.ResultID, reflectionCall string, commitOperation implstate.OperationID, reflect func()) (CommitAcceptedAssignmentResult, error) {
 	assignment := assignmentByID(run, assignmentID)
 	if assignment == nil || len(assignment.Briefs) == 0 {
 		return CommitAcceptedAssignmentResult{}, ErrAcceptanceReflection
@@ -308,7 +310,7 @@ func e2eAcceptAndCommit(ctx context.Context, run *implstate.Run, state *runstore
 	if err != nil {
 		return CommitAcceptedAssignmentResult{}, err
 	}
-	snapshot, err := (GitWorkspaceControl{}).Capture(ctx, repository)
+	snapshot, err := (gitworkspace.Control{}).Capture(ctx, repository)
 	if err != nil {
 		return CommitAcceptedAssignmentResult{}, err
 	}

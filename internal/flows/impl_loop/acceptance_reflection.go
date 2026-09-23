@@ -12,6 +12,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -29,7 +30,7 @@ type AcceptanceReflectionInput struct {
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
-	Workspace  WorkspaceControl
+	Workspace  workcopy.Control
 	Session    *AgentSession
 
 	AssignmentID implstate.AssignmentID

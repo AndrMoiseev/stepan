@@ -12,6 +12,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/setting"
@@ -30,7 +31,7 @@ type RestartContinuationInput struct {
 	StateStore     *runstore.StateStore
 	Run            *implstate.Run
 	Repository     string
-	Workspace      WorkspaceControl
+	Workspace      workcopy.Control
 	Runner         CheckRunner
 	UserControl    *UserRunControl
 	Configuration  setting.Configuration
@@ -410,7 +411,7 @@ func runRestartAssignment(ctx context.Context, input RestartContinuationInput, o
 		if err != nil {
 			return pauseRestartContinuation(ctx, input, "rebuild active assignment review brief", err)
 		}
-		diff, err := effectiveWorkspaceControl(input.Workspace).AssignmentDiff(ctx, input.Repository, assignmentDiffBase(input.Run, assignmentID))
+		diff, err := workspaceAssignmentDiff(ctx, input.Workspace, input.Repository, assignmentDiffBase(input.Run, assignmentID))
 		if err != nil {
 			return pauseRestartContinuation(ctx, input, "rebuild active assignment review diff", err)
 		}

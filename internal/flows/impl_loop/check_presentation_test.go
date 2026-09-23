@@ -13,6 +13,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	testfs "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -50,7 +51,7 @@ func TestCheckResultPublisherKeepsFullLogsOutsideMachineState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	publisher, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "check-operation")
+	publisher, err := NewCheckResultPublisherWithControl(run, testfs.New(), repository, "check-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestRunRequestedChecksWithReporterAttachesPresentationAndMeasuresDuration(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	reporter, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "request-operation")
+	reporter, err := NewCheckResultPublisherWithControl(run, testfs.New(), repository, "request-operation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +206,7 @@ func TestRunRequestedChecksPersistsCanceledCommandEvidenceOutsideInvocationConte
 			if err != nil {
 				t.Fatal(err)
 			}
-			reporter, err := NewCheckResultPublisherWithControl(run, newFilesystemWorkspaceControl(), repository, "canceled-result")
+			reporter, err := NewCheckResultPublisherWithControl(run, testfs.New(), repository, "canceled-result")
 			if err != nil {
 				t.Fatal(err)
 			}

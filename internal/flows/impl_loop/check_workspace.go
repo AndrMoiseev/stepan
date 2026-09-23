@@ -11,6 +11,8 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
@@ -42,7 +44,7 @@ type AssignmentDiff struct {
 // through ObserveCodeState using the durable checked-state evidence.
 type WorkspaceCheckObserver struct {
 	repository     string
-	workspace      WorkspaceControl
+	workspace      workcopy.Control
 	run            *implstate.Run
 	journal        *runstore.Run
 	protectedPaths []string
@@ -60,14 +62,14 @@ type WorkspaceCheckObserver struct {
 // NewWorkspaceCheckObserver captures the assignment's initial candidate
 // state. The caller must retain one observer for the complete assignment.
 func NewWorkspaceCheckObserver(ctx context.Context, repository string, run *implstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
-	return NewWorkspaceCheckObserverWithControl(ctx, GitWorkspaceControl{}, repository, run, journal, protectedPaths)
+	return NewWorkspaceCheckObserverWithControl(ctx, gitworkspace.Control{}, repository, run, journal, protectedPaths)
 }
 
 // NewWorkspaceCheckObserverWithControl constructs an observer at the workspace
-// seam. Production uses GitWorkspaceControl; orchestration tests can supply a
+// seam. Production uses gitworkspace.Control; orchestration tests can supply a
 // deterministic adapter while real mutation/restore behavior remains covered
 // by the default constructor's contract tests.
-func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace WorkspaceControl, repository string, run *implstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
+func NewWorkspaceCheckObserverWithControl(ctx context.Context, workspace workcopy.Control, repository string, run *implstate.Run, journal *runstore.Run, protectedPaths []string) (*WorkspaceCheckObserver, error) {
 	if strings.TrimSpace(repository) == "" {
 		return nil, errors.New("workspace check observer requires a repository")
 	}

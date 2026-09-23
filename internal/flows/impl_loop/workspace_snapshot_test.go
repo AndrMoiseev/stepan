@@ -96,8 +96,8 @@ func TestCheckWorkspaceBeforeOperationPausesOnSubmoduleCycle(t *testing.T) {
 	t.Parallel()
 	run := &implstate.Run{Status: implstate.RunActive}
 	workspace := ensureErrorWorkspaceControl{
-		WorkspaceControl: &unchangedWorkspaceControl{},
-		err:              &git.SubmoduleCycleError{Root: "cycle"},
+		Control: &unchangedWorkspaceControl{},
+		err:     &git.SubmoduleCycleError{Root: "cycle"},
 	}
 	err := CheckWorkspaceBeforeOperationWithControl(context.Background(), workspace, t.TempDir(), git.Snapshot{}, run)
 	if !errors.Is(err, git.ErrSubmoduleCycle) {

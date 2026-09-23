@@ -25,6 +25,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop"
 	implruntime "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/runtime"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	specflow "github.com/AndrMoiseev/stepan/internal/flows/spec"
 	"github.com/AndrMoiseev/stepan/internal/platformsupport"
 	"github.com/AndrMoiseev/stepan/internal/setting"
@@ -391,7 +392,7 @@ func runImplementationStartupInteractive(ctx context.Context, workCopy string, s
 		owned = resumed
 		ownedInteractive = &impl_loop.InteractiveRun{Run: resumed.Run, Control: control, ResumeInput: impl_loop.ResumeInput{
 			Run: resumed.Run, StateStore: resumed.StateStore, Journal: resumed.Journal, Repository: workCopy,
-			Workspace: impl_loop.GitWorkspaceControl{}, Runner: impl_loop.DirectCheckRunner{},
+			Workspace: gitworkspace.Control{}, Runner: impl_loop.DirectCheckRunner{},
 			Factories: composition.Factories, SessionOwner: &owner, SessionBase: composition.SessionBase,
 			ClassifySpecificationChange: composition.ClassifySpecificationChange,
 		}}

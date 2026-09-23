@@ -14,6 +14,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/agentruntime"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/setting"
@@ -38,7 +39,7 @@ type ResumeInput struct {
 	StateStore *runstore.StateStore
 	Journal    *runstore.Run
 	Repository string
-	Workspace  WorkspaceControl
+	Workspace  workcopy.Control
 	Runner     CheckRunner
 	// UserControl makes the resume check set subject to the same pause/stop
 	// boundary as every other configured command.
@@ -360,7 +361,7 @@ type resumeWorkspaceComparer interface {
 	Compare(context.Context, string, git.Snapshot, git.Snapshot) ([]string, error)
 }
 
-func rulesOnlyWorkspaceChange(ctx context.Context, workspace WorkspaceControl, repository string, before, after git.Snapshot, rules setting.RulesFileValidation) bool {
+func rulesOnlyWorkspaceChange(ctx context.Context, workspace workcopy.Control, repository string, before, after git.Snapshot, rules setting.RulesFileValidation) bool {
 	if rules.DocumentPaths == "" || before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef || before.SubmodulesHash != after.SubmodulesHash {
 		return false
 	}
@@ -428,7 +429,7 @@ func pendingCommitWorkspace(run *implstate.Run, expected, actual git.Snapshot) b
 	return false
 }
 
-func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace WorkspaceControl, repository string, run *implstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules setting.RulesFileValidation) (bool, git.Snapshot) {
+func reflectedTasksThenRulesWorkspace(ctx context.Context, workspace workcopy.Control, repository string, run *implstate.Run, journal *runstore.Run, expected, actual git.Snapshot, rules setting.RulesFileValidation) (bool, git.Snapshot) {
 	if run == nil || journal == nil || actual.HeadOID != expected.HeadOID || actual.HeadRef != expected.HeadRef || actual.IndexHash != expected.IndexHash || actual.SubmodulesHash != expected.SubmodulesHash {
 		// A hook refusal may stage the pending tree. The second delta below is
 		// still constrained by its durable reflection snapshot.

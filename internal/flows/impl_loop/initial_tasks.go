@@ -11,6 +11,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 )
 
@@ -230,7 +231,7 @@ func changeHasRun(ctx context.Context, store *runstore.Store, workCopy, change s
 	if strings.TrimSpace(change) == "" {
 		return false, fmt.Errorf("%w: blank change", ErrChangeAlreadyStarted)
 	}
-	canonical, err := FindGitRoot(ctx, workCopy)
+	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
 	if err != nil {
 		return false, err
 	}

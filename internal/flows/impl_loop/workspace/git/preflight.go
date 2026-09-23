@@ -1,9 +1,8 @@
-package impl_loop
+package git
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,34 +10,9 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
-
-var (
-	// ErrNewStartDirty means a new implementation run cannot take ownership of
-	// a working copy that already has uncommitted work.  It is deliberately a
-	// new-run precondition: a later resume validates its saved state instead.
-	ErrNewStartDirty = errors.New("implementation new start requires a clean working copy")
-	ErrDetachedHEAD  = errors.New("implementation requires a checked-out branch")
-	ErrMainUnknown   = errors.New("implementation main branch is unknown")
-	ErrMainBranch    = errors.New("implementation cannot run on the main branch")
-)
-
-// GitWorkspace is the immutable Git identity accepted for a new
-// implementation run. It contains only information observed from Git; this
-// preflight never creates a worktree, branch, or checkout.
-type GitWorkspace struct {
-	Root       string
-	Branch     string
-	MainBranch string
-}
-
-// FindGitRoot resolves the enclosing Git working tree for start. The returned
-// path is absolute and canonical so it can safely identify one working copy in
-// durable state later in the implementation flow.
-func FindGitRoot(ctx context.Context, start string) (string, error) {
-	return GitWorkspaceControl{}.FindRoot(ctx, start)
-}
 
 func gitFindRoot(ctx context.Context, start string) (string, error) {
 	output, err := runGit(ctx, start, "rev-parse", "--show-toplevel")
@@ -60,38 +34,30 @@ func gitFindRoot(ctx context.Context, start string) (string, error) {
 	return filepath.Clean(root), nil
 }
 
-// ValidateNewStart checks the Git-only prerequisites for starting a new run.
-// It intentionally must not be used for resume: an own paused run can retain
-// uncommitted implementation work, which is reconciled by later run-state
-// work. No Git command here changes repository state.
-func ValidateNewStart(ctx context.Context, start string, configuration setting.Configuration) (GitWorkspace, error) {
-	return GitWorkspaceControl{}.ValidateNewStart(ctx, start, configuration)
-}
-
-func gitValidateNewStart(ctx context.Context, control RepositoryControl, start string, configuration setting.Configuration) (GitWorkspace, error) {
+func gitValidateNewStart(ctx context.Context, control workspace.Repository, start string, configuration setting.Configuration) (workspace.Identity, error) {
 	root, err := control.FindRoot(ctx, start)
 	if err != nil {
-		return GitWorkspace{}, err
+		return workspace.Identity{}, err
 	}
 	if err := requireCleanWorkingCopy(ctx, root); err != nil {
-		return GitWorkspace{}, err
+		return workspace.Identity{}, err
 	}
 	branch, err := currentBranch(ctx, root)
 	if err != nil {
-		return GitWorkspace{}, err
+		return workspace.Identity{}, err
 	}
 	configuredMain, err := configuration.MainBranchName()
 	if err != nil {
-		return GitWorkspace{}, fmt.Errorf("%w: %v", ErrMainUnknown, err)
+		return workspace.Identity{}, fmt.Errorf("%w: %v", workspace.ErrMainUnknown, err)
 	}
 	mainBranch, err := resolveMainBranch(ctx, root, configuredMain)
 	if err != nil {
-		return GitWorkspace{}, err
+		return workspace.Identity{}, err
 	}
 	if branch == mainBranch {
-		return GitWorkspace{}, fmt.Errorf("%w: current branch %q", ErrMainBranch, branch)
+		return workspace.Identity{}, fmt.Errorf("%w: current branch %q", workspace.ErrMainBranch, branch)
 	}
-	return GitWorkspace{Root: root, Branch: branch, MainBranch: mainBranch}, nil
+	return workspace.Identity{Root: root, Branch: branch, MainBranch: mainBranch}, nil
 }
 
 func requireCleanWorkingCopy(ctx context.Context, root string) error {
@@ -100,7 +66,7 @@ func requireCleanWorkingCopy(ctx context.Context, root string) error {
 		return fmt.Errorf("inspect Git working copy: %w", err)
 	}
 	if len(status) != 0 {
-		return ErrNewStartDirty
+		return workspace.ErrNewStartDirty
 	}
 	return nil
 }
@@ -112,7 +78,7 @@ func currentBranch(ctx context.Context, root string) (string, error) {
 	}
 	branch := strings.TrimSpace(string(output))
 	if branch == "" {
-		return "", fmt.Errorf("%w: check out a local implementation branch", ErrDetachedHEAD)
+		return "", fmt.Errorf("%w: check out a local implementation branch", workspace.ErrDetachedHEAD)
 	}
 	return branch, nil
 }
@@ -128,32 +94,32 @@ func resolveMainBranch(ctx context.Context, root, configured string) (string, er
 
 	output, err := runGit(ctx, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
 	if err != nil {
-		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD is unavailable", ErrMainUnknown)
+		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD is unavailable", workspace.ErrMainUnknown)
 	}
 	fullBranch := strings.TrimSpace(string(output))
 	const remotePrefix = "refs/remotes/origin/"
 	if !strings.HasPrefix(fullBranch, remotePrefix) || len(fullBranch) == len(remotePrefix) {
-		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD is invalid", ErrMainUnknown)
+		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD is invalid", workspace.ErrMainUnknown)
 	}
 	if _, err := runGit(ctx, root, "rev-parse", "--verify", fullBranch+"^{commit}"); err != nil {
-		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD does not name a local branch", ErrMainUnknown)
+		return "", fmt.Errorf("%w: set project flows.impl_loop.main_branch because refs/remotes/origin/HEAD does not name a local branch", workspace.ErrMainUnknown)
 	}
 	return strings.TrimPrefix(fullBranch, remotePrefix), nil
 }
 
 func localBranchName(ctx context.Context, root, configured string) (string, error) {
 	if configured == "" || strings.IndexFunc(configured, unicode.IsSpace) >= 0 {
-		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch must be a non-empty local branch name", ErrMainUnknown)
+		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch must be a non-empty local branch name", workspace.ErrMainUnknown)
 	}
 	const localPrefix = "refs/heads/"
 	branch := configured
 	if strings.HasPrefix(branch, localPrefix) {
 		branch = strings.TrimPrefix(branch, localPrefix)
 	} else if strings.HasPrefix(branch, "refs/") {
-		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch must name refs/heads, not %q", ErrMainUnknown, configured)
+		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch must name refs/heads, not %q", workspace.ErrMainUnknown, configured)
 	}
 	if output, err := runGit(ctx, root, "check-ref-format", "--branch", branch); err != nil || strings.TrimSpace(string(output)) != branch {
-		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch is not a valid local branch name", ErrMainUnknown)
+		return "", fmt.Errorf("%w: project flows.impl_loop.main_branch is not a valid local branch name", workspace.ErrMainUnknown)
 	}
 	return branch, nil
 }

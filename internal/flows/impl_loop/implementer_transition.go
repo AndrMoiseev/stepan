@@ -10,6 +10,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -27,7 +28,7 @@ var ErrRequiredChecksChanged = errors.New("required checks changed the workspace
 // an operation, or an assignment by putting one in its response.
 type ImplementerTransitionInput struct {
 	Run            *implstate.Run
-	Workspace      WorkspaceControl
+	Workspace      workcopy.Control
 	StateStore     *runstore.StateStore
 	Journal        *runstore.Run
 	Repository     string

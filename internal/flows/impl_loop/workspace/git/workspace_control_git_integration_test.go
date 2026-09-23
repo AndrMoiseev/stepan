@@ -1,6 +1,6 @@
 //go:build git_integration
 
-package impl_loop
+package git
 
 import (
 	"context"
@@ -13,11 +13,11 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
-func TestGitWorkspaceControlContract(t *testing.T) {
+func TestControlContract(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repository := newSnapshotRepository(t)
-	workspace := GitWorkspaceControl{}
+	repository := newGitWorkspace(t)
+	workspace := Control{}
 	before, err := workspace.Capture(ctx, repository)
 	if err != nil {
 		t.Fatal(err)

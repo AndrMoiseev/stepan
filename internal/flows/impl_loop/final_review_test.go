@@ -267,7 +267,7 @@ func TestFinalReviewPausesBeforeAReviewerCanApproveAnInterveningEdit(t *testing.
 		t.Fatal(err)
 	}
 	reviewer := &controlledCallRuntime{turns: []controlledTurn{{raw: responsePayload(t, ResponseReviewPassed)}}}
-	changed := ensureErrorWorkspaceControl{WorkspaceControl: &unchangedWorkspaceControl{}, err: git.ErrRepositoryDiverged}
+	changed := ensureErrorWorkspaceControl{Control: &unchangedWorkspaceControl{}, err: git.ErrRepositoryDiverged}
 	_, err := runFinalReviewerTurn(context.Background(), FinalReviewInput{
 		Workspace: changed, Run: fixture.run, StateStore: fixture.state, Journal: fixture.journal, Repository: fixture.repository,
 		CheckResult: "final-checks-result", OperationID: "final-review", ResultID: "final-review-result", CallID: "final-review-call", RoundID: "round-1", Limits: controlledCallLimits(),

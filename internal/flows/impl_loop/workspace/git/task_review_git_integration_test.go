@@ -1,6 +1,6 @@
 //go:build git_integration
 
-package impl_loop
+package git
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 )
 
 func TestAssignmentDiffIncludesUntrackedFiles(t *testing.T) {
-	repository := newSnapshotRepository(t)
+	repository := newGitWorkspace(t)
 	baseOutput, err := exec.Command("git", "-C", repository, "rev-parse", "HEAD").Output()
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ func TestAssignmentDiffIncludesUntrackedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repository, "generated_assignment.go"), []byte("package generated\n\nconst Included = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	diff, err := (GitWorkspaceControl{}).AssignmentDiff(context.Background(), repository, strings.TrimSpace(string(baseOutput)))
+	diff, err := (Control{}).AssignmentDiff(context.Background(), repository, strings.TrimSpace(string(baseOutput)))
 	if err != nil {
 		t.Fatal(err)
 	}

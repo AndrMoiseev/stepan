@@ -12,6 +12,8 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 )
 
 // MaxCheckDiagnosticsRunes is the maximum complete-command diagnostic sent to
@@ -64,7 +66,7 @@ type CheckPresentation struct {
 type CheckResultPublisher struct {
 	run        *runstore.Run
 	repository string
-	workspace  WorkspaceControl
+	workspace  workcopy.Control
 	resultID   implstate.EvidenceID
 	next       uint64
 }
@@ -74,12 +76,12 @@ type CheckResultPublisher struct {
 // resultID must be unique for this completed check-set attempt, including a
 // retry after a process restart.
 func NewCheckResultPublisher(run *runstore.Run, repository string, resultID implstate.EvidenceID) (*CheckResultPublisher, error) {
-	return NewCheckResultPublisherWithControl(run, GitWorkspaceControl{}, repository, resultID)
+	return NewCheckResultPublisherWithControl(run, gitworkspace.Control{}, repository, resultID)
 }
 
 // NewCheckResultPublisherWithControl publishes a checked state observed
 // through the workspace seam.
-func NewCheckResultPublisherWithControl(run *runstore.Run, workspace WorkspaceControl, repository string, resultID implstate.EvidenceID) (*CheckResultPublisher, error) {
+func NewCheckResultPublisherWithControl(run *runstore.Run, workspace workcopy.Control, repository string, resultID implstate.EvidenceID) (*CheckResultPublisher, error) {
 	if run == nil {
 		return nil, fmt.Errorf("check result publisher requires a run")
 	}

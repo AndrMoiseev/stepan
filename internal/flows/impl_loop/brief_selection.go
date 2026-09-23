@@ -10,6 +10,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 )
 
 // ErrBriefSelection identifies a response or controller boundary that cannot
@@ -72,7 +73,7 @@ type BriefSelectionCallInput struct {
 	// assignment-scoped briefer refinements to one lifecycle.
 	AssignmentID     implstate.AssignmentID
 	Repository       string
-	Workspace        WorkspaceControl
+	Workspace        workcopy.Control
 	Policy           AgentCallPolicy
 	Run              *implstate.Run
 	Journal          *runstore.Run

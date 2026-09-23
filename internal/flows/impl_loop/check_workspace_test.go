@@ -12,6 +12,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	testfs "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
 )
 
 func TestWorkspaceCheckIncludesNewGeneratedFileInAssignmentDiff(t *testing.T) {
@@ -138,7 +139,7 @@ func TestWorkspaceCheckRestoresAndAccountsForWritesWhenPublisherFails(t *testing
 			}
 			accepted := implstate.EvidenceRef{ID: "accepted", Digest: "accepted-digest"}
 			model := acceptedTestRun(accepted)
-			observer, err := NewWorkspaceCheckObserverWithControl(context.Background(), newFilesystemWorkspaceControl(), repository, model, journal, []string{".stepan/settings.json"})
+			observer, err := NewWorkspaceCheckObserverWithControl(context.Background(), testfs.New(), repository, model, journal, []string{".stepan/settings.json"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -299,7 +300,7 @@ func newWorkspaceCheckReporter(t *testing.T, repository string, model *implstate
 	if err != nil {
 		t.Fatal(err)
 	}
-	workspace := newFilesystemWorkspaceControl()
+	workspace := testfs.New()
 	publisher, err := NewCheckResultPublisherWithControl(run, workspace, repository, "check-workspace")
 	if err != nil {
 		t.Fatal(err)

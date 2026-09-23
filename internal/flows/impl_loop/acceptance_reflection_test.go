@@ -10,6 +10,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	testfs "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
 )
 
 func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformationalMarkdownEdit(t *testing.T) {
@@ -43,7 +44,7 @@ func TestAcceptAssignmentAndReflectProgressPersistsAcceptanceBeforeInformational
 	}}}}
 	input := AcceptanceReflectionInput{
 		Run: run, StateStore: stateStore, Journal: journal, Repository: repository,
-		Workspace:    newFilesystemWorkspaceControl(),
+		Workspace:    testfs.New(),
 		Session:      &AgentSession{Role: ResponseRoleOrchestrator, runtime: runtime, thread: "orchestrator"},
 		AssignmentID: "assignment", Acceptance: acceptanceReflectionEvidence(run),
 		TasksPath:             filepath.ToSlash(tasksPath),

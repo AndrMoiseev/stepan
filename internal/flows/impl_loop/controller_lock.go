@@ -13,6 +13,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 )
 
 var beforeControllerLockOpenHook func(string)
@@ -51,7 +52,7 @@ func AcquireController(ctx context.Context, store *runstore.Store, workCopy stri
 	if store == nil {
 		return nil, fmt.Errorf("acquire controller: nil run store")
 	}
-	canonical, err := FindGitRoot(ctx, workCopy)
+	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +162,7 @@ func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	canonical, err := FindGitRoot(ctx, workCopy)
+	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}

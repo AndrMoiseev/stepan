@@ -1,6 +1,6 @@
 //go:build git_integration
 
-package impl_loop
+package git
 
 import (
 	"bytes"
@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/setting"
 )
 
@@ -25,7 +26,7 @@ func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	workspace, err := ValidateNewStart(context.Background(), nested, configurationWithMain("refs/heads/main"))
+	workspace, err := (Control{}).ValidateNewStart(context.Background(), nested, configurationWithMain("refs/heads/main"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +34,7 @@ func TestValidateNewStartFindsRootAndUsesConfiguredMainBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if workspace != (GitWorkspace{Root: wantRoot, Branch: "implementation", MainBranch: "main"}) {
+	if workspace != (workcopy.Identity{Root: wantRoot, Branch: "implementation", MainBranch: "main"}) {
 		t.Fatalf("workspace = %#v", workspace)
 	}
 }
@@ -45,7 +46,7 @@ func TestValidateNewStartFallsBackToLocalOriginHEAD(t *testing.T) {
 	gitFixture(t, repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 	switchToBranch(t, repository, "implementation")
 
-	workspace, err := ValidateNewStart(context.Background(), repository, setting.Configuration{})
+	workspace, err := (Control{}).ValidateNewStart(context.Background(), repository, setting.Configuration{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,8 +73,8 @@ func TestValidateNewStartRejectsUnknownMainBranchWithConfigurationGuidance(t *te
 				test.setup(t, repository)
 			}
 
-			_, err := ValidateNewStart(context.Background(), repository, setting.Configuration{})
-			if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
+			_, err := (Control{}).ValidateNewStart(context.Background(), repository, setting.Configuration{})
+			if !errors.Is(err, workcopy.ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 				t.Fatalf("error = %v", err)
 			}
 		})
@@ -98,8 +99,8 @@ func TestValidateNewStartRejectsMainBranchFromConfiguredAndFallbackSources(t *te
 			if test.setup != nil {
 				test.setup(t, repository)
 			}
-			_, err := ValidateNewStart(context.Background(), repository, test.configuration)
-			if !errors.Is(err, ErrMainBranch) {
+			_, err := (Control{}).ValidateNewStart(context.Background(), repository, test.configuration)
+			if !errors.Is(err, workcopy.ErrMainBranch) {
 				t.Fatalf("error = %v", err)
 			}
 		})
@@ -111,8 +112,8 @@ func TestValidateNewStartRejectsDetachedHEAD(t *testing.T) {
 	repository := newGitWorkspace(t)
 	gitFixture(t, repository, "checkout", "--detach", "--quiet", "HEAD")
 
-	_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
-	if !errors.Is(err, ErrDetachedHEAD) {
+	_, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+	if !errors.Is(err, workcopy.ErrDetachedHEAD) {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -140,8 +141,8 @@ func TestValidateNewStartRejectsDirtyWorkingCopyWithoutChangingItOrBranches(t *t
 			test.mutate(t, repository)
 			before := inspectWorkspace(t, repository)
 
-			_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
-			if !errors.Is(err, ErrNewStartDirty) {
+			_, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+			if !errors.Is(err, workcopy.ErrNewStartDirty) {
 				t.Fatalf("error = %v", err)
 			}
 			if after := inspectWorkspace(t, repository); !reflect.DeepEqual(after, before) {
@@ -156,8 +157,8 @@ func TestValidateNewStartRejectsInvalidConfiguredMainBranch(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
 	for _, mainBranch := range []string{"null", `""`, "[]", `" main"`, `"main "`, `"feature branch"`, `"refs/heads/"`, `"refs/tags/main"`} {
-		_, err := ValidateNewStart(context.Background(), repository, setting.Configuration{MainBranch: json.RawMessage(mainBranch)})
-		if !errors.Is(err, ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
+		_, err := (Control{}).ValidateNewStart(context.Background(), repository, setting.Configuration{MainBranch: json.RawMessage(mainBranch)})
+		if !errors.Is(err, workcopy.ErrMainUnknown) || !strings.Contains(err.Error(), "main_branch") {
 			t.Fatalf("main_branch %s error = %v", mainBranch, err)
 		}
 	}
@@ -169,8 +170,8 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 		repository := newGitWorkspace(t)
 		gitFixture(t, repository, "tag", "main")
 
-		_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
-		if !errors.Is(err, ErrMainBranch) {
+		_, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+		if !errors.Is(err, workcopy.ErrMainBranch) {
 			t.Fatalf("error = %v", err)
 		}
 	})
@@ -181,7 +182,7 @@ func TestValidateNewStartUsesLocalBranchWhenTagHasTheSameName(t *testing.T) {
 		switchToBranch(t, repository, "implementation")
 		gitFixture(t, repository, "branch", "--delete", "main")
 
-		workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+		workspace, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 		if err != nil || workspace.MainBranch != "main" {
 			t.Fatalf("workspace = %#v, error = %v", workspace, err)
 		}
@@ -205,7 +206,7 @@ func TestValidateNewStartAcceptsConfiguredMainBranchWithoutLocalRef(t *testing.T
 			switchToBranch(t, repository, "implementation")
 			gitFixture(t, repository, "branch", "--delete", "main")
 
-			workspace, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+			workspace, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -245,7 +246,7 @@ func TestValidateNewStartIgnoresRepositorySelectingGitEnvironment(t *testing.T) 
 			}
 			t.Setenv(test.name, test.value(alternate, alternateGit))
 
-			workspace, err := ValidateNewStart(context.Background(), target, configurationWithMain("main"))
+			workspace, err := (Control{}).ValidateNewStart(context.Background(), target, configurationWithMain("main"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,8 +283,8 @@ func TestValidateNewStartDoesNotHonorConfiguredSubmoduleIgnores(t *testing.T) {
 				t.Fatalf("fixture is not ignored by policy %q: %q", test.ignore, ignored)
 			}
 
-			_, err := ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
-			if !errors.Is(err, ErrNewStartDirty) {
+			_, err := (Control{}).ValidateNewStart(context.Background(), repository, configurationWithMain("main"))
+			if !errors.Is(err, workcopy.ErrNewStartDirty) {
 				t.Fatalf("error = %v", err)
 			}
 		})

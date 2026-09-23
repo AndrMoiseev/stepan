@@ -10,6 +10,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -32,9 +33,9 @@ type ControlledAgentCall struct {
 	// controller supplies it for every agent turn.
 	UserControl *UserRunControl
 	Repository  string
-	// Workspace defaults to GitWorkspaceControl. Tests of orchestration may
+	// Workspace defaults to gitworkspace.Control. Tests of orchestration may
 	// supply an in-memory adapter without weakening production observation.
-	Workspace    WorkspaceControl
+	Workspace    workcopy.Control
 	Policy       AgentCallPolicy
 	Run          *implstate.Run
 	Journal      *runstore.Run

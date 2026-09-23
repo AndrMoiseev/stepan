@@ -12,6 +12,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	testfs "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
 )
 
 func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *testing.T) {
@@ -20,7 +21,7 @@ func TestInitialRequiredChecksFailFastPauseAndPersistBaselineDiagnostics(t *test
 	runner := &recordingCheckRunner{fail: map[string]error{"lint": errors.New("lint baseline failed")}}
 
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"lint", "test_all", "build"}), Runner: runner,
 		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
 	})
@@ -78,7 +79,7 @@ func TestInitialRequiredChecksRestartsCompleteSetAfterAllowedMutation(t *testing
 	})
 
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository, Selection: selection, Runner: runner,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository, Selection: selection, Runner: runner,
 		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
 	})
 	if err != nil {
@@ -101,7 +102,7 @@ func TestInitialRequiredChecksPersistsInterruptedResultAfterCallerCancellation(t
 	defer cancel()
 
 	result, err := RunInitialRequiredChecks(ctx, InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository, Selection: selection,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository, Selection: selection,
 		Runner: CheckRunnerFunc(func(context.Context, checkexec.Command) (checkexec.Result, error) {
 			cancel()
 			return checkexec.Result{ExitCode: -1, Failure: checkexec.FailureCanceled, Stderr: []byte("interrupted baseline")}, context.Canceled
@@ -129,7 +130,7 @@ func TestInitialRequiredChecksBlocksProtectedMutationWithDurableEvidence(t *test
 	selection.Checks["lint"] = implementationCheck(repository, "lint")
 
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository, Selection: selection,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository, Selection: selection,
 		Runner: CheckRunnerFunc(func(_ context.Context, _ checkexec.Command) (checkexec.Result, error) {
 			if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("changed by check\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -159,7 +160,7 @@ func TestInitialRequiredChecksRunsEntireProjectOrderAndBindsObservedBaseline(t *
 	runner := &recordingCheckRunner{}
 
 	result, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"test_all", "lint", "build"}), Runner: runner,
 		MaxCycles: 3, Operation: "baseline-checks", Result: "baseline-result",
 	})
@@ -184,7 +185,7 @@ func TestInitialRequiredChecksRejectsAnythingButExtractedInitialBaseline(t *test
 	defer state.Close()
 	run.CurrentState = implstate.EvidenceRef{ID: "other", Digest: run.Identity.BaselineState.Digest}
 	if _, err := RunInitialRequiredChecks(context.Background(), InitialRequiredChecks{
-		Run: run, Workspace: newFilesystemWorkspaceControl(), StateStore: state, Journal: journal, Repository: repository,
+		Run: run, Workspace: testfs.New(), StateStore: state, Journal: journal, Repository: repository,
 		Selection: testCheckSelection([]string{"lint"}), Runner: &recordingCheckRunner{}, MaxCycles: 3, Operation: "baseline", Result: "result",
 	}); !errors.Is(err, ErrInitialRequiredChecks) {
 		t.Fatalf("error = %v, want initial-baseline validation error", err)

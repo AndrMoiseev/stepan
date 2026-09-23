@@ -6,6 +6,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 )
 
 func TestInvokeControlledAgentCallRejectsRestoredViolationBeforeRetry(t *testing.T) {
@@ -18,7 +20,7 @@ func TestInvokeControlledAgentCallRejectsRestoredViolationBeforeRetry(t *testing
 	}}
 	call := controlledCallFixture(t, runtime)
 	call.Repository = repository
-	call.Workspace = GitWorkspaceControl{}
+	call.Workspace = gitworkspace.Control{}
 	call.Policy = AgentCallPolicy{Role: AgentRoleExecutor, CallID: call.Expectation.Binding.CallID, AllowUnprotected: true, ProtectedPaths: []string{".stepan/settings.json"}}
 	result, err := InvokeControlledAgentCall(context.Background(), call)
 	if err != nil {
