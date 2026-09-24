@@ -1,4 +1,4 @@
-//go:build !windows && (git_integration || process_integration)
+//go:build !windows
 
 package impl_loop
 
@@ -7,14 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
 )
 
 func TestControllerLockRejectsSymlinkEntryAndReplacementRace(t *testing.T) {
 	for _, race := range []bool{false, true} {
 		t.Run(map[bool]string{false: "existing symlink", true: "replacement race"}[race], func(t *testing.T) {
 			store := mustControllerStore(t, t.TempDir())
-			repository := newGitWorkspace(t)
-			lease, err := AcquireController(context.Background(), store, repository)
+			repository := newFilesystemWorkspace(t)
+			lease, err := AcquireControllerWithWorkspace(context.Background(), testfs.Directory(repository), store, repository)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,7 +38,7 @@ func TestControllerLockRejectsSymlinkEntryAndReplacementRace(t *testing.T) {
 			} else {
 				replace(entry)
 			}
-			if lease, err := AcquireController(context.Background(), store, repository); err == nil {
+			if lease, err := AcquireControllerWithWorkspace(context.Background(), testfs.Directory(repository), store, repository); err == nil {
 				_ = lease.Close()
 				t.Fatal("controller followed a symlinked lock entry")
 			}

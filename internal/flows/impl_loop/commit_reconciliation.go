@@ -8,63 +8,14 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
-	"github.com/AndrMoiseev/stepan/internal/git"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 )
 
 // ErrPendingCommitAmbiguous means that Git cannot prove whether the pending
 // controller operation made a commit. The run is paused rather than risking a
 // second commit or a new implementation attempt.
 var ErrPendingCommitAmbiguous = errors.New("pending Git commit is ambiguous")
-
-// CommitObserver is the read-only Git seam used before retrying a durable
-// pending commit operation.
-type CommitObserver interface {
-	Observe(context.Context, string) (CommitObservation, error)
-}
-
-// GitCommitObserver reads the current HEAD commit and its working copy. It
-// performs no Git mutation and never disables normal hooks.
-type GitCommitObserver struct{}
-
-var _ CommitObserver = GitCommitObserver{}
-
-func (GitCommitObserver) Observe(ctx context.Context, repository string) (CommitObservation, error) {
-	commitID, err := runGitMutation(ctx, repository, "rev-parse", "HEAD")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	parents, err := runGitMutation(ctx, repository, "rev-list", "--parents", "-n", "1", "HEAD")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	parentFields := strings.Fields(string(parents))
-	if len(parentFields) != 1 && len(parentFields) != 2 {
-		return CommitObservation{}, errors.New("HEAD has an unexpected parent list")
-	}
-	if parentFields[0] != strings.TrimSpace(string(commitID)) {
-		return CommitObservation{}, errors.New("HEAD parent list does not start with HEAD")
-	}
-	parent := ""
-	if len(parentFields) == 2 {
-		parent = parentFields[1]
-	}
-	tree, err := runGitMutation(ctx, repository, "rev-parse", "HEAD^{tree}")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	message, err := runGitMutation(ctx, repository, "show", "-s", "--format=%B", "HEAD")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	worktree, err := git.Capture(ctx, repository)
-	if err != nil {
-		return CommitObservation{}, fmt.Errorf("capture working copy: %w", err)
-	}
-	return CommitObservation{
-		CommitID: strings.TrimSpace(string(commitID)), ParentCommit: parent,
-		Tree: strings.TrimSpace(string(tree)), Message: strings.TrimRight(string(message), "\r\n"), Worktree: worktree,
-	}, nil
-}
 
 // ReconcilePendingCommit checks the one durable pending commit intent against
 // actual Git before any retry. A matching commit is adopted exactly once; an
@@ -75,7 +26,7 @@ type ReconcilePendingCommitInput struct {
 	StateStore   *runstore.StateStore
 	Repository   string
 	AssignmentID implstate.AssignmentID
-	Observer     CommitObserver
+	Observer     workcopy.CommitObserver
 }
 
 type PendingCommitReconciliation struct {
@@ -98,7 +49,7 @@ func ReconcilePendingCommit(ctx context.Context, input ReconcilePendingCommitInp
 	}
 	observer := input.Observer
 	if observer == nil {
-		observer = GitCommitObserver{}
+		observer = gitworkspace.Control{}
 	}
 	observed, err := observer.Observe(ctx, input.Repository)
 	if err != nil {

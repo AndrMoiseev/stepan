@@ -25,7 +25,7 @@ type Control interface {
 // Control interface when they do not need repository discovery.
 type Repository interface {
 	Control
-	FindRoot(context.Context, string) (string, error)
+	RootFinder
 	ValidateNewStart(context.Context, string, setting.Configuration) (Identity, error)
 }
 
@@ -50,3 +50,8 @@ type Identity struct {
 
 // ErrAssignmentDiff indicates that the workspace review diff could not be built.
 var ErrAssignmentDiff = errors.New("cannot build assignment diff")
+
+// RootFinder resolves a path to its canonical working-copy root.
+type RootFinder interface {
+	FindRoot(context.Context, string) (string, error)
+}

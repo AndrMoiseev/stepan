@@ -8,6 +8,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -119,21 +120,21 @@ type commitControlFake struct {
 	commitErr   error
 	commitCalls int
 	onCommit    func(string)
-	observation *CommitObservation
+	observation *workcopy.CommitObservation
 }
 
-func (fake *commitControlFake) Commit(_ context.Context, _ string, message string) (CommitObservation, error) {
+func (fake *commitControlFake) Commit(_ context.Context, _ string, message string) (workcopy.CommitObservation, error) {
 	fake.commitCalls++
 	if fake.onCommit != nil {
 		fake.onCommit(message)
 	}
 	if fake.commitErr != nil {
-		return CommitObservation{}, fake.commitErr
+		return workcopy.CommitObservation{}, fake.commitErr
 	}
 	if fake.observation != nil {
 		return *fake.observation, nil
 	}
-	return CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message, Worktree: git.Snapshot{HeadOID: "commit", TreeOID: "code-and-progress-tree"}}, nil
+	return workcopy.CommitObservation{CommitID: "commit", ParentCommit: "parent", Tree: "code-and-progress-tree", Message: message, Worktree: git.Snapshot{HeadOID: "commit", TreeOID: "code-and-progress-tree"}}, nil
 }
 
 func commitStringPointer(value string) *string { return &value }

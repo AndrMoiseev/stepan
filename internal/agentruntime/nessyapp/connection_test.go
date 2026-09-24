@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/AndrMoiseev/stepan/internal/agentruntime/conformance"
@@ -761,60 +762,68 @@ func TestConnectionRoutesUpdatesPermissionsAndCancelAcknowledgement(t *testing.T
 }
 
 func TestPermissionResponseWriteFormsTerminalBarrier(t *testing.T) {
-	responding := make(chan struct{})
-	responded := make(chan error, 1)
-	handler := connectionHandler{permission: func(connection *Connection, message message) error {
-		close(responding)
-		err := connection.respond(message.id, map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow-once"}})
-		responded <- err
-		return err
-	}}
-	connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.Close()
-	defer connection.Close()
-	promptErr := startPrompt(t, connection, server)
-	if err := server.sendRequest(stringID("permission-barrier"), "session/request_permission", map[string]any{
-		"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-responding:
-	case <-time.After(time.Second):
-		t.Fatal("permission handler did not start response")
-	}
-	terminalSent := make(chan error, 1)
-	go func() {
-		terminalSent <- server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"})
-	}()
-	select {
-	case err := <-terminalSent:
+	synctest.Test(t, func(t *testing.T) {
+		responding := make(chan struct{})
+		responded := make(chan error, 1)
+		handler := connectionHandler{permission: func(connection *Connection, message message) error {
+			err := connection.respond(message.id, map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": "allow-once"}})
+			responded <- err
+			return err
+		}}
+		connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("terminal was not read while permission response write was blocked")
-	}
-	select {
-	case err := <-promptErr:
-		t.Fatalf("terminal crossed pending permission write barrier: %v", err)
-	case <-connection.Done():
-		t.Fatalf("connection failed during valid permission write: %v", connection.Err())
-	case <-time.After(100 * time.Millisecond):
-	}
-	permissionResponse, err := server.read()
-	if err != nil || permissionResponse.kind != responseMessage || permissionResponse.id.key != stringID("permission-barrier").key {
-		t.Fatalf("permission response = %+v, %v", permissionResponse, err)
-	}
-	if err := <-responded; err != nil {
-		t.Fatal(err)
-	}
-	if err := <-promptErr; err != nil {
-		t.Fatal(err)
-	}
+		defer raw.Close()
+		defer connection.Close()
+		promptErr := startPrompt(t, connection, server)
+		// Observe the actual write, after respond has claimed the inbound request.
+		// Entering the handler alone does not establish that ordering.
+		writer := connection.transport.writer
+		writer.mu.Lock()
+		writer.writer = &permissionWriteObserver{writer: writer.writer, started: responding}
+		writer.mu.Unlock()
+		if err := server.sendRequest(stringID("permission-barrier"), "session/request_permission", map[string]any{
+			"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-responding:
+		case <-time.After(time.Second):
+			t.Fatal("permission handler did not start response")
+		}
+		terminalSent := make(chan error, 1)
+		go func() {
+			terminalSent <- server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"})
+		}()
+		select {
+		case err := <-terminalSent:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("terminal was not read while permission response write was blocked")
+		}
+		synctest.Wait()
+		select {
+		case err := <-promptErr:
+			t.Fatalf("terminal crossed pending permission write barrier: %v", err)
+		case <-connection.Done():
+			t.Fatalf("connection failed during valid permission write: %v", connection.Err())
+		default:
+		}
+		permissionResponse, err := server.read()
+		if err != nil || permissionResponse.kind != responseMessage || permissionResponse.id.key != stringID("permission-barrier").key {
+			t.Fatalf("permission response = %+v, %v", permissionResponse, err)
+		}
+		if err := <-responded; err != nil {
+			t.Fatal(err)
+		}
+		if err := <-promptErr; err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestSessionUpdateHandlerErrorIsSanitized(t *testing.T) {
@@ -1132,4 +1141,60 @@ func TestProtocolDiagnosticsAreBoundedAndSanitized(t *testing.T) {
 	if strings.Contains(message, "credential-body") || len(message) > 256 {
 		t.Fatalf("unsafe protocol diagnostic: len=%d %q", len(message), message)
 	}
+}
+
+// permissionWriteObserver signals the start of the actual transport write.
+// The pipe blocks that write until the fake peer reads the permission response.
+type permissionWriteObserver struct {
+	writer  io.Writer
+	started chan struct{}
+	once    sync.Once
+}
+
+func (w *permissionWriteObserver) Write(data []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	return w.writer.Write(data)
+}
+
+func TestPromptTerminalRejectsPermissionBeforeResponseWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		entered := make(chan struct{})
+		responded := make(chan error, 1)
+		handler := connectionHandler{permission: func(connection *Connection, request message) error {
+			close(entered)
+			// Hold the handler before respond, the ordering that made the old test flaky.
+			<-connection.Done()
+			err := connection.respond(request.id, map[string]any{"outcome": map[string]string{"outcome": "cancelled"}})
+			responded <- err
+			return err
+		}}
+		connection, _, server, raw, err := establishTestConnection(t, validInitialize(), map[string]any{"sessionId": "s"}, handler)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+		defer connection.Close()
+		promptErr := startPrompt(t, connection, server)
+		if err := server.sendRequest(stringID("permission-not-started"), "session/request_permission", map[string]any{
+			"sessionId": "s", "toolCall": map[string]any{"toolCallId": "tool-1"}, "options": []any{map[string]any{"optionId": "allow-once", "kind": "allow_once", "name": "Allow once"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		<-entered
+		if err := server.sendResult(integerID(3), map[string]string{"stopReason": "end_turn"}); err != nil {
+			t.Fatal(err)
+		}
+		synctest.Wait()
+		select {
+		case err := <-promptErr:
+			if !errors.Is(err, ErrProtocol) || !strings.Contains(err.Error(), "pending inbound request") {
+				t.Fatalf("early terminal = %v", err)
+			}
+		default:
+			t.Fatal("terminal with unresolved permission was not rejected")
+		}
+		if err := <-responded; !errors.Is(err, ErrConnectionClosed) {
+			t.Fatalf("response after rejected terminal = %v", err)
+		}
+	})
 }

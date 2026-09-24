@@ -35,10 +35,10 @@ func Classify(event string, changedPaths []string) Scope {
 
 func isGlobalIntegrationPath(path string) bool {
 	switch path {
-	case "go.mod", "go.sum", ".github/workflows/ci.yml", "internal/architecture/architecture_test.go":
+	case "go.mod", "go.sum", "Makefile", ".github/workflows/ci.yml", "internal/architecture/architecture_test.go":
 		return true
 	}
-	return strings.HasPrefix(path, "internal/testscope/") || strings.HasPrefix(path, "internal/setting/")
+	return strings.HasPrefix(path, "internal/testscope/") || strings.HasPrefix(path, "internal/testall/") || strings.HasPrefix(path, "internal/setting/")
 }
 
 func isGitIntegrationPath(path string) bool {

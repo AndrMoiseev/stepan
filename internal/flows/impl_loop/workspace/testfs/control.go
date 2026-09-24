@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -22,8 +23,11 @@ import (
 // dedicated Git adapter contract tests cover Git metadata, index,
 // filters, symlinks and submodules.
 type Control struct {
-	mu     sync.Mutex
-	states map[string]map[string]filesystemWorkspaceFile
+	mu       sync.Mutex
+	states   map[string]map[string]filesystemWorkspaceFile
+	heads    map[string]workspace.CommitObservation
+	commits  map[string]string
+	sequence uint64
 }
 
 var _ workspace.Control = (*Control)(nil)
@@ -35,19 +39,30 @@ type filesystemWorkspaceFile struct {
 
 // New creates an isolated, in-memory snapshot history for ordinary files.
 func New() *Control {
-	return &Control{states: make(map[string]map[string]filesystemWorkspaceFile)}
+	return &Control{states: make(map[string]map[string]filesystemWorkspaceFile), heads: make(map[string]workspace.CommitObservation), commits: make(map[string]string)}
 }
 
-func (w *Control) Capture(_ context.Context, repository string) (git.Snapshot, error) {
+func (w *Control) Capture(ctx context.Context, repository string) (git.Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return git.Snapshot{}, err
+	}
 	files, err := captureFilesystemWorkspace(repository)
 	if err != nil {
 		return git.Snapshot{}, err
 	}
 	digest := filesystemWorkspaceDigest(files)
+
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.states[digest] = cloneFilesystemWorkspace(files)
-	w.mu.Unlock()
-	return git.Snapshot{HeadOID: "test-head", HeadRef: "refs/heads/test", TreeOID: digest, IndexHash: "test-index", StatusHash: digest, SubmodulesHash: "test-submodules"}, nil
+	head, ok := w.heads[repository]
+	if !ok {
+		w.sequence++
+		head = workspace.CommitObservation{CommitID: fmt.Sprintf("test-head-%d", w.sequence), Tree: digest, Message: "initial"}
+		w.heads[repository] = head
+		w.commits[head.CommitID] = digest
+	}
+	return git.Snapshot{HeadOID: head.CommitID, HeadRef: "refs/heads/test", TreeOID: digest, IndexHash: head.Tree, StatusHash: digest, SubmodulesHash: "test-submodules"}, nil
 }
 
 func (w *Control) Diff(_ context.Context, _ string, before, after git.Snapshot) (git.Difference, error) {
@@ -71,7 +86,7 @@ func (w *Control) RestorePaths(ctx context.Context, repository string, before, c
 	if err != nil {
 		return git.Snapshot{}, err
 	}
-	if actual.TreeOID != current.TreeOID {
+	if !sameSnapshot(actual, current) {
 		return git.Snapshot{}, git.ErrRepositoryDiverged
 	}
 	w.mu.Lock()
@@ -80,11 +95,14 @@ func (w *Control) RestorePaths(ctx context.Context, repository string, before, c
 	if !ok {
 		return git.Snapshot{}, fmt.Errorf("filesystem workspace snapshot is unknown")
 	}
+	// Validate all targets before mutating any of them, including parent links.
+	for _, path := range paths {
+		if err := safeRestoreTarget(repository, path); err != nil {
+			return git.Snapshot{}, err
+		}
+	}
 	for _, path := range paths {
 		clean := filepath.Clean(filepath.FromSlash(path))
-		if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return git.Snapshot{}, fmt.Errorf("unsafe filesystem workspace path %q", path)
-		}
 		target := filepath.Join(repository, clean)
 		file, exists := original[filepath.ToSlash(clean)]
 		if !exists {
@@ -99,8 +117,34 @@ func (w *Control) RestorePaths(ctx context.Context, repository string, before, c
 		if err := os.WriteFile(target, file.contents, file.mode.Perm()); err != nil {
 			return git.Snapshot{}, err
 		}
+		if err := os.Chmod(target, file.mode.Perm()); err != nil {
+			return git.Snapshot{}, err
+		}
 	}
 	return w.Capture(ctx, repository)
+}
+
+func safeRestoreTarget(repository, path string) error {
+	clean := filepath.Clean(filepath.FromSlash(path))
+	if clean == "." || filepath.IsAbs(clean) || filepath.VolumeName(clean) != "" || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: path %q", git.ErrRestoreUnsafe, path)
+	}
+	parts := strings.Split(clean, string(filepath.Separator))
+	target := repository
+	for i, part := range parts {
+		target = filepath.Join(target, part)
+		info, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("%w: %w", git.ErrRestoreUnsafe, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (i < len(parts)-1 && !info.IsDir()) || (i == len(parts)-1 && !info.Mode().IsRegular()) {
+			return fmt.Errorf("%w: target %q is not an ordinary file path", git.ErrRestoreUnsafe, path)
+		}
+	}
+	return nil
 }
 
 func (w *Control) EnsureUnchanged(ctx context.Context, repository string, expected git.Snapshot) error {
@@ -108,14 +152,10 @@ func (w *Control) EnsureUnchanged(ctx context.Context, repository string, expect
 	if err != nil {
 		return err
 	}
-	if actual.TreeOID != expected.TreeOID {
+	if !sameSnapshot(actual, expected) {
 		return git.ErrRepositoryDiverged
 	}
 	return nil
-}
-
-func (*Control) AssignmentDiff(context.Context, string, string) (string, error) {
-	return "Filesystem workspace changes are supplied through snapshots.", nil
 }
 
 func captureFilesystemWorkspace(repository string) (map[string]filesystemWorkspaceFile, error) {
@@ -198,4 +238,17 @@ func cloneFilesystemWorkspace(files map[string]filesystemWorkspaceFile) map[stri
 		clone[path] = file
 	}
 	return clone
+}
+
+func sameSnapshot(a, b git.Snapshot) bool {
+	return a.HeadOID == b.HeadOID && a.HeadRef == b.HeadRef && a.TreeOID == b.TreeOID && a.IndexHash == b.IndexHash && a.StatusHash == b.StatusHash && a.SubmodulesHash == b.SubmodulesHash
+}
+
+// Compare reports changed paths while requiring the same checkout identity.
+func (w *Control) Compare(ctx context.Context, repository string, before, after git.Snapshot) ([]string, error) {
+	if before.HeadOID != after.HeadOID || before.HeadRef != after.HeadRef {
+		return nil, git.ErrRepositoryDiverged
+	}
+	difference, err := w.Diff(ctx, repository, before, after)
+	return difference.Paths, err
 }

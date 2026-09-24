@@ -1,5 +1,3 @@
-//go:build git_integration
-
 package impl_loop
 
 import (
@@ -11,17 +9,20 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/testfs"
+	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
 const executionBlockedPauseReason = "execution_blocked: cannot safely attribute or restore agent file changes"
 
 func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *testing.T) {
 	t.Parallel()
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	writeAgentFile(t, repository, "prior-executor.go", "pre-existing executor work\n")
 	run, journal := newAgentCallRun(t)
 
-	outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{
+	outcome, err := observeAgentCall(context.Background(), testfs.New(), repository, AgentCallPolicy{
 		Role: AgentRoleOrchestrator, CallID: "orchestrator-1",
 		AllowedPaths: []string{"openspec/changes/example/tasks.md"},
 	}, run, journal, func() error {
@@ -51,11 +52,11 @@ func TestObserveAgentCallRestoresOnlyOrchestratorViolationAndRequestsRetry(t *te
 
 func TestObserveAgentCallPreservesExecutorAllowedWorkAndRestoresProtectedFile(t *testing.T) {
 	t.Parallel()
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	writeAgentFile(t, repository, ".stepan/settings.json", "{\"protected\":true}\n")
 	run, journal := newAgentCallRun(t)
 
-	outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{
+	outcome, err := observeAgentCall(context.Background(), testfs.New(), repository, AgentCallPolicy{
 		Role: AgentRoleExecutor, CallID: "executor-1", AllowUnprotected: true,
 		ProtectedPaths: []string{".stepan/settings.json"},
 	}, run, journal, func() error {
@@ -77,46 +78,16 @@ func TestObserveAgentCallPreservesExecutorAllowedWorkAndRestoresProtectedFile(t 
 	}
 }
 
-func TestObserveAgentCallRestoresNormalizedProtectedBytes(t *testing.T) {
+func TestObserveAgentCallBlocksOnAmbiguousControlChangeWithoutRestoring(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, attribute string
-		configure       func(*testing.T, string)
-	}{
-		{"autocrlf", "protected.txt text\n", func(t *testing.T, r string) { runSnapshotGit(t, r, "config", "core.autocrlf", "true") }},
-		{"clean filter", "protected.txt filter=stepan\n", func(t *testing.T, r string) {
-			runSnapshotGit(t, r, "config", "filter.stepan.clean", "tr -d '\\r'")
-			runSnapshotGit(t, r, "config", "filter.stepan.smudge", "cat")
-		}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository := newSnapshotRepository(t)
-			test.configure(t, repository)
-			writeAgentFile(t, repository, ".gitattributes", test.attribute)
-			writeAgentFile(t, repository, "protected.txt", "before\r\n")
-			runSnapshotGit(t, repository, "add", ".gitattributes", "protected.txt")
-			runSnapshotGit(t, repository, "-c", "user.name=Stepan Test", "-c", "user.email=stepan@example.invalid", "commit", "--quiet", "-m", "filtered")
-			run, journal := newAgentCallRun(t)
-			outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{Role: AgentRoleExecutor, CallID: test.name, AllowUnprotected: true, ProtectedPaths: []string{"protected.txt"}}, run, journal, func() error { writeAgentFile(t, repository, "protected.txt", "agent\n"); return nil })
-			if err != nil || outcome.Disposition != CallRetry {
-				t.Fatalf("outcome=%#v err=%v", outcome, err)
-			}
-			assertAgentFile(t, repository, "protected.txt", "before\r\n")
-		})
-	}
-}
-
-func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *testing.T) {
-	t.Parallel()
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	run, journal := newAgentCallRun(t)
 
-	outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{
+	outcome, err := observeAgentCall(context.Background(), indexChangedWorkspace{Control: testfs.New()}, repository, AgentCallPolicy{
 		Role: AgentRoleOrchestrator, CallID: "orchestrator-ambiguous",
 		AllowedPaths: []string{"openspec/changes/example/tasks.md"},
 	}, run, journal, func() error {
 		writeAgentFile(t, repository, "internal/engine.go", "unknown origin\n")
-		runSnapshotGit(t, repository, "add", "internal/engine.go")
 		return nil
 	})
 	if err != nil {
@@ -133,11 +104,11 @@ func TestObserveAgentCallBlocksOnAmbiguousGitControlChangeWithoutRestoring(t *te
 
 func TestObserveAgentCallBlocksWhenTargetedRollbackIsImpossible(t *testing.T) {
 	t.Parallel()
-	repository := newSnapshotRepository(t)
+	repository := newFilesystemWorkspace(t)
 	writeAgentFile(t, repository, ".stepan/settings.json", "{\"protected\":true}\n")
 	run, journal := newAgentCallRun(t)
 
-	outcome, err := ObserveAgentCall(context.Background(), repository, AgentCallPolicy{
+	outcome, err := observeAgentCall(context.Background(), testfs.New(), repository, AgentCallPolicy{
 		Role: AgentRoleExecutor, CallID: "executor-unsafe-restore", AllowUnprotected: true,
 		ProtectedPaths: []string{".stepan/settings.json"},
 	}, run, journal, func() error {
@@ -194,4 +165,13 @@ func assertAgentFile(t *testing.T, repository, relative, want string) {
 	if err != nil || string(contents) != want {
 		t.Fatalf("file %s = %q, %v; want %q", relative, contents, err, want)
 	}
+}
+
+// Models the ambiguous metadata observation without executing a Git mutation.
+type indexChangedWorkspace struct{ workcopy.Control }
+
+func (w indexChangedWorkspace) Diff(ctx context.Context, repository string, before, after git.Snapshot) (git.Difference, error) {
+	diff, err := w.Control.Diff(ctx, repository, before, after)
+	diff.IndexChanged = true
+	return diff, err
 }

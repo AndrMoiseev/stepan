@@ -15,6 +15,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 	"github.com/AndrMoiseev/stepan/internal/setting"
@@ -280,8 +281,8 @@ func TestDispatchRestartContinuationRetriesSafePendingCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, configuration, checks := restartTestOwner(t, fixture)
-	observer := &restartCommitObserver{observation: CommitObservation{CommitID: "head", Tree: "old-head-tree", Worktree: git.Snapshot{HeadOID: "head", TreeOID: "informational-reflection-tree"}}}
-	control := &commitControlFake{observation: &CommitObservation{CommitID: "restart-commit", ParentCommit: "head", Tree: "informational-reflection-tree", Worktree: git.Snapshot{HeadOID: "restart-commit", TreeOID: "informational-reflection-tree"}}}
+	observer := &restartCommitObserver{observation: workcopy.CommitObservation{CommitID: "head", Tree: "old-head-tree", Worktree: git.Snapshot{HeadOID: "head", TreeOID: "informational-reflection-tree"}}}
+	control := &commitControlFake{observation: &workcopy.CommitObservation{CommitID: "restart-commit", ParentCommit: "head", Tree: "informational-reflection-tree", Worktree: git.Snapshot{HeadOID: "restart-commit", TreeOID: "informational-reflection-tree"}}}
 	control.onCommit = func(message string) { control.observation.Message = message }
 	if err := DispatchRestartContinuation(context.Background(), RestartContinuationInput{
 		Owner: owner, Journal: fixture.journal, StateStore: fixture.state, Run: fixture.run, Repository: fixture.repository,
@@ -1483,10 +1484,10 @@ func restartTestOwner(t *testing.T, fixture *resumeFixture) (*SessionOwner, sett
 
 type restartCommitObserver struct {
 	calls       int
-	observation CommitObservation
+	observation workcopy.CommitObservation
 }
 
-func (observer *restartCommitObserver) Observe(context.Context, string) (CommitObservation, error) {
+func (observer *restartCommitObserver) Observe(context.Context, string) (workcopy.CommitObservation, error) {
 	observer.calls++
 	return observer.observation, nil
 }
@@ -1844,11 +1845,11 @@ type restartCommitControl struct {
 	message *string
 }
 
-func (control restartCommitControl) Commit(_ context.Context, _ string, message string) (CommitObservation, error) {
+func (control restartCommitControl) Commit(_ context.Context, _ string, message string) (workcopy.CommitObservation, error) {
 	if control.message != nil {
 		*control.message = message
 	}
-	return CommitObservation{
+	return workcopy.CommitObservation{
 		CommitID: "restart-commit", ParentCommit: control.parent, Tree: control.tree, Message: message,
 		Worktree: git.Snapshot{HeadOID: "restart-commit", TreeOID: control.tree},
 	}, nil

@@ -38,8 +38,8 @@ type RestartContinuationInput struct {
 	Checks         setting.CheckSelection
 	Rules          setting.RulesFileValidation
 	ProtectedPaths []string
-	CommitControl  CommitControl
-	CommitObserver CommitObserver
+	CommitControl  workcopy.Committer
+	CommitObserver workcopy.CommitObserver
 	// AfterAgentSuccessReceipt is a crash-injection seam passed to the shared
 	// controlled-call boundary. Production callers leave it nil.
 	AfterAgentSuccessReceipt func() error

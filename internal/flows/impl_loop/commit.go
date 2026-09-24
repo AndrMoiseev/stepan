@@ -1,17 +1,16 @@
 package impl_loop
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -37,35 +36,6 @@ type CommitPreparation struct {
 	Tree         string
 }
 
-// CommitObservation contains facts read from the commit Git actually made.
-// The controller completes machine task state only when every fact agrees with
-// the persisted intent.
-type CommitObservation struct {
-	CommitID     string
-	ParentCommit string
-	Tree         string
-	Message      string
-	// Worktree is captured after Git has completed the commit and all normal
-	// hooks. It is required to distinguish a matching commit from a hook that
-	// left additional or differently staged work behind.
-	Worktree git.Snapshot
-}
-
-// CommitControl is the narrow mutation seam for one assignment commit. The
-// production implementation stages the current working copy (accepted code
-// plus the orchestrator's informational mark) and makes exactly one commit.
-// Intent preparation deliberately is not a method here: all external Git work
-// must happen after the full intent reaches durable state.
-type CommitControl interface {
-	Commit(context.Context, string, string) (CommitObservation, error)
-}
-
-// GitCommitControl performs the local Git commands for an assignment commit.
-// It deliberately does not disable hooks.
-type GitCommitControl struct{}
-
-var _ CommitControl = GitCommitControl{}
-
 // CommitPreparationFromSnapshot derives the commit's expected parent and tree
 // from a snapshot the controller has already captured. It performs no Git or
 // filesystem action, preserving the durable-before-mutation boundary.
@@ -75,39 +45,6 @@ func CommitPreparationFromSnapshot(snapshot git.Snapshot) (CommitPreparation, er
 		return CommitPreparation{}, fmt.Errorf("%w: captured snapshot lacks parent or tree", ErrAssignmentCommit)
 	}
 	return preparation, nil
-}
-
-func (GitCommitControl) Commit(ctx context.Context, repository, message string) (CommitObservation, error) {
-	if _, err := runGitMutation(ctx, repository, "add", "--all"); err != nil {
-		return CommitObservation{}, err
-	}
-	if _, err := runGitMutation(ctx, repository, "commit", "-m", message); err != nil {
-		return CommitObservation{}, err
-	}
-	commitID, err := runGitMutation(ctx, repository, "rev-parse", "HEAD")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	parent, err := runGitMutation(ctx, repository, "rev-parse", "HEAD^")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	tree, err := runGitMutation(ctx, repository, "rev-parse", "HEAD^{tree}")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	observedMessage, err := runGitMutation(ctx, repository, "show", "-s", "--format=%B", "HEAD")
-	if err != nil {
-		return CommitObservation{}, err
-	}
-	worktree, err := git.Capture(ctx, repository)
-	if err != nil {
-		return CommitObservation{}, fmt.Errorf("capture working copy after commit: %w", err)
-	}
-	return CommitObservation{
-		CommitID: strings.TrimSpace(string(commitID)), ParentCommit: strings.TrimSpace(string(parent)),
-		Tree: strings.TrimSpace(string(tree)), Message: strings.TrimRight(string(observedMessage), "\r\n"), Worktree: worktree,
-	}, nil
 }
 
 // CommitAcceptedAssignmentInput is owned entirely by the controller. Response
@@ -125,11 +62,11 @@ type CommitAcceptedAssignmentInput struct {
 	// facts by CommitPreparationFromSnapshot. It is controller evidence, not
 	// an agent suggestion and it is recorded before Commit is called.
 	Preparation CommitPreparation
-	Control     CommitControl
+	Control     workcopy.Committer
 	// Observer is used only when a durable commit intent already exists. It is
-	// normally GitCommitObserver; the seam keeps restart reconciliation
+	// normally gitworkspace.Control; the seam keeps restart reconciliation
 	// independently testable without changing the mutation contract.
-	Observer CommitObserver
+	Observer workcopy.CommitObserver
 }
 
 type CommitAcceptedAssignmentResult struct {
@@ -186,7 +123,7 @@ func CommitAcceptedAssignment(ctx context.Context, input CommitAcceptedAssignmen
 	}
 	control := input.Control
 	if control == nil {
-		control = GitCommitControl{}
+		control = gitworkspace.Control{}
 	}
 	if err := requireActiveCommitRun(input.Run); err != nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, fmt.Errorf("%w: %w", ErrAssignmentCommit, err)
@@ -225,11 +162,11 @@ func pendingCommitIntent(run *implstate.Run, assignmentID implstate.AssignmentID
 	return intent, intent.OperationID != "" && intent.ParentCommit != "" && intent.Tree != "" && strings.TrimSpace(intent.Message) != ""
 }
 
-func commitMatchesIntent(intent implstate.CommitIntent, observed CommitObservation) bool {
+func commitMatchesIntent(intent implstate.CommitIntent, observed workcopy.CommitObservation) bool {
 	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Tree == intent.Tree && observed.Message == intent.Message
 }
 
-func worktreeMatchesCommit(observed CommitObservation) bool {
+func worktreeMatchesCommit(observed workcopy.CommitObservation) bool {
 	return observed.Worktree.HeadOID == observed.CommitID && observed.Worktree.TreeOID == observed.Tree
 }
 
@@ -289,14 +226,14 @@ func restoreUndurableCommitRun(run, before *implstate.Run, event implstate.Event
 // using acceptance evidence for the old tree. Message-only mismatches are
 // instead paused: reaccepting unchanged files could not create a corrective
 // commit, but the unexpected commit remains untouched for user reconciliation.
-func canReacceptChangedCommit(intent implstate.CommitIntent, observed CommitObservation) bool {
+func canReacceptChangedCommit(intent implstate.CommitIntent, observed workcopy.CommitObservation) bool {
 	// Only the tree/worktree is allowed to differ for an ordinary hook. A
 	// changed parent, message, or HEAD is ambiguous Git control-state drift and
 	// must stay paused rather than being misclassified as safe reacceptance.
 	return strings.TrimSpace(observed.CommitID) != "" && observed.ParentCommit == intent.ParentCommit && observed.Message == intent.Message && observed.Worktree.HeadOID == observed.CommitID && (observed.Tree != intent.Tree || observed.Worktree.TreeOID != observed.Tree)
 }
 
-func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentInput, intent implstate.CommitIntent, observed CommitObservation) (CommitAcceptedAssignmentResult, error) {
+func reconcileChangedCommit(ctx context.Context, input CommitAcceptedAssignmentInput, intent implstate.CommitIntent, observed workcopy.CommitObservation) (CommitAcceptedAssignmentResult, error) {
 	if input.Journal == nil {
 		return CommitAcceptedAssignmentResult{Intent: intent}, pauseCommitAwaitingRetry(ctx, input, errors.New("hook changed commit content but no run journal is available to record the actual working state"))
 	}
@@ -452,41 +389,4 @@ func assignmentByID(run *implstate.Run, id implstate.AssignmentID) *implstate.As
 
 func responseMatchesAcceptedAssignment(run *implstate.Run, assignment implstate.Assignment, response AgentResponse) bool {
 	return response.Binding.RunID == run.Identity.ID && response.Binding.AssignmentID == assignment.ID && response.Binding.BriefID == assignment.Acceptance.BriefID && response.Binding.Specification == run.Identity.Specification && response.Binding.Configuration == run.Identity.Configuration && response.Binding.TaskList == run.Identity.TaskList && strings.TrimSpace(response.Binding.CallID) != ""
-}
-
-func runGitMutation(ctx context.Context, directory string, arguments ...string) ([]byte, error) {
-	return runGitMutationWithEnvironment(ctx, directory, gitMutationEnvironment(), arguments...)
-}
-
-func runGitMutationWithEnvironment(ctx context.Context, directory string, environment []string, arguments ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, "git", append([]string{"-C", directory}, arguments...)...)
-	command.Env = environment
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(arguments, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
-}
-
-// gitMutationEnvironment has the same repository-selection hardening as the
-// read-only helper but intentionally omits GIT_OPTIONAL_LOCKS=0: index writes
-// are required for a real commit.
-func gitMutationEnvironment() []string {
-	blocked := map[string]bool{
-		"GIT_DIR": true, "GIT_WORK_TREE": true, "GIT_COMMON_DIR": true, "GIT_INDEX_FILE": true,
-		"GIT_OBJECT_DIRECTORY": true, "GIT_ALTERNATE_OBJECT_DIRECTORIES": true, "GIT_NAMESPACE": true,
-		"GIT_REPLACE_REF_BASE": true, "GIT_SHALLOW_FILE": true, "GIT_CEILING_DIRECTORIES": true,
-		"GIT_OPTIONAL_LOCKS": true,
-	}
-	environment := make([]string, 0, len(os.Environ()))
-	for _, item := range os.Environ() {
-		key, _, _ := strings.Cut(item, "=")
-		key = strings.ToUpper(key)
-		if blocked[key] || strings.HasPrefix(key, "GIT_CONFIG_") || key == "GIT_CONFIG_PARAMETERS" {
-			continue
-		}
-		environment = append(environment, item)
-	}
-	return environment
 }

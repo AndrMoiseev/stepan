@@ -4,6 +4,10 @@ threshold:
   compliance: 100
   coverage: 100
 dependenciesRules:
+  - package: '^github\.com/AndrMoiseev/stepan/internal/testall$'
+    shouldOnlyDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/processjob$'
   - package: '^github\.com/AndrMoiseev/stepan/.+$'
     shouldNotDependsOn:
       internal:
@@ -145,3 +149,8 @@ dependenciesRules:
       internal:
         - '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace$'
         - '^github\.com/AndrMoiseev/stepan/internal/git$'
+
+  - package: '^github\.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git/testfixture$'
+    shouldNotDependsOn:
+      internal:
+        - '^github\.com/AndrMoiseev/stepan/internal/.+$'

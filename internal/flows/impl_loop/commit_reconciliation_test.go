@@ -7,6 +7,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	"github.com/AndrMoiseev/stepan/internal/git"
 )
 
@@ -15,7 +16,7 @@ func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
 	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
 	defer stateStore.Close()
 	intent := persistPendingCommit(t, run, stateStore)
-	observer := &commitObserverFake{observation: CommitObservation{
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
 		CommitID: intent.ParentCommit,
 		Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
 	}}
@@ -48,7 +49,7 @@ func TestReconcilePendingCommitDoesNotReturnRetryWhileRunIsInactive(t *testing.T
 			} else if err := run.Close("user stopped run"); err != nil {
 				t.Fatal(err)
 			}
-			observer := &commitObserverFake{observation: CommitObservation{
+			observer := &commitObserverFake{observation: workcopy.CommitObservation{
 				CommitID: intent.ParentCommit, Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
 			}}
 
@@ -67,7 +68,7 @@ func TestReconcilePendingCommitAdoptsMatchingCommitOnlyOnce(t *testing.T) {
 	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
 	defer stateStore.Close()
 	intent := persistPendingCommit(t, run, stateStore)
-	observer := &commitObserverFake{observation: CommitObservation{
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
 		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
@@ -98,7 +99,7 @@ func TestReconcilePendingCommitPausesWhenGitFactsAreAmbiguous(t *testing.T) {
 	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
 	defer stateStore.Close()
 	intent := persistPendingCommit(t, run, stateStore)
-	observer := &commitObserverFake{observation: CommitObservation{
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
 		CommitID: "unknown-commit", ParentCommit: intent.ParentCommit, Tree: "unexpected-tree", Message: intent.Message,
 		Worktree: git.Snapshot{HeadOID: "unknown-commit", TreeOID: "unexpected-tree"},
 	}}
@@ -126,7 +127,7 @@ func TestReconcilePendingCommitPausesWhenExactGitFactsLackRequiredTrailer(t *tes
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-	observer := &commitObserverFake{observation: CommitObservation{
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
 		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
@@ -149,7 +150,7 @@ func TestReconcilePendingCommitRestoresCallerStateWhenAccountingCannotBePersiste
 	if err := stateStore.Close(); err != nil {
 		t.Fatal(err)
 	}
-	observer := &commitObserverFake{observation: CommitObservation{
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
 		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
 		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
 	}}
@@ -182,12 +183,12 @@ func persistPendingCommit(t *testing.T, run *implstate.Run, stateStore *runstore
 }
 
 type commitObserverFake struct {
-	observation CommitObservation
+	observation workcopy.CommitObservation
 	err         error
 	calls       int
 }
 
-func (fake *commitObserverFake) Observe(context.Context, string) (CommitObservation, error) {
+func (fake *commitObserverFake) Observe(context.Context, string) (workcopy.CommitObservation, error) {
 	fake.calls++
 	return fake.observation, fake.err
 }

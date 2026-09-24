@@ -13,6 +13,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 )
 
@@ -49,10 +50,15 @@ func (l *ControllerLease) Close() error {
 // AcquireController takes controller ownership for one canonical working copy.
 // It does not inspect run status, which permits resume to acquire the same lock.
 func AcquireController(ctx context.Context, store *runstore.Store, workCopy string) (*ControllerLease, error) {
+	return AcquireControllerWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy)
+}
+
+// AcquireControllerWithWorkspace uses the supplied workspace root resolver.
+func AcquireControllerWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy string) (*ControllerLease, error) {
 	if store == nil {
 		return nil, fmt.Errorf("acquire controller: nil run store")
 	}
-	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
+	canonical, err := workspace.FindRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -142,11 +148,16 @@ func ControllerOwned(ctx context.Context, store *runstore.Store, canonical strin
 // AcquireNewRunController atomically reserves controller ownership and rejects
 // a new run if an active or paused durable run already names this working copy.
 func AcquireNewRunController(ctx context.Context, store *runstore.Store, workCopy string) (*ControllerLease, error) {
-	lease, err := AcquireController(ctx, store, workCopy)
+	return AcquireNewRunControllerWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy)
+}
+
+// AcquireNewRunControllerWithWorkspace uses the supplied workspace root resolver.
+func AcquireNewRunControllerWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy string) (*ControllerLease, error) {
+	lease, err := AcquireControllerWithWorkspace(ctx, workspace, store, workCopy)
 	if err != nil {
 		return nil, err
 	}
-	if existing, err := FindUnclosedRun(ctx, store, lease.workCopy); err != nil {
+	if existing, err := FindUnclosedRunWithWorkspace(ctx, workspace, store, lease.workCopy); err != nil {
 		_ = lease.Close()
 		return nil, err
 	} else if existing != nil {
@@ -159,10 +170,15 @@ func AcquireNewRunController(ctx context.Context, store *runstore.Store, workCop
 // FindUnclosedRun is a read-only status operation and deliberately takes no
 // controller lock. Paused runs remain open; closed and succeeded runs do not.
 func FindUnclosedRun(ctx context.Context, store *runstore.Store, workCopy string) (*implstate.Run, error) {
+	return FindUnclosedRunWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy)
+}
+
+// FindUnclosedRunWithWorkspace uses the supplied workspace root resolver.
+func FindUnclosedRunWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy string) (*implstate.Run, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
+	canonical, err := workspace.FindRoot(ctx, workCopy)
 	if err != nil {
 		return nil, err
 	}

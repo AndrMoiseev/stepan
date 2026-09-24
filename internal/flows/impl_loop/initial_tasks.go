@@ -11,6 +11,7 @@ import (
 
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
 )
@@ -134,7 +135,12 @@ func validateInitialTaskExtractionResponse(run *implstate.Run, response AgentRes
 // this work copy. In particular, it cannot silently reuse tasks from a closed
 // run. Open runs are rejected by AcquireNewRunController.
 func BeginNewChange(ctx context.Context, store *runstore.Store, workCopy, change string) (*NewChangeStart, error) {
-	lease, err := AcquireNewRunController(ctx, store, workCopy)
+	return BeginNewChangeWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy, change)
+}
+
+// BeginNewChangeWithWorkspace uses the supplied workspace root resolver.
+func BeginNewChangeWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy, change string) (*NewChangeStart, error) {
+	lease, err := AcquireNewRunControllerWithWorkspace(ctx, workspace, store, workCopy)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +174,12 @@ type ResumedRun struct {
 // process, not continuing work: it is first persisted as a pause and only the
 // normal /resume reconciliation may make it active again.
 func RecoverOwnRun(ctx context.Context, store *runstore.Store, workCopy string) (*ResumedRun, *UserRunControl, error) {
-	resumed, err := ContinueOwnRun(ctx, store, workCopy)
+	return RecoverOwnRunWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy)
+}
+
+// RecoverOwnRunWithWorkspace uses the supplied workspace root resolver.
+func RecoverOwnRunWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy string) (*ResumedRun, *UserRunControl, error) {
+	resumed, err := ContinueOwnRunWithWorkspace(ctx, workspace, store, workCopy)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -194,14 +205,19 @@ func RecoverOwnRun(ctx context.Context, store *runstore.Store, workCopy string) 
 // associated with workCopy. It never opens a closed run, and it cannot import
 // a run belonging to another work copy.
 func ContinueOwnRun(ctx context.Context, store *runstore.Store, workCopy string) (*ResumedRun, error) {
-	lease, err := AcquireController(ctx, store, workCopy)
+	return ContinueOwnRunWithWorkspace(ctx, gitworkspace.Control{}, store, workCopy)
+}
+
+// ContinueOwnRunWithWorkspace uses the supplied workspace root resolver.
+func ContinueOwnRunWithWorkspace(ctx context.Context, workspace workcopy.RootFinder, store *runstore.Store, workCopy string) (*ResumedRun, error) {
+	lease, err := AcquireControllerWithWorkspace(ctx, workspace, store, workCopy)
 	if err != nil {
 		return nil, err
 	}
 	fail := func(err error) (*ResumedRun, error) {
 		return nil, errors.Join(err, lease.Close())
 	}
-	model, err := FindUnclosedRun(ctx, store, lease.WorkCopy())
+	model, err := FindUnclosedRunWithWorkspace(ctx, workspace, store, lease.WorkCopy())
 	if err != nil {
 		return fail(err)
 	}
@@ -231,10 +247,7 @@ func changeHasRun(ctx context.Context, store *runstore.Store, workCopy, change s
 	if strings.TrimSpace(change) == "" {
 		return false, fmt.Errorf("%w: blank change", ErrChangeAlreadyStarted)
 	}
-	canonical, err := (gitworkspace.Control{}).FindRoot(ctx, workCopy)
-	if err != nil {
-		return false, err
-	}
+	canonical := filepath.Clean(workCopy)
 	ids, err := store.RunIDs()
 	if err != nil {
 		return false, err

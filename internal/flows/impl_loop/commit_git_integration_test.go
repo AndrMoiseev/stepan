@@ -14,6 +14,7 @@ import (
 	"github.com/AndrMoiseev/stepan/internal/flows/impl_loop/checkexec"
 	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
 	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
 	gitworkspace "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace/git"
 	"github.com/AndrMoiseev/stepan/internal/git"
 	"github.com/AndrMoiseev/stepan/internal/openspec"
@@ -23,9 +24,9 @@ import (
 func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
-	writeResumeGitSpecification(t, repository)
-	writeGitWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Rules\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	writeResumeSpecification(t, repository)
+	writeWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Rules\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
 	configuration := resumeTestConfiguration(t, "test-model", "rules/rules.md")
 	store := mustControllerStore(t, t.TempDir())
 	journal, err := store.Create("resume-hook-refusal")
@@ -79,7 +80,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	}
 	defer stateStore.Close()
 	prepareResumeCommitAcceptance(t, run, stateStore, journal)
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [x] task\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [x] task\n")
 	reflection, err := workspace.Capture(context.Background(), repository)
 	if err != nil {
 		t.Fatal(err)
@@ -92,13 +93,13 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	message := "Commit accepted task"
 	response := commitResponse(run, "commit-1", message)
 	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nexit 1\n")
-	if _, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}}); !errors.Is(err, ErrAssignmentCommit) {
+	if _, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: gitworkspace.Control{}}); !errors.Is(err, ErrAssignmentCommit) {
 		t.Fatalf("hook refusal = %v", err)
 	}
 	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
 		t.Fatalf("hook refusal lost pending acceptance: %#v", run)
 	}
-	writeGitWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Updated rules\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "rules", "rules.md"), "# Updated rules\n")
 	if err := os.Remove(filepath.Join(repository, ".git", "hooks", "pre-commit")); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestGitResumeRetriesPendingCommitAfterHookRefusalWithStagedIndex(t *testing
 	if intent := run.Assignments[0].Acceptance.PendingCommit; intent.Tree == preparation.Tree || intent.Tree == "" {
 		t.Fatalf("resume did not durably refresh pending tree after rules-only edit: %#v", intent)
 	}
-	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
+	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: gitworkspace.Control{}})
 	if err != nil || result.Commit.CommitID == "" {
 		t.Fatalf("retry commit result=%#v err=%v", result, err)
 	}
@@ -146,15 +147,6 @@ func recordResumeReflectionEvidence(t *testing.T, run *implstate.Run, stateStore
 	if _, err := stateStore.Record(context.Background(), run); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func writeResumeGitSpecification(t *testing.T, repository string) {
-	t.Helper()
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "proposal.md"), "proposal\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "design.md"), "design\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "tasks.md"), "- [ ] task\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "changes", "change", "specs", "feature", "spec.md"), "requirement\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "openspec", "specs", "base", "spec.md"), "base\n")
 }
 
 func prepareResumeCommitAcceptance(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore, journal *runstore.Run) {
@@ -209,8 +201,8 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	acceptCommitFixture(t, stateStore, run)
 
 	tasks := filepath.Join(repository, "openspec", "changes", "change", "tasks.md")
-	writeGitWorkspaceFile(t, tasks, "- [x] source task\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	writeWorkspaceFile(t, tasks, "- [x] source task\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
 	// In the real flow this is the already-captured post-orchestrator snapshot
 	// returned by the controlled call. The commit step only derives facts from
 	// it and does no Git work until after StateStore.Record.
@@ -225,7 +217,7 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	message := "Implement source task"
 	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
 
-	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
+	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: gitworkspace.Control{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,110 +238,6 @@ func TestGitCommitControlCommitsCodeAndInformationalMarkTogether(t *testing.T) {
 	}
 }
 
-func TestGitCommitAcceptedAssignmentRetriesPendingCommitOnceAfterExplicitResume(t *testing.T) {
-	repository := newGitWorkspace(t)
-	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
-	defer stateStore.Close()
-	acceptCommitFixture(t, stateStore, run)
-
-	snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preparation, err := CommitPreparationFromSnapshot(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message := "Implement the accepted task"
-	response := AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{
-		CallID: "implement", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief",
-		Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList,
-	}}
-	commitMessage, err := messageForImplementationCommit(run, "assignment", "commit-1", response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := run.SetPendingCommitIntent("assignment", implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stateStore.Record(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-	if err := run.Pause("waiting for user"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stateStore.Record(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-	if err := run.Resume(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stateStore.Record(context.Background(), run); err != nil {
-		t.Fatal(err)
-	}
-	control := &commitControlFake{observation: &CommitObservation{
-		CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: commitMessage,
-		Worktree: git.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
-	}}
-
-	result, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
-		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
-		Response: response, Preparation: preparation, Control: control,
-	})
-	if err != nil || control.commitCalls != 1 || result.Commit.CommitID != "commit" || run.Assignments[0].Status != implstate.AssignmentCommitted {
-		t.Fatalf("resumed pending commit result=%#v error=%v calls=%d run=%#v", result, err, control.commitCalls, run)
-	}
-}
-
-func TestGitCommitAcceptedAssignmentDoesNotRetryPendingCommitUntilRunIsExplicitlyResumed(t *testing.T) {
-	for _, status := range []implstate.RunStatus{implstate.RunPaused, implstate.RunClosed} {
-		t.Run(string(status), func(t *testing.T) {
-			repository := newGitWorkspace(t)
-			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
-			defer stateStore.Close()
-			acceptCommitFixture(t, stateStore, run)
-			snapshot, err := (gitworkspace.Control{}).Capture(context.Background(), repository)
-			if err != nil {
-				t.Fatal(err)
-			}
-			preparation, err := CommitPreparationFromSnapshot(snapshot)
-			if err != nil {
-				t.Fatal(err)
-			}
-			intent := implstate.CommitIntent{OperationID: "commit-1", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1"}
-			if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := stateStore.Record(context.Background(), run); err != nil {
-				t.Fatal(err)
-			}
-			if status == implstate.RunPaused {
-				err = run.Pause("waiting for user")
-			} else {
-				err = run.Close("user stopped run")
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err := stateStore.Record(context.Background(), run); err != nil {
-				t.Fatal(err)
-			}
-			control := &commitControlFake{observation: &CommitObservation{
-				CommitID: "commit", ParentCommit: preparation.ParentCommit, Tree: preparation.Tree, Message: intent.Message,
-				Worktree: git.Snapshot{HeadOID: "commit", TreeOID: preparation.Tree},
-			}}
-
-			_, err = CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{
-				Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1",
-				Preparation: preparation, Control: control,
-			})
-			if !errors.Is(err, ErrPendingCommitInactive) || control.commitCalls != 0 {
-				t.Fatalf("inactive pending commit error=%v calls=%d", err, control.commitCalls)
-			}
-		})
-	}
-}
-
 func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.T) {
 	repository := newGitWorkspace(t)
 	switchToBranch(t, repository, "implementation")
@@ -358,12 +246,12 @@ func TestGitCommitControlHookRefusalPausesAwaitingCommitWithoutReset(t *testing.
 	acceptCommitFixture(t, stateStore, run)
 
 	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\necho hook rejected >&2\nexit 1\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
 	preparation := captureCommitPreparation(t, repository)
 	message := "Implement source task"
 	response := commitResponse(run, "commit-1", message)
 
-	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: GitCommitControl{}})
+	_, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: response, Preparation: preparation, Control: gitworkspace.Control{}})
 	if !errors.Is(err, ErrAssignmentCommit) || !strings.Contains(run.PauseReason, "hook rejected") {
 		t.Fatalf("hook refusal error=%v pause=%q", err, run.PauseReason)
 	}
@@ -389,7 +277,7 @@ func TestGitCommitReconciliationAdoptsCommitCreatedBeforeResultWasRecorded(t *te
 	run, stateStore, journal := acceptanceReflectionFixture(t, repository)
 	acceptCommitFixture(t, stateStore, run)
 
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
 	preparation := captureCommitPreparation(t, repository)
 	message, err := messageForImplementationCommit(run, "assignment", "commit-1", commitResponse(run, "commit-1", "Implement source task"))
 	if err != nil {
@@ -442,9 +330,9 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 	acceptCommitFixture(t, stateStore, run)
 
 	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nprintf 'hook content\\n' > hook.txt\ngit add -- hook.txt\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
 	message := "Implement source task"
-	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", message), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", message), Preparation: captureCommitPreparation(t, repository), Control: gitworkspace.Control{}})
 	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
 		t.Fatalf("hook content change error=%v result=%#v", err, first)
 	}
@@ -458,10 +346,10 @@ func TestGitCommitControlHookChangesRequireNewAcceptanceAndNewCommit(t *testing.
 
 	// The original hook-created commit remains in history. The changed state is
 	// accepted again and the correction is recorded by a distinct commit.
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted and corrected code\n")
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted and corrected code\n")
 	reacceptAfterHook(t, run, stateStore)
 	secondMessage := "Correct hook-modified result"
-	second, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", secondMessage), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	second, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-2", Response: commitResponse(run, "commit-2", secondMessage), Preparation: captureCommitPreparation(t, repository), Control: gitworkspace.Control{}})
 	if err != nil || second.Commit.CommitID == "" {
 		t.Fatalf("corrective commit error=%v result=%#v", err, second)
 	}
@@ -480,8 +368,8 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 	acceptCommitFixture(t, stateStore, run)
 
 	writeGitHook(t, repository, "pre-commit", "#!/bin/sh\nprintf 'hook content\\n' > hook.txt\ngit add -- hook.txt\n")
-	writeGitWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
-	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", "Implement source task"), Preparation: captureCommitPreparation(t, repository), Control: GitCommitControl{}})
+	writeWorkspaceFile(t, filepath.Join(repository, "implementation.txt"), "accepted code\n")
+	first, err := CommitAcceptedAssignment(context.Background(), CommitAcceptedAssignmentInput{Run: run, StateStore: stateStore, Journal: journal, Repository: repository, AssignmentID: "assignment", OperationID: "commit-1", Response: commitResponse(run, "commit-1", "Implement source task"), Preparation: captureCommitPreparation(t, repository), Control: gitworkspace.Control{}})
 	if !errors.Is(err, ErrCommitReacceptanceRequired) || !first.ReacceptanceRequired {
 		t.Fatalf("hook content change error=%v result=%#v", err, first)
 	}
@@ -539,9 +427,9 @@ func TestGitCommitControlReusesHookCreatedCommitAfterReloadWhenReacceptedUnchang
 
 type failOnCallCommitControl struct{ calls int }
 
-func (control *failOnCallCommitControl) Commit(context.Context, string, string) (CommitObservation, error) {
+func (control *failOnCallCommitControl) Commit(context.Context, string, string) (workcopy.CommitObservation, error) {
 	control.calls++
-	return CommitObservation{}, errors.New("reused hook commit must not invoke Git")
+	return workcopy.CommitObservation{}, errors.New("reused hook commit must not invoke Git")
 }
 
 func captureCommitPreparation(t *testing.T, repository string) CommitPreparation {
@@ -557,14 +445,10 @@ func captureCommitPreparation(t *testing.T, repository string) CommitPreparation
 	return preparation
 }
 
-func commitResponse(run *implstate.Run, operationID implstate.OperationID, message string) AgentResponse {
-	return AgentResponse{Kind: ResponseImplementationReady, Message: &message, Binding: ResponseBinding{CallID: string(operationID) + "-call", RunID: run.Identity.ID, AssignmentID: "assignment", BriefID: "brief", Specification: run.Identity.Specification, Configuration: run.Identity.Configuration, TaskList: run.Identity.TaskList}}
-}
-
 func writeGitHook(t *testing.T, repository, name, body string) {
 	t.Helper()
 	path := filepath.Join(repository, ".git", "hooks", name)
-	writeGitWorkspaceFile(t, path, body)
+	writeWorkspaceFile(t, path, body)
 	if err := os.Chmod(path, 0o700); err != nil {
 		t.Fatal(err)
 	}

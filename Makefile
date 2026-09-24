@@ -15,7 +15,7 @@ test-process:
 	go test -count=1 -tags=process_integration ./...
 
 test-all:
-	go test -count=1 -parallel=4 -tags=git_integration,process_integration ./...
+	go run ./internal/testall
 
 lint: lint-go lint-actions
 
