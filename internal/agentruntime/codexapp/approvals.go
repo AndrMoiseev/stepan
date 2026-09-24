@@ -1,0 +1,641 @@
+package codexapp
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+)
+
+type ApprovalKind string
+
+const (
+	CommandApproval     ApprovalKind = "command"
+	FileChangeApproval  ApprovalKind = "file_change"
+	PermissionsApproval ApprovalKind = "permissions"
+)
+
+type ApprovalDecision string
+
+const (
+	DecisionAccept        ApprovalDecision = "accept"
+	DecisionDecline       ApprovalDecision = "decline"
+	DecisionCancel        ApprovalDecision = "cancel"
+	DecisionAwaitOperator ApprovalDecision = "await_operator"
+)
+
+func IsApprovalMethod(method string) bool {
+	return method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval" || method == "item/permissions/requestApproval"
+}
+
+type CommandForm struct {
+	Command string `json:"command"`
+	CWD     string `json:"cwd"`
+}
+
+// AccessPolicy is deliberately an exact allowlist. Command strings are data,
+// never shell-parsed, and permission paths must be contained by an allowed root.
+type AccessPolicy struct {
+	ReadableRoots     []string       `json:"readable_roots"`
+	WritableRoots     []string       `json:"writable_roots"`
+	ProtectedPaths    []string       `json:"protected_paths,omitempty"`
+	ProtectedPatterns []string       `json:"protected_patterns,omitempty"`
+	AllowedCommands   []CommandForm  `json:"allowed_commands,omitempty"`
+	NetworkAccess     bool           `json:"network_access"`
+	OperatorDecisions []ApprovalKind `json:"operator_decisions,omitempty"`
+}
+
+type normalizedPolicy struct {
+	ReadableRoots     []string       `json:"readable_roots"`
+	WritableRoots     []string       `json:"writable_roots"`
+	ProtectedPaths    []string       `json:"protected_paths"`
+	ProtectedPatterns []string       `json:"protected_patterns"`
+	AllowedCommands   []CommandForm  `json:"allowed_commands"`
+	NetworkAccess     bool           `json:"network_access"`
+	OperatorDecisions []ApprovalKind `json:"operator_decisions"`
+}
+
+// ApprovalRequest is a decoded App Server approval request. Sensitive payloads
+// remain private; callers only receive correlation metadata.
+type ApprovalRequest struct {
+	Kind        ApprovalKind
+	ThreadID    string
+	TurnID      string
+	ItemID      string
+	ids         approvalIDs
+	permissions permissionProfile
+}
+
+// ApprovalEvaluator owns normalized policy and observed file-change evidence.
+// It is safe for concurrent use by the runtime and diagnostic probe.
+type ApprovalEvaluator struct {
+	mu          sync.Mutex
+	workspace   string
+	policy      normalizedPolicy
+	fileChanges map[string][]string
+}
+
+func NewApprovalEvaluator(workspace string, policy AccessPolicy) (*ApprovalEvaluator, error) {
+	normalized, err := normalizePolicy(policy, workspace)
+	if err != nil {
+		return nil, err
+	}
+	return &ApprovalEvaluator{workspace: workspace, policy: normalized, fileChanges: make(map[string][]string)}, nil
+}
+
+// PolicySnapshotID returns a stable identifier for the normalized policy.
+func (evaluator *ApprovalEvaluator) PolicySnapshotID() (string, error) {
+	evaluator.mu.Lock()
+	defer evaluator.mu.Unlock()
+	data, err := json.Marshal(evaluator.policy)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+func normalizePolicy(policy AccessPolicy, workspace string) (normalizedPolicy, error) {
+	if len(policy.ReadableRoots) == 0 {
+		policy.ReadableRoots = []string{workspace}
+	}
+	result := normalizedPolicy{NetworkAccess: policy.NetworkAccess}
+	var err error
+	if result.ReadableRoots, err = normalizePaths(policy.ReadableRoots); err != nil {
+		return normalizedPolicy{}, fmt.Errorf("readable roots: %w", err)
+	}
+	if result.WritableRoots, err = normalizePaths(policy.WritableRoots); err != nil {
+		return normalizedPolicy{}, fmt.Errorf("writable roots: %w", err)
+	}
+	if result.ProtectedPaths, err = normalizePaths(policy.ProtectedPaths); err != nil {
+		return normalizedPolicy{}, fmt.Errorf("protected paths: %w", err)
+	}
+	for _, pattern := range policy.ProtectedPatterns {
+		pattern, err = normalizeProtectedPattern(pattern)
+		if err != nil {
+			return normalizedPolicy{}, fmt.Errorf("protected pattern %q: %w", pattern, err)
+		}
+		if filepath.Separator == '\\' {
+			pattern = strings.ToLower(pattern)
+		}
+		if _, err := path.Match(pattern, "probe"); err != nil {
+			return normalizedPolicy{}, fmt.Errorf("protected pattern %q: %w", pattern, err)
+		}
+		result.ProtectedPatterns = append(result.ProtectedPatterns, pattern)
+	}
+	sort.Strings(result.ProtectedPatterns)
+	for _, command := range policy.AllowedCommands {
+		command.Command = normalizeCommand(command.Command)
+		if command.Command == "" || unsafeCommand(command.Command) {
+			return normalizedPolicy{}, fmt.Errorf("unsafe allowed command %q", command.Command)
+		}
+		command.CWD, err = canonicalPath(command.CWD)
+		if err != nil {
+			return normalizedPolicy{}, fmt.Errorf("allowed command cwd: %w", err)
+		}
+		result.AllowedCommands = append(result.AllowedCommands, command)
+	}
+	sort.Slice(result.AllowedCommands, func(i, j int) bool {
+		if result.AllowedCommands[i].CWD == result.AllowedCommands[j].CWD {
+			return result.AllowedCommands[i].Command < result.AllowedCommands[j].Command
+		}
+		return result.AllowedCommands[i].CWD < result.AllowedCommands[j].CWD
+	})
+	for _, kind := range policy.OperatorDecisions {
+		if kind != CommandApproval && kind != FileChangeApproval && kind != PermissionsApproval {
+			return normalizedPolicy{}, fmt.Errorf("unknown operator decision kind %q", kind)
+		}
+		result.OperatorDecisions = append(result.OperatorDecisions, kind)
+	}
+	sort.Slice(result.OperatorDecisions, func(i, j int) bool { return result.OperatorDecisions[i] < result.OperatorDecisions[j] })
+	return result, nil
+}
+
+// normalizeProtectedPattern resolves the non-glob prefix of an absolute
+// pattern. This keeps matching stable when a platform exposes /var through a
+// symlink such as /private/var.
+func normalizeProtectedPattern(pattern string) (string, error) {
+	pattern = filepath.Clean(pattern)
+	if filepath.IsAbs(pattern) {
+		prefix, suffix := protectedPatternPrefix(pattern)
+		canonical, err := canonicalPath(prefix)
+		if err != nil {
+			return "", err
+		}
+		pattern = filepath.Join(append([]string{canonical}, suffix...)...)
+	}
+	return filepath.ToSlash(pattern), nil
+}
+
+func protectedPatternPrefix(pattern string) (string, []string) {
+	volume := filepath.VolumeName(pattern)
+	remainder := strings.TrimPrefix(pattern, volume)
+	components := strings.FieldsFunc(remainder, func(r rune) bool { return r == filepath.Separator })
+	for index, component := range components {
+		if strings.ContainsAny(component, "*?[") {
+			prefix := volume
+			if filepath.IsAbs(pattern) {
+				prefix += string(filepath.Separator)
+			}
+			for _, static := range components[:index] {
+				prefix = filepath.Join(prefix, static)
+			}
+			return prefix, components[index:]
+		}
+	}
+	return pattern, nil
+}
+
+func normalizePaths(paths []string) ([]string, error) {
+	result := make([]string, 0, len(paths))
+	for _, value := range paths {
+		normalized, err := canonicalPath(value)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, normalized)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func canonicalPath(value string) (string, error) {
+	if !filepath.IsAbs(value) {
+		return "", fmt.Errorf("path %q must be absolute", value)
+	}
+	value = filepath.Clean(value)
+	probe := value
+	var suffix []string
+	for {
+		resolved, err := resolveExistingPath(probe)
+		if err == nil {
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return "", err
+		}
+		suffix = append(suffix, filepath.Base(probe))
+		probe = parent
+	}
+}
+
+func resolveExistingPath(value string) (string, error) {
+	value = filepath.Clean(value)
+	for links := 0; links < 255; links++ {
+		volume := filepath.VolumeName(value)
+		current := volume + string(filepath.Separator)
+		components := strings.Split(strings.TrimPrefix(value, current), string(filepath.Separator))
+		followed := false
+		for index, component := range components {
+			if component == "" {
+				continue
+			}
+			candidate := filepath.Join(current, component)
+			info, err := os.Lstat(candidate)
+			if err != nil {
+				return "", err
+			}
+			if info.Mode()&(os.ModeSymlink|os.ModeIrregular) == 0 {
+				current = candidate
+				continue
+			}
+			destination, err := os.Readlink(candidate)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(destination) {
+				destination = filepath.Join(filepath.Dir(candidate), destination)
+			}
+			value = filepath.Join(append([]string{destination}, components[index+1:]...)...)
+			followed = true
+			break
+		}
+		if !followed {
+			return filepath.EvalSymlinks(value)
+		}
+	}
+	return "", errors.New("too many reparse points")
+}
+
+type approvalIDs struct {
+	ThreadID                        string            `json:"threadId"`
+	TurnID                          string            `json:"turnId"`
+	ItemID                          string            `json:"itemId"`
+	Command                         *string           `json:"command"`
+	CWD                             *string           `json:"cwd"`
+	GrantRoot                       *string           `json:"grantRoot"`
+	Scope                           string            `json:"scope"`
+	ProposedExecpolicyAmendment     []string          `json:"proposedExecpolicyAmendment"`
+	ProposedNetworkPolicyAmendments []json.RawMessage `json:"proposedNetworkPolicyAmendments"`
+	NetworkApprovalContext          json.RawMessage   `json:"networkApprovalContext"`
+}
+
+type permissionProfile struct {
+	FileSystem *fileSystemPermissions `json:"fileSystem,omitempty"`
+	Network    *networkPermissions    `json:"network,omitempty"`
+}
+
+type fileSystemPermissions struct {
+	Entries          []permissionEntry `json:"entries,omitempty"`
+	GlobScanMaxDepth *uint             `json:"globScanMaxDepth,omitempty"`
+	Read             []string          `json:"read,omitempty"`
+	Write            []string          `json:"write,omitempty"`
+}
+
+type permissionEntry struct {
+	Access string         `json:"access"`
+	Path   permissionPath `json:"path"`
+}
+
+type permissionPath struct {
+	Type    string          `json:"type"`
+	Path    string          `json:"path,omitempty"`
+	Pattern string          `json:"pattern,omitempty"`
+	Value   json.RawMessage `json:"value,omitempty"`
+}
+
+type networkPermissions struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+type fileChangeEvidence struct {
+	ThreadID string   `json:"threadId"`
+	TurnID   string   `json:"turnId"`
+	ItemID   string   `json:"itemId"`
+	Paths    []string `json:"paths"`
+}
+
+func decodeFileChangeEvidence(message Message) (fileChangeEvidence, bool, error) {
+	type change struct {
+		Path string `json:"path"`
+	}
+	var threadID, turnID, itemID string
+	var changes []change
+	switch message.Method {
+	case "item/started":
+		var params struct {
+			ThreadID string `json:"threadId"`
+			TurnID   string `json:"turnId"`
+			Item     struct {
+				ID      string   `json:"id"`
+				Type    string   `json:"type"`
+				Changes []change `json:"changes"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			return fileChangeEvidence{}, true, err
+		}
+		if params.Item.Type != "fileChange" {
+			return fileChangeEvidence{}, false, nil
+		}
+		threadID, turnID, itemID, changes = params.ThreadID, params.TurnID, params.Item.ID, params.Item.Changes
+	case "item/fileChange/patchUpdated":
+		var params struct {
+			ThreadID string   `json:"threadId"`
+			TurnID   string   `json:"turnId"`
+			ItemID   string   `json:"itemId"`
+			Changes  []change `json:"changes"`
+		}
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			return fileChangeEvidence{}, true, err
+		}
+		threadID, turnID, itemID, changes = params.ThreadID, params.TurnID, params.ItemID, params.Changes
+	default:
+		return fileChangeEvidence{}, false, nil
+	}
+	evidence := fileChangeEvidence{ThreadID: threadID, TurnID: turnID, ItemID: itemID}
+	for _, change := range changes {
+		if change.Path == "" {
+			return fileChangeEvidence{}, true, errors.New("file change notification has empty path")
+		}
+		evidence.Paths = append(evidence.Paths, change.Path)
+	}
+	return evidence, true, nil
+}
+
+// Observe records file-change evidence for a single active turn.
+func (evaluator *ApprovalEvaluator) Observe(message Message, threadID, turnID string) error {
+	evidence, relevant, err := decodeFileChangeEvidence(message)
+	if err != nil || !relevant {
+		return err
+	}
+	if evidence.ThreadID != threadID || evidence.TurnID != turnID || evidence.ItemID == "" {
+		return errors.New("file change evidence has invalid correlation fields")
+	}
+	paths := make([]string, 0, len(evidence.Paths))
+	for _, value := range evidence.Paths {
+		if !filepath.IsAbs(value) {
+			value = filepath.Join(evaluator.workspace, value)
+		}
+		value, err = canonicalPath(value)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, value)
+	}
+	evaluator.mu.Lock()
+	key := fileChangeKey(evidence.ThreadID, evidence.TurnID, evidence.ItemID)
+	evaluator.fileChanges[key] = append(evaluator.fileChanges[key], paths...)
+	evaluator.mu.Unlock()
+	return nil
+}
+
+func fileChangeKey(threadID, turnID, itemID string) string {
+	return threadID + "\x00" + turnID + "\x00" + itemID
+}
+
+func decodeApproval(message Message) (ApprovalKind, approvalIDs, permissionProfile, error) {
+	var ids approvalIDs
+	if err := json.Unmarshal(message.Params, &ids); err != nil || ids.ThreadID == "" || ids.TurnID == "" || ids.ItemID == "" {
+		return "", approvalIDs{}, permissionProfile{}, errors.New("invalid approval correlation fields")
+	}
+	var kind ApprovalKind
+	var permissions permissionProfile
+	switch message.Method {
+	case "item/commandExecution/requestApproval":
+		kind = CommandApproval
+	case "item/fileChange/requestApproval":
+		kind = FileChangeApproval
+	case "item/permissions/requestApproval":
+		kind = PermissionsApproval
+		var params map[string]json.RawMessage
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			return "", approvalIDs{}, permissionProfile{}, errors.New("invalid permissions approval")
+		}
+		raw, ok := params["permissions"]
+		if !ok {
+			return "", approvalIDs{}, permissionProfile{}, errors.New("invalid permissions approval")
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&permissions); err != nil {
+			return "", approvalIDs{}, permissionProfile{}, errors.New("invalid permissions approval")
+		}
+	default:
+		return "", approvalIDs{}, permissionProfile{}, fmt.Errorf("unsupported server request %q", message.Method)
+	}
+	return kind, ids, permissions, nil
+}
+
+// Decode validates an App Server approval request without exposing its raw
+// command, permission, or file payloads.
+func (evaluator *ApprovalEvaluator) Decode(message Message) (ApprovalRequest, error) {
+	kind, ids, permissions, err := decodeApproval(message)
+	if err != nil {
+		return ApprovalRequest{}, err
+	}
+	return ApprovalRequest{
+		Kind: kind, ThreadID: ids.ThreadID, TurnID: ids.TurnID, ItemID: ids.ItemID,
+		ids: ids, permissions: permissions,
+	}, nil
+}
+
+// Evaluate applies the current policy to a previously decoded request.
+func (evaluator *ApprovalEvaluator) Evaluate(request ApprovalRequest) ApprovalDecision {
+	evaluator.mu.Lock()
+	defer evaluator.mu.Unlock()
+	return evaluateApproval(evaluator.policy, evaluator.fileChanges, request.Kind, request.ids, request.permissions)
+}
+
+func evaluateApproval(policy normalizedPolicy, fileChanges map[string][]string, kind ApprovalKind, ids approvalIDs, permissions permissionProfile) ApprovalDecision {
+	switch kind {
+	case CommandApproval:
+		if ids.Command == nil || ids.CWD == nil || len(ids.ProposedExecpolicyAmendment) != 0 || len(ids.ProposedNetworkPolicyAmendments) != 0 {
+			return DecisionDecline
+		}
+		if len(ids.NetworkApprovalContext) != 0 && string(ids.NetworkApprovalContext) != "null" && !policy.NetworkAccess {
+			return DecisionDecline
+		}
+		cwd, err := canonicalPath(*ids.CWD)
+		if err != nil {
+			return DecisionDecline
+		}
+		command := normalizeCommand(*ids.Command)
+		if unsafeCommand(command) {
+			return DecisionDecline
+		}
+		for _, allowed := range policy.AllowedCommands {
+			if allowed.Command == command && samePath(allowed.CWD, cwd) {
+				return acceptOrAwait(policy, kind)
+			}
+		}
+		return DecisionDecline
+	case FileChangeApproval:
+		if ids.GrantRoot != nil || ids.Scope == "session" {
+			return DecisionDecline
+		}
+		paths := fileChanges[fileChangeKey(ids.ThreadID, ids.TurnID, ids.ItemID)]
+		if len(paths) == 0 {
+			return DecisionDecline
+		}
+		for _, value := range paths {
+			if !allowedRequestedPath(policy, value, policy.WritableRoots) {
+				return DecisionDecline
+			}
+		}
+		return acceptOrAwait(policy, kind)
+	case PermissionsApproval:
+		if ids.CWD == nil {
+			return DecisionDecline
+		}
+		cwd, err := canonicalPath(*ids.CWD)
+		if err != nil || !allowedPath(policy, cwd, policy.ReadableRoots) {
+			return DecisionDecline
+		}
+		if permissions.Network != nil && permissions.Network.Enabled != nil && *permissions.Network.Enabled && !policy.NetworkAccess {
+			return DecisionDecline
+		}
+		if permissions.FileSystem != nil {
+			if permissions.FileSystem.GlobScanMaxDepth != nil {
+				return DecisionDecline
+			}
+			for _, value := range permissions.FileSystem.Read {
+				if !allowedRequestedPath(policy, value, policy.ReadableRoots) {
+					return DecisionDecline
+				}
+			}
+			for _, value := range permissions.FileSystem.Write {
+				if !allowedRequestedPath(policy, value, policy.WritableRoots) {
+					return DecisionDecline
+				}
+			}
+			for _, entry := range permissions.FileSystem.Entries {
+				if entry.Path.Type != "path" || entry.Path.Path == "" {
+					return DecisionDecline
+				}
+				roots := policy.ReadableRoots
+				if entry.Access == "write" {
+					roots = policy.WritableRoots
+				} else if entry.Access != "read" && entry.Access != "deny" {
+					return DecisionDecline
+				}
+				if !allowedRequestedPath(policy, entry.Path.Path, roots) {
+					return DecisionDecline
+				}
+			}
+		}
+		return acceptOrAwait(policy, kind)
+	default:
+		return DecisionDecline
+	}
+}
+
+func acceptOrAwait(policy normalizedPolicy, kind ApprovalKind) ApprovalDecision {
+	for _, required := range policy.OperatorDecisions {
+		if required == kind {
+			return DecisionAwaitOperator
+		}
+	}
+	return DecisionAccept
+}
+
+func allowedRequestedPath(policy normalizedPolicy, value string, roots []string) bool {
+	normalized, err := canonicalPath(value)
+	return err == nil && allowedPath(policy, normalized, roots)
+}
+
+func allowedPath(policy normalizedPolicy, value string, roots []string) bool {
+	for _, protected := range policy.ProtectedPaths {
+		if within(protected, value) {
+			return false
+		}
+	}
+	slashed := filepath.ToSlash(value)
+	if filepath.Separator == '\\' {
+		slashed = strings.ToLower(slashed)
+	}
+	for _, pattern := range policy.ProtectedPatterns {
+		matched, _ := path.Match(pattern, slashed)
+		if matched {
+			return false
+		}
+	}
+	for _, root := range roots {
+		relative, err := filepath.Rel(root, value)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !protectedByName(relative) {
+			return true
+		}
+	}
+	return false
+}
+
+func protectedByName(value string) bool {
+	for _, component := range strings.FieldsFunc(filepath.ToSlash(value), func(r rune) bool { return r == '/' }) {
+		switch strings.ToLower(component) {
+		case ".git", ".stepan", ".codex", ".agents", ".ssh", ".aws", ".azure", ".env", ".npmrc", ".pypirc", ".netrc", ".git-credentials", "credentials", "credentials.json", "secret", "secrets", "id_rsa", "id_ed25519":
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCommand(command string) string {
+	return strings.TrimSpace(command)
+}
+
+func unsafeCommand(command string) bool {
+	if command == "" || strings.ContainsAny(command, "\r\n;&|><`") || strings.Contains(command, "$(") {
+		return true
+	}
+	fields := strings.Fields(strings.ToLower(command))
+	if len(fields) == 0 {
+		return true
+	}
+	executable := strings.TrimSuffix(filepath.Base(fields[0]), ".exe")
+	switch executable {
+	case "sh", "bash", "zsh", "cmd", "powershell", "pwsh", "rm", "rmdir", "del", "erase", "remove-item", "format", "shutdown", "diskpart":
+		return true
+	case "git":
+		return len(fields) > 1 && (fields[1] == "clean" || fields[1] == "reset")
+	}
+	return false
+}
+
+func within(root, value string) bool {
+	relative, err := filepath.Rel(root, value)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func samePath(left, right string) bool {
+	if filepath.Separator == '\\' {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+// Response returns the App Server result for this request and never creates a
+// session-scoped permission grant.
+func (request ApprovalRequest) Response(decision ApprovalDecision) any {
+	if request.Kind == PermissionsApproval {
+		if decision == DecisionAccept {
+			return struct {
+				Permissions permissionProfile `json:"permissions"`
+				Scope       string            `json:"scope"`
+			}{request.permissions, "turn"}
+		}
+		return struct {
+			Permissions permissionProfile `json:"permissions"`
+			Scope       string            `json:"scope"`
+		}{permissionProfile{}, "turn"}
+	}
+	return struct {
+		Decision ApprovalDecision `json:"decision"`
+	}{decision}
+}

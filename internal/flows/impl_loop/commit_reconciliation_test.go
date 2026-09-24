@@ -1,0 +1,194 @@
+package impl_loop
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+	runstore "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/store"
+	workcopy "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/workspace"
+	"github.com/AndrMoiseev/stepan/internal/git"
+)
+
+func TestReconcilePendingCommitAllowsNormalRetryBeforeGitCommit(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	intent := persistPendingCommit(t, run, stateStore)
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
+		CommitID: intent.ParentCommit,
+		Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
+	}}
+
+	reconciled, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reconciled.Retry || reconciled.Adopted || observer.calls != 1 {
+		t.Fatalf("pre-commit reconciliation = %#v, observations=%d", reconciled, observer.calls)
+	}
+	if run.Status != implstate.RunActive || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
+		t.Fatalf("safe retry changed accepted state: %#v", run)
+	}
+}
+
+func TestReconcilePendingCommitDoesNotReturnRetryWhileRunIsInactive(t *testing.T) {
+	for _, status := range []implstate.RunStatus{implstate.RunPaused, implstate.RunClosed} {
+		t.Run(string(status), func(t *testing.T) {
+			repository := newFilesystemWorkspace(t)
+			run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+			defer stateStore.Close()
+			intent := persistPendingCommit(t, run, stateStore)
+			if status == implstate.RunPaused {
+				if err := run.Pause("waiting for user"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := run.Close("user stopped run"); err != nil {
+				t.Fatal(err)
+			}
+			observer := &commitObserverFake{observation: workcopy.CommitObservation{
+				CommitID: intent.ParentCommit, Worktree: git.Snapshot{HeadOID: intent.ParentCommit, TreeOID: intent.Tree},
+			}}
+
+			result, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+				Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+			})
+			if !errors.Is(err, ErrPendingCommitInactive) || result.Retry || observer.calls != 0 {
+				t.Fatalf("inactive reconciliation result=%#v error=%v observations=%d", result, err, observer.calls)
+			}
+		})
+	}
+}
+
+func TestReconcilePendingCommitAdoptsMatchingCommitOnlyOnce(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	intent := persistPendingCommit(t, run, stateStore)
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
+		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+	}}
+
+	first, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Adopted || first.Retry || first.Commit.CommitID != "created-commit" {
+		t.Fatalf("matching commit was not adopted: %#v", first)
+	}
+	parent, _ := run.TaskStatus("parent")
+	if run.Assignments[0].Status != implstate.AssignmentCommitted || run.LeafStatus["A"] != implstate.TaskComplete || parent != implstate.TaskComplete {
+		t.Fatalf("matching commit did not complete machine accounting: %#v", run)
+	}
+	second, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if err != nil || second.Adopted || second.Retry || observer.calls != 1 {
+		t.Fatalf("completed commit was reconciled twice: result=%#v error=%v observations=%d", second, err, observer.calls)
+	}
+}
+
+func TestReconcilePendingCommitPausesWhenGitFactsAreAmbiguous(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	intent := persistPendingCommit(t, run, stateStore)
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
+		CommitID: "unknown-commit", ParentCommit: intent.ParentCommit, Tree: "unexpected-tree", Message: intent.Message,
+		Worktree: git.Snapshot{HeadOID: "unknown-commit", TreeOID: "unexpected-tree"},
+	}}
+
+	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if !errors.Is(err, ErrPendingCommitAmbiguous) {
+		t.Fatalf("ambiguous Git facts error = %v", err)
+	}
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
+		t.Fatalf("ambiguous reconciliation changed commit accounting: %#v", run)
+	}
+}
+
+func TestReconcilePendingCommitPausesWhenExactGitFactsLackRequiredTrailer(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	defer stateStore.Close()
+	intent := persistPendingCommit(t, run, stateStore)
+	intent.Message = "Implement accepted task"
+	if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
+		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+	}}
+
+	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if !errors.Is(err, ErrPendingCommitAmbiguous) {
+		t.Fatalf("wrong service trailer error = %v", err)
+	}
+	if run.Status != implstate.RunPaused || run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit {
+		t.Fatalf("wrong trailer changed accounting instead of pausing: %#v", run)
+	}
+}
+
+func TestReconcilePendingCommitRestoresCallerStateWhenAccountingCannotBePersisted(t *testing.T) {
+	repository := newFilesystemWorkspace(t)
+	run, stateStore, _ := acceptanceReflectionFixture(t, repository)
+	intent := persistPendingCommit(t, run, stateStore)
+	if err := stateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+	observer := &commitObserverFake{observation: workcopy.CommitObservation{
+		CommitID: "created-commit", ParentCommit: intent.ParentCommit, Tree: intent.Tree, Message: intent.Message,
+		Worktree: git.Snapshot{HeadOID: "created-commit", TreeOID: intent.Tree},
+	}}
+
+	_, err := ReconcilePendingCommit(context.Background(), ReconcilePendingCommitInput{
+		Run: run, StateStore: stateStore, Repository: repository, AssignmentID: "assignment", Observer: observer,
+	})
+	if !errors.Is(err, ErrAssignmentCommit) {
+		t.Fatalf("reconcile with closed store error = %v", err)
+	}
+	if run.Assignments[0].Status != implstate.AssignmentAcceptedAwaitingCommit || run.LeafStatus["A"] != implstate.TaskAcceptedAwaitingCommit {
+		t.Fatalf("undurable accounting advanced caller state: %#v", run)
+	}
+}
+
+func persistPendingCommit(t *testing.T, run *implstate.Run, stateStore *runstore.StateStore) implstate.CommitIntent {
+	t.Helper()
+	acceptCommitFixture(t, stateStore, run)
+	intent := implstate.CommitIntent{
+		OperationID: "commit-1", ParentCommit: "parent", Tree: "accepted-tree",
+		Message: "Implement accepted task\n\nStepan-Run: " + string(run.Identity.ID) + "\nStepan-Assignment: assignment\nStepan-Operation: commit-1",
+	}
+	if err := run.SetPendingCommitIntent("assignment", intent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stateStore.Record(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	return intent
+}
+
+type commitObserverFake struct {
+	observation workcopy.CommitObservation
+	err         error
+	calls       int
+}
+
+func (fake *commitObserverFake) Observe(context.Context, string) (workcopy.CommitObservation, error) {
+	fake.calls++
+	return fake.observation, fake.err
+}

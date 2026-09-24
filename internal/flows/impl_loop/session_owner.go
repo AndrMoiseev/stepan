@@ -1,0 +1,443 @@
+package impl_loop
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/AndrMoiseev/stepan/internal/agentruntime"
+	implstate "github.com/AndrMoiseev/stepan/internal/flows/impl_loop/state"
+)
+
+var (
+	// ErrSessionOwnerClosed means that the process-local owner has been closed.
+	// A resumed run must use a new owner and therefore new provider sessions.
+	ErrSessionOwnerClosed = errors.New("implementation session owner is closed")
+	ErrSessionClosed      = errors.New("implementation agent session is closed")
+	ErrSessionMissing     = errors.New("implementation agent session is not available")
+)
+
+// SessionOwner owns the provider conversations for one implementation run in
+// one working process. It deliberately has no persistence or provider resume
+// capability: a process restart creates a new owner from durable run state.
+//
+// The owner keeps only sessions whose scope permits a continuation. Explorer
+// sessions are created anew for every request. The controller supplies result
+// messages to the continuing source session in a later turn.
+type SessionOwner struct {
+	prepared PreparedRuntimes
+	base     agentruntime.ThreadConfig
+
+	mu         sync.Mutex
+	closed     bool
+	persistent map[sessionKey]*AgentSession
+	sessions   map[*AgentSession]struct{}
+}
+
+type sessionScope string
+
+const (
+	sessionScopeOrchestrator sessionScope = "orchestrator"
+	sessionScopeBriefer      sessionScope = "briefer"
+	sessionScopeAssignment   sessionScope = "assignment"
+	sessionScopeFinalReview  sessionScope = "final_review"
+)
+
+type sessionKey struct {
+	scope sessionScope
+	role  ResponseRole
+	id    string
+}
+
+// SessionRestore describes one conversation that must be recreated after a
+// controller process has restarted. Start is deliberately a complete
+// controller-built bootstrap message, reconstructed from the journal, briefs,
+// results, and current run state. It contains no provider thread or
+// conversation identifier.
+//
+// Explorer is intentionally absent: an Explorer session is one request only.
+// A durable outstanding Explorer request is resumed through its controller
+// route, which opens a new Explorer session for that request.
+type SessionRestore struct {
+	Role ResponseRole
+	// AssignmentID is required for briefer, implementer, and task-reviewer
+	// sessions. FinalReviewRound is required for a final-review session.
+	AssignmentID     implstate.AssignmentID
+	FinalReviewRound string
+	Start            RoleStartContext
+}
+
+// AgentSession is one controller-owned provider thread. Its only interaction
+// surface is a sequential turn; security policy and output schema were fixed
+// when the session was opened.
+type AgentSession struct {
+	Role ResponseRole
+
+	runtime agentruntime.Runtime
+	thread  agentruntime.Thread
+	owner   *SessionOwner
+	start   RoleStartContext
+	// restart is only used by narrowly scoped test adapters. Production
+	// sessions are recreated by their SessionOwner from the saved start
+	// context, never by resuming a provider-specific conversation.
+	restart func(context.Context) (*AgentSession, error)
+
+	mu     sync.Mutex
+	closed bool
+}
+
+// NewSessionOwner builds the process-local owner for a single implementation
+// run. The base config supplies the workspace and optional artifact root; the
+// owner supplies each role's immutable bootstrap message, schema, and write
+// permission when opening a session.
+func NewSessionOwner(prepared PreparedRuntimes, base agentruntime.ThreadConfig) (*SessionOwner, error) {
+	if !filepath.IsAbs(base.Workspace) {
+		return nil, errors.New("implementation session owner requires an absolute workspace")
+	}
+	if base.ArtifactRoot != "" && !filepath.IsAbs(base.ArtifactRoot) {
+		return nil, errors.New("implementation session owner requires an absolute artifact root")
+	}
+	return &SessionOwner{
+		prepared:   prepared,
+		base:       base.Clone(),
+		persistent: make(map[sessionKey]*AgentSession),
+		sessions:   make(map[*AgentSession]struct{}),
+	}, nil
+}
+
+// MatchesPrepared reports whether this live owner was built from the same
+// effective role profiles as prepared. An owner without a complete prepared
+// plan cannot prove that it is safe to continue after a configuration reload,
+// so callers must replace it before dispatching new work.
+func (owner *SessionOwner) MatchesPrepared(prepared PreparedRuntimes) bool {
+	if owner == nil {
+		return false
+	}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed || len(owner.prepared.roles) == 0 || len(prepared.roles) == 0 || len(owner.prepared.roles) != len(prepared.roles) {
+		return false
+	}
+	for role, current := range owner.prepared.roles {
+		next, ok := prepared.roles[role]
+		if !ok || current.Profile != next.Profile {
+			return false
+		}
+	}
+	return true
+}
+
+// Orchestrator returns the one conversation for this owner. Repeated calls in
+// the same working process continue that conversation rather than starting a
+// provider-specific resumed session.
+func (owner *SessionOwner) Orchestrator(ctx context.Context, start RoleStartContext) (*AgentSession, error) {
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeOrchestrator, role: ResponseRoleOrchestrator}, start)
+}
+
+// Briefer returns the conversation for one assignment. It accepts only the
+// opaque context produced by BuildBrieferStartContext, so an assignment cannot
+// start from a caller-provided fragment or substitute another assignment's
+// bootstrap. Repeated calls for this assignment deliberately continue the
+// same session for later brief refinements.
+func (owner *SessionOwner) Briefer(ctx context.Context, assignmentID implstate.AssignmentID, start BrieferStartContext) (*AgentSession, error) {
+	if strings.TrimSpace(string(assignmentID)) == "" || assignmentID != start.assignment() {
+		return nil, errors.New("implementation briefer session requires its matching assignment ID")
+	}
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(assignmentID)}, start.roleStartContext())
+}
+
+// ExistingBriefer returns the already-started briefer conversation for an
+// assignment. Brief refinement is a continuation of initial briefing rather
+// than an opportunity to create an independent interpretation after the fact.
+// A resumed process has no such conversation and must create a new session
+// through its recovery flow with the complete durable context.
+func (owner *SessionOwner) ExistingBriefer(assignmentID implstate.AssignmentID) (*AgentSession, error) {
+	if owner == nil || strings.TrimSpace(string(assignmentID)) == "" {
+		return nil, errors.New("implementation briefer continuation requires an assignment ID")
+	}
+	key := sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(assignmentID)}
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed {
+		return nil, ErrSessionOwnerClosed
+	}
+	session := owner.persistent[key]
+	if session == nil {
+		return nil, ErrSessionMissing
+	}
+	return session, nil
+}
+
+// Assignment returns the implementer or task-reviewer conversation
+// for one assignment. A different assignment gets an entirely new session for
+// each role, while follow-up work for this assignment keeps its conversation.
+func (owner *SessionOwner) Assignment(ctx context.Context, assignmentID implstate.AssignmentID, role ResponseRole, start RoleStartContext) (*AgentSession, error) {
+	if strings.TrimSpace(string(assignmentID)) == "" {
+		return nil, errors.New("implementation assignment session requires an assignment ID")
+	}
+	if role != ResponseRoleImplementer && role != ResponseRoleTaskReviewer {
+		return nil, fmt.Errorf("implementation assignment session does not support role %q", role)
+	}
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeAssignment, role: role, id: string(assignmentID)}, start)
+}
+
+// Explorer opens a fresh conversation for this single research request. It is
+// intentionally not cached, so a new request cannot inherit another request's
+// history. Close it once its result has been delivered to the source session.
+func (owner *SessionOwner) Explorer(ctx context.Context, start RoleStartContext) (*AgentSession, error) {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed {
+		return nil, ErrSessionOwnerClosed
+	}
+	return owner.newSessionLocked(ctx, ResponseRoleExplorer, start)
+}
+
+// FinalReviewer returns the conversation for one final-review round. The same
+// round can continue after an Explorer request; a new round always receives a
+// new independent conversation.
+func (owner *SessionOwner) FinalReviewer(ctx context.Context, roundID string, start RoleStartContext) (*AgentSession, error) {
+	if strings.TrimSpace(roundID) == "" {
+		return nil, errors.New("implementation final-review session requires a round ID")
+	}
+	return owner.persistentSession(ctx, sessionKey{scope: sessionScopeFinalReview, role: ResponseRoleFinalReviewer, id: roundID}, start)
+}
+
+// Restore creates a fresh provider session for a durable conversation scope.
+// It never attempts provider-specific thread resume. Calling Restore more
+// than once for the same scope in one process returns the session already
+// opened by this owner, just like the ordinary role accessors.
+func (owner *SessionOwner) Restore(ctx context.Context, restore SessionRestore) (*AgentSession, error) {
+	if owner == nil {
+		return nil, ErrSessionOwnerClosed
+	}
+	if restore.Start.Role != restore.Role {
+		return nil, fmt.Errorf("implementation restored session role %q does not match start context role %q", restore.Role, restore.Start.Role)
+	}
+	switch restore.Role {
+	case ResponseRoleOrchestrator:
+		if restore.AssignmentID != "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, errors.New("implementation restored orchestrator session cannot have an assignment or final-review round")
+		}
+		return owner.Orchestrator(ctx, restore.Start)
+	case ResponseRoleBriefer:
+		if restore.AssignmentID == "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, errors.New("implementation restored briefer session requires only an assignment ID")
+		}
+		return owner.persistentSession(ctx, sessionKey{scope: sessionScopeBriefer, role: ResponseRoleBriefer, id: string(restore.AssignmentID)}, restore.Start)
+	case ResponseRoleImplementer, ResponseRoleTaskReviewer:
+		if restore.AssignmentID == "" || strings.TrimSpace(restore.FinalReviewRound) != "" {
+			return nil, fmt.Errorf("implementation restored %s session requires only an assignment ID", restore.Role)
+		}
+		return owner.Assignment(ctx, restore.AssignmentID, restore.Role, restore.Start)
+	case ResponseRoleFinalReviewer:
+		if restore.AssignmentID != "" || strings.TrimSpace(restore.FinalReviewRound) == "" {
+			return nil, errors.New("implementation restored final-review session requires only a round ID")
+		}
+		return owner.FinalReviewer(ctx, restore.FinalReviewRound, restore.Start)
+	case ResponseRoleExplorer:
+		return nil, errors.New("implementation Explorer sessions are restored by rerouting their durable request")
+	default:
+		return nil, fmt.Errorf("implementation cannot restore unsupported role %q", restore.Role)
+	}
+}
+
+func (owner *SessionOwner) persistentSession(ctx context.Context, key sessionKey, start RoleStartContext) (*AgentSession, error) {
+	owner.mu.Lock()
+	defer owner.mu.Unlock()
+	if owner.closed {
+		return nil, ErrSessionOwnerClosed
+	}
+	if session, ok := owner.persistent[key]; ok {
+		return session, nil
+	}
+	session, err := owner.newSessionLocked(ctx, key.role, start)
+	if err != nil {
+		return nil, err
+	}
+	owner.persistent[key] = session
+	return session, nil
+}
+
+func (owner *SessionOwner) newSessionLocked(ctx context.Context, role ResponseRole, start RoleStartContext) (*AgentSession, error) {
+	if start.Role != role {
+		return nil, fmt.Errorf("implementation session role %q does not match start context role %q", role, start.Role)
+	}
+	prepared, ok := owner.prepared.Role(string(role))
+	if !ok {
+		return nil, fmt.Errorf("implementation runtime is not prepared for role %q", role)
+	}
+	config := owner.base.Clone()
+	config.WorkspaceWriteAllowed = role == ResponseRoleOrchestrator || role == ResponseRoleImplementer
+	config, err := ThreadConfigForRoleContext(start, config)
+	if err != nil {
+		return nil, fmt.Errorf("prepare implementation session for role %q: %w", role, err)
+	}
+	if err := config.Validate(); err != nil {
+		return nil, fmt.Errorf("validate implementation session for role %q: %w", role, err)
+	}
+	runtime, err := prepared.Start(ctx)
+	if err != nil {
+		return nil, err
+	}
+	thread, err := runtime.StartThread(config)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("start implementation session for role %q: %w", role, err), runtime.Close())
+	}
+	session := &AgentSession{Role: role, runtime: runtime, thread: thread, owner: owner, start: start}
+	owner.sessions[session] = struct{}{}
+	return session, nil
+}
+
+// Recreate discards this provider runtime and opens a new runtime/thread from
+// the same immutable role start context. It is the retry boundary for calls
+// that may have terminated a provider session through an interrupt or crash.
+func (session *AgentSession) Recreate(ctx context.Context) (*AgentSession, error) {
+	if session == nil {
+		return nil, ErrSessionClosed
+	}
+	if session.owner == nil {
+		if session.restart != nil {
+			return session.restart(ctx)
+		}
+		return nil, ErrSessionClosed
+	}
+	return session.owner.recreate(ctx, session)
+}
+
+func (owner *SessionOwner) recreate(ctx context.Context, session *AgentSession) (*AgentSession, error) {
+	owner.mu.Lock()
+	if owner.closed {
+		owner.mu.Unlock()
+		return nil, ErrSessionOwnerClosed
+	}
+	delete(owner.sessions, session)
+	keys := make([]sessionKey, 0, 1)
+	for key, current := range owner.persistent {
+		if current == session {
+			keys = append(keys, key)
+			delete(owner.persistent, key)
+		}
+	}
+	next, createErr := owner.newSessionLocked(ctx, session.Role, session.start)
+	if createErr == nil {
+		for _, key := range keys {
+			owner.persistent[key] = next
+		}
+	}
+	owner.mu.Unlock()
+	closeErr := discardSessionForTechnicalRetry(session)
+	if createErr != nil {
+		return nil, errors.Join(fmt.Errorf("recreate implementation session for role %q: %w", session.Role, createErr), closeErr)
+	}
+	return next, closeErr
+}
+
+// discardSessionForTechnicalRetry closes a session that has already been
+// replaced. Interrupt and crash paths in all supported adapters invalidate the
+// old handle before this call, so their terminal sentinels merely confirm that
+// there is nothing left to dispose. Cleanup or containment failures still
+// matter: they can leave resources or boundaries in an unknown state and must
+// stop the retry.
+func discardSessionForTechnicalRetry(session *AgentSession) error {
+	err := session.close()
+	if isExpectedDiscardError(err) {
+		return nil
+	}
+	return err
+}
+
+func isExpectedDiscardError(err error) bool {
+	if err == nil {
+		return true
+	}
+	if errors.Is(err, agentruntime.ErrRuntimeCleanup) || errors.Is(err, agentruntime.ErrRuntimeContainment) {
+		return false
+	}
+	return errors.Is(err, agentruntime.ErrTurnInterrupted) ||
+		errors.Is(err, agentruntime.ErrRuntimeClosed) ||
+		errors.Is(err, agentruntime.ErrRuntimeExited) ||
+		errors.Is(err, agentruntime.ErrThreadFailed)
+}
+
+// RunTurn continues this role's provider conversation. Calls are serialized
+// because the provider-neutral Runtime contract permits only one active turn.
+func (session *AgentSession) RunTurn(message string) (json.RawMessage, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return nil, ErrSessionClosed
+	}
+	return session.runtime.RunTurn(session.thread, message)
+}
+
+// Interrupt asks the provider to stop this session's active turn. Each
+// implementation session owns its runtime, so this does not interrupt a
+// different role's conversation. It intentionally does not take the turn
+// mutex: RunTurn holds that mutex while the provider is running.
+func (session *AgentSession) Interrupt() error {
+	if session == nil || session.runtime == nil {
+		return ErrSessionClosed
+	}
+	return session.runtime.Interrupt()
+}
+
+// Close releases every session opened by this owner. It is safe to call more
+// than once. A closed owner cannot reopen old provider conversations.
+func (owner *SessionOwner) Close() error {
+	owner.mu.Lock()
+	if owner.closed {
+		owner.mu.Unlock()
+		return nil
+	}
+	owner.closed = true
+	sessions := make([]*AgentSession, 0, len(owner.sessions))
+	for session := range owner.sessions {
+		sessions = append(sessions, session)
+	}
+	owner.sessions = make(map[*AgentSession]struct{})
+	owner.persistent = make(map[sessionKey]*AgentSession)
+	owner.mu.Unlock()
+
+	var closeErr error
+	for _, session := range sessions {
+		closeErr = errors.Join(closeErr, session.close())
+	}
+	return closeErr
+}
+
+// Close releases one session early, which is useful for the one-request
+// Explorer scope. Persistent sessions are removed, so a later request opens a
+// fresh conversation rather than returning a closed handle.
+func (session *AgentSession) Close() error {
+	if session.owner == nil {
+		return session.close()
+	}
+	return session.owner.release(session)
+}
+
+func (owner *SessionOwner) release(session *AgentSession) error {
+	owner.mu.Lock()
+	delete(owner.sessions, session)
+	for key, current := range owner.persistent {
+		if current == session {
+			delete(owner.persistent, key)
+		}
+	}
+	owner.mu.Unlock()
+	return session.close()
+}
+
+func (session *AgentSession) close() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return nil
+	}
+	session.closed = true
+	return errors.Join(session.runtime.CloseThread(session.thread), session.runtime.Close())
+}

@@ -1,0 +1,1 @@
+Independently review completeness and cross-cutting interactions against the current complete specification, indexed rules, and aggregate final diff. Do not infer correctness from unavailable prior rounds or check history; do not edit files or execute commands.

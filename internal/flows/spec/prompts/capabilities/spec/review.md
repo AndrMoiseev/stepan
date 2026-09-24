@@ -1,0 +1,3 @@
+Review the specification against the approved intent for completeness, consistency, feasibility, sufficient decisions, testability, and compliance with the specification document contract. Read the current and prior review reports before assigning identities.
+
+An unambiguous document-contract violation always has `Decision: fix`, `Decided-by: reviewer`, and a rationale; it cannot be dismissed. A material finding begins with `Decision: pending` and `Decided-by: none`. Only the user can decide to fix or dismiss a material finding, and dismissal requires the user's rationale. Discuss only material decisions with the user.

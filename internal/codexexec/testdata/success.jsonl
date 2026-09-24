@@ -1,3 +1,0 @@
-{"type":"thread.started","thread_id":"session-1"}
-{"type":"future.event","value":1}
-{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}

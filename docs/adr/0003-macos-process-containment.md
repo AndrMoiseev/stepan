@@ -1,4 +1,4 @@
-# ADR 0003: macOS/arm64 и containment через process group
+﻿# ADR 0003: macOS/arm64 и containment через process group
 
 Статус: **принято**
 
@@ -34,8 +34,8 @@ containment процесса остаются ответственностью �
 2. `Assign(*os.Process)` сразу после успешного `Start` и до protocol operation;
 3. повторно вызываемый `Close()` для принудительного завершения containment.
 
-Оба пути запуска Codex — `internal/codexapp` и `internal/codexexec` — обязаны
-использовать этот lifecycle. Ошибка любой операции является fail-closed.
+`internal/agentruntime/codexapp` использует этот lifecycle. Ошибка любой операции
+является fail-closed.
 
 На Windows `Prepare` не меняет команду, `Assign` помещает процесс в Job Object,
 а `Close` закрывает handle с `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
@@ -52,8 +52,6 @@ containment процесса остаются ответственностью �
 
 Штатное завершение App Server остаётся двухфазным: Stepan сначала best-effort
 отправляет `turn/interrupt` и ждёт до трёх секунд, затем закрывает supervisor.
-Для cancel/timeout legacy `codexexec` supervisor закрывается сразу, как и Job
-Object до этого изменения.
 
 ### Терминал
 
@@ -117,5 +115,5 @@ ADR пересматривается, если:
 
 - [ADR 0001](0001-codex-app-server-containment.md)
 - [ADR 0002](0002-current-stack-and-architecture.md)
-- [План совместимости с macOS](../specs/macos-compatibility/implementation-plan.md)
-- [План ручной приёмки](../specs/macos-compatibility/manual-test-plan.md)
+- [План совместимости с macOS](../changes/features/macos-compatibility/implementation-plan.md)
+- [План ручной приёмки](../changes/features/macos-compatibility/manual-test-plan.md)
