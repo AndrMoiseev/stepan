@@ -1,6 +1,9 @@
 # stepan
 Vendor agnostic AI SDLC Orchestrator
 
+[Глоссарий проекта](docs/glossary.md) — термины подготовки feature, автономной
+реализации, агентских ролей и восстановления запусков.
+
 Текущий пользовательский сценарий подготовки спецификации описан в
 [протоколе flow `/feature`](docs/feature-flow.md).
 
