@@ -1,0 +1,9 @@
+name: stepan
+version: 0.1.0
+description: Development skills for the Stepan repository
+targets:
+  - codex
+  - claude
+dependencies:
+  apm:
+    - AndrMoiseev/ai-sdlc/packages/aisdlc-core

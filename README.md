@@ -1,6 +1,55 @@
 # stepan
 Vendor agnostic AI SDLC Orchestrator
 
+## Скиллы для разработки
+
+Скиллы разработчика устанавливаются в этот репозиторий через
+[Microsoft APM](https://github.com/microsoft/apm). Нужны Git и APM в `PATH`;
+[инструкция установки APM](https://microsoft.github.io/apm/getting-started/installation/).
+Конфигурация проверена с APM 0.32.0. Все команды выполняются из корня репозитория.
+
+Установить зависимости из `apm.yml`:
+
+```text
+apm install --trust-bin
+```
+
+В зависимости включён пакет `aisdlc-core` из
+[AndrMoiseev/ai-sdlc](https://github.com/AndrMoiseev/ai-sdlc/tree/main/packages/aisdlc-core)
+со скиллами `sdd-spec`, `sdd-apply`, `sdd-doc`, `sdd-implement` и общими
+зависимостями. Чтобы добавить конкретный скилл из другой коллекции (пример):
+
+```text
+apm install github/awesome-copilot --skill review-and-refactor --trust-bin
+```
+
+APM сохраняет выбранные пакеты и скиллы в `apm.yml`, а разрешённые версии — в
+`apm.lock.yaml`. Коммитьте оба файла после добавления или обновления зависимостей.
+После появления lockfile воспроизводимая установка выполняется командой:
+
+```text
+apm install --frozen --trust-bin
+```
+
+Флаг `--trust-bin` разрешает установку исполняемых файлов из `bin/` пакетов.
+Передавайте его явно, в том числе при установке по lockfile: в неинтерактивном
+режиме APM по умолчанию пропускает эти файлы.
+
+Для обновления зависимостей с установкой исполняемых файлов используйте
+`apm install --update --trust-bin` (в APM 0.32.0 команда `apm update` не принимает
+`--trust-bin`). Формат ссылок на пакеты и
+выбор скиллов описаны в [документации APM](https://microsoft.github.io/apm/reference/cli/install/).
+
+В `apm.yml` выбраны Codex и Claude Code. APM размещает скиллы в
+`.agents/skills/` и `.claude/skills/`; скачанные пакеты находятся в `apm_modules/`.
+Установленные скиллы в `.agents/skills/` и `.claude/skills/` храните в Git вместе
+с `apm.yml` и `apm.lock.yaml`. После установки или обновления коммитьте изменения
+в этих каталогах. Каталог скачанных пакетов `apm_modules/` исключён из Git и
+восстанавливается установкой.
+Скиллы предназначены для работы разработчика в агентском CLI. Управляемые
+сессии Claude внутри Stepan по текущему контракту запускаются с отключёнными
+скиллами.
+
 [Глоссарий проекта](docs/glossary.md) — термины подготовки feature, автономной
 реализации, агентских ролей и восстановления запусков.
 

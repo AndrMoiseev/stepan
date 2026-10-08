@@ -5,3 +5,6 @@
 !/.stepan/specs/**
 /stepan.exe
 /stepan
+
+# APM package cache; deployed skills, manifests and lockfile stay in Git.
+apm_modules/
