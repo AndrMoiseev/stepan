@@ -24,15 +24,17 @@ type Thread struct {
 }
 
 type turnRun struct {
-	mu        sync.Mutex
-	threadID  string
-	turnID    string
-	events    []Message
-	wake      chan struct{}
-	terminal  bool
-	approvals *ApprovalEvaluator
-	pending   map[string]bool
-	done      chan struct{}
+	mu                sync.Mutex
+	threadID          string
+	turnID            string
+	events            []Message
+	wake              chan struct{}
+	terminal          bool
+	approvals         *ApprovalEvaluator
+	pending           map[string]bool
+	responding        map[string]chan struct{}
+	terminalResponses []<-chan struct{}
+	done              chan struct{}
 }
 
 type terminalItem struct {
@@ -214,8 +216,8 @@ func (connection *Connection) RunTurn(thread *Thread, prompt string) (json.RawMe
 			}
 			completed[item.ID] = item
 		case "turn/completed":
-			if run.hasPending() {
-				return nil, connection.failTurn(errors.New("terminal notification arrived with unresolved approval"))
+			if err := run.waitTerminalResponses(connection.done); err != nil {
+				return nil, connection.Err()
 			}
 			output, err := decodeCompletedTurn(message.Params, completed)
 			if err != nil {
@@ -356,6 +358,9 @@ func (connection *Connection) registerTurnApproval(message Message) (func() erro
 	}
 	return func() error {
 		decision := run.evaluateApproval(request)
+		if err := run.beginResponse(message.ID.Key()); err != nil {
+			return err
+		}
 		if err := connection.Respond(message.ID, request.Response(decision)); err != nil {
 			return err
 		}
@@ -405,18 +410,47 @@ func (run *turnRun) resolvePending(key string) error {
 		return ErrDuplicateResponse
 	}
 	delete(run.pending, key)
+	close(run.responding[key])
+	delete(run.responding, key)
 	return nil
 }
 
-func (run *turnRun) hasPending() bool {
+func (run *turnRun) beginResponse(key string) error {
 	run.mu.Lock()
 	defer run.mu.Unlock()
-	return len(run.pending) != 0
+	if !run.pending[key] || run.responding[key] != nil {
+		return ErrDuplicateResponse
+	}
+	if run.responding == nil {
+		run.responding = make(map[string]chan struct{})
+	}
+	run.responding[key] = make(chan struct{})
+	return nil
+}
+
+func (run *turnRun) waitTerminalResponses(done <-chan struct{}) error {
+	run.mu.Lock()
+	responses := run.terminalResponses
+	run.mu.Unlock()
+	for _, response := range responses {
+		select {
+		case <-response:
+			continue
+		default:
+		}
+		select {
+		case <-response:
+		case <-done:
+			return ErrConnectionClosed
+		}
+	}
+	return nil
 }
 
 func (run *turnRun) clearPending() {
 	run.mu.Lock()
 	clear(run.pending)
+	clear(run.responding)
 	run.mu.Unlock()
 }
 
@@ -477,6 +511,17 @@ func (run *turnRun) push(message Message) error {
 		return fmt.Errorf("%s arrived after turn/completed", message.Method)
 	}
 	if message.Method == "turn/completed" {
+		// The peer may finish after reading an approval response but before
+		// its writer returns. Join those writes before accepting the result;
+		// approvals that have not reached a decision still fail closed.
+		for key := range run.pending {
+			response := run.responding[key]
+			if response == nil {
+				run.mu.Unlock()
+				return errors.New("terminal notification arrived with unresolved approval")
+			}
+			run.terminalResponses = append(run.terminalResponses, response)
+		}
 		run.terminal = true
 	}
 	run.events = append(run.events, message)

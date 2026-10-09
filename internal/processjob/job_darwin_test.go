@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -47,7 +45,7 @@ func TestCloseSucceedsAfterLeaderExitsBeforeWait(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if process.Proc.P_stat == 5 { // SZOMB from sys/proc.h
+		if process.Proc.P_stat == darwinZombie {
 			break
 		}
 		select {
@@ -92,35 +90,6 @@ func TestCloseKillsRemainingGroupMemberAfterLeaderIsReaped(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertStopped(t, persistentChild)
-}
-
-func awaitPID(t *testing.T, path string) int {
-	t.Helper()
-	deadline := time.NewTimer(5 * time.Second)
-	defer deadline.Stop()
-	poll := time.NewTicker(10 * time.Millisecond)
-	defer poll.Stop()
-	for {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			value := strings.TrimSpace(string(data))
-			if value != "" {
-				pid, err := strconv.Atoi(value)
-				if err != nil || pid <= 1 {
-					t.Fatalf("descendant PID %q: %v", data, err)
-				}
-				return pid
-			}
-		}
-		if !os.IsNotExist(err) {
-			t.Fatal(err)
-		}
-		select {
-		case <-deadline.C:
-			t.Fatalf("timed out waiting for descendant PID at %s", path)
-		case <-poll.C:
-		}
-	}
 }
 
 func assertStopped(t *testing.T, pid int) {

@@ -222,7 +222,10 @@ func (runtime *Runtime) classify(err error) error {
 		return fmt.Errorf("%w: %v", ErrRuntimeClosed, err)
 	}
 	if errors.Is(err, ErrConnectionClosed) {
-		return fmt.Errorf("%w: %v; %s", ErrAppServerExited, err, runtime.process.Diagnostic())
+		// Stdout EOF can race the stderr reader. Retire the unusable process
+		// and join diagnostic collection before returning its final error.
+		closeErr := runtime.process.Close()
+		return errors.Join(fmt.Errorf("%w: %v; %s", ErrAppServerExited, err, runtime.process.Diagnostic()), closeErr)
 	}
 	return err
 }

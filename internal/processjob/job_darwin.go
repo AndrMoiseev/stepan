@@ -109,8 +109,9 @@ func (j *Job) Close() error {
 			return
 		}
 		if errors.Is(err, syscall.EPERM) {
-			// Darwin's killpg1 skips zombies and may return EPERM when no
-			// signalable members remain. Do not hide permission errors for
+			// Darwin's killpg1 skips zombies and processes already exiting,
+			// so EPERM can mean no signalable members remain. P_WEXIT precedes
+			// SZOMB in sysctl snapshots. Do not hide permission errors for
 			// live members, or a failure to inspect the recorded group.
 			members, inspectErr := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
 			if inspectErr != nil {
@@ -118,7 +119,8 @@ func (j *Job) Close() error {
 			} else {
 				live := false
 				for _, member := range members {
-					if member.Proc.P_stat != 5 { // SZOMB from sys/proc.h
+					if !darwinProcessExited(member.Proc.P_stat, member.Proc.P_flag) {
+						err = fmt.Errorf("process %d still active (status=%d flags=%#x): %w", member.Proc.P_pid, member.Proc.P_stat, member.Proc.P_flag, err)
 						live = true
 						break
 					}

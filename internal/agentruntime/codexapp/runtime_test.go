@@ -98,6 +98,11 @@ func TestRuntimeCrashRequiresNewRuntimeAndThread(t *testing.T) {
 	if !errors.Is(err, ErrAppServerExited) || !strings.Contains(err.Error(), "fake crash") {
 		t.Fatalf("crash error = %v", err)
 	}
+	select {
+	case <-old.process.waitDone:
+	default:
+		t.Fatal("crash returned before process wait and stderr collection completed")
+	}
 	if _, err := old.StartThread(testThreadConfig(workspace)); !errors.Is(err, ErrAppServerExited) {
 		t.Fatalf("old runtime reused = %v", err)
 	}
