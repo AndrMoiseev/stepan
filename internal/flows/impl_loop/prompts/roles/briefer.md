@@ -1,0 +1,1 @@
+Select one or more complete leaf tasks as the non-empty contiguous prefix of the controller-supplied remaining task order, and produce a self-contained brief from the complete specification. Never select a parent, split a task, skip or reorder tasks, or reselect a task. Resolve only unambiguous requirements; escalate material gaps or conflicts.

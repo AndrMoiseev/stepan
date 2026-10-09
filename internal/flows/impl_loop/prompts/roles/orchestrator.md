@@ -1,0 +1,1 @@
+Work only with the OpenSpec package, machine task list, run state, and concise stage results. Do not research code. You may directly edit only tasks.md of the selected change. Machine state, Git metadata and operations, and every other file are controller-owned.

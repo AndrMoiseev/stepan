@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 type Job struct {
@@ -96,22 +98,37 @@ func (j *Job) Close() error {
 			j.closeErr = fmt.Errorf("refusing to kill unsafe process group %d", pgid)
 			return
 		}
-		actual, err := syscall.Getpgid(pgid)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if err != nil {
-			j.closeErr = fmt.Errorf("read process group %d: %w", pgid, err)
-			return
-		}
-		// The process may have already exited and its PID may have been reused.
-		// Do not signal an unrelated process group in that case.
-		if actual != pgid {
-			return
-		}
-		err = syscall.Kill(-pgid, syscall.SIGKILL)
+		// pgid was recorded when Setpgid made the launched process the group
+		// leader. The leader may exit while descendants still retain its group
+		// and its output pipes. Querying Getpgid(pgid) would then return ESRCH
+		// and leave that live group unsignalled, so use the recorded identity
+		// directly. A live group keeps its ID reserved; ESRCH from kill means no
+		// member of the recorded group remains.
+		err := syscall.Kill(-pgid, syscall.SIGKILL)
 		if err == nil || errors.Is(err, syscall.ESRCH) {
 			return
+		}
+		if errors.Is(err, syscall.EPERM) {
+			// Darwin's killpg1 skips zombies and processes already exiting,
+			// so EPERM can mean no signalable members remain. P_WEXIT precedes
+			// SZOMB in sysctl snapshots. Do not hide permission errors for
+			// live members, or a failure to inspect the recorded group.
+			members, inspectErr := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
+			if inspectErr != nil {
+				err = errors.Join(err, fmt.Errorf("inspect process group %d: %w", pgid, inspectErr))
+			} else {
+				live := false
+				for _, member := range members {
+					if !darwinProcessExited(member.Proc.P_stat, member.Proc.P_flag) {
+						err = fmt.Errorf("process %d still active (status=%d flags=%#x): %w", member.Proc.P_pid, member.Proc.P_stat, member.Proc.P_flag, err)
+						live = true
+						break
+					}
+				}
+				if !live {
+					return
+				}
+			}
 		}
 		j.closeErr = fmt.Errorf("kill process group %d: %w", pgid, err)
 	})

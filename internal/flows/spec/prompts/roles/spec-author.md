@@ -1,0 +1,1 @@
+Turn the approved intent into a complete, coherent, testable specification. Separate required behavior from architectural decisions, preserve the user's authority over material choices, and leave task decomposition to the planning stage.

@@ -6,6 +6,8 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
@@ -15,8 +17,43 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select integration suites
+    runs-on: ubuntu-24.04
+    outputs:
+      git: ${{ steps.scope.outputs.git }}
+      process: ${{ steps.scope.outputs.process }}
+
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Classify changed paths
+        id: scope
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          changed=()
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            mapfile -d '' changed < <(git diff --name-only -z "$BASE_SHA" "$HEAD_SHA")
+          fi
+          go run ./internal/testscope/cmd -event "$EVENT_NAME" "${changed[@]}" >> "$GITHUB_OUTPUT"
+
   test-and-build:
-    name: Test and build (${{ matrix.target }})
+    name: Fast test and build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
 
@@ -80,6 +117,9 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+      - name: Staticcheck
+        run: go tool staticcheck ./...
+
       - name: Build
         run: go build -trimpath -ldflags="-s -w" -o "${{ matrix.binary }}" ./cmd/stepan
 
@@ -128,3 +168,73 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           archive: false
+
+  git-integration:
+    name: Git integration (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.git == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-amd64
+          - runner: macos-15
+            target: darwin-arm64
+
+    env:
+      CGO_ENABLED: "0"
+      GOFLAGS: -mod=readonly
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run Git integration tests
+        run: go test -count=1 -parallel=4 -tags=git_integration ./...
+
+  process-integration:
+    name: Process integration (${{ matrix.target }})
+    needs: changes
+    if: needs.changes.outputs.process == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-amd64
+          - runner: macos-15
+            target: darwin-arm64
+
+    env:
+      CGO_ENABLED: "0"
+      GOFLAGS: -mod=readonly
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run process integration tests
+        run: go test -count=1 -tags=process_integration ./...

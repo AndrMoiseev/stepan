@@ -93,8 +93,7 @@ Server при выполнении следующих обязательных �
 - Dynamic narrow read grant временно заменён явным копированием inputs и новым
   turn.
 - MVP остаётся Windows-only.
-- Legacy `codexexec` сохраняется как evidence и источник проверенного Windows Job
-  Object поведения до появления эквивалентного App Server lifecycle.
+- App Server самостоятельно владеет проверкой версии Codex и lifecycle процесса.
 
 ## Критерии пересмотра
 
@@ -116,6 +115,6 @@ live-сценариев до обновления integration contract.
 
 ## Основания
 
-- [Отчёт итерации 0](../specs/iteration-0/report.md)
-- [Контракт Codex App Server 0.147.0](../specs/iteration-0/codex-integration-contract.md)
-- [Результаты A01–A16](../specs/iteration-0/results/)
+- [Отчёт итерации 0](../changes/features/iteration-0/report.md)
+- [Контракт Codex App Server 0.147.0](../changes/features/iteration-0/codex-integration-contract.md)
+- [Результаты A01–A16](../changes/features/iteration-0/results/)

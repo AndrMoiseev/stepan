@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Зависимости модулей Stepan",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 650]
+  },
+  "components": [
+    { "id": "cli", "type": "frontend", "label": "cmd/stepan", "sublabel": "Точка входа и сборка", "pos": [570, 45], "size": [280, 76] },
+    { "id": "spec", "type": "backend", "label": "flows/spec", "sublabel": "Подготовка спецификации", "pos": [205, 180], "size": [260, 76] },
+    { "id": "impl", "type": "backend", "label": "flows/impl_loop", "sublabel": "Цикл реализации", "pos": [955, 180], "size": [260, 76] },
+    { "id": "runtime", "type": "backend", "label": "agentruntime", "sublabel": "Контракт агентов", "pos": [75, 325], "size": [250, 76] },
+    { "id": "adapters", "type": "backend", "label": "Адаптеры агентов", "sublabel": "Claude · Codex · Nessy", "pos": [385, 325], "size": [260, 76] },
+    { "id": "openspec", "type": "backend", "label": "openspec", "sublabel": "Документы change", "pos": [730, 325], "size": [200, 76] },
+    { "id": "checkexec", "type": "backend", "label": "impl_loop/checkexec", "sublabel": "Запуск проверок", "pos": [950, 325], "size": [190, 76] },
+    { "id": "store", "type": "database", "label": "impl_loop/store", "sublabel": "Журнал и проекция run", "pos": [1160, 325], "size": [210, 76] },
+    { "id": "git", "type": "backend", "label": "git", "sublabel": "Снимки и изменения", "pos": [125, 495], "size": [225, 76] },
+    { "id": "jobs", "type": "backend", "label": "processjob", "sublabel": "Дерево процессов", "pos": [465, 495], "size": [225, 76] },
+    { "id": "state", "type": "database", "label": "impl_loop/state", "sublabel": "Модель состояния run", "pos": [1145, 495], "size": [225, 76] }
+  ],
+  "connections": [
+    { "from": "cli", "to": "spec", "variant": "emphasis" },
+    { "from": "cli", "to": "impl", "variant": "emphasis" },
+    { "from": "spec", "to": "runtime", "fromSide": "bottom", "toSide": "top" },
+    { "from": "impl", "to": "openspec", "fromSide": "bottom", "toSide": "top" },
+    { "from": "impl", "to": "checkexec", "fromSide": "bottom", "toSide": "top" },
+    { "from": "impl", "to": "store", "fromSide": "bottom", "toSide": "top" },
+    { "from": "adapters", "to": "runtime" },
+    { "from": "openspec", "to": "git", "fromSide": "bottom", "toSide": "top", "via": [[830, 430], [237.5, 430]] },
+    { "from": "checkexec", "to": "jobs", "fromSide": "bottom", "toSide": "top" },
+    { "from": "store", "to": "state", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Как читать стрелки", "items": ["A → B: A вправе импортировать B по arch-go.yml", "Показаны ключевые связи; полный список есть в основном документе"] },
+    { "dot": "violet", "title": "Границы", "items": ["flows/spec и flows/impl_loop не импортируют друг друга", "store зависит от вложенного state, а не от пакета flow"] }
+  ]
+}

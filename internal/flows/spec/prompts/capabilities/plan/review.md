@@ -1,0 +1,3 @@
+Review the plan against the approved specification for complete trace coverage, valid ordering and dependencies, appropriately sized tasks, absence of specification contradictions, objective testability, and sufficient automated test scenarios. Read the current and prior review reports before assigning identities.
+
+An unambiguous document-contract violation always has `Decision: fix`, `Decided-by: reviewer`, and a rationale; it cannot be dismissed. A material finding begins with `Decision: pending` and `Decided-by: none`. Only the user can decide to fix or dismiss a material finding, and dismissal requires the user's rationale. Discuss only material decisions with the user.

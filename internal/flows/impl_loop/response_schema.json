@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "properties": {
+    "kind": { "type": "string" },
+    "message": { "type": "string" },
+    "task_ids": { "type": "array", "items": { "type": "string" } },
+    "task_payloads": { "type": "array", "items": { "type": "string" } },
+    "brief": { "type": "string" },
+    "check_names": { "type": "array", "items": { "type": "string" } },
+    "finding_ids": { "type": "array", "items": { "type": "string" } },
+    "findings": { "type": "array", "items": { "type": "string" } },
+    "finding_decisions": { "type": "array", "items": { "type": "string" } },
+    "finding_reasons": { "type": "array", "items": { "type": "string" } },
+    "question": { "type": "string" },
+    "context": { "type": "string" },
+    "boundaries": { "type": "string" },
+    "known_facts": { "type": "array", "items": { "type": "string" } },
+    "unknowns": { "type": "array", "items": { "type": "string" } },
+    "references": { "type": "array", "items": { "type": "string" } },
+    "locations": { "type": "array", "items": { "type": "string" } },
+    "bases": { "type": "array", "items": { "type": "string" } },
+    "expected_results": { "type": "array", "items": { "type": "string" } },
+    "options": { "type": "array", "items": { "type": "string" } },
+    "recommendation": { "type": "string" },
+    "blocked_action": { "type": "string" },
+    "diagnostic": { "type": "string" },
+    "attempts": { "type": "array", "items": { "type": "string" } },
+    "required_user_action": { "type": "string" },
+    "user_settings": { "type": "string" },
+    "project_settings": { "type": "string" },
+    "explanation": { "type": "string" }
+  },
+  "required": [
+    "kind", "message", "task_ids", "task_payloads", "brief", "check_names",
+    "finding_ids", "findings", "finding_decisions", "finding_reasons",
+    "question", "context", "boundaries", "known_facts", "unknowns", "references",
+    "locations", "bases", "expected_results", "options", "recommendation",
+    "blocked_action", "diagnostic", "attempts", "required_user_action",
+    "user_settings", "project_settings", "explanation"
+  ],
+  "additionalProperties": false
+}

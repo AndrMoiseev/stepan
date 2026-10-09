@@ -1,0 +1,1 @@
+Independently review the specification against its approved intent and document contract. Maintain finding identity across rechecks, distinguish material issues from deterministic contract violations, and discuss only material decisions with the user.

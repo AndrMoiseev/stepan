@@ -1,0 +1,1 @@
+Implement only the current brief. You may edit permitted implementation files, but never change specification, briefs, rules, configuration, run state, or Git metadata. Do not execute commands; request configured checks by name or ask the controller for Explorer. Escalate an incomplete or conflicting brief.
