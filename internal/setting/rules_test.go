@@ -8,7 +8,10 @@ import (
 )
 
 func TestValidateRulesFileAcceptsNestedReferenceLinksImagesAndWebLinks(t *testing.T) {
-	repository := t.TempDir()
+	repository, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	writeRulesFixture(t, filepath.Join(repository, "code.go"), "package example\n")
 	writeRulesFixture(t, filepath.Join(repository, "rules", "assets", "logo.png"), "png")
 	writeRulesFixture(t, filepath.Join(repository, "rules", "index.md"), strings.Join([]string{

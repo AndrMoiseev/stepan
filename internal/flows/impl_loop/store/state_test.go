@@ -565,8 +565,6 @@ func publishTestReference(t *testing.T, run *Run, id implstate.EvidenceID) impls
 	return reference
 }
 
-var stateStoreTestHookMu sync.Mutex
-
 func replaceBeforeProjectionCommitHook(t *testing.T, replacement func(implstate.Event) error) {
 	t.Helper()
 	stateStoreTestHookMu.Lock()

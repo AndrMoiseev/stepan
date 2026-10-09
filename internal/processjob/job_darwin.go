@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 type Job struct {
@@ -105,6 +107,26 @@ func (j *Job) Close() error {
 		err := syscall.Kill(-pgid, syscall.SIGKILL)
 		if err == nil || errors.Is(err, syscall.ESRCH) {
 			return
+		}
+		if errors.Is(err, syscall.EPERM) {
+			// Darwin's killpg1 skips zombies and may return EPERM when no
+			// signalable members remain. Do not hide permission errors for
+			// live members, or a failure to inspect the recorded group.
+			members, inspectErr := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
+			if inspectErr != nil {
+				err = errors.Join(err, fmt.Errorf("inspect process group %d: %w", pgid, inspectErr))
+			} else {
+				live := false
+				for _, member := range members {
+					if member.Proc.P_stat != 5 { // SZOMB from sys/proc.h
+						live = true
+						break
+					}
+				}
+				if !live {
+					return
+				}
+			}
 		}
 		j.closeErr = fmt.Errorf("kill process group %d: %w", pgid, err)
 	})

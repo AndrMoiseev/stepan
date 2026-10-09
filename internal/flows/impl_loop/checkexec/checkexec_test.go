@@ -44,6 +44,10 @@ func TestRunDirectlyExecutesArgumentsInConfiguredDirectoryAndIsolatesEnvironment
 	if err := os.Mkdir(workingDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	workingDirectory, err := filepath.EvalSymlinks(workingDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	firstArguments := []string{"argument with spaces", "semi; colon", "$(not a shell substitution)", "redirection > remains literal"}
 	first, err := Run(helperCommand(workingDirectory, firstArguments, map[string]string{

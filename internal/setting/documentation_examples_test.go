@@ -2,6 +2,7 @@ package setting
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,8 +66,21 @@ func TestImplementationLoopDocumentationConfigurationExamplesValidate(t *testing
 	}
 }
 
+func TestDocumentationSettingsAcceptsCheckoutLineEndings(t *testing.T) {
+	const document = "<!-- example:start -->\n```json\n{\"value\": true}\n```\n<!-- example:end -->\n"
+	for _, newline := range []string{"\n", "\r\n"} {
+		t.Run(fmt.Sprintf("%q", newline), func(t *testing.T) {
+			got := documentationSettings(t, strings.ReplaceAll(document, "\n", newline), "example")
+			if string(got) != `{"value": true}` {
+				t.Fatalf("settings = %s", got)
+			}
+		})
+	}
+}
+
 func documentationSettings(t *testing.T, document, name string) []byte {
 	t.Helper()
+	document = strings.ReplaceAll(document, "\r\n", "\n")
 	start := "<!-- " + name + ":start -->"
 	end := "<!-- " + name + ":end -->"
 	startAt := strings.Index(document, start)

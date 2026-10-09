@@ -29,9 +29,19 @@ func (w ensureErrorWorkspaceControl) EnsureUnchanged(context.Context, string, gi
 
 func newFilesystemWorkspace(t *testing.T) string {
 	t.Helper()
-	repository := t.TempDir()
+	repository := canonicalTestDirectory(t)
 	if err := os.WriteFile(filepath.Join(repository, "tracked.txt"), []byte("initial\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return repository
+}
+
+// Durable identities must use the same canonical root as workspace discovery.
+func canonicalTestDirectory(t *testing.T) string {
+	t.Helper()
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }

@@ -123,7 +123,7 @@ func (p Package) CompleteSpecification() string {
 }
 
 func validateChange(change string) error {
-	if strings.TrimSpace(change) == "" || filepath.Base(change) != change || change == "." || change == ".." {
+	if strings.TrimSpace(change) == "" || strings.ContainsAny(change, `/\`) || filepath.Base(change) != change || change == "." || change == ".." {
 		return fmt.Errorf("%w: %q", ErrInvalidChange, change)
 	}
 	return nil

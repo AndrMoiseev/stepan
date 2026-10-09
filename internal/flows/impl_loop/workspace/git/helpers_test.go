@@ -12,7 +12,10 @@ import (
 
 func newGitWorkspace(t *testing.T) string {
 	t.Helper()
-	repository := t.TempDir()
+	repository, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	gitFixture(t, repository, "init", "--quiet", "--initial-branch=main")
 	gitFixture(t, repository, "config", "user.name", "Stepan Tests")
 	gitFixture(t, repository, "config", "user.email", "stepan-tests@example.invalid")

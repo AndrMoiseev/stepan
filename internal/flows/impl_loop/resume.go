@@ -373,10 +373,20 @@ func rulesOnlyWorkspaceChange(ctx context.Context, workspace workcopy.Control, r
 	if err != nil || len(paths) == 0 {
 		return false
 	}
+	// Rules validation resolves filesystem aliases; use the same root before
+	// comparing its absolute document paths with workspace-relative changes.
+	canonical, err := filepath.EvalSymlinks(repository)
+	if err != nil {
+		return false
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		return false
+	}
 	ruleDocuments := strings.Split(rules.DocumentPaths, "\x00")
 	documents := make(map[string]struct{}, len(ruleDocuments))
 	for _, document := range ruleDocuments {
-		relative, err := filepath.Rel(repository, document)
+		relative, err := filepath.Rel(canonical, document)
 		if err != nil || filepath.IsAbs(relative) {
 			return false
 		}
